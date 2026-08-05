@@ -146,7 +146,9 @@ const commands = {
     const dir = path.join(root, 'supabase', 'migrations');
     fs.mkdirSync(dir, { recursive: true });
 
-    const dest = path.join(dir, '00000000000000_init.sql');
+    // The name is fixed so re-running overwrites rather than stacking duplicates.
+    // Avoid calling it "init" — the Supabase CLI skips migrations with that name.
+    const dest = path.join(dir, '20260101000000_optimus_schema.sql');
     const header = '-- Generated from db/schema.sql by `npm run db:migration`. Do not edit directly.\n\n';
     fs.writeFileSync(dest, header + fs.readFileSync(schemaFile, 'utf8'));
 
