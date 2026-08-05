@@ -141,16 +141,39 @@ const commands = {
     process.exitCode = missing.length ? 1 : 0;
   },
 
-  /** Mirrors db/schema.sql into supabase/migrations so `supabase db push` works. */
+  /**
+   * Mirrors db/schema.sql into supabase/migrations so `supabase db push` works.
+   *
+   * A new timestamped file is emitted only when the schema actually changed —
+   * the CLI records applied migrations by filename, so editing the previous one
+   * in place would leave the change unapplied. Replaying is safe because
+   * schema.sql is written to be idempotent.
+   *
+   * Never name a migration "init"; the Supabase CLI silently skips those.
+   */
   migration() {
     const dir = path.join(root, 'supabase', 'migrations');
     fs.mkdirSync(dir, { recursive: true });
 
-    // The name is fixed so re-running overwrites rather than stacking duplicates.
-    // Avoid calling it "init" — the Supabase CLI skips migrations with that name.
-    const dest = path.join(dir, '20260101000000_optimus_schema.sql');
     const header = '-- Generated from db/schema.sql by `npm run db:migration`. Do not edit directly.\n\n';
-    fs.writeFileSync(dest, header + fs.readFileSync(schemaFile, 'utf8'));
+    const contents = header + fs.readFileSync(schemaFile, 'utf8');
+
+    const existing = fs
+      .readdirSync(dir)
+      .filter((file) => file.endsWith('_optimus_schema.sql'))
+      .sort();
+    const latest = existing.at(-1);
+
+    const force = process.argv.includes('--force');
+
+    if (!force && latest && fs.readFileSync(path.join(dir, latest), 'utf8') === contents) {
+      console.log(`no schema changes — ${latest} is current`);
+      return;
+    }
+
+    const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+    const dest = path.join(dir, `${stamp}_optimus_schema.sql`);
+    fs.writeFileSync(dest, contents);
 
     const ref = projectRef();
     console.log(`wrote ${path.relative(root, dest)}`);

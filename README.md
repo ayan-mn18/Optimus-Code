@@ -1,7 +1,8 @@
 # Optimus Code — API
 
 Backend for **Optimus Code**, a daily DSA challenge platform built on the
-[Striver SDE Sheet](https://takeuforward.org/dsa/strivers-sde-sheet-top-coding-interview-problems).
+[Striver SDE Sheet](https://takeuforward.org/dsa/strivers-sde-sheet-top-coding-interview-problems)
+and [A2Z Sheet](https://takeuforward.org/dsa/strivers-a2z-sheet-learn-dsa-a-to-z).
 
 Every enrolled developer gets **5 problems a day**, each from a different topic. Clear all
 five and the day turns green. Fall short and the day is marked **red** — the problems you
@@ -46,7 +47,7 @@ instead.
 | `npm run db:check`     | Prints which expected tables exist; exits non-zero if any are missing |
 | `npm run db:migration` | Mirrors the schema into `supabase/migrations/` for `supabase db push` |
 | `npm run db:setup`     | `db:apply` + `seed`                                                  |
-| `npm run seed`         | Upserts the 191 problems (keyed on `slug`)                           |
+| `npm run seed`         | Upserts the 544 problems (keyed on `slug`)                           |
 
 `psql` is required for `db:apply` / `db:check` (`brew install libpq && brew link --force libpq`).
 The password is passed through `PGPASSWORD`, so it never appears in the process list or your
@@ -73,7 +74,7 @@ It listens on `http://localhost:4000`. `GET /health` is a liveness check.
 
 ### Refreshing the problem catalogue
 
-`data/problems.json` is generated. To re-scrape the sheet:
+`data/problems.json` is generated from both sheets, deduped on slug. To re-scrape:
 
 ```bash
 npm run scrape
@@ -85,11 +86,12 @@ npm run scrape
 | ------------------- | -------------------------------------------------------------- |
 | `users`             | Account, bcrypt password hash, timezone                         |
 | `refresh_tokens`    | Hashed, rotating, revocable                                     |
-| `problems`          | 191 problems across 13 topics with LeetCode / YouTube / article links |
+| `problems`          | 544 problems across 19 topics with LeetCode / YouTube / article links |
 | `enrollments`       | One per user — daily target, start date                         |
 | `daily_logs`        | One row per user per day: `active` \| `complete` \| `missed`    |
 | `daily_assignments` | The problems handed out on a day, with a `carried_over` flag    |
 | `user_problems`     | Solve state, one row per (user, problem), `is_bonus` for extras |
+| `waitlist`          | Public signups from the landing page                            |
 
 RLS is enabled on every table. The API holds the service-role key and authorizes each
 request itself; only `problems` is readable by anon.
@@ -132,6 +134,15 @@ All authenticated routes take `Authorization: Bearer <accessToken>`.
 | GET    | `/today`             | Today's set, progress, streak, days just closed out |
 | POST   | `/solve/:problemId`  | `timeSpentMin?, notes?` — mark solved               |
 | DELETE | `/solve/:problemId`  | Undo a solve                                        |
+
+### Waitlist — `/api/waitlist`
+
+Public, no auth. Rate limited to 10 signups per hour per address.
+
+| Method | Path | Body                       | Notes                                          |
+| ------ | ---- | -------------------------- | ---------------------------------------------- |
+| GET    | `/`  | —                          | Total signups, for the landing-page counter     |
+| POST   | `/`  | `email, name?, referrer?`  | Joining twice returns `alreadyJoined: true`     |
 
 ### Dashboard — `/api/dashboard`
 

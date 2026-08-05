@@ -129,6 +129,19 @@ create index if not exists user_problems_user_idx      on public.user_problems (
 create index if not exists user_problems_solved_on_idx on public.user_problems (user_id, solved_on desc);
 
 -- ---------------------------------------------------------------------------
+-- waitlist — public signups from the landing page
+-- ---------------------------------------------------------------------------
+create table if not exists public.waitlist (
+  id         uuid primary key default gen_random_uuid(),
+  email      text not null unique,
+  name       text,
+  referrer   text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists waitlist_created_at_idx on public.waitlist (created_at);
+
+-- ---------------------------------------------------------------------------
 -- Row level security
 -- The API talks to Postgres with the service-role key and authorizes every
 -- request itself, so RLS stays on with no permissive policies for anon/auth.
@@ -140,6 +153,7 @@ alter table public.daily_logs        enable row level security;
 alter table public.daily_assignments enable row level security;
 alter table public.user_problems     enable row level security;
 alter table public.problems          enable row level security;
+alter table public.waitlist          enable row level security;
 
 drop policy if exists "problems are publicly readable" on public.problems;
 create policy "problems are publicly readable"
