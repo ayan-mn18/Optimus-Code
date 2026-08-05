@@ -27,11 +27,41 @@ cp .env.example .env      # fill in Supabase URL + service role key, and two JWT
 npm install
 ```
 
-Run `db/schema.sql` once in the Supabase SQL editor, then load the problem catalogue:
+Then create the schema and load the problem catalogue — all from the CLI:
 
 ```bash
+npm run db:setup
+```
+
+That runs `db:apply` (pushes `db/schema.sql` through `psql`) followed by `seed`. It needs
+`SUPABASE_DB_PASSWORD` in `.env` — Supabase → Project Settings → Database → Database
+password. On an IPv4-only network use the pooler connection string as `SUPABASE_DB_URL`
+instead.
+
+### Database commands
+
+| Command                | What it does                                                        |
+| ---------------------- | ------------------------------------------------------------------- |
+| `npm run db:apply`     | Applies `db/schema.sql` via `psql` (idempotent — safe to re-run)     |
+| `npm run db:check`     | Prints which expected tables exist; exits non-zero if any are missing |
+| `npm run db:migration` | Mirrors the schema into `supabase/migrations/` for `supabase db push` |
+| `npm run db:setup`     | `db:apply` + `seed`                                                  |
+| `npm run seed`         | Upserts the 191 problems (keyed on `slug`)                           |
+
+`psql` is required for `db:apply` / `db:check` (`brew install libpq && brew link --force libpq`).
+The password is passed through `PGPASSWORD`, so it never appears in the process list or your
+shell history.
+
+**Prefer the Supabase CLI?** `npm run db:migration` writes the schema into
+`supabase/migrations/`, after which the usual flow works and no database password is needed:
+
+```bash
+supabase link --project-ref <your-project-ref>
+supabase db push
 npm run seed
 ```
+
+Either way you can also just paste `db/schema.sql` into the Supabase SQL editor.
 
 Start the API:
 

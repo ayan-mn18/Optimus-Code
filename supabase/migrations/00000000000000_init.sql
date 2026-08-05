@@ -1,0 +1,149 @@
+-- Generated from db/schema.sql by `npm run db:migration`. Do not edit directly.
+
+-- ============================================================================
+-- Optimus Code — Supabase / Postgres schema
+-- Run this once in the Supabase SQL editor, then `npm run seed`.
+-- ============================================================================
+
+create extension if not exists "pgcrypto";
+
+-- ---------------------------------------------------------------------------
+-- users
+-- ---------------------------------------------------------------------------
+create table if not exists public.users (
+  id            uuid primary key default gen_random_uuid(),
+  email         text not null unique,
+  password_hash text not null,
+  name          text not null,
+  timezone      text not null default 'UTC',
+  avatar_seed   text not null default 'optimus',
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
+create index if not exists users_email_idx on public.users (lower(email));
+
+-- ---------------------------------------------------------------------------
+-- refresh_tokens (rotating, hashed)
+-- ---------------------------------------------------------------------------
+create table if not exists public.refresh_tokens (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references public.users(id) on delete cascade,
+  token_hash text not null unique,
+  expires_at timestamptz not null,
+  revoked_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists refresh_tokens_user_idx on public.refresh_tokens (user_id);
+
+-- ---------------------------------------------------------------------------
+-- problems (seeded from the Striver SDE Sheet)
+-- ---------------------------------------------------------------------------
+create table if not exists public.problems (
+  id           uuid primary key default gen_random_uuid(),
+  slug         text not null unique,
+  title        text not null,
+  topic        text not null,
+  difficulty   text not null check (difficulty in ('Easy', 'Medium', 'Hard')),
+  leetcode_url text,
+  youtube_url  text,
+  article_url  text,
+  source       text not null default 'Striver SDE Sheet',
+  order_index  int  not null default 0,
+  created_at   timestamptz not null default now()
+);
+
+create index if not exists problems_topic_idx      on public.problems (topic);
+create index if not exists problems_difficulty_idx on public.problems (difficulty);
+
+-- ---------------------------------------------------------------------------
+-- enrollments — a user signing up for the daily challenge
+-- ---------------------------------------------------------------------------
+create table if not exists public.enrollments (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references public.users(id) on delete cascade,
+  daily_target int  not null default 5 check (daily_target between 1 and 20),
+  status       text not null default 'active' check (status in ('active', 'paused')),
+  started_on   date not null,
+  created_at   timestamptz not null default now(),
+  unique (user_id)
+);
+
+-- ---------------------------------------------------------------------------
+-- daily_logs — one row per user per calendar day (in the user's timezone)
+--   active   : today, still in progress
+--   complete  : hit the daily target — green day
+--   missed    : target not met before the day closed — red day
+-- ---------------------------------------------------------------------------
+create table if not exists public.daily_logs (
+  id             uuid primary key default gen_random_uuid(),
+  user_id        uuid not null references public.users(id) on delete cascade,
+  log_date       date not null,
+  required_count int  not null default 5,
+  solved_count   int  not null default 0,
+  bonus_count    int  not null default 0,
+  status         text not null default 'active' check (status in ('active', 'complete', 'missed')),
+  closed_at      timestamptz,
+  created_at     timestamptz not null default now(),
+  unique (user_id, log_date)
+);
+
+create index if not exists daily_logs_user_date_idx on public.daily_logs (user_id, log_date desc);
+
+-- ---------------------------------------------------------------------------
+-- daily_assignments — the problems handed out for a given day
+--   carried_over marks a problem that came back from an earlier red day
+-- ---------------------------------------------------------------------------
+create table if not exists public.daily_assignments (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      uuid not null references public.users(id) on delete cascade,
+  problem_id   uuid not null references public.problems(id) on delete cascade,
+  assigned_on  date not null,
+  position     int  not null default 0,
+  carried_over boolean not null default false,
+  created_at   timestamptz not null default now(),
+  unique (user_id, assigned_on, problem_id)
+);
+
+create index if not exists daily_assignments_user_date_idx on public.daily_assignments (user_id, assigned_on desc);
+create index if not exists daily_assignments_problem_idx   on public.daily_assignments (user_id, problem_id);
+
+-- ---------------------------------------------------------------------------
+-- user_problems — solve state, one row per (user, problem)
+--   is_bonus = solved outside the day's assigned set
+-- ---------------------------------------------------------------------------
+create table if not exists public.user_problems (
+  id            uuid primary key default gen_random_uuid(),
+  user_id       uuid not null references public.users(id) on delete cascade,
+  problem_id    uuid not null references public.problems(id) on delete cascade,
+  status        text not null default 'solved' check (status in ('solved', 'revisit')),
+  solved_on     date not null,
+  is_bonus      boolean not null default false,
+  time_spent_min int,
+  notes         text,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  unique (user_id, problem_id)
+);
+
+create index if not exists user_problems_user_idx      on public.user_problems (user_id);
+create index if not exists user_problems_solved_on_idx on public.user_problems (user_id, solved_on desc);
+
+-- ---------------------------------------------------------------------------
+-- Row level security
+-- The API talks to Postgres with the service-role key and authorizes every
+-- request itself, so RLS stays on with no permissive policies for anon/auth.
+-- ---------------------------------------------------------------------------
+alter table public.users             enable row level security;
+alter table public.refresh_tokens    enable row level security;
+alter table public.enrollments       enable row level security;
+alter table public.daily_logs        enable row level security;
+alter table public.daily_assignments enable row level security;
+alter table public.user_problems     enable row level security;
+alter table public.problems          enable row level security;
+
+drop policy if exists "problems are publicly readable" on public.problems;
+create policy "problems are publicly readable"
+  on public.problems for select
+  using (true);
