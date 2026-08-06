@@ -2,7 +2,15 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
-import { enroll, getEnrollment, getToday, markSolved, unmarkSolved, getStreak } from '../services/challenge.service.js';
+import {
+  enroll,
+  getEnrollment,
+  getToday,
+  extendToday,
+  markSolved,
+  unmarkSolved,
+  getStreak,
+} from '../services/challenge.service.js';
 
 const router = Router();
 
@@ -37,6 +45,15 @@ router.get('/today', async (req, res, next) => {
   try {
     const [today, streak] = [await getToday(req.user), await getStreak(req.user)];
     res.json({ ...today, streak });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/extend', async (req, res, next) => {
+  try {
+    const [today, streak] = [await extendToday(req.user), await getStreak(req.user)];
+    res.status(201).json({ ...today, streak });
   } catch (err) {
     next(err);
   }

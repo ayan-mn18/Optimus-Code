@@ -89,7 +89,7 @@ npm run scrape
 | `problems`          | 544 problems across 19 topics with LeetCode / YouTube / article links |
 | `enrollments`       | One per user — daily target, start date                         |
 | `daily_logs`        | One row per user per day: `active` \| `complete` \| `missed`    |
-| `daily_assignments` | The problems handed out on a day, with a `carried_over` flag    |
+| `daily_assignments` | The problems handed out on a day — `round` 1 is the target set, 2+ are extra sets; `carried_over` flags red-day returns |
 | `user_problems`     | Solve state, one row per (user, problem), `is_bonus` for extras |
 | `waitlist`          | Public signups from the landing page                            |
 
@@ -105,8 +105,12 @@ request itself; only `problems` is readable by anon.
    solved least.
 3. Each pick comes from a different topic. If fewer distinct topics remain than the target,
    the rule relaxes rather than handing out a short day.
-4. Solving an assigned problem bumps `solved_count`; hitting the target flips the day green.
-   Anything solved beyond the set is counted as bonus.
+4. Solving a problem from the target set bumps `solved_count`; hitting the target flips the
+   day green. Anything else solved that day — extra sets, or free picks from the library —
+   counts as bonus and never changes the target.
+5. Once the day is green the user can ask for another set (`POST /api/challenge/extend`),
+   dealt by the same one-per-topic picker. Extra sets live at `round` 2+ and are capped at
+   5 sets per day.
 
 Day boundaries use the user's own timezone, stored on their profile.
 
@@ -132,6 +136,7 @@ All authenticated routes take `Authorization: Bearer <accessToken>`.
 | GET    | `/`                  | Enrollment + streak                                |
 | POST   | `/enroll`            | `dailyTarget?` (default 5) — join the challenge     |
 | GET    | `/today`             | Today's set, progress, streak, days just closed out |
+| POST   | `/extend`            | Deal another set once the target is met (max 5 sets/day) |
 | POST   | `/solve/:problemId`  | `timeSpentMin?, notes?` — mark solved               |
 | DELETE | `/solve/:problemId`  | Undo a solve                                        |
 

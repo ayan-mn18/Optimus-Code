@@ -8,6 +8,9 @@ const PROBLEM_FIELDS = 'id, slug, title, topic, difficulty, leetcode_url, youtub
 /** Fraction of a daily set reserved for problems returning from a red day. */
 const BACKLOG_SHARE = 0.6;
 
+/** Guard on extra sets, so a day cannot be extended without limit. */
+const MAX_ROUNDS_PER_DAY = 5;
+
 function shuffle(items) {
   const out = [...items];
   for (let i = out.length - 1; i > 0; i -= 1) {
@@ -75,11 +78,14 @@ async function closeOpenDays(userId, today) {
   if (!openLogs.length) return [];
 
   const dates = openLogs.map((log) => log.log_date);
+  // Round 1 only — a day is judged on its target set, never on extra sets the
+  // user asked for after clearing it.
   const assignments = unwrap(
     await db
       .from('daily_assignments')
       .select('problem_id, assigned_on')
       .eq('user_id', userId)
+      .eq('round', 1)
       .in('assigned_on', dates),
     'load assignments for open days',
   );
@@ -191,7 +197,12 @@ async function refreshDayCounters(userId, date) {
 
   const [assignments, solvedToday] = await Promise.all([
     unwrap(
-      await db.from('daily_assignments').select('problem_id').eq('user_id', userId).eq('assigned_on', date),
+      await db
+        .from('daily_assignments')
+        .select('problem_id, round')
+        .eq('user_id', userId)
+        .eq('assigned_on', date)
+        .eq('round', 1),
       'load day assignments',
     ),
     unwrap(
@@ -205,10 +216,13 @@ async function refreshDayCounters(userId, date) {
     ),
   ]);
 
-  const assignedIds = new Set(assignments.map((a) => a.problem_id));
+  // Only round 1 counts toward the target. Everything else solved today —
+  // extra sets the user asked for, or problems picked freely from the
+  // library — lands in the bonus tally.
+  const targetSetIds = new Set(assignments.map((a) => a.problem_id));
   const solvedIds = solvedToday.map((row) => row.problem_id);
-  const solvedCount = solvedIds.filter((id) => assignedIds.has(id)).length;
-  const bonusCount = solvedIds.filter((id) => !assignedIds.has(id)).length;
+  const solvedCount = solvedIds.filter((id) => targetSetIds.has(id)).length;
+  const bonusCount = solvedIds.filter((id) => !targetSetIds.has(id)).length;
 
   const status = solvedCount >= log.required_count
     ? 'complete'
@@ -278,9 +292,10 @@ export async function getToday(user) {
   const assignments = unwrap(
     await db
       .from('daily_assignments')
-      .select(`position, carried_over, problem:problems(${PROBLEM_FIELDS})`)
+      .select(`position, round, carried_over, problem:problems(${PROBLEM_FIELDS})`)
       .eq('user_id', user.id)
       .eq('assigned_on', today)
+      .order('round')
       .order('position'),
     'load today assignments',
   );
@@ -297,6 +312,10 @@ export async function getToday(user) {
 
   log = (await refreshDayCounters(user.id, today)) ?? log;
 
+  // Free picks from the library. Extra-set solves are also flagged bonus, but
+  // they already have their own section, so they are excluded here rather than
+  // being listed on the dashboard twice.
+  const assignedTodayIds = new Set(assignments.map((row) => row.problem.id));
   const bonusSolves = unwrap(
     await db
       .from('user_problems')
@@ -305,7 +324,7 @@ export async function getToday(user) {
       .eq('solved_on', today)
       .eq('is_bonus', true),
     'load bonus solves',
-  );
+  ).filter((row) => !assignedTodayIds.has(row.problem.id));
 
   return {
     date: today,
@@ -316,15 +335,80 @@ export async function getToday(user) {
     status: log.status,
     isComplete: log.status === 'complete',
     closedDays,
-    problems: assignments.map((row) => ({
-      ...row.problem,
-      position: row.position,
-      carriedOver: row.carried_over,
-      solved: solvedMap.has(row.problem.id),
-      solvedOn: solvedMap.get(row.problem.id)?.solved_on ?? null,
-    })),
+    problems: assignments.filter((row) => row.round === 1).map(toProblem(solvedMap)),
+    // Extra sets dealt after the target was met, newest last.
+    extraSets: [...new Set(assignments.filter((row) => row.round > 1).map((row) => row.round))]
+      .sort((a, b) => a - b)
+      .map((round) => ({
+        round,
+        problems: assignments.filter((row) => row.round === round).map(toProblem(solvedMap)),
+      })),
+    canExtend: log.status === 'complete' && maxRound(assignments) < MAX_ROUNDS_PER_DAY,
     bonusProblems: bonusSolves.map((row) => ({ ...row.problem, solved: true, solvedOn: row.solved_on })),
   };
+}
+
+const toProblem = (solvedMap) => (row) => ({
+  ...row.problem,
+  position: row.position,
+  round: row.round,
+  carriedOver: row.carried_over,
+  solved: solvedMap.has(row.problem.id),
+  solvedOn: solvedMap.get(row.problem.id)?.solved_on ?? null,
+});
+
+const maxRound = (assignments) => assignments.reduce((max, row) => Math.max(max, row.round), 1);
+
+/**
+ * Deals another set once the day's target is met — the alternative to wandering
+ * off into the full library. Extra sets never change the target, so the day
+ * stays green no matter how much of the extra set gets solved.
+ */
+export async function extendToday(user) {
+  const enrollment = await requireEnrollment(user.id);
+  const today = todayIn(user.timezone);
+
+  await closeOpenDays(user.id, today);
+
+  const log = unwrap(
+    await db.from('daily_logs').select('*').eq('user_id', user.id).eq('log_date', today).maybeSingle(),
+    'load today log',
+  );
+
+  if (!log || log.status !== 'complete') {
+    throw ApiError.badRequest('Finish today\'s set before asking for another one');
+  }
+
+  const existing = unwrap(
+    await db.from('daily_assignments').select('round').eq('user_id', user.id).eq('assigned_on', today),
+    'load today rounds',
+  );
+
+  const nextRound = maxRound(existing) + 1;
+  if (nextRound > MAX_ROUNDS_PER_DAY) {
+    throw ApiError.badRequest(`That is ${MAX_ROUNDS_PER_DAY} sets today. Pick freely from all problems instead`);
+  }
+
+  const picks = await pickDailyProblems(user.id, today, enrollment.daily_target);
+  if (!picks.length) {
+    throw ApiError.badRequest('Nothing left unsolved — you have finished the sheet');
+  }
+
+  unwrap(
+    await db.from('daily_assignments').insert(
+      picks.map((pick, index) => ({
+        user_id: user.id,
+        problem_id: pick.problem.id,
+        assigned_on: today,
+        position: index,
+        round: nextRound,
+        carried_over: pick.carriedOver,
+      })),
+    ),
+    'create extra set',
+  );
+
+  return getToday(user);
 }
 
 export async function markSolved(user, problemId, { timeSpentMin = null, notes = null } = {}) {
@@ -339,12 +423,15 @@ export async function markSolved(user, problemId, { timeSpentMin = null, notes =
 
   await closeOpenDays(user.id, today);
 
-  const assignedToday = unwrap(
+  // Only the target set counts as non-bonus — problems from an extra set are
+  // bonus just like ones picked freely from the library.
+  const inTargetSet = unwrap(
     await db
       .from('daily_assignments')
       .select('id')
       .eq('user_id', user.id)
       .eq('assigned_on', today)
+      .eq('round', 1)
       .eq('problem_id', problemId)
       .maybeSingle(),
     'check today assignment',
@@ -357,7 +444,7 @@ export async function markSolved(user, problemId, { timeSpentMin = null, notes =
         problem_id: problemId,
         status: 'solved',
         solved_on: today,
-        is_bonus: !assignedToday,
+        is_bonus: !inTargetSet,
         time_spent_min: timeSpentMin,
         notes,
         updated_at: new Date().toISOString(),
@@ -371,7 +458,7 @@ export async function markSolved(user, problemId, { timeSpentMin = null, notes =
 
   return {
     problem: { ...problem, solved: true, solvedOn: today },
-    isBonus: !assignedToday,
+    isBonus: !inTargetSet,
     day: log && {
       date: today,
       target: log.required_count,
