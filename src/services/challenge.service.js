@@ -13,6 +13,24 @@ const MAX_ROUNDS_PER_DAY = 5;
 
 const UNIQUE_VIOLATION = '23505';
 
+/** Green days needed to earn one freeze, and the most you can bank. */
+export const FREEZE_EVERY = 10;
+export const FREEZE_CAP = 3;
+
+/**
+ * Freezes are derived, never incremented: earned is a pure function of green
+ * days, and only the spent count is stored. An award cannot fire twice.
+ */
+export function freezeBalance({ greenDays, freezesUsed }) {
+  const earned = Math.floor(greenDays / FREEZE_EVERY);
+  return {
+    earned,
+    used: freezesUsed,
+    available: Math.max(0, Math.min(earned - freezesUsed, FREEZE_CAP)),
+    nextAt: (Math.floor(greenDays / FREEZE_EVERY) + 1) * FREEZE_EVERY,
+  };
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -120,13 +138,32 @@ async function closeOpenDays(userId, today) {
     'load assignments for open days',
   );
 
-  const solvedIds = await getSolvedProblemIds(userId);
-  const closed = [];
+  const [solvedIds, priorGreenDays, account] = await Promise.all([
+    getSolvedProblemIds(userId),
+    countGreenDays(userId),
+    unwrap(await db.from('users').select('freezes_used').eq('id', userId).single(), 'load freeze balance'),
+  ]);
 
-  for (const log of openLogs) {
+  const closed = [];
+  let greenDays = priorGreenDays;
+  let freezesUsed = account.freezes_used;
+
+  // Oldest first: a freeze spent on one day changes what is available for the
+  // next, and a day that closes green can itself earn the next freeze.
+  for (const log of [...openLogs].sort((a, b) => (a.log_date < b.log_date ? -1 : 1))) {
     const dayProblems = assignments.filter((a) => a.assigned_on === log.log_date);
     const solved = dayProblems.filter((a) => solvedIds.has(a.problem_id)).length;
-    const status = solved >= log.required_count ? 'complete' : 'missed';
+
+    let status;
+    if (solved >= log.required_count) {
+      status = 'complete';
+      greenDays += 1;
+    } else if (freezeBalance({ greenDays, freezesUsed }).available > 0) {
+      status = 'frozen';
+      freezesUsed += 1;
+    } else {
+      status = 'missed';
+    }
 
     unwrap(
       await db
@@ -136,10 +173,28 @@ async function closeOpenDays(userId, today) {
       'close day',
     );
 
-    closed.push({ date: log.log_date, status, solved });
+    closed.push({ date: log.log_date, status, solved, required: log.required_count });
+  }
+
+  if (freezesUsed !== account.freezes_used) {
+    unwrap(
+      await db.from('users').update({ freezes_used: freezesUsed }).eq('id', userId),
+      'record freeze use',
+    );
   }
 
   return closed;
+}
+
+async function countGreenDays(userId) {
+  const { count, error } = await db
+    .from('daily_logs')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('status', 'complete');
+
+  if (error) throw Object.assign(new Error(`count green days: ${error.message}`), { status: 500 });
+  return count ?? 0;
 }
 
 async function getSolvedProblemIds(userId) {
@@ -254,11 +309,12 @@ async function refreshDayCounters(userId, date) {
   const solvedCount = solvedIds.filter((id) => targetSetIds.has(id)).length;
   const bonusCount = solvedIds.filter((id) => !targetSetIds.has(id)).length;
 
+  // A closed day keeps its verdict unless the target is actually met.
   const status = solvedCount >= log.required_count
     ? 'complete'
-    : log.status === 'missed'
-      ? 'missed'
-      : 'active';
+    : log.status === 'active'
+      ? 'active'
+      : log.status;
 
   return unwrap(
     await db
@@ -523,46 +579,92 @@ export async function unmarkSolved(user, problemId) {
   return { problemId, day: log, streak: await getStreak(user) };
 }
 
-/** Current and longest run of green days. Today still being open never breaks it. */
+/** A frozen day holds the streak; only green days count toward its length. */
+const HOLDS_STREAK = new Set(['complete', 'frozen']);
+
+/**
+ * Current and longest run, plus the freeze balance. Today still being open
+ * never breaks the streak. Also writes the standings the leaderboard reads.
+ */
 export async function getStreak(user) {
   const today = todayIn(user.timezone);
-  const logs = unwrap(
-    await db
-      .from('daily_logs')
-      .select('log_date, status')
-      .eq('user_id', user.id)
-      .order('log_date', { ascending: false }),
-    'load logs for streak',
-  );
+
+  const [logs, account, solvedCount] = await Promise.all([
+    unwrap(
+      await db
+        .from('daily_logs')
+        .select('log_date, status')
+        .eq('user_id', user.id)
+        .order('log_date', { ascending: false }),
+      'load logs for streak',
+    ),
+    unwrap(await db.from('users').select('freezes_used').eq('id', user.id).single(), 'load freeze balance'),
+    countSolved(user.id),
+  ]);
 
   const statusByDate = new Map(logs.map((log) => [log.log_date, log.status]));
 
   let current = 0;
   let cursor = statusByDate.get(today) === 'complete' ? today : addDays(today, -1);
-  while (statusByDate.get(cursor) === 'complete') {
-    current += 1;
+  while (HOLDS_STREAK.has(statusByDate.get(cursor))) {
+    if (statusByDate.get(cursor) === 'complete') current += 1;
     cursor = addDays(cursor, -1);
   }
 
   let longest = 0;
   let run = 0;
   let previous = null;
-  const ascending = [...logs].reverse();
-  for (const log of ascending) {
-    if (log.status !== 'complete') {
+  for (const log of [...logs].reverse()) {
+    if (!HOLDS_STREAK.has(log.status)) {
       run = 0;
       previous = log.log_date;
       continue;
     }
-    run = previous && daysBetween(previous, log.log_date) === 1 ? run + 1 : 1;
+    const contiguous = previous && daysBetween(previous, log.log_date) === 1;
+    run = contiguous ? run + (log.status === 'complete' ? 1 : 0) : log.status === 'complete' ? 1 : 0;
     longest = Math.max(longest, run);
     previous = log.log_date;
   }
 
-  return {
+  const greenDays = logs.filter((log) => log.status === 'complete').length;
+  const lastCompleteOn = logs.find((log) => log.status === 'complete')?.log_date ?? null;
+  // A frozen day holds the streak too, so liveness is judged on this.
+  const lastStreakDay = logs.find((log) => HOLDS_STREAK.has(log.status))?.log_date ?? null;
+
+  const streak = {
     current,
     longest,
-    greenDays: logs.filter((log) => log.status === 'complete').length,
+    greenDays,
     redDays: logs.filter((log) => log.status === 'missed').length,
+    frozenDays: logs.filter((log) => log.status === 'frozen').length,
+    freezes: freezeBalance({ greenDays, freezesUsed: account.freezes_used }),
   };
+
+  unwrap(
+    await db
+      .from('users')
+      .update({
+        current_streak: current,
+        longest_streak: Math.max(longest, current),
+        green_days: greenDays,
+        total_solved: solvedCount,
+        last_complete_on: lastCompleteOn,
+        last_streak_day: lastStreakDay,
+      })
+      .eq('id', user.id),
+    'update standings',
+  );
+
+  return streak;
+}
+
+async function countSolved(userId) {
+  const { count, error } = await db
+    .from('user_problems')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('status', 'solved');
+
+  if (error) throw Object.assign(new Error(`count solved: ${error.message}`), { status: 500 });
+  return count ?? 0;
 }

@@ -43,6 +43,7 @@ const publicUser = (user) => ({
   email: user.email,
   timezone: user.timezone,
   avatarSeed: user.avatar_seed,
+  showOnLeaderboard: user.show_on_leaderboard ?? true,
   createdAt: user.created_at,
 });
 
@@ -139,12 +140,19 @@ router.get('/me', requireAuth, async (req, res, next) => {
 router.patch(
   '/me',
   requireAuth,
-  validate(z.object({ name: z.string().trim().min(2).max(60).optional(), timezone: timezone.optional() })),
+  validate(
+    z.object({
+      name: z.string().trim().min(2).max(60).optional(),
+      timezone: timezone.optional(),
+      showOnLeaderboard: z.boolean().optional(),
+    }),
+  ),
   async (req, res, next) => {
     try {
       const patch = { updated_at: new Date().toISOString() };
       if (req.body.name) patch.name = req.body.name;
       if (req.body.timezone) patch.timezone = req.body.timezone;
+      if (req.body.showOnLeaderboard !== undefined) patch.show_on_leaderboard = req.body.showOnLeaderboard;
 
       const user = unwrap(
         await db.from('users').update(patch).eq('id', req.user.id).select('*').single(),

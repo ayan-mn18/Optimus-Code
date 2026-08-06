@@ -10,6 +10,7 @@ import authRoutes from './routes/auth.routes.js';
 import challengeRoutes from './routes/challenge.routes.js';
 import dashboardRoutes from './routes/dashboard.routes.js';
 import waitlistRoutes from './routes/waitlist.routes.js';
+import leaderboardRoutes from './routes/leaderboard.routes.js';
 
 export function createApp() {
   const app = express();
@@ -45,6 +46,7 @@ export function createApp() {
   app.use('/api/challenge', challengeRoutes);
   app.use('/api/dashboard', dashboardRoutes);
   app.use('/api/waitlist', waitlistRoutes);
+  app.use('/api/leaderboard', leaderboardRoutes);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

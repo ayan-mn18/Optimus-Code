@@ -88,10 +88,15 @@ npm run scrape
 | `refresh_tokens`    | Hashed, rotating, revocable                                     |
 | `problems`          | 544 problems across 19 topics with LeetCode / YouTube / article links |
 | `enrollments`       | One per user — daily target, start date                         |
-| `daily_logs`        | One row per user per day: `active` \| `complete` \| `missed`    |
+| `daily_logs`        | One row per user per day: `active` \| `complete` \| `frozen` \| `missed` |
 | `daily_assignments` | The problems handed out on a day — `round` 1 is the target set, 2+ are extra sets; `carried_over` flags red-day returns |
 | `user_problems`     | Solve state, one row per (user, problem), `is_bonus` for extras |
 | `waitlist`          | Public signups from the landing page                            |
+
+Standings (`current_streak`, `green_days`, `total_solved`, `last_streak_day`) are denormalised
+onto `users` whenever a streak is recomputed, so the leaderboard does not replay every user's
+log history. `freezes_used` is the only stored half of the freeze balance — the earned count is
+derived from green days, so an award can never double-fire.
 
 RLS is enabled on every table. The API holds the service-role key and authorizes each
 request itself; only `problems` is readable by anon.
@@ -99,7 +104,7 @@ request itself; only `problems` is readable by anon.
 ## How a day works
 
 1. First request of the day settles any day that ended while still `active` — target met
-   becomes `complete`, otherwise `missed`.
+   becomes `complete`; otherwise `frozen` if a freeze is banked, else `missed`.
 2. Today's set is generated once and stored. Up to 60% of the slots go to problems carried
    over from red days (oldest first); the rest are fresh, biased toward the topics you have
    solved least.
@@ -114,6 +119,13 @@ request itself; only `problems` is readable by anon.
 
 Day boundaries use the user's own timezone, stored on their profile.
 
+### Streak freezes
+
+One freeze is earned per 10 green days, capped at 3 banked. When a day closes short and a
+freeze is available it is spent automatically: the day is recorded as `frozen` rather than
+`missed` and the streak survives. A frozen day holds the streak but does not lengthen it, and
+its unsolved problems still return to the pool like any red day.
+
 ## API
 
 All authenticated routes take `Authorization: Bearer <accessToken>`.
@@ -127,7 +139,7 @@ All authenticated routes take `Authorization: Bearer <accessToken>`.
 | POST   | `/refresh` | `refreshToken`                      | Rotates the refresh token      |
 | POST   | `/logout`  | —                                   | Revokes all refresh tokens     |
 | GET    | `/me`      | —                                   | Current user + enrollment      |
-| PATCH  | `/me`      | `name?, timezone?`                  | Update profile                 |
+| PATCH  | `/me`      | `name?, timezone?, showOnLeaderboard?` | Update profile              |
 
 ### Challenge — `/api/challenge`
 
@@ -149,11 +161,22 @@ Public, no auth. Rate limited to 10 signups per hour per address.
 | GET    | `/`  | —                          | Total signups, for the landing-page counter     |
 | POST   | `/`  | `email, name?, referrer?`  | Joining twice returns `alreadyJoined: true`     |
 
+### Leaderboard — `/api/leaderboard`
+
+| Method | Path | Query                                    | Notes                                        |
+| ------ | ---- | ---------------------------------------- | -------------------------------------------- |
+| GET    | `/`  | `metric=streak\|solved\|consistency`     | Top 50 plus the caller's own rank             |
+
+A stored streak only counts while it is still alive — if the last streak-holding day is older
+than yesterday it reads as zero. Users who set `show_on_leaderboard` to false drop off the
+board but still get their own standing back.
+
 ### Dashboard — `/api/dashboard`
 
 | Method | Path        | Notes                                                        |
 | ------ | ----------- | ------------------------------------------------------------ |
 | GET    | `/overview` | Totals, streak, topic mastery, difficulty split, 182-day heatmap |
+| GET    | `/recap`    | `weeksAgo` (0–52) — a week's totals, daily bars, topics, and the change on the week before |
 | GET    | `/problems` | Filter by `topic`, `difficulty`, `status`, `search`, paginated |
 | GET    | `/topics`   | Topic list with problem counts                               |
 

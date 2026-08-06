@@ -1,3 +1,5 @@
+-- Generated from db/schema.sql by `npm run db:migration`. Do not edit directly.
+
 -- ============================================================================
 -- Optimus Code — Supabase / Postgres schema
 -- Run this once in the Supabase SQL editor, then `npm run seed`.
@@ -29,9 +31,6 @@ alter table public.users add column if not exists longest_streak      int  not n
 alter table public.users add column if not exists green_days          int  not null default 0;
 alter table public.users add column if not exists total_solved        int  not null default 0;
 alter table public.users add column if not exists last_complete_on    date;
--- Most recent day that HELD the streak — complete or covered by a freeze.
--- Liveness is judged on this, not on last_complete_on.
-alter table public.users add column if not exists last_streak_day     date;
 alter table public.users add column if not exists show_on_leaderboard boolean not null default true;
 
 -- Streak freezes: one earned per 10 green days. `freezes_used` is the only
