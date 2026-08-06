@@ -11,6 +11,36 @@ const BACKLOG_SHARE = 0.6;
 /** Guard on extra sets, so a day cannot be extended without limit. */
 const MAX_ROUNDS_PER_DAY = 5;
 
+const UNIQUE_VIOLATION = '23505';
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Reads back a day another request is in the middle of creating, giving it a
+ * moment to finish writing its assignments before we render an empty set.
+ */
+async function waitForDay(userId, date, attempts = 5) {
+  let log = null;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    log = unwrap(
+      await db.from('daily_logs').select('*').eq('user_id', userId).eq('log_date', date).maybeSingle(),
+      'load today log',
+    );
+
+    const { count } = await db
+      .from('daily_assignments')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('assigned_on', date);
+
+    if (log && count) return log;
+    await sleep(80);
+  }
+
+  return log;
+}
+
 function shuffle(items) {
   const out = [...items];
   for (let i = out.length - 1; i > 0; i -= 1) {
@@ -264,28 +294,38 @@ export async function getToday(user) {
   if (!log) {
     const picks = await pickDailyProblems(user.id, today, enrollment.daily_target);
 
-    log = unwrap(
-      await db
-        .from('daily_logs')
-        .insert({ user_id: user.id, log_date: today, required_count: picks.length || enrollment.daily_target })
-        .select('*')
-        .single(),
-      'create today log',
-    );
+    // Two tabs (or a StrictMode double-mount) can hit the first request of the
+    // day at once. The unique index on (user_id, log_date) decides which one
+    // wins; the loser adopts the winner's day instead of erroring.
+    const created = await db
+      .from('daily_logs')
+      .insert({ user_id: user.id, log_date: today, required_count: picks.length || enrollment.daily_target })
+      .select('*')
+      .single();
 
-    if (picks.length) {
-      unwrap(
-        await db.from('daily_assignments').insert(
-          picks.map((pick, index) => ({
-            user_id: user.id,
-            problem_id: pick.problem.id,
-            assigned_on: today,
-            position: index,
-            carried_over: pick.carriedOver,
-          })),
-        ),
-        'create today assignments',
-      );
+    if (created.error && created.error.code !== UNIQUE_VIOLATION) {
+      throw Object.assign(new Error(`create today log: ${created.error.message}`), { status: 500 });
+    }
+
+    if (created.data) {
+      log = created.data;
+      if (picks.length) {
+        unwrap(
+          await db.from('daily_assignments').insert(
+            picks.map((pick, index) => ({
+              user_id: user.id,
+              problem_id: pick.problem.id,
+              assigned_on: today,
+              position: index,
+              carried_over: pick.carriedOver,
+            })),
+          ),
+          'create today assignments',
+        );
+      }
+    } else {
+      // The winner may not have written its assignments yet.
+      log = await waitForDay(user.id, today);
     }
   }
 
