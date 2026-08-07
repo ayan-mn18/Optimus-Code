@@ -2,6 +2,7 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
+import { env } from '../config/env.js';
 import { db, unwrap } from '../lib/supabase.js';
 import { ApiError } from '../lib/errors.js';
 import { isValidTimezone } from '../lib/dates.js';
@@ -19,6 +20,11 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: { message: 'Too many attempts, try again in a few minutes' } },
 });
+
+function requireSignupEnabled(_req, _res, next) {
+  if (!env.signupEnabled) return next(ApiError.notFound('Sign up is currently closed'));
+  next();
+}
 
 const timezone = z
   .string()
@@ -56,7 +62,7 @@ async function sessionPayload(user) {
   return { user: publicUser(user), enrollment, accessToken, refreshToken };
 }
 
-router.post('/signup', authLimiter, validate(signupSchema), async (req, res, next) => {
+router.post('/signup', requireSignupEnabled, authLimiter, validate(signupSchema), async (req, res, next) => {
   try {
     const { name, email, password, timezone: tz } = req.body;
 

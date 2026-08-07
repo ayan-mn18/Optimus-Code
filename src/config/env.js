@@ -18,6 +18,7 @@ export const env = {
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean),
+  signupEnabled: process.env.SIGNUP_ENABLED === 'true',
 
   supabaseUrl: required('SUPABASE_URL'),
   supabaseServiceKey: required('SUPABASE_SERVICE_ROLE_KEY'),
