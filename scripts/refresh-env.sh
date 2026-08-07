@@ -16,7 +16,7 @@ aws ssm get-parameter \
   --region "$REGION" \
   --name "$PARAMETER_NAME" \
   --with-decryption \
-  --output json | jq -er '.Parameter.Value' > "$TEMP_FILE"
+  --output json | jq -jer '.Parameter.Value' > "$TEMP_FILE"
 
 if [ ! -s "$TEMP_FILE" ]; then
   echo "Parameter $PARAMETER_NAME returned an empty environment." >&2
