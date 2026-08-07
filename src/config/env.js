@@ -1,11 +1,11 @@
 import dotenv from 'dotenv';
 
-dotenv.config();
+dotenv.config({ path: ['.env.local', '.env'] });
 
 function required(key) {
   const value = process.env[key];
   if (!value) {
-    throw new Error(`Missing required environment variable: ${key}. Copy .env.example to .env and fill it in.`);
+    throw new Error(`Missing required environment variable: ${key}. Copy .env.example to .env.local and fill it in.`);
   }
   return value;
 }
