@@ -1,0 +1,290 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Optimus Code backend on EC2 with SSM deployments from GitHub Actions
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  AmiId:
+    Type: AWS::EC2::Image::Id
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3.small
+  EnvironmentParameterName:
+    Type: String
+    Default: /optimus-code/prod/env
+  GitHubOwner:
+    Type: String
+    Default: ayan-mn18
+  GitHubRepository:
+    Type: String
+    Default: Optimus-Code
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      Tags:
+        - Key: App
+          Value: optimus-code
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: optimus-code-ec2
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: ReadBackendEnvironment
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${EnvironmentParameterName}
+      Tags:
+        - Key: App
+          Value: optimus-code
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: optimus-code-ec2
+      Roles:
+        - !Ref InstanceRole
+
+  BackendSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public HTTP for Optimus Code API
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - Description: Public HTTP
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - Description: Outbound access
+          IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: optimus-code-backend
+        - Key: App
+          Value: optimus-code
+
+  BackendInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref BackendSecurityGroup
+      IamInstanceProfile: !Ref InstanceProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: 16
+            Encrypted: true
+            DeleteOnTermination: true
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+        InstanceMetadataTags: enabled
+      Tags:
+        - Key: Name
+          Value: optimus-code-backend
+        - Key: App
+          Value: optimus-code
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+
+          apt-get update
+          apt-get install -y ca-certificates curl git gnupg jq nginx unzip
+          curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+          apt-get install -y nodejs
+
+          if ! command -v aws >/dev/null 2>&1; then
+            curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp
+            /tmp/aws/install
+          fi
+
+          if ! id optimus >/dev/null 2>&1; then
+            useradd --system --create-home --shell /usr/sbin/nologin optimus
+          fi
+
+          aws ssm get-parameter \
+            --region ${AWS::Region} \
+            --name ${EnvironmentParameterName} \
+            --with-decryption \
+            --output json | jq -r '.Parameter.Value' > /etc/optimus-code.env
+          chown root:optimus /etc/optimus-code.env
+          chmod 640 /etc/optimus-code.env
+
+          cat > /etc/systemd/system/optimus-code.service <<'SERVICE'
+          [Unit]
+          Description=Optimus Code API
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          Type=simple
+          User=optimus
+          Group=optimus
+          WorkingDirectory=/opt/optimus-code
+          EnvironmentFile=/etc/optimus-code.env
+          ExecStart=/usr/bin/node src/server.js
+          Restart=always
+          RestartSec=5
+          NoNewPrivileges=true
+          PrivateTmp=true
+          ProtectHome=true
+          ProtectSystem=strict
+
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE
+
+          cat > /etc/nginx/sites-available/optimus-code <<'NGINX'
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+              server_name _;
+
+              location / {
+                  proxy_pass http://127.0.0.1:4000;
+                  proxy_http_version 1.1;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  proxy_connect_timeout 5s;
+                  proxy_read_timeout 60s;
+              }
+          }
+          NGINX
+          rm -f /etc/nginx/sites-enabled/default
+          ln -sfn /etc/nginx/sites-available/optimus-code /etc/nginx/sites-enabled/optimus-code
+          nginx -t
+          systemctl enable nginx
+          systemctl restart nginx
+
+          cat > /usr/local/bin/deploy-optimus-code <<'DEPLOY'
+          #!/bin/bash
+          set -euo pipefail
+          APP_DIR=/opt/optimus-code
+          REPOSITORY=https://github.com/ayan-mn18/Optimus-Code.git
+          REVISION="$1"
+          if [ -z "$REVISION" ]; then
+            REVISION=origin/main
+          fi
+
+          if [ ! -d "$APP_DIR/.git" ]; then
+            install -d -o optimus -g optimus "$APP_DIR"
+            sudo -u optimus git clone "$REPOSITORY" "$APP_DIR"
+          fi
+
+          sudo -u optimus git -C "$APP_DIR" fetch --prune origin
+          sudo -u optimus git -C "$APP_DIR" checkout --force "$REVISION"
+          sudo -u optimus npm --prefix "$APP_DIR" ci --omit=dev
+          systemctl daemon-reload
+          systemctl enable optimus-code
+          systemctl restart optimus-code
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:4000/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+
+          journalctl -u optimus-code --no-pager -n 100
+          exit 1
+          DEPLOY
+          chmod 750 /usr/local/bin/deploy-optimus-code
+
+          /usr/local/bin/deploy-optimus-code origin/main
+
+  BackendEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: optimus-code-backend
+        - Key: App
+          Value: optimus-code
+
+  BackendEipAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt BackendEip.AllocationId
+      InstanceId: !Ref BackendInstance
+
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: optimus-code-github-deploy
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}/${GitHubRepository}:ref:refs/heads/main
+      Policies:
+        - PolicyName: DeployBackendWithSsm
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ec2:DescribeInstances
+                Resource: '*'
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${BackendInstance}
+              - Effect: Allow
+                Action:
+                  - ssm:GetCommandInvocation
+                  - ssm:ListCommandInvocations
+                Resource: '*'
+      Tags:
+        - Key: App
+          Value: optimus-code
+
+Outputs:
+  ApiUrl:
+    Value: !Sub
+      - http://${Ip}
+      - Ip: !GetAtt BackendEip.PublicIp
+  InstanceId:
+    Value: !Ref BackendInstance
+  GitHubDeployRoleArn:
+    Value: !GetAtt GitHubDeployRole.Arn
