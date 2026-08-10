@@ -101,45 +101,25 @@ export async function getOverview(user, { heatmapDays = 182 } = {}) {
   };
 }
 
-/** Paginated problem explorer with solve state joined in. */
-export async function listProblems(user, { topic, difficulty, status, search, page = 1, pageSize = 50 }) {
-  let query = db.from('problems').select('*', { count: 'exact' });
+/** Complete problem explorer payload; filtering and pagination stay client-side. */
+export async function listProblems(user) {
+  const [problems, solved] = await Promise.all([
+    unwrap(await db.from('problems').select('*').order('order_index'), 'load problems'),
+    unwrap(
+      await db
+        .from('user_problems')
+        .select('problem_id, solved_on')
+        .eq('user_id', user.id)
+        .eq('status', 'solved'),
+      'load solve state',
+    ),
+  ]);
+  const solvedMap = new Map(solved.map((row) => [row.problem_id, row.solved_on]));
+  const items = problems.map((problem) => ({
+    ...problem,
+    solved: solvedMap.has(problem.id),
+    solvedOn: solvedMap.get(problem.id) ?? null,
+  }));
 
-  if (topic) query = query.eq('topic', topic);
-  if (difficulty) query = query.eq('difficulty', difficulty);
-  if (search) query = query.ilike('title', `%${search}%`);
-
-  const from = (page - 1) * pageSize;
-  const { data, error, count } = await query.order('order_index').range(from, from + pageSize - 1);
-  if (error) throw Object.assign(new Error(`list problems: ${error.message}`), { status: 500 });
-
-  const solved = unwrap(
-    await db.from('user_problems').select('problem_id, solved_on, is_bonus').eq('user_id', user.id),
-    'load solve state',
-  );
-  const solvedMap = new Map(solved.map((row) => [row.problem_id, row]));
-
-  const items = data
-    .map((problem) => ({
-      ...problem,
-      solved: solvedMap.has(problem.id),
-      solvedOn: solvedMap.get(problem.id)?.solved_on ?? null,
-    }))
-    .filter((problem) => {
-      if (status === 'solved') return problem.solved;
-      if (status === 'unsolved') return !problem.solved;
-      return true;
-    });
-
-  return { items, page, pageSize, total: count ?? items.length };
-}
-
-export async function listTopics() {
-  const problems = unwrap(await db.from('problems').select('topic, difficulty'), 'load topics');
-  const map = new Map();
-  for (const problem of problems) {
-    if (!map.has(problem.topic)) map.set(problem.topic, { topic: problem.topic, total: 0 });
-    map.get(problem.topic).total += 1;
-  }
-  return [...map.values()].sort((a, b) => b.total - a.total);
+  return { items, total: items.length };
 }
