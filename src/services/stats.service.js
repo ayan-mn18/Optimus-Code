@@ -30,8 +30,12 @@ export async function getOverview(user, { heatmapDays = 182 } = {}) {
     ),
     getStreak(user),
     unwrap(
-      await db.from('daily_assignments').select('problem_id, assigned_on').eq('user_id', user.id),
-      'load assignments',
+      await db
+        .from('daily_assignments')
+        .select('problem_id, assigned_on')
+        .eq('user_id', user.id)
+        .eq('round', 1),
+      'load target assignments',
     ),
   ]);
 

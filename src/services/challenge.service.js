@@ -213,8 +213,12 @@ async function pickDailyProblems(userId, today, target) {
   const [problems, assignments, solvedIds] = await Promise.all([
     unwrap(await db.from('problems').select(PROBLEM_FIELDS).order('order_index'), 'load problems'),
     unwrap(
-      await db.from('daily_assignments').select('problem_id, assigned_on').eq('user_id', userId),
-      'load past assignments',
+      await db
+        .from('daily_assignments')
+        .select('problem_id, assigned_on')
+        .eq('user_id', userId)
+        .eq('round', 1),
+      'load past target assignments',
     ),
     getSolvedProblemIds(userId),
   ]);
