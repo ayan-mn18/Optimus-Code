@@ -114,8 +114,8 @@ request itself; only `problems` is readable by anon.
    day green. Anything else solved that day — extra sets, or free picks from the library —
    counts as bonus and never changes the target.
 5. Once the day is green the user can ask for another set (`POST /api/challenge/extend`),
-   dealt by the same one-per-topic picker. Extra sets live at `round` 2+ and are capped at
-   5 sets per day.
+   dealt by the same one-per-topic picker. Extra sets live at `round` 2+ and remain available
+   until no unsolved problems remain.
 
 Day boundaries use the user's own timezone, stored on their profile.
 
@@ -148,7 +148,7 @@ All authenticated routes take `Authorization: Bearer <accessToken>`.
 | GET    | `/`                  | Enrollment + streak                                |
 | POST   | `/enroll`            | `dailyTarget?` (default 5) — join the challenge     |
 | GET    | `/today`             | Today's set, progress, streak, days just closed out |
-| POST   | `/extend`            | Deal another set once the target is met (max 5 sets/day) |
+| POST   | `/extend`            | Deal another set once the target is met             |
 | POST   | `/solve/:problemId`  | `timeSpentMin?, notes?` — mark solved               |
 | DELETE | `/solve/:problemId`  | Undo a solve                                        |
 

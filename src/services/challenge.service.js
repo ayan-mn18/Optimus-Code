@@ -8,8 +8,6 @@ const PROBLEM_FIELDS = 'id, slug, title, topic, difficulty, leetcode_url, youtub
 /** Fraction of a daily set reserved for problems returning from a red day. */
 const BACKLOG_SHARE = 0.6;
 
-/** Guard on extra sets, so a day cannot be extended without limit. */
-const MAX_ROUNDS_PER_DAY = 5;
 
 const UNIQUE_VIOLATION = '23505';
 
@@ -436,14 +434,14 @@ export async function getToday(user) {
     isComplete: log.status === 'complete',
     closedDays,
     problems: assignments.filter((row) => row.round === 1).map(toProblem(solvedMap)),
-    // Extra sets dealt after the target was met, newest last.
+    // Newest extra set first, so a fresh deal appears immediately in the UI.
     extraSets: [...new Set(assignments.filter((row) => row.round > 1).map((row) => row.round))]
-      .sort((a, b) => a - b)
+      .sort((a, b) => b - a)
       .map((round) => ({
         round,
         problems: assignments.filter((row) => row.round === round).map(toProblem(solvedMap)),
       })),
-    canExtend: log.status === 'complete' && maxRound(assignments) < MAX_ROUNDS_PER_DAY,
+    canExtend: log.status === 'complete',
     bonusProblems: bonusSolves.map((row) => ({ ...row.problem, solved: true, solvedOn: row.solved_on })),
   };
 }
@@ -485,9 +483,6 @@ export async function extendToday(user) {
   );
 
   const nextRound = maxRound(existing) + 1;
-  if (nextRound > MAX_ROUNDS_PER_DAY) {
-    throw ApiError.badRequest(`That is ${MAX_ROUNDS_PER_DAY} sets today. Pick freely from all problems instead`);
-  }
 
   const picks = await pickDailyProblems(user.id, today, enrollment.daily_target);
   if (!picks.length) {
