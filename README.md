@@ -91,6 +91,7 @@ npm run scrape
 | `daily_logs`        | One row per user per day: `active` \| `complete` \| `frozen` \| `missed` |
 | `daily_assignments` | The problems handed out on a day — `round` 1 is the target set, 2+ are extra sets; `carried_over` flags red-day returns |
 | `user_problems`     | Solve state, one row per (user, problem), `is_bonus` for extras |
+| `milestone_recaps` | Immutable analytics snapshot and viewed state every 50 solves   |
 | `waitlist`          | Public signups from the landing page                            |
 
 Standings (`current_streak`, `green_days`, `total_solved`, `last_streak_day`) are denormalised
@@ -151,6 +152,13 @@ All authenticated routes take `Authorization: Bearer <accessToken>`.
 | POST   | `/extend`            | Deal another set once the target is met             |
 | POST   | `/solve/:problemId`  | `timeSpentMin?, notes?` — mark solved               |
 | DELETE | `/solve/:problemId`  | Undo a solve                                        |
+
+### Milestones — `/api/milestones`
+
+| Method | Path                   | Notes                                      |
+| ------ | ---------------------- | ------------------------------------------ |
+| GET    | `/pending`             | Latest unviewed 50-solve milestone recap   |
+| POST   | `/:milestone/viewed`   | Mark a milestone celebration as viewed     |
 
 ### Waitlist — `/api/waitlist`
 

@@ -1,3 +1,5 @@
+-- Generated from db/schema.sql by `npm run db:migration`. Do not edit directly.
+
 -- ============================================================================
 -- Optimus Code — Supabase / Postgres schema
 -- Run this once in the Supabase SQL editor, then `npm run seed`.

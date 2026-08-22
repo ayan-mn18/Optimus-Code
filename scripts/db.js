@@ -32,6 +32,8 @@ const EXPECTED_TABLES = [
   'daily_logs',
   'daily_assignments',
   'user_problems',
+  'milestone_recaps',
+  'waitlist',
 ];
 
 function fail(message, hint) {

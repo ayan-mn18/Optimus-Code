@@ -11,6 +11,7 @@ import challengeRoutes from './routes/challenge.routes.js';
 import dashboardRoutes from './routes/dashboard.routes.js';
 import waitlistRoutes from './routes/waitlist.routes.js';
 import leaderboardRoutes from './routes/leaderboard.routes.js';
+import milestoneRoutes from './routes/milestone.routes.js';
 
 export function createApp() {
   const app = express();
@@ -47,6 +48,7 @@ export function createApp() {
   app.use('/api/dashboard', dashboardRoutes);
   app.use('/api/waitlist', waitlistRoutes);
   app.use('/api/leaderboard', leaderboardRoutes);
+  app.use('/api/milestones', milestoneRoutes);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
