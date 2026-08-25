@@ -30,7 +30,7 @@ npm install
 ```
 
 For account invitations, verify a Resend sending domain and set `RESEND_API_KEY`,
-`EMAIL_FROM`, and `APP_URL`. Without both Resend values, email delivery stays disabled.
+`EMAIL_FROM`, `APP_URL`, and `EMAIL_DELIVERY_ENABLED=true`. Delivery stays disabled otherwise.
 
 Then create the schema and load the problem catalogue — all from the CLI:
 

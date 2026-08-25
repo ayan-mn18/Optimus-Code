@@ -37,7 +37,7 @@ export const env = {
 
   dailyTarget: Number(process.env.DAILY_TARGET ?? 5),
   email: {
-    enabled: Boolean(resendApiKey && emailFrom),
+    enabled: process.env.EMAIL_DELIVERY_ENABLED === 'true' && Boolean(resendApiKey && emailFrom),
     apiKey: resendApiKey,
     from: emailFrom,
     replyTo: process.env.EMAIL_REPLY_TO?.trim() || undefined,
