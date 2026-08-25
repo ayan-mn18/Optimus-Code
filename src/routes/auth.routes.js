@@ -2,7 +2,6 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
-import { env } from '../config/env.js';
 import { db, unwrap } from '../lib/supabase.js';
 import { ApiError } from '../lib/errors.js';
 import { isValidTimezone } from '../lib/dates.js';
@@ -21,22 +20,12 @@ const authLimiter = rateLimit({
   message: { error: { message: 'Too many attempts, try again in a few minutes' } },
 });
 
-function requireSignupEnabled(_req, _res, next) {
-  if (!env.signupEnabled) return next(ApiError.notFound('Sign up is currently closed'));
-  next();
-}
 
 const timezone = z
   .string()
   .default('UTC')
   .refine(isValidTimezone, { message: 'Unknown timezone' });
 
-const signupSchema = z.object({
-  name: z.string().trim().min(2, 'Name is too short').max(60),
-  email: z.string().trim().toLowerCase().email('Enter a valid email'),
-  password: z.string().min(8, 'Password must be at least 8 characters').max(128),
-  timezone,
-});
 
 const loginSchema = z.object({
   email: z.string().trim().toLowerCase().email('Enter a valid email'),
@@ -62,36 +51,6 @@ async function sessionPayload(user) {
   return { user: publicUser(user), enrollment, accessToken, refreshToken };
 }
 
-router.post('/signup', requireSignupEnabled, authLimiter, validate(signupSchema), async (req, res, next) => {
-  try {
-    const { name, email, password, timezone: tz } = req.body;
-
-    const existing = unwrap(
-      await db.from('users').select('id').eq('email', email).maybeSingle(),
-      'check existing user',
-    );
-    if (existing) throw ApiError.conflict('An account with that email already exists');
-
-    const user = unwrap(
-      await db
-        .from('users')
-        .insert({
-          name,
-          email,
-          password_hash: await bcrypt.hash(password, 12),
-          timezone: tz,
-          avatar_seed: email.split('@')[0],
-        })
-        .select('*')
-        .single(),
-      'create user',
-    );
-
-    res.status(201).json(await sessionPayload(user));
-  } catch (err) {
-    next(err);
-  }
-});
 
 router.post('/login', authLimiter, validate(loginSchema), async (req, res, next) => {
   try {

@@ -3,6 +3,7 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { db, unwrap } from '../lib/supabase.js';
 import { validate } from '../middleware/validate.js';
+import { issueWaitlistInvite } from '../services/invite.service.js';
 
 const router = Router();
 
@@ -40,21 +41,28 @@ router.post('/', joinLimiter, validate(joinSchema), async (req, res, next) => {
     const { email, name, referrer } = req.body;
 
     const existing = unwrap(
-      await db.from('waitlist').select('id').eq('email', email).maybeSingle(),
+      await db.from('waitlist').select('*').eq('email', email).maybeSingle(),
       'check waitlist',
     );
 
-    // Joining twice is not an error — the landing page just says "already in".
+    // Repeated joins stay idempotent. An active invite is never sent twice.
     if (existing) {
-      return res.json({ joined: true, alreadyJoined: true, count: await waitlistCount() });
+      const invite = await issueWaitlistInvite(existing);
+      return res.json({ joined: true, alreadyJoined: true, inviteSent: invite.sent, count: await waitlistCount() });
     }
 
-    unwrap(
-      await db.from('waitlist').insert({ email, name: name ?? null, referrer: referrer ?? null }),
+    const entry = unwrap(
+      await db
+        .from('waitlist')
+        .insert({ email, name: name ?? null, referrer: referrer ?? null })
+        .select('*')
+        .single(),
       'join waitlist',
     );
 
-    res.status(201).json({ joined: true, alreadyJoined: false, count: await waitlistCount() });
+    const invite = await issueWaitlistInvite(entry);
+
+    res.status(201).json({ joined: true, alreadyJoined: false, inviteSent: invite.sent, count: await waitlistCount() });
   } catch (err) {
     next(err);
   }

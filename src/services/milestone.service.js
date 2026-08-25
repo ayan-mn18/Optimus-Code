@@ -2,6 +2,7 @@ import { db, unwrap } from '../lib/supabase.js';
 import { ApiError } from '../lib/errors.js';
 import { daysBetween } from '../lib/dates.js';
 import { getStreak } from './challenge.service.js';
+import { sendMilestoneNotification } from './notification.service.js';
 
 export const MILESTONE_STEP = 50;
 
@@ -144,7 +145,10 @@ export async function getPendingMilestone(user) {
       .maybeSingle(),
     'load milestone recap',
   );
-  if (existing) return existing.viewed_at ? null : existing.snapshot;
+  if (existing) {
+    if (!existing.viewed_at) await sendMilestoneNotification(user, existing.snapshot);
+    return existing.viewed_at ? null : existing.snapshot;
+  }
 
   const snapshot = await loadRecap(user, milestone);
   const created = await db.from('milestone_recaps').insert({
@@ -157,7 +161,10 @@ export async function getPendingMilestone(user) {
   if (created.error && created.error.code !== UNIQUE_VIOLATION) {
     throw Object.assign(new Error(`create milestone recap: ${created.error.message}`), { status: 500 });
   }
-  if (!created.error) return snapshot;
+  if (!created.error) {
+    await sendMilestoneNotification(user, snapshot);
+    return snapshot;
+  }
 
   const winner = unwrap(
     await db
@@ -168,6 +175,7 @@ export async function getPendingMilestone(user) {
       .single(),
     'load concurrent milestone recap',
   );
+  if (!winner.viewed_at) await sendMilestoneNotification(user, winner.snapshot);
   return winner.viewed_at ? null : winner.snapshot;
 }
 

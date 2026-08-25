@@ -19,6 +19,7 @@ Frontend lives in [Optimus-Code-UI](https://github.com/ayan-mn18/Optimus-Code-UI
 | Database   | Supabase (Postgres) via `@supabase/supabase-js` |
 | Auth       | Own JWT — bcrypt hashes, rotating refresh tokens |
 | Validation | zod                                           |
+| Email      | Resend transactional API with one-time invite links |
 | Hardening  | helmet, cors allowlist, express-rate-limit, compression |
 
 ## Getting started
@@ -27,6 +28,9 @@ Frontend lives in [Optimus-Code-UI](https://github.com/ayan-mn18/Optimus-Code-UI
 cp .env.example .env      # fill in Supabase URL + service role key, and two JWT secrets
 npm install
 ```
+
+For account invitations, verify a Resend sending domain and set `RESEND_API_KEY`,
+`EMAIL_FROM`, and `APP_URL`. Without both Resend values, email delivery stays disabled.
 
 Then create the schema and load the problem catalogue — all from the CLI:
 
@@ -72,6 +76,17 @@ npm run dev
 
 It listens on `http://localhost:4000`. `GET /health` is a liveness check.
 
+### Transactional email
+
+Resend sends one-time waitlist invitations, account-ready messages, 50-solve milestone
+celebrations, red-day recaps, and one late-day streak warning. Invite tokens are random,
+stored only as SHA-256 hashes, expire after seven days by default, and are consumed in the
+same database transaction that creates the account. The in-process worker also backfills
+unsent waitlist and milestone emails after email configuration becomes available.
+
+Use a verified transactional subdomain such as `accounts.example.com`. Passwords are chosen
+inside the application and are never included in email.
+
 ### Refreshing the problem catalogue
 
 `data/problems.json` is generated from both sheets, deduped on slug. To re-scrape:
@@ -91,8 +106,9 @@ npm run scrape
 | `daily_logs`        | One row per user per day: `active` \| `complete` \| `frozen` \| `missed` |
 | `daily_assignments` | The problems handed out on a day — `round` 1 is the target set, 2+ are extra sets; `carried_over` flags red-day returns |
 | `user_problems`     | Solve state, one row per (user, problem), `is_bonus` for extras |
-| `milestone_recaps` | Immutable analytics snapshot and viewed state every 50 solves   |
+| `milestone_recaps`  | Immutable analytics snapshot and viewed/email state every 50 solves |
 | `waitlist`          | Public signups from the landing page                            |
+| `account_invites`   | Hashed, expiring, single-use waitlist invitation tokens             |
 
 Standings (`current_streak`, `green_days`, `total_solved`, `last_streak_day`) are denormalised
 onto `users` whenever a streak is recomputed, so the leaderboard does not replay every user's
@@ -135,7 +151,6 @@ All authenticated routes take `Authorization: Bearer <accessToken>`.
 
 | Method | Path       | Body                                | Notes                          |
 | ------ | ---------- | ----------------------------------- | ------------------------------ |
-| POST   | `/signup`  | `name, email, password, timezone`   | Returns session + tokens       |
 | POST   | `/login`   | `email, password`                   | Returns session + tokens       |
 | POST   | `/refresh` | `refreshToken`                      | Rotates the refresh token      |
 | POST   | `/logout`  | —                                   | Revokes all refresh tokens     |
@@ -162,12 +177,20 @@ All authenticated routes take `Authorization: Bearer <accessToken>`.
 
 ### Waitlist — `/api/waitlist`
 
-Public, no auth. Rate limited to 10 signups per hour per address.
+Joining sends one active account invitation when Resend is configured. Repeated submissions
+do not duplicate active invites.
 
 | Method | Path | Body                       | Notes                                          |
 | ------ | ---- | -------------------------- | ---------------------------------------------- |
 | GET    | `/`  | —                          | Total signups, for the landing-page counter     |
-| POST   | `/`  | `email, name?, referrer?`  | Joining twice returns `alreadyJoined: true`     |
+| POST   | `/`  | `email, name?, referrer?`  | Adds the email and sends a one-time invite      |
+ 
+### Invitations — `/api/invites`
+
+| Method | Path       | Body                              | Notes                              |
+| ------ | ---------- | --------------------------------- | ---------------------------------- |
+| POST   | `/inspect` | `token`                           | Validates an unexpired invite       |
+| POST   | `/accept`  | `token, name, password, timezone` | Atomically creates the user account |
 
 ### Leaderboard — `/api/leaderboard`
 

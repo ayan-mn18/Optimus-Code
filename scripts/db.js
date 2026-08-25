@@ -34,6 +34,7 @@ const EXPECTED_TABLES = [
   'user_problems',
   'milestone_recaps',
   'waitlist',
+  'account_invites',
 ];
 
 function fail(message, hint) {

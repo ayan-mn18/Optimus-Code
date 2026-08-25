@@ -2,6 +2,7 @@ import { db, unwrap } from '../lib/supabase.js';
 import { ApiError } from '../lib/errors.js';
 import { env } from '../config/env.js';
 import { todayIn, addDays, daysBetween } from '../lib/dates.js';
+import { sendRedDayNotification } from './notification.service.js';
 
 const PROBLEM_FIELDS = 'id, slug, title, topic, difficulty, leetcode_url, youtube_url, article_url, order_index';
 
@@ -139,12 +140,20 @@ async function closeOpenDays(userId, today) {
   const [solvedIds, priorGreenDays, account] = await Promise.all([
     getSolvedProblemIds(userId),
     countGreenDays(userId),
-    unwrap(await db.from('users').select('freezes_used').eq('id', userId).single(), 'load freeze balance'),
+    unwrap(
+      await db
+        .from('users')
+        .select('freezes_used, email, name, timezone, current_streak')
+        .eq('id', userId)
+        .single(),
+      'load freeze balance',
+    ),
   ]);
 
   const closed = [];
   let greenDays = priorGreenDays;
   let freezesUsed = account.freezes_used;
+  let latestMissed = null;
 
   // Oldest first: a freeze spent on one day changes what is available for the
   // next, and a day that closes green can itself earn the next freeze.
@@ -172,7 +181,12 @@ async function closeOpenDays(userId, today) {
     );
 
     closed.push({ date: log.log_date, status, solved, required: log.required_count });
+    if (status === 'missed') {
+      latestMissed = { id: log.id, date: log.log_date, status, solved, required: log.required_count };
+    }
   }
+  if (latestMissed) await sendRedDayNotification(account, latestMissed);
+
 
   if (freezesUsed !== account.freezes_used) {
     unwrap(
