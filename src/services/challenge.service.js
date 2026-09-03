@@ -318,6 +318,7 @@ async function pickDailyProblems(userId, today, targets) {
     const takenIds = new Set();
 
     for (const candidate of ordered) {
+      if (picked.length >= target) break;
       if (usedTopics.has(candidate.problem.topic)) continue;
       picked.push(candidate);
       usedTopics.add(candidate.problem.topic);
