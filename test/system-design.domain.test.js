@@ -1,31 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import { buildLocalQuestionSet, scoreTextAnswer } from '../src/services/assessment.service.js';
+import { env } from '../src/config/env.js';
+import { generateQuestionSet, scoreMultipleChoice } from '../src/services/assessment.service.js';
 import { normalizeDailyTarget, quotaComplete } from '../src/services/challenge.service.js';
 import { createCodeRunner } from '../src/services/code-runner.service.js';
 import { PRICING, publicSubscription } from '../src/services/billing.service.js';
 
-const lldProblem = {
-  id: 'problem-lld',
-  title: 'Design Parking Lot',
-  kind: 'LLD',
-  topic: 'LLD Interview Problems',
-
-  subtopic: 'Object design',
-  difficulty: 'Medium',
-  description: 'Design a parking lot with multiple vehicle types.',
-  coding_enabled: true,
-};
-
-const hldProblem = {
-  ...lldProblem,
-  id: 'problem-hld',
-  title: 'Design URL Shortener',
-  kind: 'HLD',
-  topic: 'Interview Problems',
-  coding_enabled: false,
-};
 test('daily picker rejects object targets instead of expanding to full catalog', () => {
   assert.equal(normalizeDailyTarget(3, 'DSA'), 3);
   assert.throws(() => normalizeDailyTarget({ DSA: 3 }, 'DSA'), /Invalid DSA daily target/);
@@ -38,32 +19,56 @@ test('daily completion requires every configured category', () => {
   assert.equal(quotaComplete({ dsa_required: 0, dsa_solved: 0, lld_required: 1, lld_solved: 1, hld_required: 0, hld_solved: 0 }), true);
 });
 
-test('local Optimus generator creates ten stable HLD questions', () => {
-  const first = buildLocalQuestionSet(hldProblem, 'user-a', 1, false);
-  const second = buildLocalQuestionSet(hldProblem, 'user-a', 1, false);
-  assert.equal(first.length, 10);
-  assert.equal(new Set(first.map((question) => question.id)).size, 10);
-  assert.deepEqual(first, second);
-  assert.equal(first.some((question) => question.type === 'code'), false);
-  assert.ok(first.every((question) => question.prompt.includes(hldProblem.title)));
+test('MCQ grading requires an exact single- or multi-select match', () => {
+  const question = { correctAnswers: ['availability', 'latency'] };
+  assert.equal(scoreMultipleChoice(question, { values: ['availability', 'latency'] }).score, 1);
+  assert.equal(scoreMultipleChoice(question, { values: ['latency', 'availability'] }).score, 1);
+  assert.equal(scoreMultipleChoice(question, { values: ['availability'] }).score, 0);
+  assert.equal(scoreMultipleChoice(question, { values: ['availability', 'latency', 'failure'] }).score, 0);
 });
 
-test('LLD generator adds one validated coding question when runner exists', () => {
-  const questions = buildLocalQuestionSet(lldProblem, 'user-b', 2, true);
-  const coding = questions.filter((question) => question.type === 'code');
-  assert.equal(questions.length, 10);
-  assert.equal(coding.length, 1);
-  assert.ok(coding[0].visibleTests.length > 0);
-  assert.ok(coding[0].hiddenTests.length > 0);
+test('LLM generator validates ten MCQs and preserves the answer key', async () => {
+  const previous = { ...env.ai };
+  Object.assign(env.ai, { enabled: true, provider: 'openai', apiKey: 'test-key', baseUrl: 'https://llm.example/v1', model: 'test-model' });
+  const problem = { id: 'problem-hld', title: 'Design URL Shortener', kind: 'HLD', topic: 'Distributed systems', difficulty: 'Medium' };
+  const questions = Array.from({ length: 10 }, (_, index) => ({
+    id: `q${index + 1}`,
+    type: 'multiple_choice',
+    label: `Question ${index + 1}`,
+    prompt: `Choose the best design for question ${index + 1}.`,
+    context: 'System design context.',
+    selectionMode: index === 1 ? 'multiple' : 'single',
+    options: ['A', 'B', 'C'],
+    correctAnswers: index === 1 ? ['A', 'B'] : ['A'],
+  }));
+  const calls = [];
+  try {
+    const result = await generateQuestionSet(problem, 'user-a', 1, {
+      fetchImpl: async (...args) => {
+        calls.push(args);
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ questions }) } }] }), { status: 200 });
+      },
+    });
+    assert.equal(result.questions.length, 10);
+    assert.ok(result.questions.every((question) => question.type === 'multiple_choice'));
+    assert.deepEqual(result.questions[1].correctAnswers, ['A', 'B']);
+    assert.match(calls[0][0], /chat\/completions$/);
+  } finally {
+    Object.assign(env.ai, previous);
+  }
 });
 
-test('text grading enforces reasoning length and rubric coverage', () => {
-  const question = { rubric: ['availability', 'latency', 'failure'] };
-  assert.equal(scoreTextAnswer(question, { text: 'Too short.' }).score, 0);
-  assert.equal(
-    scoreTextAnswer(question, { text: 'I prioritize availability and bound latency while describing each failure mode explicitly.' }).score,
-    1,
-  );
+test('Optimus generation is unavailable when no LLM key is configured', async () => {
+  const previous = env.ai.enabled;
+  env.ai.enabled = false;
+  try {
+    await assert.rejects(
+      generateQuestionSet({ id: 'problem', title: 'Topic', kind: 'HLD' }, 'user-a', 1),
+      (error) => error?.status === 503,
+    );
+  } finally {
+    env.ai.enabled = previous;
+  }
 });
 
 test('Judge0 adapter sends isolated code and returns per-test results', async () => {

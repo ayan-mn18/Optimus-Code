@@ -233,8 +233,10 @@ returns one attributed catalogue item.
 
 ### Optimus — `/api/assessments`
 
-Create or resume an attempt, autosave answers, run visible code tests, then submit once.
-The server removes rubrics and hidden tests from every client response.
+Create or resume an attempt, autosave answers, and submit once. Each attempt contains ten
+LLM-generated single- or multi-select questions. An LLM key is required; there is no local
+question fallback. The answer key is included in the client response so the UI can score live,
+and the server independently verifies the exact selections. Passing requires more than 80%.
 
 ### Billing — `/api/billing`
 
