@@ -1,13 +1,12 @@
 # Optimus Code — API
 
-Backend for **Optimus Code**, a daily DSA challenge platform built on the
-[Striver SDE Sheet](https://takeuforward.org/dsa/strivers-sde-sheet-top-coding-interview-problems)
-and [A2Z Sheet](https://takeuforward.org/dsa/strivers-a2z-sheet-learn-dsa-a-to-z).
+Backend for **Optimus Code**, a daily DSA and System Design practice platform.
+The DSA catalogue comes from the Striver SDE and A2Z sheets. LLD and HLD metadata
+comes from [Code With Aryan](https://codewitharyan.com/system-design) with source attribution.
 
-Every enrolled developer gets **5 problems a day**, each from a different topic. Clear all
-five and the day turns green. Fall short and the day is marked **red** — the problems you
-skipped drop back into the pool and resurface on a later day. Solve more than five and the
-extras count as bonus.
+Each user chooses separate DSA, LLD, and HLD goals. A day turns green only when every
+category quota is complete. System Design completion requires passing a ten-question
+Optimus assessment; LLD attempts may include isolated coding tests.
 
 Frontend lives in [Optimus-Code-UI](https://github.com/ayan-mn18/Optimus-Code-UI).
 
@@ -17,10 +16,11 @@ Frontend lives in [Optimus-Code-UI](https://github.com/ayan-mn18/Optimus-Code-UI
 | ---------- | --------------------------------------------- |
 | Runtime    | Node 20+, Express 4 (ESM)                     |
 | Database   | Supabase (Postgres) via `@supabase/supabase-js` |
-| Auth       | Own JWT — bcrypt hashes, rotating refresh tokens |
+| Auth       | JWT sessions, bcrypt passwords, Google Identity Services |
 | Validation | zod                                           |
-| Email      | Resend transactional API with one-time invite links |
-| Hardening  | helmet, cors allowlist, express-rate-limit, compression |
+| Email      | Brevo transactional email API                 |
+| Billing    | Dodo Payments hosted subscriptions            |
+| Hardening  | helmet, cors allowlist, rate limits, isolated code execution |
 
 ## Getting started
 
@@ -29,8 +29,8 @@ cp .env.example .env      # fill in Supabase URL + service role key, and two JWT
 npm install
 ```
 
-For account invitations, verify a Resend sending domain and set `RESEND_API_KEY`,
-`EMAIL_FROM`, `APP_URL`, and `EMAIL_DELIVERY_ENABLED=true`. Delivery stays disabled otherwise.
+For email delivery, verify a Brevo sender and set `BREVO_API_KEY`, `EMAIL_FROM`,
+`APP_URL`, and `EMAIL_DELIVERY_ENABLED=true`. Delivery stays disabled otherwise.
 
 Then create the schema and load the problem catalogue — all from the CLI:
 
@@ -45,14 +45,15 @@ instead.
 
 ### Database commands
 
-| Command                | What it does                                                        |
-| ---------------------- | ------------------------------------------------------------------- |
-| `npm run db:apply`     | Applies `db/schema.sql` via `psql` (idempotent — safe to re-run)     |
-| `npm run db:check`     | Prints which expected tables exist; exits non-zero if any are missing |
-| `npm run db:migration` | Mirrors the schema into `supabase/migrations/` for `supabase db push` |
-| `npm run db:setup`     | `db:apply` + `seed`                                                  |
-| `npm run seed`         | Upserts the 544 problems (keyed on `slug`)                           |
-
+| Command                        | What it does                                                        |
+| ------------------------------ | ------------------------------------------------------------------- |
+| `npm run db:apply`             | Applies `db/schema.sql` via `psql`                                  |
+| `npm run db:check`             | Prints which expected tables exist                                 |
+| `npm run db:migration`         | Mirrors the schema into `supabase/migrations/`                      |
+| `npm run db:setup`             | `db:apply` + `seed`                                                 |
+| `npm run seed`                 | Upserts DSA, LLD, and HLD catalogues by `(kind, slug)`              |
+| `npm run scrape`               | Refreshes the Striver DSA snapshot                                  |
+| `npm run scrape:system-design` | Refreshes 73 LLD and 205 HLD items                                  |
 `psql` is required for `db:apply` / `db:check` (`brew install libpq && brew link --force libpq`).
 The password is passed through `PGPASSWORD`, so it never appears in the process list or your
 shell history.
@@ -78,37 +79,40 @@ It listens on `http://localhost:4000`. `GET /health` is a liveness check.
 
 ### Transactional email
 
-Resend sends one-time waitlist invitations, account-ready messages, 50-solve milestone
-celebrations, red-day recaps, and one late-day streak warning. Invite tokens are random,
-stored only as SHA-256 hashes, expire after seven days by default, and are consumed in the
-same database transaction that creates the account. The in-process worker also backfills
-unsent waitlist and milestone emails after email configuration becomes available.
+Brevo sends one-time waitlist invitations, account-ready messages, milestone celebrations,
+red-day recaps, and late-day streak warnings. Invite tokens are random, stored only as
+SHA-256 hashes, expire after seven days by default, and are consumed in the same database
+transaction that creates the account.
 
-Use a verified transactional subdomain such as `accounts.example.com`. Passwords are chosen
-inside the application and are never included in email.
+Use a verified sender. Passwords are chosen inside the application and never emailed.
 
-### Refreshing the problem catalogue
+### Refreshing catalogues
 
-`data/problems.json` is generated from both sheets, deduped on slug. To re-scrape:
+`data/problems.json` contains DSA. `data/system-design.json` contains attributed LLD/HLD metadata.
 
 ```bash
 npm run scrape
+npm run scrape:system-design
 ```
 
 ## Data model
 
 | Table               | Purpose                                                        |
 | ------------------- | -------------------------------------------------------------- |
-| `users`             | Account, bcrypt password hash, timezone                         |
-| `refresh_tokens`    | Hashed, rotating, revocable                                     |
-| `problems`          | 544 problems across 19 topics with LeetCode / YouTube / article links |
-| `enrollments`       | One per user — daily target, start date                         |
-| `daily_logs`        | One row per user per day: `active` \| `complete` \| `frozen` \| `missed` |
-| `daily_assignments` | The problems handed out on a day — `round` 1 is the target set, 2+ are extra sets; `carried_over` flags red-day returns |
-| `user_problems`     | Solve state, one row per (user, problem), `is_bonus` for extras |
-| `milestone_recaps`  | Immutable analytics snapshot and viewed/email state every 50 solves |
-| `waitlist`          | Public signups from the landing page                            |
-| `account_invites`   | Hashed, expiring, single-use waitlist invitation tokens             |
+| `users`                  | Password or Google account, timezone, standings                 |
+| `refresh_tokens`         | Hashed, rotating, revocable                                     |
+| `problems`               | Unified DSA, LLD, and HLD catalogue                              |
+| `enrollments`            | Separate DSA, LLD, and HLD daily goals                          |
+| `daily_logs`             | Per-category snapshots and daily status                         |
+| `daily_assignments`      | Stored daily assignments and DSA extra rounds                   |
+| `user_problems`          | Verified solve state                                              |
+| `assessment_attempts`    | Immutable Optimus question sets and result state                |
+| `assessment_answers`     | Answers, rubric feedback, and test results                      |
+| `subscriptions`          | Dodo subscription lifecycle                                     |
+| `payment_webhook_events` | Idempotent signed webhook receipts                              |
+| `milestone_recaps`       | Immutable milestone analytics                                   |
+| `waitlist`               | Public signups                                                   |
+| `account_invites`        | Hashed, expiring invitation tokens                              |
 
 Standings (`current_streak`, `green_days`, `total_solved`, `last_streak_day`) are denormalised
 onto `users` whenever a streak is recomputed, so the leaderboard does not replay every user's
@@ -120,19 +124,12 @@ request itself; only `problems` is readable by anon.
 
 ## How a day works
 
-1. First request of the day settles any day that ended while still `active` — target met
-   becomes `complete`; otherwise `frozen` if a freeze is banked, else `missed`.
-2. Today's set is generated once and stored. Up to 60% of the slots go to problems carried
-   over from red days (oldest first); the rest are fresh, biased toward the topics you have
-   solved least.
-3. Each pick comes from a different topic. If fewer distinct topics remain than the target,
-   the rule relaxes rather than handing out a short day.
-4. Solving a problem from the target set bumps `solved_count`; hitting the target flips the
-   day green. Anything else solved that day — extra sets, or free picks from the library —
-   counts as bonus and never changes the target.
-5. Once the day is green the user can ask for another set (`POST /api/challenge/extend`),
-   dealt by the same one-per-topic picker. Extra sets live at `round` 2+ and remain available
-   until no unsolved problems remain.
+1. First request settles older active days using each saved category quota.
+2. Today's DSA, LLD, and HLD sets are generated once and stored.
+3. Picks favor unsolved work, old backlog, topic diversity, and weak coverage.
+4. DSA uses direct solve state. LLD and HLD only complete after Optimus passes.
+5. The day turns green only when every category quota is complete.
+6. Once green, users may request DSA-only bonus rounds.
 
 Day boundaries use the user's own timezone, stored on their profile.
 
@@ -151,7 +148,8 @@ All authenticated routes take `Authorization: Bearer <accessToken>`.
 
 | Method | Path       | Body                                | Notes                          |
 | ------ | ---------- | ----------------------------------- | ------------------------------ |
-| POST   | `/login`   | `email, password`                   | Returns session + tokens       |
+| POST   | `/login`   | `email, password`                   | Password session               |
+| POST   | `/google`  | `credential, timezone`              | Google sign-in or signup       |
 | POST   | `/refresh` | `refreshToken`                      | Rotates the refresh token      |
 | POST   | `/logout`  | —                                   | Revokes all refresh tokens     |
 | GET    | `/me`      | —                                   | Current user + enrollment      |
@@ -162,11 +160,12 @@ All authenticated routes take `Authorization: Bearer <accessToken>`.
 | Method | Path                 | Notes                                              |
 | ------ | -------------------- | -------------------------------------------------- |
 | GET    | `/`                  | Enrollment + streak                                |
-| POST   | `/enroll`            | `dailyTarget?` (default 5) — join the challenge     |
-| GET    | `/today`             | Today's set, progress, streak, days just closed out |
-| POST   | `/extend`            | Deal another set once the target is met             |
-| POST   | `/solve/:problemId`  | `timeSpentMin?, notes?` — mark solved               |
-| DELETE | `/solve/:problemId`  | Undo a solve                                        |
+| POST   | `/enroll`            | Join with `goals: { DSA, LLD, HLD }`               |
+| PATCH  | `/goals`             | Update future daily goals                          |
+| GET    | `/today`             | Mixed assignments and per-category progress       |
+| POST   | `/extend`            | Deal a DSA bonus set after completing the day      |
+| POST   | `/solve/:problemId`  | Mark DSA solved                                    |
+| DELETE | `/solve/:problemId`  | Undo a DSA solve                                   |
 
 ### Milestones — `/api/milestones`
 
@@ -177,7 +176,7 @@ All authenticated routes take `Authorization: Bearer <accessToken>`.
 
 ### Waitlist — `/api/waitlist`
 
-Joining sends one active account invitation when Resend is configured. Repeated submissions
+Joining sends one active account invitation when Brevo is configured. Repeated submissions
 do not duplicate active invites.
 
 | Method | Path | Body                       | Notes                                          |
@@ -211,20 +210,25 @@ board but still get their own standing back.
 | GET    | `/problems` | Filter by `topic`, `difficulty`, `status`, `search`, paginated |
 | GET    | `/topics`   | Topic list with problem counts                               |
 
+### System Design — `/api/system-design`
+
+`GET /` lists LLD or HLD with topic, difficulty, text, and solve filters. `GET /:problemId`
+returns one attributed catalogue item.
+
+### Optimus — `/api/assessments`
+
+Create or resume an attempt, autosave answers, run visible code tests, then submit once.
+The server removes rubrics and hidden tests from every client response.
+
+### Billing — `/api/billing`
+
+`GET /pricing` is public. Authenticated users create Dodo checkout sessions and read their
+subscription. `/webhook` verifies Standard Webhooks signatures and processes events idempotently.
+
 ## Environment
 
-| Variable                    | Default                 |
-| --------------------------- | ----------------------- |
-| `PORT`                      | `4000`                  |
-| `NODE_ENV`                  | `development`           |
-| `CORS_ORIGIN`               | `http://localhost:5173` (comma-separated) |
-| `SUPABASE_URL`              | required                |
-| `SUPABASE_SERVICE_ROLE_KEY` | required                |
-| `JWT_ACCESS_SECRET`         | required                |
-| `JWT_REFRESH_SECRET`        | required                |
-| `JWT_ACCESS_TTL`            | `15m`                   |
-| `JWT_REFRESH_TTL`           | `30d`                   |
-| `DAILY_TARGET`              | `5`                     |
+See `.env.example` for Google, Brevo, LLM, Judge0, and Dodo variables. Provider keys remain
+server-only. The frontend receives only `VITE_GOOGLE_CLIENT_ID`.
 
 ## Licence
 

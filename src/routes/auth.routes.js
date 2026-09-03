@@ -2,8 +2,10 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
+import { OAuth2Client } from 'google-auth-library';
 import { db, unwrap } from '../lib/supabase.js';
 import { ApiError } from '../lib/errors.js';
+import { env } from '../config/env.js';
 import { isValidTimezone } from '../lib/dates.js';
 import { signAccessToken, issueRefreshToken, rotateRefreshToken, revokeAllRefreshTokens } from '../lib/tokens.js';
 import { validate } from '../middleware/validate.js';
@@ -11,6 +13,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { getEnrollment } from '../services/challenge.service.js';
 
 const router = Router();
+const googleClient = new OAuth2Client();
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -38,6 +41,8 @@ const publicUser = (user) => ({
   email: user.email,
   timezone: user.timezone,
   avatarSeed: user.avatar_seed,
+  pictureUrl: user.picture_url ?? null,
+  authProvider: user.auth_provider ?? 'password',
   showOnLeaderboard: user.show_on_leaderboard ?? true,
   createdAt: user.created_at,
 });
@@ -72,6 +77,80 @@ router.post('/login', authLimiter, validate(loginSchema), async (req, res, next)
     next(err);
   }
 });
+
+router.post(
+  '/google',
+  authLimiter,
+  validate(z.object({ credential: z.string().min(100), timezone })),
+  async (req, res, next) => {
+    try {
+      if (!env.google.clientId) throw new ApiError(503, 'Google sign-in is not configured');
+      const ticket = await googleClient.verifyIdToken({
+        idToken: req.body.credential,
+        audience: env.google.clientId,
+      });
+      const profile = ticket.getPayload();
+      if (!profile?.sub || !profile.email || !profile.email_verified) {
+        throw ApiError.unauthorized('Google could not verify this email');
+      }
+
+      const email = profile.email.toLowerCase();
+      let user = unwrap(
+        await db.from('users').select('*').eq('google_sub', profile.sub).maybeSingle(),
+        'load Google user',
+      );
+      if (!user) {
+        user = unwrap(await db.from('users').select('*').eq('email', email).maybeSingle(), 'load user by email');
+      }
+
+      if (user) {
+        if (user.google_sub && user.google_sub !== profile.sub) {
+          throw ApiError.conflict('This email is linked to another Google account');
+        }
+        user = unwrap(
+          await db
+            .from('users')
+            .update({
+              google_sub: profile.sub,
+              auth_provider: 'google',
+              picture_url: profile.picture ?? user.picture_url,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', user.id)
+            .select('*')
+            .single(),
+          'link Google user',
+        );
+      } else {
+        user = unwrap(
+          await db
+            .from('users')
+            .insert({
+              email,
+              password_hash: null,
+              google_sub: profile.sub,
+              auth_provider: 'google',
+              name: profile.name?.trim() || email.split('@')[0],
+              timezone: req.body.timezone,
+              avatar_seed: `google-${profile.sub.slice(-12)}`,
+              picture_url: profile.picture ?? null,
+            })
+            .select('*')
+            .single(),
+          'create Google user',
+        );
+      }
+
+      res.json(await sessionPayload(user));
+    } catch (error) {
+      if (error?.message?.includes('Wrong recipient') || error?.message?.includes('Invalid token')) {
+        next(ApiError.unauthorized('Google sign-in token is invalid'));
+        return;
+      }
+      next(error);
+    }
+  },
+);
 
 router.post('/refresh', validate(z.object({ refreshToken: z.string().min(10) })), async (req, res, next) => {
   try {

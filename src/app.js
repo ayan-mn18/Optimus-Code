@@ -13,6 +13,9 @@ import waitlistRoutes from './routes/waitlist.routes.js';
 import leaderboardRoutes from './routes/leaderboard.routes.js';
 import milestoneRoutes from './routes/milestone.routes.js';
 import inviteRoutes from './routes/invite.routes.js';
+import systemDesignRoutes from './routes/system-design.routes.js';
+import assessmentRoutes from './routes/assessment.routes.js';
+import billingRoutes from './routes/billing.routes.js';
 
 export function createApp() {
   const app = express();
@@ -20,7 +23,12 @@ export function createApp() {
   app.set('trust proxy', 1);
   app.use(helmet());
   app.use(compression());
-  app.use(express.json({ limit: '128kb' }));
+  app.use(express.json({
+    limit: '128kb',
+    verify(req, _res, buffer) {
+      if (req.originalUrl === '/api/billing/webhook') req.rawBody = Buffer.from(buffer);
+    },
+  }));
   app.use(
     cors({
       origin(origin, callback) {
@@ -51,6 +59,9 @@ export function createApp() {
   app.use('/api/leaderboard', leaderboardRoutes);
   app.use('/api/milestones', milestoneRoutes);
   app.use('/api/invites', inviteRoutes);
+  app.use('/api/system-design', systemDesignRoutes);
+  app.use('/api/assessments', assessmentRoutes);
+  app.use('/api/billing', billingRoutes);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

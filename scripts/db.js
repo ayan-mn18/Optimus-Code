@@ -35,6 +35,10 @@ const EXPECTED_TABLES = [
   'milestone_recaps',
   'waitlist',
   'account_invites',
+  'assessment_attempts',
+  'assessment_answers',
+  'subscriptions',
+  'payment_webhook_events',
 ];
 
 function fail(message, hint) {

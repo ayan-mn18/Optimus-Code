@@ -15,7 +15,7 @@ export async function requireAuth(req, _res, next) {
     const user = unwrap(
       await db
         .from('users')
-        .select('id, email, name, timezone, avatar_seed, created_at')
+        .select('id, email, name, timezone, avatar_seed, picture_url, auth_provider, show_on_leaderboard, created_at')
         .eq('id', payload.sub)
         .maybeSingle(),
       'load session user',

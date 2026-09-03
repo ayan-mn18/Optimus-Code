@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createEmailSender } from '../src/services/email.service.js';
+import { createEmailSender, parseSender } from '../src/services/email.service.js';
 import { hashInviteToken } from '../src/services/invite.service.js';
 import {
   accountReadyEmail,
@@ -10,17 +10,17 @@ import {
   streakRiskEmail,
 } from '../src/emails/templates.js';
 
-test('email sender passes content and idempotency to Resend', async () => {
+test('email sender passes content and idempotency to Brevo', async () => {
   const calls = [];
   const sender = createEmailSender({
-    client: {
-      emails: {
-        send: async (...args) => {
-          calls.push(args);
-          return { data: { id: 'email-123' }, error: null };
-        },
-      },
+    fetchImpl: async (...args) => {
+      calls.push(args);
+      return new Response(JSON.stringify({ messageId: 'email-123' }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      });
     },
+    apiKey: 'brevo-test-key',
     from: 'Optimus Code <invite@example.com>',
     replyTo: 'help@example.com',
   });
@@ -30,13 +30,23 @@ test('email sender passes content and idempotency to Resend', async () => {
 
   assert.deepEqual(result, { sent: true, messageId: 'email-123' });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0][0].to[0], 'ada@example.com');
-  assert.equal(calls[0][0].replyTo, 'help@example.com');
-  assert.equal(calls[0][1].idempotencyKey, 'invite/123');
+  const [url, init] = calls[0];
+  const payload = JSON.parse(init.body);
+  assert.equal(url, 'https://api.brevo.com/v3/smtp/email');
+  assert.equal(init.headers['api-key'], 'brevo-test-key');
+  assert.deepEqual(payload.sender, { name: 'Optimus Code', email: 'invite@example.com' });
+  assert.equal(payload.to[0].email, 'ada@example.com');
+  assert.equal(payload.replyTo.email, 'help@example.com');
+  assert.equal(payload.headers['Idempotency-Key'], 'invite/123');
+});
+
+test('sender parser supports named and plain addresses', () => {
+  assert.deepEqual(parseSender('Optimus Code <hello@example.com>'), { name: 'Optimus Code', email: 'hello@example.com' });
+  assert.deepEqual(parseSender('hello@example.com'), { email: 'hello@example.com' });
 });
 
 test('disabled email sender performs no network call', async () => {
-  const sender = createEmailSender({ client: null, from: '', replyTo: undefined });
+  const sender = createEmailSender({ apiKey: '', from: '', replyTo: undefined });
   const result = await sender.send({
     to: 'ada@example.com',
     message: { subject: 'No-op', html: '<p>No-op</p>', text: 'No-op' },

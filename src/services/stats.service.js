@@ -10,7 +10,7 @@ export async function getOverview(user, { heatmapDays = 182 } = {}) {
   const since = addDays(today, -(heatmapDays - 1));
 
   const [problems, solved, logs, streak, assignments] = await Promise.all([
-    unwrap(await db.from('problems').select('id, topic, difficulty'), 'load problems'),
+    unwrap(await db.from('problems').select('id, kind, topic, difficulty'), 'load problems'),
     unwrap(
       await db
         .from('user_problems')
@@ -22,7 +22,7 @@ export async function getOverview(user, { heatmapDays = 182 } = {}) {
     unwrap(
       await db
         .from('daily_logs')
-        .select('log_date, status, solved_count, bonus_count, required_count')
+        .select('log_date, status, solved_count, bonus_count, required_count, dsa_required, lld_required, hld_required, dsa_solved, lld_solved, hld_solved')
         .eq('user_id', user.id)
         .gte('log_date', since)
         .order('log_date'),
@@ -42,9 +42,9 @@ export async function getOverview(user, { heatmapDays = 182 } = {}) {
   const problemById = new Map(problems.map((p) => [p.id, p]));
   const solvedIds = new Set(solved.map((row) => row.problem_id));
 
-  // ---- topic mastery -------------------------------------------------------
+  // ---- DSA topic mastery ---------------------------------------------------
   const topics = new Map();
-  for (const problem of problems) {
+  for (const problem of problems.filter((item) => item.kind === 'DSA')) {
     if (!topics.has(problem.topic)) {
       topics.set(problem.topic, { topic: problem.topic, total: 0, solved: 0, easy: 0, medium: 0, hard: 0 });
     }
@@ -57,10 +57,17 @@ export async function getOverview(user, { heatmapDays = 182 } = {}) {
   }
 
   // ---- difficulty split ----------------------------------------------------
+  const dsaProblems = problems.filter((problem) => problem.kind === 'DSA');
   const difficulty = DIFFICULTIES.map((level) => {
-    const total = problems.filter((p) => p.difficulty === level).length;
-    const done = problems.filter((p) => p.difficulty === level && solvedIds.has(p.id)).length;
+    const total = dsaProblems.filter((problem) => problem.difficulty === level).length;
+    const done = dsaProblems.filter((problem) => problem.difficulty === level && solvedIds.has(problem.id)).length;
     return { difficulty: level, total, solved: done, percent: total ? Math.round((done / total) * 100) : 0 };
+  });
+
+  const tracks = ['DSA', 'LLD', 'HLD'].map((kind) => {
+    const catalog = problems.filter((problem) => problem.kind === kind);
+    const solvedCount = catalog.filter((problem) => solvedIds.has(problem.id)).length;
+    return { kind, total: catalog.length, solved: solvedCount, percent: catalog.length ? Math.round((solvedCount / catalog.length) * 100) : 0 };
   });
 
   // ---- heatmap -------------------------------------------------------------
@@ -100,6 +107,7 @@ export async function getOverview(user, { heatmapDays = 182 } = {}) {
     streak,
     topics: [...topics.values()].sort((a, b) => b.solved / b.total - a.solved / a.total || a.topic.localeCompare(b.topic)),
     difficulty,
+    tracks,
     heatmap,
     recentDays: logs.slice(-14).reverse(),
   };
@@ -108,7 +116,7 @@ export async function getOverview(user, { heatmapDays = 182 } = {}) {
 /** Complete problem explorer payload; filtering and pagination stay client-side. */
 export async function listProblems(user) {
   const [problems, solved] = await Promise.all([
-    unwrap(await db.from('problems').select('*').order('order_index'), 'load problems'),
+    unwrap(await db.from('problems').select('*').eq('kind', 'DSA').order('order_index'), 'load DSA problems'),
     unwrap(
       await db
         .from('user_problems')

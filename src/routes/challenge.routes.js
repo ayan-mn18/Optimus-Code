@@ -24,22 +24,32 @@ router.get('/', async (req, res, next) => {
     next(err);
   }
 });
+const goalsSchema = z
+  .object({
+    DSA: z.number().int().min(0).max(20).default(3),
+    LLD: z.number().int().min(0).max(10).default(1),
+    HLD: z.number().int().min(0).max(10).default(1),
+  })
+  .refine((goals) => {
+    const total = goals.DSA + goals.LLD + goals.HLD;
+    return total >= 1 && total <= 20;
+  }, { message: 'Choose between 1 and 20 total daily problems' });
 
-router.post(
-  '/enroll',
-  validate(z.object({ dailyTarget: z.number().int().min(1).max(20).optional() })),
-  async (req, res, next) => {
-    try {
-      const enrollment = await enroll(req.user.id, {
-        dailyTarget: req.body.dailyTarget,
-        timezone: req.user.timezone,
-      });
-      res.status(201).json({ enrollment });
-    } catch (err) {
-      next(err);
-    }
-  },
-);
+async function saveGoals(req, res, next) {
+  try {
+    const enrollment = await enroll(req.user.id, {
+      goals: req.body.goals,
+      timezone: req.user.timezone,
+    });
+    res.status(201).json({ enrollment });
+  } catch (err) {
+    next(err);
+  }
+}
+
+router.post('/enroll', validate(z.object({ goals: goalsSchema.default({ DSA: 3, LLD: 1, HLD: 1 }) })), saveGoals);
+
+router.patch('/goals', validate(z.object({ goals: goalsSchema })), saveGoals);
 
 router.get('/today', async (req, res, next) => {
   try {

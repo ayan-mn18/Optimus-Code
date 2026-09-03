@@ -18,7 +18,7 @@ async function weekSlice(userId, start) {
     unwrap(
       await db
         .from('user_problems')
-        .select(`solved_on, is_bonus, problem:problems(topic, difficulty)`)
+        .select(`solved_on, is_bonus, problem:problems(kind, topic, difficulty)`)
         .eq('user_id', userId)
         .eq('status', 'solved')
         .gte('solved_on', start)
@@ -80,6 +80,11 @@ export async function getWeeklyRecap(user, { weeksAgo = 0 } = {}) {
     byDifficulty[row.problem.difficulty] = (byDifficulty[row.problem.difficulty] ?? 0) + 1;
   }
 
+  const tracks = ['DSA', 'LLD', 'HLD'].map((kind) => ({
+    kind,
+    solved: week.solves.filter((row) => row.problem?.kind === kind).length,
+  }));
+
   const solved = week.solves.length;
   const previousSolved = previous.solves.length;
   const greenDays = week.logs.filter((log) => log.status === 'complete').length;
@@ -111,6 +116,7 @@ export async function getWeeklyRecap(user, { weeksAgo = 0 } = {}) {
       .map(([topic, count]) => ({ topic, count }))
       .sort((a, b) => b.count - a.count),
     difficulty: byDifficulty,
+    tracks,
     streak,
     headline: headlineFor({ solved, greenDays, change: solved - previousSolved, streak }),
   };
