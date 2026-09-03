@@ -40,6 +40,8 @@ const EXPECTED_TABLES = [
   'assessment_answers',
   'subscriptions',
   'payment_webhook_events',
+  'blogs',
+  'blog_likes',
 ];
 
 function fail(message, hint) {

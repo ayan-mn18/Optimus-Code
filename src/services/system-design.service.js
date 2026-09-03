@@ -1,5 +1,6 @@
 import { db, unwrap } from '../lib/supabase.js';
 import { ApiError } from '../lib/errors.js';
+import { blogSlugsByProblem } from './blog.service.js';
 
 const FIELDS = [
   'id', 'slug', 'title', 'kind', 'topic', 'subtopic', 'difficulty', 'description',
@@ -24,12 +25,14 @@ export async function listSystemDesign(user, { kind, topic, difficulty, status, 
     ),
   ]);
   const solvedMap = new Map(solved.map((row) => [row.problem_id, row.solved_on]));
+  const blogMap = await blogSlugsByProblem(problems.map((problem) => problem.id));
   const term = search?.trim().toLocaleLowerCase();
   const items = problems
     .map((problem) => ({
       ...problem,
       solved: solvedMap.has(problem.id),
       solvedOn: solvedMap.get(problem.id) ?? null,
+      blogSlug: blogMap.get(problem.id) ?? null,
     }))
     .filter((problem) => !term || `${problem.title} ${problem.topic} ${problem.subtopic ?? ''}`.toLocaleLowerCase().includes(term))
     .filter((problem) => status === 'solved' ? problem.solved : status === 'unsolved' ? !problem.solved : true);
@@ -69,5 +72,11 @@ export async function getSystemDesignProblem(user, problemId) {
     ),
   ]);
   if (!problem) throw ApiError.notFound('System Design problem not found');
-  return { ...problem, solved: Boolean(solved), solvedOn: solved?.solved_on ?? null };
+  const blogMap = await blogSlugsByProblem([problem.id]);
+  return {
+    ...problem,
+    solved: Boolean(solved),
+    solvedOn: solved?.solved_on ?? null,
+    blogSlug: blogMap.get(problem.id) ?? null,
+  };
 }

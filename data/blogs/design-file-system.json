@@ -1,0 +1,614 @@
+{
+  "slug": "design-file-system",
+  "title": "Design File System",
+  "summary": "The flat hash map passes LeetCode 1166 in five minutes. The segment trie is what the interviewer is actually asking for — here is the pivot, the code, the concurrency follow-up, and every edge case worth stating out loud.",
+  "kind": "LLD",
+  "problemSlug": "design-file-system-42-82",
+  "topic": "LLD Interview Problems",
+  "difficulty": "Hard",
+  "coverEmoji": "🗂️",
+  "origin": "editorial",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "Trie",
+    "Hash Map",
+    "Tree",
+    "Design",
+    "Concurrency",
+    "Interview Favourite"
+  ],
+  "companies": [
+    {
+      "name": "Amazon",
+      "roles": [
+        "SDE-1",
+        "SDE-2"
+      ],
+      "sources": [
+        "https://leetcode.com/problems/design-file-system/"
+      ]
+    },
+    {
+      "name": "Google",
+      "roles": [
+        "SWE L3",
+        "SWE L4"
+      ],
+      "sources": [
+        "https://leetcode.com/problems/design-in-memory-file-system/"
+      ]
+    },
+    {
+      "name": "Microsoft",
+      "roles": [
+        "SDE-2"
+      ],
+      "sources": [
+        "https://leetcode.com/problems/design-file-system/"
+      ]
+    },
+    {
+      "name": "Uber",
+      "roles": [
+        "SDE-2"
+      ],
+      "sources": [
+        "https://leetcode.com/problems/design-in-memory-file-system/"
+      ]
+    },
+    {
+      "name": "Bloomberg",
+      "roles": [
+        "SWE"
+      ],
+      "sources": [
+        "https://leetcode.com/problems/design-in-memory-file-system/"
+      ]
+    },
+    {
+      "name": "Oracle",
+      "roles": [
+        "MTS"
+      ],
+      "sources": [
+        "https://leetcode.com/problems/design-file-system/"
+      ]
+    },
+    {
+      "name": "Salesforce",
+      "roles": [
+        "MTS"
+      ],
+      "sources": [
+        "https://leetcode.com/problems/design-file-system/"
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "LeetCode 1166 — Design File System",
+      "url": "https://leetcode.com/problems/design-file-system/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "The exact problem. Medium. Locked company tags live here."
+    },
+    {
+      "title": "LeetCode 588 — Design In-Memory File System",
+      "url": "https://leetcode.com/problems/design-in-memory-file-system/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "The Hard follow-up: ls, mkdir, addContentToFile, readContentFromFile."
+    },
+    {
+      "title": "LeetCode 1166 — community solutions",
+      "url": "https://leetcode.com/problems/design-file-system/solutions/",
+      "source": "LeetCode",
+      "kind": "discussion",
+      "note": "Both the flat-map and trie solutions, with the usual argument about which the interviewer wants."
+    },
+    {
+      "title": "Design data structures and algorithms for in-memory file system",
+      "url": "https://www.geeksforgeeks.org/design-data-structures-algorithms-memory-file-system/",
+      "source": "GeeksforGeeks",
+      "kind": "article",
+      "note": "Walks the directory-tree model and the ls/mkdir operations."
+    },
+    {
+      "title": "Trie data structure — introduction",
+      "url": "https://www.geeksforgeeks.org/dsa/introduction-to-trie-data-structure-and-algorithm-tutorials/",
+      "source": "GeeksforGeeks",
+      "kind": "article",
+      "note": "Background if the segment-trie idea is new."
+    },
+    {
+      "title": "Design File System — walkthrough",
+      "url": "https://codewitharyan.com/tech-blogs/design-file-system",
+      "source": "Code With Aryan",
+      "kind": "article",
+      "note": "The write-up this catalogue entry was originally sourced from."
+    },
+    {
+      "title": "Design File System — video explanation",
+      "url": "https://www.youtube.com/watch?v=yTgXFgL1BK0",
+      "source": "YouTube",
+      "kind": "video",
+      "note": "Whiteboard walkthrough of the trie construction."
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What you are actually being asked",
+      "text": "LeetCode 1166 is a *warm-up*. The interview question hiding behind it is: **model a hierarchical namespace so that lookup, insertion and every follow-up (`ls`, delete, quotas, watches) stays cheap.** Solve the literal problem in five minutes, then spend the rest of the hour on the structure that survives the follow-ups."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a file system that lets you create paths and associate a value with each one."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`boolean createPath(String path, int value)` — creates `path` and associates `value` with it. Returns `false` if the path already exists, or if its **parent** does not exist. Otherwise creates it and returns `true`.",
+        "`int get(String path)` — returns the value at `path`, or `-1` if the path does not exist."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "A path is one or more concatenated strings of the form `/` followed by one or more lowercase letters: `/leetcode` and `/leetcode/problems` are valid; `\"\"` and `/` are not."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Read the contract twice",
+      "text": "Three rules do all the work: **the path must not already exist**, **the parent must already exist**, and **the root `/` is never a createable path** — it is the implicit parent of every top-level entry. Most rejected solutions get the third one wrong."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "paragraph",
+      "text": "The interviewer is grading the questions as much as the code. Ask these, in this order:"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Is the input already normalised?",
+          "text": "Do I have to handle a trailing slash, `//`, `.`, `..`, or an empty segment? On LeetCode the input is clean — in the interview version it never is. Agree on a `normalise()` boundary and move on."
+        },
+        {
+          "title": "Is `createPath` on an existing path an update or a failure?",
+          "text": "The stated contract says failure. Real filesystems say `EEXIST` unless you pass `O_TRUNC`. State which one you are building."
+        },
+        {
+          "title": "Do I need to enumerate children?",
+          "text": "This is the pivot question. If `ls` / `listChildren` is ever coming, a flat map is the wrong shape and you should say so now, not in the follow-up."
+        },
+        {
+          "title": "Single-threaded or concurrent?",
+          "text": "Changes the data structure choice, not just a lock. Ask early so the design carries it."
+        },
+        {
+          "title": "How many paths, and how deep?",
+          "text": "10^4 paths fits anywhere. 10^9 paths pushes you toward interning segments and off-heap storage — mention it, don't build it."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Scope agreed with the interviewer before writing any code.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "`createPath(path, value)` — create only if absent and parent present",
+          "The parent check is the whole problem"
+        ],
+        [
+          "Functional",
+          "`get(path)` — value or `-1`",
+          "Sentinel, not exception — the contract says so"
+        ],
+        [
+          "Functional (follow-up)",
+          "`ls(path)`, `delete(path)`, `move(from, to)`",
+          "These are what kill the flat-map answer"
+        ],
+        [
+          "Non-functional",
+          "O(number of segments) per operation",
+          "Not O(depth × alphabet)"
+        ],
+        [
+          "Non-functional",
+          "Memory proportional to *distinct* segments",
+          "Shared prefixes must not be stored twice"
+        ],
+        [
+          "Non-functional",
+          "Safe under concurrent readers and writers",
+          "Standard follow-up at Amazon and Uber"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the flat hash map"
+    },
+    {
+      "type": "paragraph",
+      "text": "Store the *whole path string* as the key. The parent is just a substring: everything before the last `/`."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "FlatFileSystem.java",
+      "code": "class FileSystem {\n    private final Map<String, Integer> paths = new HashMap<>();\n\n    public boolean createPath(String path, int value) {\n        if (path == null || path.length() <= 1 || path.charAt(0) != '/') return false;\n        if (paths.containsKey(path)) return false;               // already exists\n\n        String parent = path.substring(0, path.lastIndexOf('/'));\n        // parent == \"\" means the parent is the root, which always exists.\n        if (!parent.isEmpty() && !paths.containsKey(parent)) return false;\n\n        paths.put(path, value);\n        return true;\n    }\n\n    public int get(String path) {\n        return paths.getOrDefault(path, -1);\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "This is a correct, accepted solution",
+      "text": "Do not pretend it is wrong — that reads as rehearsed. Say what it *is*: **O(m) per operation** for a path of length `m` (you hash the full string), dead simple, and the right call if the API never grows. Then say what it cannot do."
+    },
+    {
+      "type": "paragraph",
+      "text": "Where it falls over:"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**`ls(\"/a\")` is O(n)** — you must scan every key in the map to find the children of one directory.",
+        "**`delete(\"/a\")` is O(n)** — same scan, to find the subtree.",
+        "**Memory duplicates prefixes** — `/usr/local/bin/node` stores all 20 characters, and so does every sibling. `n` paths of depth `d` store `O(n · d)` characters instead of `O(distinct segments)`.",
+        "**Rename is O(n)** — moving `/a` to `/b` rewrites every descendant key."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 2 — a trie over path segments"
+    },
+    {
+      "type": "paragraph",
+      "text": "Split on `/` and make each **segment** a node. The path *is* the walk from the root. This is exactly how a real filesystem stores directory entries, and it is the answer the interviewer is steering you toward."
+    },
+    {
+      "type": "paragraph",
+      "text": "The critical detail people get wrong: this is a trie keyed on **segments**, not on characters. `/leetcode` is one edge labelled `leetcode`, not eight edges labelled `l`, `e`, `e`, `t`…"
+    },
+    {
+      "type": "mermaid",
+      "title": "Trie after four createPath calls",
+      "caption": "`/leetcode` → 1, `/leetcode/problems` → 2, `/leetcode/contest` → 3, `/usr` → 9. Shared prefixes are stored once; `hasValue` distinguishes a created path from an implicit ancestor.",
+      "code": "graph TD\n    root[\"/ (root)<br/><i>hasValue: false</i>\"]\n    lc[\"leetcode<br/><b>value: 1</b>\"]\n    pr[\"problems<br/><b>value: 2</b>\"]\n    ct[\"contest<br/><b>value: 3</b>\"]\n    usr[\"usr<br/><b>value: 9</b>\"]\n\n    root -->|\"leetcode\"| lc\n    root -->|\"usr\"| usr\n    lc -->|\"problems\"| pr\n    lc -->|\"contest\"| ct\n\n    classDef filled fill:#2a1f5e,stroke:#8b7bff,color:#f2f2f7\n    classDef empty fill:#1a1a22,stroke:#32323f,color:#a1a1b0,font-style:italic\n    class lc,pr,ct,usr filled\n    class root empty"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Class design"
+    },
+    {
+      "type": "mermaid",
+      "title": "Two classes, one responsibility each",
+      "caption": "`TrieNode` knows about *structure*. `FileSystem` knows about the *contract* — the exists/parent-exists rules live there and nowhere else.",
+      "code": "classDiagram\n    class FileSystem {\n        -TrieNode root\n        +boolean createPath(String path, int value)\n        +int get(String path)\n        +List~String~ ls(String path)\n        +boolean delete(String path)\n        -TrieNode walk(String path)\n        -String[] segments(String path)\n    }\n\n    class TrieNode {\n        -Map~String, TrieNode~ children\n        -int value\n        -boolean hasValue\n        +TrieNode child(String name)\n        +TrieNode addChild(String name)\n    }\n\n    FileSystem \"1\" o-- \"1\" TrieNode : root\n    TrieNode \"1\" o-- \"*\" TrieNode : children"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Why `hasValue` and not \"value != -1\"",
+      "text": "A node can exist purely as an ancestor. If you encode absence as `-1` you cannot tell `/a` *created with value -1* from `/a` *never created* — and the moment the interviewer allows negative values your `get` starts lying. An explicit `hasValue` flag (or a boxed `Integer`) is the honest model. Interviewers watch for this."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "createPath, step by step"
+    },
+    {
+      "type": "mermaid",
+      "title": "createPath control flow",
+      "code": "flowchart TD\n    A[[\"createPath(path, value)\"]] --> B{\"valid path?<br/>starts with / and len > 1\"}\n    B -- no --> F[[\"return false\"]]\n    B -- yes --> C[\"segments = split(path, '/')\"]\n    C --> D[\"node = root\"]\n    D --> E{\"more parent segments<br/>left to walk?\"}\n    E -- yes --> G{\"child exists?\"}\n    G -- no --> F\n    G -- yes --> H[\"node = child\"] --> E\n    E -- \"no, at the last segment\" --> I{\"last segment<br/>already a child<br/>with a value?\"}\n    I -- yes --> F\n    I -- no --> J[\"create or reuse child<br/>set value, hasValue = true\"]\n    J --> K[[\"return true\"]]\n\n    style F fill:#3a1f22,stroke:#f4696b,color:#f2f2f7\n    style K fill:#153229,stroke:#34d399,color:#f2f2f7"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk every segment **except the last** and require each to exist — that is the parent check. Then handle the last segment: it must not already carry a value."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "FileSystem.java",
+      "code": "class TrieNode {\n    final Map<String, TrieNode> children = new HashMap<>();\n    int value;\n    boolean hasValue;\n}\n\nclass FileSystem {\n    private final TrieNode root = new TrieNode();\n\n    public boolean createPath(String path, int value) {\n        String[] parts = segments(path);\n        if (parts == null) return false;\n\n        TrieNode node = root;\n        // Every segment but the last must already exist — the parent check.\n        for (int i = 0; i < parts.length - 1; i++) {\n            node = node.children.get(parts[i]);\n            if (node == null) return false;\n        }\n\n        String leaf = parts[parts.length - 1];\n        TrieNode existing = node.children.get(leaf);\n        // A node may exist only as an ancestor; that path is still \"not created\".\n        if (existing != null && existing.hasValue) return false;\n\n        TrieNode target = existing != null ? existing : new TrieNode();\n        target.value = value;\n        target.hasValue = true;\n        node.children.put(leaf, target);\n        return true;\n    }\n\n    public int get(String path) {\n        TrieNode node = walk(path);\n        return node != null && node.hasValue ? node.value : -1;\n    }\n\n    /** Children of a directory — O(k), the reason the trie exists. */\n    public List<String> ls(String path) {\n        TrieNode node = \"/\".equals(path) ? root : walk(path);\n        if (node == null) return List.of();\n        List<String> names = new ArrayList<>(node.children.keySet());\n        Collections.sort(names);\n        return names;\n    }\n\n    /** Unlinks a whole subtree in O(depth); the descendants are collected by GC. */\n    public boolean delete(String path) {\n        String[] parts = segments(path);\n        if (parts == null) return false;\n\n        TrieNode node = root;\n        for (int i = 0; i < parts.length - 1; i++) {\n            node = node.children.get(parts[i]);\n            if (node == null) return false;\n        }\n        return node.children.remove(parts[parts.length - 1]) != null;\n    }\n\n    private TrieNode walk(String path) {\n        String[] parts = segments(path);\n        if (parts == null) return null;\n\n        TrieNode node = root;\n        for (String part : parts) {\n            node = node.children.get(part);\n            if (node == null) return null;\n        }\n        return node;\n    }\n\n    /** null for any path that is not \"/name(/name)*\". */\n    private String[] segments(String path) {\n        if (path == null || path.length() < 2 || path.charAt(0) != '/') return null;\n        String[] parts = path.substring(1).split(\"/\", -1);\n        for (String part : parts) {\n            if (part.isEmpty()) return null;   // rejects \"//a\" and a trailing \"/\"\n        }\n        return parts;\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "file_system.py",
+      "code": "class TrieNode:\n    __slots__ = (\"children\", \"value\", \"has_value\")\n\n    def __init__(self):\n        self.children: dict[str, \"TrieNode\"] = {}\n        self.value = 0\n        self.has_value = False\n\n\nclass FileSystem:\n    def __init__(self):\n        self.root = TrieNode()\n\n    def createPath(self, path: str, value: int) -> bool:\n        parts = self._segments(path)\n        if parts is None:\n            return False\n\n        node = self.root\n        for part in parts[:-1]:              # the parent must already exist\n            node = node.children.get(part)\n            if node is None:\n                return False\n\n        leaf = parts[-1]\n        existing = node.children.get(leaf)\n        if existing is not None and existing.has_value:\n            return False\n\n        target = existing or TrieNode()\n        target.value, target.has_value = value, True\n        node.children[leaf] = target\n        return True\n\n    def get(self, path: str) -> int:\n        node = self._walk(path)\n        return node.value if node and node.has_value else -1\n\n    def _walk(self, path: str) -> TrieNode | None:\n        parts = self._segments(path)\n        if parts is None:\n            return None\n        node = self.root\n        for part in parts:\n            node = node.children.get(part)\n            if node is None:\n                return None\n        return node\n\n    @staticmethod\n    def _segments(path: str) -> list[str] | None:\n        if not path or len(path) < 2 or path[0] != \"/\":\n            return None\n        parts = path[1:].split(\"/\")\n        return None if any(not part for part in parts) else parts"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Try it"
+    },
+    {
+      "type": "paragraph",
+      "text": "Run calls against a live trie. Watch how `createPath` refuses an orphan, and how a node created as an ancestor is still *not* a created path until it gets a value."
+    },
+    {
+      "type": "widget",
+      "name": "file-system-trie",
+      "title": "Interactive trie",
+      "caption": "Every call runs the exact algorithm above — the tree and the return value come from the same code path."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "`m` = path length in characters, `k` = number of segments, `n` = number of stored paths, `c` = children of one directory.",
+      "headers": [
+        "Operation",
+        "Flat hash map",
+        "Segment trie"
+      ],
+      "rows": [
+        [
+          "`createPath`",
+          "O(m) — two full-string hashes",
+          "O(m) — hash each segment once"
+        ],
+        [
+          "`get`",
+          "O(m)",
+          "O(m)"
+        ],
+        [
+          "`ls`",
+          "**O(n · m)** — scan every key",
+          "**O(c log c)** — read one map"
+        ],
+        [
+          "`delete` subtree",
+          "**O(n · m)** — scan every key",
+          "**O(k)** — unlink one pointer"
+        ],
+        [
+          "`move` / rename",
+          "**O(n · m)** — rewrite every key",
+          "**O(k)** — re-point one pointer"
+        ],
+        [
+          "Memory",
+          "O(n · m) characters",
+          "O(distinct segments) — prefixes shared"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Do not oversell the trie",
+      "text": "Both are O(m) for `get`. The trie wins on **structure**, not on point lookup — and it costs you one `HashMap` object per node, which is real overhead when paths are shallow and never enumerated. Saying this out loud is worth more than the trie itself."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency — the follow-up that decides the interview"
+    },
+    {
+      "type": "paragraph",
+      "text": "\"Now make it thread-safe\" is asked at Amazon and Uber more often than not. The naive answer is one global lock. The graded answer names the trade-off:"
+    },
+    {
+      "type": "table",
+      "headers": [
+        "Strategy",
+        "Read cost",
+        "Write cost",
+        "When to use it"
+      ],
+      "rows": [
+        [
+          "One global `ReentrantReadWriteLock`",
+          "Shared",
+          "Exclusive, whole tree",
+          "Write-rare workloads; simplest correct answer"
+        ],
+        [
+          "`ConcurrentHashMap` per node",
+          "Lock-free",
+          "Per-directory CAS",
+          "Default choice — matches the usual read-heavy mix"
+        ],
+        [
+          "Hand-over-hand (lock coupling)",
+          "Lock per level",
+          "Lock per level",
+          "Deep trees with hot subtrees; hard to get right"
+        ],
+        [
+          "Copy-on-write root",
+          "Lock-free, snapshot",
+          "O(depth) node copies",
+          "Snapshot reads, backups, low write rate"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "`ConcurrentHashMap` alone is not enough",
+      "text": "`createPath` is a **check-then-act** across two nodes: it reads the parent, then writes the child. Two threads creating `/a/b` and `/a/c` are fine; two threads both creating `/a/b` can both see it absent. Use `children.putIfAbsent(...)` and let the loser return `false` — that single call is what makes the operation atomic."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Concurrent createPath — the leaf step",
+      "code": "// children is a ConcurrentHashMap<String, TrieNode>.\n// putIfAbsent collapses check-then-act into one atomic step: exactly one\n// caller inserts, every other caller gets the winner back and bails out.\nTrieNode fresh = new TrieNode();\nfresh.value = value;\nfresh.hasValue = true;\n\nTrieNode winner = node.children.putIfAbsent(leaf, fresh);\nif (winner == null) return true;            // we created it\n\n// Someone else got there first, or the node already existed as an ancestor.\nsynchronized (winner) {\n    if (winner.hasValue) return false;\n    winner.value = value;\n    winner.hasValue = true;\n    return true;\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Scaling it up — where LLD meets HLD"
+    },
+    {
+      "type": "paragraph",
+      "text": "If the interviewer pushes past the in-memory version, they are asking you to name the pieces a real filesystem adds. You are not implementing these; you are showing you know they exist."
+    },
+    {
+      "type": "mermaid",
+      "title": "From an in-memory trie to a real filesystem",
+      "caption": "The trie survives as the *directory tree*. Everything else is added around it.",
+      "code": "flowchart LR\n    subgraph M[\"In-memory (this problem)\"]\n        T[\"Segment trie<br/>name → node\"]\n    end\n    subgraph R[\"Real filesystem\"]\n        D[\"Directory entries<br/>name → inode number\"]\n        I[\"Inode table<br/>metadata, block pointers\"]\n        BA[\"Block allocator<br/>free-space bitmap\"]\n        J[\"Journal / WAL<br/>crash consistency\"]\n        C[\"Page cache<br/>hot blocks\"]\n    end\n    T -.->|\"becomes\"| D\n    D --> I --> BA\n    I --> J\n    BA --> C"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Inodes** — split *name → id* from *id → metadata*. That indirection is what makes hard links possible: two names, one inode.",
+        "**Journaling / write-ahead log** — a `createPath` that dies halfway must not leave a directory entry pointing at nothing. Write intent, then apply.",
+        "**Block allocation** — files hold bytes, not one `int`. Extents or a free bitmap, plus indirect blocks for large files.",
+        "**Caching** — an LRU over hot path lookups turns repeated `get` on the same directory into a single map hit. This is where *Design LRU Cache* shows up inside this question.",
+        "**Sharding by path prefix** — distributed filesystems (HDFS, GFS) keep the namespace on a metadata server and shard the *data*, precisely because the tree is small and the bytes are not."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups you should have an answer ready for"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Implement `ls(path)` returning sorted children",
+          "text": "Free in the trie: read `node.children.keySet()` and sort — O(c log c). Say the flat map needs a full scan. Then note that if `ls` is hot, a `TreeMap` per node keeps children sorted at insert time and makes `ls` O(c)."
+        },
+        {
+          "title": "Delete a whole subtree",
+          "text": "Unlink the child pointer from the parent — O(depth). The descendants become unreachable and are collected. In C++ you would need refcounting or an explicit post-order free."
+        },
+        {
+          "title": "Support `..`, `.` and a trailing `/`",
+          "text": "Normalise into a segment stack before touching the trie: push a segment, pop on `..`, ignore `.` and empty segments. Keep it in one function so the core stays clean."
+        },
+        {
+          "title": "Return the longest existing prefix of a missing path",
+          "text": "Walk until a child is missing and return how far you got — O(k), and impossible on the flat map without probing every prefix."
+        },
+        {
+          "title": "Autocomplete / prefix search on names",
+          "text": "This is where a *character* trie inside each directory node earns its place — a second trie, nested, only if the interviewer asks."
+        },
+        {
+          "title": "Watch a directory for changes (inotify)",
+          "text": "Observer pattern: a `List<Watcher>` on the node, notified on child insert or remove. Cheap to add because the structure already localises changes to one node."
+        },
+        {
+          "title": "Enforce a per-directory quota",
+          "text": "Keep a subtree size on each node and update it along the insertion path — O(depth) per write, O(1) per read. Impossible to maintain cheaply on the flat map."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state before you are asked"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`createPath(\"/\", 1)` → `false`. The root is not a createable path.",
+        "`createPath(\"/a/b\", 1)` when `/a` does not exist → `false`. No implicit `mkdir -p`.",
+        "`createPath(\"/a\", 1)` twice → the second returns `false`; the stored value stays `1`.",
+        "`get(\"/a\")` where `/a` exists only as the parent of `/a/b` → `-1`. This is the `hasValue` case.",
+        "`get` on a never-seen path → `-1`, not an exception.",
+        "Empty string, `//a`, and a trailing `/a/` → `false` from validation, not a crash.",
+        "Negative values are legal payloads — never overload `-1` as \"absent\"."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Test cases"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "FileSystemTest.java",
+      "code": "FileSystem fs = new FileSystem();\n\nassert fs.createPath(\"/leetcode\", 1);        // top-level: parent is the root\nassert !fs.createPath(\"/leetcode\", 2);       // duplicate rejected\nassert fs.get(\"/leetcode\") == 1;             // value unchanged by the failed create\n\nassert !fs.createPath(\"/a/b\", 3);            // orphan: /a does not exist\nassert fs.get(\"/a/b\") == -1;\n\nassert fs.createPath(\"/leetcode/problems\", 2);\nassert fs.get(\"/leetcode/problems\") == 2;\nassert fs.ls(\"/leetcode\").equals(List.of(\"problems\"));\n\nassert !fs.createPath(\"/\", 1);               // root is not createable\nassert !fs.createPath(\"\", 1);                // invalid\nassert !fs.createPath(\"/a//b\", 1);           // empty segment\n\nassert fs.createPath(\"/n\", -5);              // negative payload is legal\nassert fs.get(\"/n\") == -5;                   // and must not read as \"absent\"\n\nassert fs.delete(\"/leetcode\");               // unlinks the subtree\nassert fs.get(\"/leetcode/problems\") == -1;"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "headers": [
+        "Signal",
+        "Weak answer",
+        "Strong answer"
+      ],
+      "rows": [
+        [
+          "Problem framing",
+          "Starts coding immediately",
+          "Asks whether `ls` is coming, then picks the structure"
+        ],
+        [
+          "Data structure choice",
+          "\"Trie is better\"",
+          "Names the exact operations that make it better, and the cost it adds"
+        ],
+        [
+          "The absence sentinel",
+          "Uses `-1` for \"no value\"",
+          "Separate `hasValue` flag; explains why"
+        ],
+        [
+          "Validation",
+          "Assumes clean input",
+          "One `segments()` boundary, rest of the code trusts it"
+        ],
+        [
+          "Concurrency",
+          "\"Add `synchronized`\"",
+          "`putIfAbsent` on the leaf; explains check-then-act"
+        ],
+        [
+          "Extensibility",
+          "Solves only what was asked",
+          "Shows `ls`/`delete`/quota falling out of the same structure"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The 45-minute plan",
+      "text": "**0–5 min** clarify and state the contract. **5–10 min** flat map, out loud, as the baseline. **10–15 min** name the operations that break it and pivot to the segment trie. **15–30 min** code `createPath`, `get`, `walk`, `segments`. **30–38 min** `ls`, `delete`, edge cases, tests. **38–45 min** concurrency and one scaling remark. Do not skip the baseline — pivoting *from* a working answer is the signal."
+    }
+  ]
+}
