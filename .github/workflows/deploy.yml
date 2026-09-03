@@ -53,6 +53,14 @@ jobs:
           trap 'rm -f "$TEMP_ENV"' EXIT
           printf '%s\n' "$OPTIMUS_PROD_ENV" > "$TEMP_ENV"
           node scripts/push-env.js "$TEMP_ENV"
+          DB_URL=$(awk -F= '$1 == "SUPABASE_DB_URL" { value = substr($0, index($0, "=") + 1); gsub(/^"|"$/, "", value); print value; exit }' "$TEMP_ENV")
+          if [ -z "$DB_URL" ]; then
+            echo 'SUPABASE_DB_URL is required in OPTIMUS_PROD_ENV for schema deployment.' >&2
+            exit 1
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -f db/schema.sql >/dev/null
 
   deploy:
     needs: [validate, sync_environment]
