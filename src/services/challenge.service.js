@@ -423,6 +423,118 @@ async function resetMalformedToday(userId, date) {
   );
 }
 
+/**
+ * Applies a goal change to the open day immediately. Completed assignments are
+ * kept where possible; lowering a goal removes the excess assignments, while
+ * increasing it draws a fresh set from the same backlog-aware picker.
+ */
+async function syncTodayTargets(userId, today, enrollment, log) {
+  const targets = enrollmentTargets(enrollment);
+  const [assignments, solvedRows] = await Promise.all([
+    unwrap(
+      await db
+        .from('daily_assignments')
+        .select('id, problem_id, position, carried_over, problem:problems(kind)')
+        .eq('user_id', userId)
+        .eq('assigned_on', today)
+        .eq('round', 1)
+        .order('position'),
+      'load today assignments for goal update',
+    ),
+    unwrap(
+      await db.from('user_problems').select('problem_id').eq('user_id', userId).eq('status', 'solved'),
+      'load solved problems for goal update',
+    ),
+  ]);
+  const solvedIds = new Set(solvedRows.map((row) => row.problem_id));
+  const removeIds = [];
+  const removedSolvedIds = [];
+  const keptByKind = new Map();
+
+  for (const kind of KINDS) {
+    const current = assignments.filter((assignment) => assignment.problem?.kind === kind);
+    const target = normalizeDailyTarget(targets[kind], kind);
+    const solved = current.filter((assignment) => solvedIds.has(assignment.problem_id));
+    const unsolved = current.filter((assignment) => !solvedIds.has(assignment.problem_id));
+    const kept = [
+      ...solved.slice(0, target),
+      ...unsolved.slice(0, Math.max(0, target - Math.min(solved.length, target))),
+    ];
+    const keptIds = new Set(kept.map((assignment) => assignment.id));
+    for (const assignment of current) {
+      if (keptIds.has(assignment.id)) continue;
+      removeIds.push(assignment.id);
+      if (solvedIds.has(assignment.problem_id)) removedSolvedIds.push(assignment.problem_id);
+    }
+    keptByKind.set(kind, kept);
+  }
+
+  if (removeIds.length) {
+    unwrap(
+      await db.from('daily_assignments').delete().in('id', removeIds),
+      'trim today assignments for goal update',
+    );
+  }
+  if (removedSolvedIds.length) {
+    unwrap(
+      await db
+        .from('user_problems')
+        .update({ is_bonus: true })
+        .eq('user_id', userId)
+        .in('problem_id', removedSolvedIds),
+      'mark trimmed solves as bonus',
+    );
+  }
+
+  const missingTargets = Object.fromEntries(
+    KINDS.map((kind) => [kind, Math.max(0, targets[kind] - keptByKind.get(kind).length)]),
+  );
+  const additions = await pickDailyProblems(userId, today, missingTargets);
+  const currentMaxPosition = assignments.reduce((max, assignment) => Math.max(max, assignment.position ?? 0), -1);
+  if (additions.length) {
+    unwrap(
+      await db.from('daily_assignments').insert(
+        additions.map((pick, index) => ({
+          user_id: userId,
+          problem_id: pick.problem.id,
+          assigned_on: today,
+          position: currentMaxPosition + index + 1,
+          round: 1,
+          carried_over: pick.carriedOver,
+        })),
+      ),
+      'add today assignments for goal update',
+    );
+  }
+
+  const counts = { DSA: 0, LLD: 0, HLD: 0 };
+  for (const kind of KINDS) counts[kind] = keptByKind.get(kind).length;
+  for (const pick of additions) counts[pick.problem.kind] += 1;
+  const requiredCount = counts.DSA + counts.LLD + counts.HLD;
+  const shouldReopen = log.status === 'complete' && requiredCount > log.solved_count;
+
+  return unwrap(
+    await db
+      .from('daily_logs')
+      .update({
+        required_count: requiredCount,
+        dsa_required: counts.DSA,
+        lld_required: counts.LLD,
+        hld_required: counts.HLD,
+        ...(shouldReopen ? { status: 'active', closed_at: null } : {}),
+      })
+      .eq('id', log.id)
+      .select('*')
+      .single(),
+    'update today target',
+  );
+}
+
+function todayGoalChanged(log, enrollment) {
+  const targets = enrollmentTargets(enrollment);
+  return KINDS.some((kind) => log[`${kind.toLowerCase()}_required`] !== targets[kind]);
+}
+
 async function isMalformedToday(userId, date, log) {
   if (!log || log.status !== 'active') return false;
   if (log.required_count !== targetTotal(log)) return true;
@@ -454,6 +566,10 @@ export async function getToday(user) {
   if (await isMalformedToday(user.id, today, log)) {
     await resetMalformedToday(user.id, today);
     log = null;
+  }
+
+  if (log && todayGoalChanged(log, enrollment)) {
+    log = await syncTodayTargets(user.id, today, enrollment, log);
   }
 
   if (!log) {
