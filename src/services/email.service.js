@@ -1,4 +1,5 @@
 import { env } from '../config/env.js';
+import nodemailer from 'nodemailer';
 
 const BREVO_ENDPOINT = 'https://api.brevo.com/v3/smtp/email';
 
@@ -36,10 +37,46 @@ export function createEmailSender({ fetchImpl = fetch, apiKey, from, replyTo, en
   };
 }
 
-export const email = createEmailSender({
-  apiKey: env.email.apiKey,
-  from: env.email.from,
-  replyTo: env.email.replyTo,
-});
+export function createSmtpEmailSender({ host, port, secure, user, password, from, replyTo }) {
+  const transporter = nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: { user, pass: password },
+  });
+
+  return {
+    async send({ to, message, idempotencyKey }) {
+      if (!user || !password || !from) return { sent: false, reason: 'not_configured' };
+      const info = await transporter.sendMail({
+        from,
+        to,
+        subject: message.subject,
+        html: message.html,
+        text: message.text,
+        ...(replyTo ? { replyTo } : {}),
+        headers: { 'X-Optimus-Idempotency-Key': idempotencyKey },
+      });
+      return { sent: true, messageId: info.messageId };
+    },
+    verify: () => transporter.verify(),
+  };
+}
+
+export const email = env.email.transport === 'smtp'
+  ? createSmtpEmailSender({
+    host: env.email.smtpHost,
+    port: env.email.smtpPort,
+    secure: env.email.smtpSecure,
+    user: env.email.smtpUser,
+    password: env.email.apiKey,
+    from: env.email.from,
+    replyTo: env.email.replyTo,
+  })
+  : createEmailSender({
+    apiKey: env.email.apiKey,
+    from: env.email.from,
+    replyTo: env.email.replyTo,
+  });
 
 export const emailConfigured = () => env.email.enabled;

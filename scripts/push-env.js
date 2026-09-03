@@ -37,6 +37,11 @@ const required = [
 const missing = required.filter((key) => !values[key]);
 if (missing.length) throw new Error(`Missing production values: ${missing.join(', ')}`);
 if (values.NODE_ENV !== 'production') throw new Error('NODE_ENV must be production in .env.prod.');
+if (values.EMAIL_DELIVERY_ENABLED === 'true' && values.EMAIL_TRANSPORT === 'smtp') {
+  const smtpMissing = ['BREVO_API_KEY', 'BREVO_SMTP_HOST', 'BREVO_SMTP_PORT', 'BREVO_SMTP_USER', 'EMAIL_FROM']
+    .filter((key) => !values[key]);
+  if (smtpMissing.length) throw new Error(`Missing SMTP email values: ${smtpMissing.join(', ')}`);
+}
 
 const result = spawnSync(
   'aws',

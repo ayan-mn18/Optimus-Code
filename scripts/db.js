@@ -33,6 +33,7 @@ const EXPECTED_TABLES = [
   'daily_assignments',
   'user_problems',
   'milestone_recaps',
+  'streak_milestones',
   'waitlist',
   'account_invites',
   'assessment_attempts',

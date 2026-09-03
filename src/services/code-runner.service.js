@@ -5,10 +5,41 @@ const NODE_LANGUAGE_ID = 63;
 const MAX_SOURCE_BYTES = 50_000;
 
 function harness(source, tests) {
-  return `'use strict';\n${source}\n\nconst __tests = ${JSON.stringify(tests)};\nconst __results = [];\nfor (const test of __tests) {\n  try {\n    const actual = selectNext(test.input);\n    const passed = JSON.stringify(actual) === JSON.stringify(test.expected);\n    __results.push({ name: test.name, passed, expected: test.expected, actual });\n  } catch (error) {\n    __results.push({ name: test.name, passed: false, expected: test.expected, error: String(error?.message ?? error) });\n  }\n}\nconsole.log('__OPTIMUS_RESULT__' + JSON.stringify(__results));`;
+  return `'use strict';\n${source}\n\nconst __tests = ${JSON.stringify(tests)};\nconst __results = [];\nfor (const test of __tests) {\n  try {\n    const actual = selectNext(test.input);\n    const passed = JSON.stringify(actual) === JSON.stringify(test.expected);\n    __results.push({ name: test.name, passed, expected: test.expected, actual });\n  } catch (error) {\n    __results.push({ name: test.name, passed: false, expected: test.expected, error: String(error && error.message || error) });\n  }\n}\nconsole.log('__OPTIMUS_RESULT__' + JSON.stringify(__results));`;
 }
 
 export function createCodeRunner({ config = env.runner, fetchImpl = fetch } = {}) {
+  const runPiston = async (source, tests) => {
+    const response = await fetchImpl(`${config.baseUrl}/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        language: 'javascript',
+        version: '18.15.0',
+        files: [{ name: 'main.js', content: harness(source, tests) }],
+        run_timeout: 3000,
+        run_memory_limit: 128000,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new ApiError(502, payload.message ?? 'Code runner rejected the submission');
+    const run = payload.run ?? {};
+    const stdout = run.stdout ?? '';
+    const marker = stdout.split('\n').find((line) => line.startsWith('__OPTIMUS_RESULT__'));
+    let results = [];
+    if (marker) {
+      try { results = JSON.parse(marker.slice('__OPTIMUS_RESULT__'.length)); } catch { results = []; }
+    }
+    return {
+      passed: results.length === tests.length && results.every((result) => result.passed),
+      results,
+      status: run.code === 0 ? 'Accepted' : 'Runtime Error',
+      stderr: (run.stderr ?? '').slice(0, 4000),
+      time: null,
+      memory: null,
+    };
+  };
+
   return {
     configured: Boolean(config.enabled && config.baseUrl),
 
@@ -16,6 +47,7 @@ export function createCodeRunner({ config = env.runner, fetchImpl = fetch } = {}
       if (!config.enabled || !config.baseUrl) throw new ApiError(503, 'Code runner is not configured');
       if (Buffer.byteLength(source, 'utf8') > MAX_SOURCE_BYTES) throw ApiError.badRequest('Code exceeds 50 KB');
       if (!Array.isArray(tests) || !tests.length || tests.length > 25) throw ApiError.badRequest('Invalid test suite');
+      if (config.provider === 'piston') return runPiston(source, tests);
 
       const headers = { 'content-type': 'application/json' };
       if (config.apiKey) headers['x-rapidapi-key'] = config.apiKey;

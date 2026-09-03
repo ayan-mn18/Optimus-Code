@@ -26,8 +26,36 @@ jobs:
       - run: npm ci
       - run: npm run lint
 
-  deploy:
+  sync_environment:
     needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::285515885386:role/optimus-code-github-deploy
+          aws-region: ap-south-1
+      - name: Sync encrypted production environment to SSM
+        env:
+          OPTIMUS_PROD_ENV: ${{ secrets.OPTIMUS_PROD_ENV }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${OPTIMUS_PROD_ENV:-}" ]; then
+            echo 'Repository secret OPTIMUS_PROD_ENV is not configured.' >&2
+            exit 1
+          fi
+          TEMP_ENV=$(mktemp)
+          trap 'rm -f "$TEMP_ENV"' EXIT
+          printf '%s\n' "$OPTIMUS_PROD_ENV" > "$TEMP_ENV"
+          node scripts/push-env.js "$TEMP_ENV"
+
+  deploy:
+    needs: [validate, sync_environment]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

@@ -17,7 +17,7 @@ test('canonical schema applies cleanly and contains new product tables', async (
     order by table_name
   `);
   const tables = new Set(result.rows.map((row) => row.table_name));
-  for (const name of ['problems', 'assessment_attempts', 'assessment_answers', 'subscriptions', 'payment_webhook_events']) {
+  for (const name of ['problems', 'assessment_attempts', 'assessment_answers', 'subscriptions', 'payment_webhook_events', 'streak_milestones']) {
     assert.ok(tables.has(name), `${name} table missing`);
   }
 

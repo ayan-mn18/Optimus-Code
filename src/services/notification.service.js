@@ -3,9 +3,11 @@ import { env } from '../config/env.js';
 import { todayIn } from '../lib/dates.js';
 import { email, emailConfigured } from './email.service.js';
 import { sendPendingWaitlistInvites } from './invite.service.js';
-import { milestoneEmail, redDayEmail, streakRiskEmail } from '../emails/templates.js';
+import { greenStreakEmail, milestoneEmail, redDayEmail, streakRiskEmail } from '../emails/templates.js';
 
 const dashboardUrl = `${env.email.appUrl}/dashboard`;
+export const GREEN_STREAK_STEP = 7;
+const UNIQUE_VIOLATION = '23505';
 
 function localHour(date, timezone) {
   const part = new Intl.DateTimeFormat('en-US', {
@@ -128,6 +130,124 @@ export async function sendRedDayNotification(
   }
 }
 
+/**
+ * Creates a durable, idempotent event before delivery. A retry can safely send
+ * the same milestone after a transient SMTP outage without duplicating it.
+ */
+export async function sendGreenStreakNotification(
+  user,
+  streak,
+  { sender = email, enabled = emailConfigured(), achievedOn = todayIn(user.timezone), existingState } = {},
+) {
+  const streakLength = Number(streak?.current ?? 0);
+  if (!enabled || streakLength < GREEN_STREAK_STEP || streakLength % GREEN_STREAK_STEP !== 0) return false;
+
+  let state = existingState;
+  try {
+    if (!state) {
+      state = unwrap(
+        await db
+          .from('streak_milestones')
+          .select('id, emailed_at')
+          .eq('user_id', user.id)
+          .eq('streak_length', streakLength)
+          .eq('achieved_on', achievedOn)
+          .maybeSingle(),
+        'load streak milestone email state',
+      );
+    }
+    if (!state) {
+      const created = await db
+        .from('streak_milestones')
+        .insert({ user_id: user.id, streak_length: streakLength, achieved_on: achievedOn })
+        .select('id, emailed_at')
+        .maybeSingle();
+      if (created.error && created.error.code !== UNIQUE_VIOLATION) {
+        throw Object.assign(new Error(`create streak milestone email: ${created.error.message}`), { status: 500 });
+      }
+      state = created.data;
+      if (!state) {
+        state = unwrap(
+          await db
+            .from('streak_milestones')
+            .select('id, emailed_at')
+            .eq('user_id', user.id)
+            .eq('streak_length', streakLength)
+            .eq('achieved_on', achievedOn)
+            .single(),
+          'load concurrent streak milestone email',
+        );
+      }
+    }
+  } catch (error) {
+    console.error('[email] green-streak state failed:', error instanceof Error ? error.message : error);
+    return false;
+  }
+  if (state.emailed_at) return false;
+
+  try {
+    const result = await sender.send({
+      to: user.email,
+      message: greenStreakEmail({
+        name: user.name,
+        streakLength,
+        longestStreak: Math.max(Number(user.longest_streak ?? 0), streakLength),
+        loginUrl: dashboardUrl,
+      }),
+      idempotencyKey: `green-streak/${user.id}/${streakLength}/${achievedOn}`,
+    });
+    if (!result.sent) return false;
+
+    unwrap(
+      await db.from('streak_milestones').update({ emailed_at: new Date().toISOString() }).eq('id', state.id),
+      'record streak milestone email',
+    );
+    return true;
+  } catch (error) {
+    console.error('[email] green-streak delivery failed:', error instanceof Error ? error.message : error);
+    return false;
+  }
+}
+
+export async function sendPendingGreenStreakEmails() {
+  if (!emailConfigured()) return { checked: 0, sent: 0 };
+
+  const milestones = unwrap(
+    await db
+      .from('streak_milestones')
+      .select('id, user_id, streak_length, achieved_on, emailed_at')
+      .is('emailed_at', null)
+      .order('created_at', { ascending: true })
+      .limit(50),
+    'load pending streak milestone emails',
+  );
+  if (!milestones.length) return { checked: 0, sent: 0 };
+
+  const users = unwrap(
+    await db
+      .from('users')
+      .select('id, email, name, longest_streak')
+      .in('id', [...new Set(milestones.map((milestone) => milestone.user_id))]),
+    'load streak milestone email users',
+  );
+  const userById = new Map(users.map((user) => [user.id, user]));
+  let sent = 0;
+  for (const milestone of milestones) {
+    const user = userById.get(milestone.user_id);
+    if (!user) continue;
+    const delivered = await sendGreenStreakNotification(
+      user,
+      { current: milestone.streak_length },
+      {
+        existingState: milestone,
+        achievedOn: milestone.achieved_on,
+      },
+    );
+    if (delivered) sent += 1;
+  }
+  return { checked: milestones.length, sent };
+}
+
 export async function runStreakRiskNotifications(
   now = new Date(),
   { sender = email, enabled = emailConfigured(), onlyUserIds } = {},
@@ -192,6 +312,7 @@ export function startEmailNotificationWorker() {
   const run = () => {
     Promise.all([
       runStreakRiskNotifications(),
+      sendPendingGreenStreakEmails(),
       sendPendingWaitlistInvites(),
       sendPendingMilestoneEmails(),
     ]).catch((error) => {

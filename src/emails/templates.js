@@ -126,11 +126,11 @@ export function milestoneEmail({ name, milestone, headline, topTopics, nextMiles
 
 export function redDayEmail({ name, date, solved, required, loginUrl }) {
   return {
-    subject: 'Yesterday closed red. Today stays open.',
+    subject: 'Yesterday missed its target. Today is a reset.',
     html: layout({
       preheader: 'Your missed problems returned to the practice mix.',
       eyebrow: 'Daily recap',
-      title: 'One red day changes nothing.',
+      title: 'One missed day changes nothing.',
       intro: `Hi ${firstName(name)}. ${escapeHtml(date)} closed at ${escapeHtml(solved)} of ${escapeHtml(required)}. The unfinished problems returned to your mix, ready for another attempt.`,
       content: `<div style="margin-top:24px;padding:18px;border-left:3px solid ${COLORS.bad};border-radius:10px;background:${COLORS.elevated}"><p style="margin:0;color:${COLORS.ink};font-size:15px;font-weight:700">No reset. No guilt.</p><p style="margin:7px 0 0;color:${COLORS.muted};font-size:13px;line-height:1.6">Open today’s set and rebuild momentum with the first problem.</p></div>`,
       cta: { label: 'Start today’s set', url: loginUrl },
@@ -143,22 +143,41 @@ export function redDayEmail({ name, date, solved, required, loginUrl }) {
 export function streakRiskEmail({ name, remaining, currentStreak, hoursLeft, loginUrl }) {
   const streakCopy = currentStreak > 0 ? `${currentStreak}-day streak` : 'daily target';
   return {
-    subject: `${remaining} left today. Your ${streakCopy} is waiting.`,
+    subject: `${remaining} left today — your ${streakCopy} is waiting.`,
     html: layout({
       preheader: `${remaining} problems remain before local midnight.`,
       eyebrow: 'Streak check',
-      title: `${plural(remaining, 'problem')} left today.`,
-      intro: `Hi ${firstName(name)}. About ${escapeHtml(hoursLeft)} hours remain before local midnight. A short focused block can still close the day green.`,
+      title: `Today is almost complete.`,
+      intro: `Hi ${firstName(name)}. You are close to completing today's tasks, but ${escapeHtml(remaining)} ${pluralWord(remaining, 'problem')} ${Number(remaining) === 1 ? 'is' : 'are'} still open. About ${escapeHtml(hoursLeft)} hours remain before local midnight.`,
       content: `<table role="presentation" width="100%" cellspacing="8" cellpadding="0" border="0" style="margin-top:22px"><tr>
         ${stat('Remaining', remaining, COLORS.warn)}${stat('Current streak', `${currentStreak}d`, COLORS.brandPale)}${stat('Hours left', hoursLeft, COLORS.accent)}
       </tr></table>`,
       cta: { label: 'Finish today’s set', url: loginUrl },
       footnote: 'This reminder sends once, near the end of your local day.',
     }),
-    text: `Hi ${name}. ${remaining} problems remain, with about ${hoursLeft} hours before local midnight. Continue here: ${loginUrl}`,
+    text: `Hi ${name}. You are close to completing today's tasks, but ${remaining} ${pluralWord(remaining, 'problem')} ${Number(remaining) === 1 ? 'is' : 'are'} still open. About ${hoursLeft} hours remain before local midnight. Continue here: ${loginUrl}`,
   };
 }
 
-function plural(count, word) {
-  return `${count} ${word}${Number(count) === 1 ? '' : 's'}`;
+export function greenStreakEmail({ name, streakLength, longestStreak, loginUrl }) {
+  return {
+    subject: `${streakLength} green days in a row. Keep the rhythm.`,
+    html: layout({
+      preheader: `${streakLength} consecutive green days on Optimus Code.`,
+      eyebrow: 'Streak milestone',
+      title: `${streakLength} green days in a row.`,
+      intro: `Hi ${firstName(name)}. You kept your daily promise for ${escapeHtml(streakLength)} consecutive days. That is a system you can trust.`,
+      content: `<table role="presentation" width="100%" cellspacing="8" cellpadding="0" border="0" style="margin-top:22px"><tr>
+        ${stat('Current streak', `${streakLength}d`, COLORS.good)}${stat('Best streak', `${longestStreak}d`, COLORS.brandPale)}${stat('Next check-in', 'Tomorrow', COLORS.accent)}
+      </tr></table>
+      <div style="margin-top:24px;padding:18px;border-left:3px solid ${COLORS.good};border-radius:10px;background:${COLORS.elevated}"><p style="margin:0;color:${COLORS.ink};font-size:15px;font-weight:700">Protect the rhythm.</p><p style="margin:7px 0 0;color:${COLORS.muted};font-size:13px;line-height:1.6">Keep tomorrow’s target realistic. Consistency compounds faster than heroic catch-up sessions.</p></div>`,
+      cta: { label: 'Open my dashboard', url: loginUrl },
+      footnote: 'We send this once at each seven-day streak milestone.',
+    }),
+    text: `Hi ${name}. You kept your daily promise for ${streakLength} green days in a row. Your best streak is ${longestStreak} days. Keep the rhythm: ${loginUrl}`,
+  };
+}
+
+function pluralWord(count, word) {
+  return Number(count) === 1 ? word : `${word}s`;
 }

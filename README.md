@@ -77,6 +77,21 @@ npm run dev
 
 It listens on `http://localhost:4000`. `GET /health` is a liveness check.
 
+### Production environment and headless notifications
+
+Production secrets are not committed to Git. Store the complete contents shaped
+like `.env.prod.example` in the GitHub repository secret `OPTIMUS_PROD_ENV`.
+Pushes to `main` validate the backend, sync that encrypted secret to AWS SSM at
+`/optimus-code/prod/env`, refresh the EC2 environment, and restart the service.
+The GitHub OIDC role must have `ssm:PutParameter` permission (the CloudFormation
+template includes it for new or updated stacks).
+
+The backend starts its notification worker from `src/server.js` under systemd;
+it does not require a browser or an active user session. Failed-day reminders,
+end-of-day warnings, seven-day streak milestones, and 50-solve recaps are
+idempotent and retried by the worker. Apply `db/schema.sql` (or the generated
+Supabase migration) before deploying the new `streak_milestones` table.
+
 ### Transactional email
 
 Brevo sends one-time waitlist invitations, account-ready messages, milestone celebrations,

@@ -8,6 +8,7 @@ import {
   milestoneEmail,
   redDayEmail,
   streakRiskEmail,
+  greenStreakEmail,
 } from '../src/emails/templates.js';
 
 test('email sender passes content and idempotency to Brevo', async () => {
@@ -77,6 +78,7 @@ test('transactional templates include plain text and escape names', () => {
     }),
     redDayEmail({ name: 'Ada', date: '2026-08-24', solved: 2, required: 5, loginUrl: 'https://example.com' }),
     streakRiskEmail({ name: 'Ada', remaining: 2, currentStreak: 9, hoursLeft: 4, loginUrl: 'https://example.com' }),
+    greenStreakEmail({ name: 'Ada', streakLength: 7, longestStreak: 7, loginUrl: 'https://example.com' }),
   ];
 
   for (const message of messages) {

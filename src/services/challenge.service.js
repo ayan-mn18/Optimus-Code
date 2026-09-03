@@ -1,7 +1,7 @@
 import { db, unwrap } from '../lib/supabase.js';
 import { ApiError } from '../lib/errors.js';
 import { todayIn, addDays, daysBetween } from '../lib/dates.js';
-import { sendRedDayNotification } from './notification.service.js';
+import { sendGreenStreakNotification, sendRedDayNotification } from './notification.service.js';
 
 const PROBLEM_FIELDS = [
   'id', 'slug', 'title', 'kind', 'topic', 'subtopic', 'difficulty', 'description',
@@ -12,6 +12,7 @@ const PROBLEM_FIELDS = [
 /** Fraction of a daily set reserved for problems returning from a red day. */
 const BACKLOG_SHARE = 0.6;
 const KINDS = ['DSA', 'LLD', 'HLD'];
+const SOLVE_MILESTONE_STEP = 50;
 
 const enrollmentTargets = (enrollment) => ({
   DSA: enrollment.dsa_target,
@@ -59,6 +60,19 @@ export function freezeBalance({ greenDays, freezesUsed }) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Queue the 50-solve recap from the API event itself, so email delivery does
+ * not depend on a browser opening the milestone modal. The dynamic import
+ * keeps the domain services acyclic. */
+async function queueSolveMilestone(user, streak) {
+  if (!streak.totalSolved || streak.totalSolved % SOLVE_MILESTONE_STEP !== 0) return;
+  try {
+    const { getPendingMilestone } = await import('./milestone.service.js');
+    await getPendingMilestone(user);
+  } catch (error) {
+    console.error('[email] solve milestone queue failed:', error instanceof Error ? error.message : error);
+  }
+}
 
 /**
  * Reads back a day another request is in the middle of creating, giving it a
@@ -635,6 +649,9 @@ export async function markSolved(user, problemId, { timeSpentMin = null, notes =
   );
 
   const log = await refreshDayCounters(user.id, today);
+  const streak = await getStreak(user);
+  await queueSolveMilestone(user, streak);
+  await sendGreenStreakNotification(user, streak);
   return {
     problem: { ...problem, solved: true, solvedOn: today },
     isBonus: !inTargetSet,
@@ -646,7 +663,7 @@ export async function markSolved(user, problemId, { timeSpentMin = null, notes =
       status: log.status,
       isComplete: log.status === 'complete',
     },
-    streak: await getStreak(user),
+    streak,
   };
 }
 
@@ -686,6 +703,9 @@ export async function completeAssessedProblem(user, problemId) {
     'complete assessed problem',
   );
   await refreshDayCounters(user.id, today);
+  const streak = await getStreak(user);
+  await queueSolveMilestone(user, streak);
+  await sendGreenStreakNotification(user, streak);
   return problem;
 }
 
@@ -762,6 +782,7 @@ export async function getStreak(user) {
     current,
     longest,
     greenDays,
+    totalSolved: solvedCount,
     redDays: logs.filter((log) => log.status === 'missed').length,
     frozenDays: logs.filter((log) => log.status === 'frozen').length,
     freezes: freezeBalance({ greenDays, freezesUsed: account.freezes_used }),
