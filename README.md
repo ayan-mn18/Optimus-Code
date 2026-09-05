@@ -6,7 +6,7 @@ comes from [Code With Aryan](https://codewitharyan.com/system-design) with sourc
 
 Each user chooses separate DSA, LLD, and HLD goals. A day turns green only when every
 category quota is complete. System Design completion requires passing a ten-question
-Optimus assessment; LLD attempts may include isolated coding tests.
+LLM-generated MCQ Optimus assessment.
 
 Frontend lives in [Optimus-Code-UI](https://github.com/ayan-mn18/Optimus-Code-UI).
 

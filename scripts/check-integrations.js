@@ -28,9 +28,13 @@ const groups = {
     ['DODO_ANNUAL_PRODUCT_ID', backend.DODO_ANNUAL_PRODUCT_ID],
   ],
   'Optimus AI': [
+    ['LLM_PROVIDER', backend.LLM_PROVIDER],
     ['LLM_API_KEY', backend.LLM_API_KEY],
     ['LLM_BASE_URL', backend.LLM_BASE_URL],
     ['LLM_MODEL', backend.LLM_MODEL],
+    ...(String(backend.LLM_PROVIDER ?? '').toLowerCase() === 'anthropic'
+      ? [['LLM_WORKSPACE_ID', backend.LLM_WORKSPACE_ID]]
+      : []),
   ],
   'Code runner': [
     ['JUDGE0_URL', backend.JUDGE0_URL],
