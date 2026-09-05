@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
-import { estimateReadMinutes, slugify } from '../src/services/blog.service.js';
+import { companiesFromEvidence, estimateReadMinutes, slugify } from '../src/services/blog.service.js';
 
 test('slugs are url-safe, collapsed and bounded', () => {
   assert.equal(slugify('Design File System'), 'design-file-system');
@@ -49,11 +49,26 @@ test('seeded blogs are well formed and every reference is a real url', async () 
       assert.ok(ref.title, `${file}: reference without a title`);
       assert.doesNotThrow(() => new URL(ref.url), `${file}: bad reference url ${ref.url}`);
     }
-    for (const company of doc.companies ?? []) {
-      assert.ok(company.name, `${file}: company tag without a name`);
-      for (const source of company.sources ?? []) {
-        assert.doesNotThrow(() => new URL(source), `${file}: bad company source ${source}`);
+    assert.ok(!doc.companies, `${file}: companies are derived from evidence, not authored`);
+    for (const item of doc.evidence ?? []) {
+      assert.doesNotThrow(() => new URL(item.url), `${file}: bad evidence url ${item.url}`);
+      assert.ok(item.title, `${file}: evidence without a title`);
+      assert.ok(['report', 'aggregate', 'roundup'].includes(item.kind), `${file}: bad evidence kind`);
+      assert.ok(item.companies?.length, `${file}: evidence naming no company`);
+      for (const mention of item.companies) {
+        assert.ok(mention.name, `${file}: company mention without a name`);
       }
+    }
+
+    // The bug this replaced: seven company cards all linking to the same URL.
+    const derived = companiesFromEvidence(doc.evidence ?? []);
+    for (const company of derived) {
+      assert.ok(company.sources.length, `${file}: ${company.name} has no source`);
+      assert.equal(
+        new Set(company.sources).size,
+        company.sources.length,
+        `${file}: ${company.name} lists the same source twice`,
+      );
     }
   }
 });
@@ -90,4 +105,39 @@ test('blog tables and counters behave under the canonical schema', async () => {
   assert.deepEqual(unliked.rows[0], { liked: false, likes: 0 });
 
   await database.close();
+});
+
+test('company tags roll up per source, and cannot outrun their evidence', () => {
+  const evidence = [
+    {
+      url: 'https://example.com/reports',
+      kind: 'aggregate',
+      companies: [{ name: 'Google' }, { name: 'Capital One', role: 'Senior', date: 'Jun 2026' }],
+    },
+    {
+      url: 'https://example.com/write-up',
+      kind: 'report',
+      companies: [{ name: 'Google', role: 'L4', date: 'May 2024' }],
+    },
+    // Same source listed twice must not inflate the count.
+    { url: 'https://example.com/write-up', kind: 'report', companies: [{ name: 'Google' }] },
+    // A source with no companies, and a company with no name, contribute nothing.
+    { url: 'https://example.com/empty', kind: 'roundup', companies: [] },
+  ];
+
+  const [google, capitalOne] = companiesFromEvidence(evidence);
+
+  assert.equal(google.name, 'Google');
+  assert.equal(google.count, 2, 'count is distinct sources, not mentions');
+  assert.deepEqual(google.sources, ['https://example.com/reports', 'https://example.com/write-up']);
+  assert.deepEqual(google.roles, ['L4']);
+  assert.equal(google.confidence, 'reported', 'a company inherits its strongest evidence');
+  assert.equal(google.lastSeen, 'May 2024');
+
+  assert.equal(capitalOne.confidence, 'aggregated');
+  assert.equal(capitalOne.lastSeen, 'Jun 2026');
+
+  // No evidence, no tag — there is no other way to get one.
+  assert.deepEqual(companiesFromEvidence([]), []);
+  assert.deepEqual(companiesFromEvidence([{ kind: 'report', companies: [{ name: 'Ghost' }] }]), []);
 });

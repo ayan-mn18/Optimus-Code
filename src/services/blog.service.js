@@ -4,7 +4,7 @@ import { ApiError } from '../lib/errors.js';
 const LIST_FIELDS = [
   'id', 'slug', 'title', 'summary', 'kind', 'problem_id', 'topic', 'difficulty',
   'author_id', 'author_name', 'origin', 'status', 'cover_emoji', 'read_minutes',
-  'tags', 'companies', 'refs', 'views', 'likes', 'published_at', 'created_at', 'updated_at',
+  'tags', 'evidence', 'companies', 'refs', 'views', 'likes', 'published_at', 'created_at', 'updated_at',
 ].join(', ');
 
 const FULL_FIELDS = `${LIST_FIELDS}, blocks`;
@@ -29,6 +29,7 @@ function toBlog(row, { user, liked = false } = {}) {
     coverEmoji: row.cover_emoji,
     readMinutes: row.read_minutes,
     tags: row.tags ?? [],
+    evidence: row.evidence ?? [],
     companies: row.companies ?? [],
     refs: row.refs ?? [],
     views: row.views,
@@ -40,6 +41,65 @@ function toBlog(row, { user, liked = false } = {}) {
     updatedAt: row.updated_at,
     ...(row.blocks ? { blocks: row.blocks } : {}),
   };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Company tags are derived, never authored                                    */
+/*                                                                             */
+/* Evidence is keyed on the source: one link, every company it names. Rolling  */
+/* that up per company is what stops seven company cards from all pointing at  */
+/* the same URL — each company ends up with the sources that actually mention  */
+/* it, and a company no source mentions cannot exist at all.                   */
+/* -------------------------------------------------------------------------- */
+
+/** Ranked weakest to strongest; a company inherits its best evidence. */
+const CONFIDENCE = { roundup: 1, aggregate: 2, report: 3 };
+const CONFIDENCE_LABEL = { 1: 'claimed', 2: 'aggregated', 3: 'reported' };
+
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/** "Jun 2026" / "2016" -> a sortable integer. Unparseable dates sort last. */
+function dateRank(value) {
+  if (!value) return 0;
+  const match = String(value).trim().match(/^(?:([A-Za-z]{3})[a-z]*\s+)?(\d{4})$/);
+  if (!match) return 0;
+  const month = match[1] ? MONTHS.indexOf(match[1].toLowerCase()) + 1 : 0;
+  return Number(match[2]) * 100 + month;
+}
+
+export function companiesFromEvidence(evidence = []) {
+  const byName = new Map();
+
+  for (const item of evidence) {
+    if (!item?.url) continue;
+    const weight = CONFIDENCE[item.kind] ?? CONFIDENCE.roundup;
+
+    for (const mention of item.companies ?? []) {
+      const name = typeof mention === 'string' ? mention : mention?.name;
+      if (!name) continue;
+
+      const entry = byName.get(name) ?? { name, sources: [], roles: new Set(), rank: 0, confidence: 0 };
+      if (!entry.sources.includes(item.url)) entry.sources.push(item.url);
+      if (mention.role) entry.roles.add(mention.role);
+      entry.confidence = Math.max(entry.confidence, weight);
+
+      const rank = dateRank(mention.date);
+      if (rank > entry.rank) {
+        entry.rank = rank;
+        entry.lastSeen = mention.date;
+      }
+      byName.set(name, entry);
+    }
+  }
+
+  return [...byName.values()]
+    .map(({ roles, rank: _rank, confidence, ...entry }) => ({
+      ...entry,
+      count: entry.sources.length,
+      roles: [...roles],
+      confidence: CONFIDENCE_LABEL[confidence],
+    }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
 }
 
 /** Flattens every string a block renders so read time and search see real prose. */
@@ -225,7 +285,8 @@ export async function createBlog(user, payload) {
         read_minutes: estimateReadMinutes(payload.blocks ?? []),
         blocks: payload.blocks ?? [],
         tags: payload.tags ?? [],
-        companies: payload.companies ?? [],
+        evidence: payload.evidence ?? [],
+        companies: companiesFromEvidence(payload.evidence ?? []),
         refs: payload.refs ?? [],
         published_at: publish ? new Date().toISOString() : null,
       })
@@ -254,7 +315,10 @@ export async function updateBlog(user, id, payload) {
   if (payload.difficulty !== undefined) patch.difficulty = payload.difficulty;
   if (payload.coverEmoji !== undefined) patch.cover_emoji = payload.coverEmoji;
   if (payload.tags !== undefined) patch.tags = payload.tags;
-  if (payload.companies !== undefined) patch.companies = payload.companies;
+  if (payload.evidence !== undefined) {
+    patch.evidence = payload.evidence;
+    patch.companies = companiesFromEvidence(payload.evidence);
+  }
   if (payload.refs !== undefined) patch.refs = payload.refs;
   if (payload.blocks !== undefined) {
     patch.blocks = payload.blocks;

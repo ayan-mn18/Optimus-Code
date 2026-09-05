@@ -9,7 +9,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, unwrap } from '../src/lib/supabase.js';
-import { estimateReadMinutes } from '../src/services/blog.service.js';
+import { companiesFromEvidence, estimateReadMinutes } from '../src/services/blog.service.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const blogDir = path.join(here, '..', 'data', 'blogs');
@@ -53,14 +53,19 @@ for (const file of files) {
     read_minutes: estimateReadMinutes(doc.blocks ?? []),
     blocks: doc.blocks ?? [],
     tags: doc.tags ?? [],
-    companies: doc.companies ?? [],
+    evidence: doc.evidence ?? [],
+    // Derived, never authored — see companiesFromEvidence.
+    companies: companiesFromEvidence(doc.evidence ?? []),
     refs: doc.refs ?? [],
     published_at: existing?.published_at ?? new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
 
   unwrap(await db.from('blogs').upsert(row, { onConflict: 'slug' }), 'upsert blog');
-  console.log(`  ✓ ${doc.slug} — ${row.blocks.length} blocks, ~${row.read_minutes} min`);
+  console.log(
+    `  ✓ ${doc.slug} — ${row.blocks.length} blocks, ~${row.read_minutes} min, `
+    + `${row.evidence.length} sources → ${row.companies.length} companies`,
+  );
 }
 
 console.log('done');

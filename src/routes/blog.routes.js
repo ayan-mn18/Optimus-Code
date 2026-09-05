@@ -24,12 +24,23 @@ const blockSchema = z.object({
   type: z.string().min(1).max(40),
 }).passthrough();
 
-const companySchema = z.object({
-  name: z.string().trim().min(1).max(60),
-  count: z.number().int().nonnegative().optional(),
-  roles: z.array(z.string().trim().max(60)).max(10).optional(),
-  lastSeen: z.string().trim().max(40).optional(),
-  sources: z.array(z.string().url()).max(10).optional(),
+/**
+ * Evidence is keyed on the source, not the company: one link carries every
+ * company it names. Company tags are derived from this server-side and are not
+ * accepted as input, so a tag can never exist without a link behind it.
+ */
+const evidenceSchema = z.object({
+  url: z.string().url(),
+  title: z.string().trim().min(1).max(200),
+  source: z.string().trim().max(60).optional(),
+  kind: z.enum(['report', 'aggregate', 'roundup']).default('report'),
+  quote: z.string().trim().max(600).optional(),
+  note: z.string().trim().max(400).optional(),
+  companies: z.array(z.object({
+    name: z.string().trim().min(1).max(60),
+    role: z.string().trim().max(60).optional(),
+    date: z.string().trim().max(40).optional(),
+  })).max(40).default([]),
 });
 
 const refSchema = z.object({
@@ -64,7 +75,7 @@ const createSchema = z.object({
   status: z.enum(['draft', 'published']).default('draft'),
   blocks: z.array(blockSchema).max(400).default([]),
   tags: z.array(z.string().trim().min(1).max(60)).max(20).default([]),
-  companies: z.array(companySchema).max(40).default([]),
+  evidence: z.array(evidenceSchema).max(40).default([]),
   refs: z.array(refSchema).max(40).default([]),
 });
 
