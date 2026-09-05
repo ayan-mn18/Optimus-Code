@@ -1,0 +1,241 @@
+{
+  "problemSlug": "design-atm-machine-42-82",
+  "title": "Design an ATM Machine",
+  "summary": "Two problems in one. A state machine for the card-to-cash flow, and a note-dispensing algorithm where greedy is wrong often enough to matter — and knowing exactly when is the whole interview.",
+  "coverEmoji": "🏧",
+  "tags": [
+    "OOP",
+    "State Pattern",
+    "Greedy",
+    "Dynamic Programming",
+    "Money"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "LeetCode 2241 — Design an ATM Machine",
+      "url": "https://leetcode.com/problems/design-an-atm-machine/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "The algorithmic half: five denominations, deposit and withdraw, largest-first."
+    },
+    {
+      "title": "awesome-low-level-design — ATM",
+      "url": "https://github.com/ashishps1/awesome-low-level-design/blob/main/problems/atm.md",
+      "source": "GitHub",
+      "kind": "repo",
+      "note": "The object-modelling half, with reference implementations."
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What you are actually being asked",
+      "text": "Interviewers use this because it has a clean split. The **flow** — card in, PIN, select, dispense, card out — is a state machine, and it is graded the same way the vending machine is. The **dispense** is a coin-change problem where the greedy answer is wrong for some inputs, and noticing that is what separates candidates."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "An ATM holds notes in a fixed set of denominations. A customer inserts a card, authenticates, chooses withdraw or deposit, and the machine dispenses notes or accepts them. It must never dispense more than it holds, never dispense the wrong amount, and never debit an account without dispensing."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Which denominations, and how many of each?",
+          "text": "LeetCode 2241 fixes them at 20, 50, 100, 200, 500 with unlimited counts per denomination but a finite stock. Real machines are 10/20/50. The counts matter more than the values."
+        },
+        {
+          "title": "Largest-notes-first, or fewest notes?",
+          "text": "For a canonical set these are the same. For an arbitrary set they are not — and that is the follow-up."
+        },
+        {
+          "title": "Is the account balance checked here or by a bank service?",
+          "text": "Say the ATM calls a `BankService`. It keeps the design honest and gives you a seam for the failure cases."
+        },
+        {
+          "title": "What happens if dispensing fails halfway?",
+          "text": "The interesting one. A debit followed by a jam is the failure everyone remembers. It is why the debit comes *after* the notes are staged."
+        },
+        {
+          "title": "Card retention after three wrong PINs?",
+          "text": "A small rule, but it is a state, and getting it into the diagram shows you are modelling the real thing."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The flow is a state machine"
+    },
+    {
+      "type": "mermaid",
+      "title": "Card in to card out",
+      "caption": "The card is ejected on every terminal path — including failure. An ATM that keeps your card because of an exception is a headline, not a bug.",
+      "code": "stateDiagram-v2\n    [*] --> Idle\n    Idle --> CardInserted : insertCard()\n    CardInserted --> Authenticated : correct PIN\n    CardInserted --> CardInserted : wrong PIN (attempts < 3)\n    CardInserted --> CardRetained : wrong PIN x3\n    Authenticated --> SelectingAmount : chooses Withdraw\n    SelectingAmount --> Dispensing : amount ok, notes available\n    SelectingAmount --> Authenticated : rejected, retry\n    Dispensing --> Idle : notes out, card ejected\n    Authenticated --> Idle : cancel / eject card\n    CardRetained --> Idle : operator reset"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Order of operations is the correctness argument",
+      "text": "**Reserve the notes, debit the account, then release.** Debit-then-dispense means a jam has taken the customer's money. Dispense-then-debit means a crash has given money away. Reserving first makes the failure recoverable: if the debit fails you return the notes to the hopper and nothing happened."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Dispensing notes"
+    },
+    {
+      "type": "paragraph",
+      "text": "LeetCode 2241 says *largest denomination first*. That is a stated rule, not an optimisation — and it is worth knowing that the rule and the optimum can disagree."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "CashDispenser.java",
+      "code": "/** Largest-first, and — critically — a two-pass design: compute the plan,\n *  and only commit it if the full amount can be met. A partial dispense is\n *  worse than a refusal. */\nfinal class CashDispenser {\n    private final int[] denominations;   // descending\n    private final int[] counts;\n\n    Optional<int[]> plan(int amount) {\n        int[] take = new int[denominations.length];\n\n        for (int i = 0; i < denominations.length && amount > 0; i++) {\n            int wanted = amount / denominations[i];\n            take[i] = Math.min(wanted, counts[i]);\n            amount -= take[i] * denominations[i];\n        }\n\n        // Nothing has been touched yet. If we cannot make it exactly, we say\n        // so and the hopper is untouched.\n        return amount == 0 ? Optional.of(take) : Optional.empty();\n    }\n\n    void commit(int[] take) {\n        for (int i = 0; i < counts.length; i++) counts[i] -= take[i];\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Greedy is not always optimal, and you should say when",
+      "text": "For **canonical** systems (10/20/50/100, or 1/5/10/25) largest-first uses the fewest notes. For an arbitrary set it can fail outright: with denominations {1, 3, 4} and a target of 6, greedy takes 4 + 1 + 1 = three notes when 3 + 3 = two is correct. LeetCode 2241 *mandates* largest-first, so greedy is required there — but naming the limitation is what gets you the follow-up credit."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Fewest notes, when greedy is not allowed",
+      "code": "/** Coin-change DP over a bounded supply. O(amount x denominations) time.\n *  Reach for this only when the interviewer says the denominations are\n *  arbitrary, or asks for provably fewest notes. */\nint fewestNotes(int amount, int[] denoms, int[] counts) {\n    int[] best = new int[amount + 1];\n    Arrays.fill(best, Integer.MAX_VALUE);\n    best[0] = 0;\n\n    for (int d = 0; d < denoms.length; d++) {\n        for (int used = 1; used <= counts[d]; used++) {          // bounded supply\n            for (int a = amount; a >= denoms[d]; a--) {\n                if (best[a - denoms[d]] != Integer.MAX_VALUE) {\n                    best[a] = Math.min(best[a], best[a - denoms[d]] + 1);\n                }\n            }\n        }\n    }\n    return best[amount] == Integer.MAX_VALUE ? -1 : best[amount];\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Class design"
+    },
+    {
+      "type": "mermaid",
+      "title": "Three collaborators, one state",
+      "caption": "The ATM owns the flow. Cash, accounts and cards are three separate concerns, and the bank being an interface is what lets you test the failure paths.",
+      "code": "classDiagram\n    class ATM {\n        -State state\n        -CashDispenser dispenser\n        -BankService bank\n        -Card current\n        -int pinAttempts\n        +void insertCard(Card c)\n        +void enterPin(String pin)\n        +void withdraw(int amount)\n        +void ejectCard()\n    }\n    class CashDispenser {\n        -int[] denominations\n        -int[] counts\n        +Optional~int[]~ plan(int amount)\n        +void commit(int[] take)\n    }\n    class BankService {\n        <<interface>>\n        +boolean authenticate(Card c, String pin)\n        +Money balanceOf(Account a)\n        +boolean debit(Account a, Money m)\n    }\n    class State {\n        <<interface>>\n        +void enterPin(ATM a, String pin)\n        +void withdraw(ATM a, int amount)\n        +void ejectCard(ATM a)\n    }\n    ATM --> State\n    ATM o-- CashDispenser\n    ATM --> BankService"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups you should have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Fewest notes instead of largest-first",
+          "text": "Bounded coin-change DP, above. Name the complexity — O(amount × denominations) — and note it is pseudo-polynomial, not polynomial."
+        },
+        {
+          "title": "Deposits",
+          "text": "Notes go in, counts go up, and the account is credited. The mirror-image failure applies: credit only after the notes are physically accepted."
+        },
+        {
+          "title": "Concurrency across many ATMs on one account",
+          "text": "Two withdrawals racing on the same balance. The debit must be a conditional update — `UPDATE ... WHERE balance >= amount` — not read-then-write."
+        },
+        {
+          "title": "Daily withdrawal limits",
+          "text": "Belongs on the bank service, not the ATM. Putting the rule in the machine means twelve machines with twelve opinions."
+        },
+        {
+          "title": "Audit and reconciliation",
+          "text": "Every dispense is a ledger entry. The physical note count must reconcile against the ledger, and disagreement is the alarm."
+        },
+        {
+          "title": "Out of a denomination mid-day",
+          "text": "`plan` already handles it by returning empty. The interesting part is telling the customer *before* they enter an amount that cannot be made."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state before you are asked"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Amount not expressible in available notes — e.g. £30 with only £50s → refuse before touching the hopper.",
+        "Amount exceeds the balance → bank rejects; the ATM never learns the balance unless it asks.",
+        "Amount exceeds total cash in the machine → refuse early, and do not leak how much is inside.",
+        "Wrong PIN three times → retain the card, and make sure the *state* enforces it rather than a counter someone can forget to reset.",
+        "Cancel at any point before dispensing → card ejected, nothing debited.",
+        "Zero or negative amount → rejected at validation, not at the dispenser."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Flow",
+          "Booleans and ifs",
+          "A state machine, with card retention as a state"
+        ],
+        [
+          "Failure ordering",
+          "Debits then dispenses",
+          "Reserves, debits, releases — and explains why"
+        ],
+        [
+          "Dispensing",
+          "One pass, mutates as it goes",
+          "Plans first, commits only if exact"
+        ],
+        [
+          "Greedy",
+          "Assumes it is optimal",
+          "Names canonical sets, and the {1,3,4} counterexample"
+        ],
+        [
+          "Boundaries",
+          "ATM knows account balances",
+          "Bank is an interface; limits live there"
+        ],
+        [
+          "Concurrency",
+          "Read-then-write balance",
+          "Conditional debit"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The 45-minute plan",
+      "text": "**0–5** clarify denominations, counts, and who owns the balance. **5–12** state machine on the board, including card retention. **12–22** code the dispenser's plan/commit split. **22–30** the reserve-debit-release ordering and what each failure does. **30–38** greedy versus DP, with the counterexample. **38–45** concurrency across machines."
+    }
+  ],
+  "kind": "LLD",
+  "topic": "LLD Interview Problems",
+  "difficulty": "Medium",
+  "origin": "editorial",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "slug": "design-atm-machine"
+}

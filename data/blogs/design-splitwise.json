@@ -1,0 +1,310 @@
+{
+  "problemSlug": "design-splitwise-42-82",
+  "title": "Design Splitwise",
+  "summary": "An expense splitter is a ledger with a settlement algorithm bolted on. Most candidates get the classes right and then quietly produce a system that loses a cent per transaction — and the interviewer is watching for exactly that.",
+  "coverEmoji": "🧾",
+  "tags": [
+    "OOP",
+    "Strategy",
+    "Graph",
+    "Money",
+    "Design"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.hellointerview.com/community/questions/splitwise-lld/cm6jwwh6700bxui4bzs4jmddl",
+      "title": "Design an LLD of Splitwise",
+      "source": "Hello Interview",
+      "kind": "aggregate",
+      "quote": "Asked at: Microsoft, Uber, Amazon",
+      "note": "No levels or dates published on the free page.",
+      "companies": [
+        {
+          "name": "Microsoft"
+        },
+        {
+          "name": "Uber"
+        },
+        {
+          "name": "Amazon"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "awesome-low-level-design — Splitwise",
+      "url": "https://github.com/ashishps1/awesome-low-level-design/blob/main/problems/splitwise.md",
+      "source": "GitHub",
+      "kind": "repo",
+      "note": "Requirements and reference implementations."
+    },
+    {
+      "title": "Design an LLD of Splitwise",
+      "url": "https://www.hellointerview.com/community/questions/splitwise-lld/cm6jwwh6700bxui4bzs4jmddl",
+      "source": "Hello Interview",
+      "kind": "discussion",
+      "note": "Community discussion with candidate notes."
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What you are actually being asked",
+      "text": "Two things, and only two. **Can you model money without losing money** — which rules out floats and forces you to decide who absorbs a rounding remainder. And **can you settle a debt graph** — reducing *n* people owing each other into the fewest transfers. The class diagram is the easy half."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Users belong to groups. Any user can add an expense they paid for, split among some subset of users — equally, by exact amounts, or by percentage. The system tracks who owes whom, and can settle a group with as few payments as possible."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Equal, exact, percentage — all three?",
+          "text": "They are three implementations of one interface. Confirm which are in scope, then build the interface anyway."
+        },
+        {
+          "title": "Multiple currencies?",
+          "text": "If yes, an amount without a currency is meaningless and every balance needs one. Usually out of scope; ask so you can say you asked."
+        },
+        {
+          "title": "Can an expense be edited or deleted after the fact?",
+          "text": "This decides whether balances are stored or derived. It is the biggest architectural fork in the question."
+        },
+        {
+          "title": "Simplify debts automatically, or on demand?",
+          "text": "Splitwise itself makes this a setting, because automatic simplification confuses people who wanted to pay a specific person."
+        },
+        {
+          "title": "Who absorbs the rounding remainder?",
+          "text": "Splitting £10 three ways is 3.33, 3.33, 3.34. Someone pays the extra penny. Ask who — it signals that you know money is not divisible."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Never use floating point for money",
+      "text": "`0.1 + 0.2 != 0.3`. Use integer minor units — pennies, cents — or `BigDecimal` with an explicit rounding mode. A candidate who writes `double amount` has told the interviewer they have never shipped anything financial, whatever else they say afterwards."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Class design"
+    },
+    {
+      "type": "mermaid",
+      "title": "Ledger first, balances derived",
+      "caption": "`ExpenseBook` is the source of truth. Balances are a projection of it — which is what makes editing and deleting an expense a solved problem rather than a data-repair exercise.",
+      "code": "classDiagram\n    class ExpenseBook {\n        -List~Expense~ expenses\n        +void add(Expense e)\n        +void remove(String expenseId)\n        +Map~Pair, Money~ balances()\n        +List~Transfer~ settle(SettlementStrategy s)\n    }\n    class Expense {\n        -String id\n        -User paidBy\n        -Money amount\n        -SplitStrategy split\n        -List~User~ participants\n        +Map~User, Money~ shares()\n    }\n    class SplitStrategy {\n        <<interface>>\n        +Map~User, Money~ divide(Money total, List~User~ users)\n    }\n    class Money {\n        -long minorUnits\n        -Currency currency\n        +Money plus(Money o)\n        +List~Money~ allocate(int ways)\n    }\n    ExpenseBook o-- Expense\n    Expense --> SplitStrategy\n    Expense --> Money\n    SplitStrategy <|.. EqualSplit\n    SplitStrategy <|.. ExactSplit\n    SplitStrategy <|.. PercentSplit"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Store the ledger, derive the balances",
+      "text": "*“I would keep expenses as the source of truth and derive balances, because deleting an expense then becomes removing a row rather than reverse-engineering which balances it touched.”* If you store balances directly, every edit is a migration and every bug is permanent."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Splitting without losing a penny"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Money.java",
+      "code": "/** Integer minor units. The only interesting method is allocate(). */\npublic record Money(long minorUnits, Currency currency) {\n\n    /** Split as evenly as possible, distributing the remainder one unit at a\n     *  time from the front. 1000 pennies over 3 ways -> [334, 333, 333].\n     *  The total is ALWAYS preserved, which is the entire contract. */\n    public List<Money> allocate(int ways) {\n        long base = minorUnits / ways;\n        long remainder = minorUnits % ways;\n\n        List<Money> out = new ArrayList<>(ways);\n        for (int i = 0; i < ways; i++) {\n            out.add(new Money(base + (i < remainder ? 1 : 0), currency));\n        }\n        return out;\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Say the invariant out loud",
+      "text": "*“The sum of the parts equals the whole, always — that is what `allocate` guarantees and what naive division does not.”* Then mention the fairness wrinkle: allocating the remainder from the front means the same person always pays the extra penny, so real systems rotate it."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "EqualSplit.java",
+      "code": "final class EqualSplit implements SplitStrategy {\n    @Override\n    public Map<User, Money> divide(Money total, List<User> users) {\n        List<Money> parts = total.allocate(users.size());\n        Map<User, Money> shares = new LinkedHashMap<>();\n        for (int i = 0; i < users.size(); i++) shares.put(users.get(i), parts.get(i));\n        return shares;\n    }\n}\n\nfinal class ExactSplit implements SplitStrategy {\n    private final Map<User, Money> exact;\n    @Override\n    public Map<User, Money> divide(Money total, List<User> users) {\n        Money sum = exact.values().stream().reduce(Money.zero(), Money::plus);\n        // Validate, loudly. A split that does not sum to the total is the\n        // most common way a real expense app corrupts a group's balances.\n        if (!sum.equals(total)) throw new IllegalArgumentException(\"shares must sum to the total\");\n        return exact;\n    }\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Settlement — the algorithm half"
+    },
+    {
+      "type": "paragraph",
+      "text": "Six friends, twenty expenses, everyone owes everyone. Settling naively is up to *n²* transfers. The question is how few you can do."
+    },
+    {
+      "type": "mermaid",
+      "title": "From a tangle to a minimum set of transfers",
+      "caption": "Collapse the graph to one net balance per person, then repeatedly match the largest debtor with the largest creditor. Any group of *n* people settles in at most *n − 1* transfers.",
+      "code": "flowchart LR\n    subgraph R[\"Raw debts\"]\n        A1[\"A owes B 10\"]; B1[\"B owes C 10\"]; C1[\"A owes C 5\"]\n    end\n    subgraph N[\"Net balances\"]\n        A2[\"A: −15\"]; B2[\"B: 0\"]; C2[\"C: +15\"]\n    end\n    subgraph S[\"Settlement\"]\n        T[\"A pays C 15<br/><b>1 transfer, not 3</b>\"]\n    end\n    R --> N --> S"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "GreedySettlement.java",
+      "code": "/** Net everyone out, then match biggest debtor to biggest creditor.\n *  Each step zeroes at least one person, so this terminates in <= n-1\n *  transfers. That bound is the thing worth saying out loud. */\nList<Transfer> settle(Map<User, Money> net) {\n    PriorityQueue<Entry> owes = new PriorityQueue<>(Comparator.comparingLong(Entry::amount));          // most negative\n    PriorityQueue<Entry> owed = new PriorityQueue<>(Comparator.comparingLong(Entry::amount).reversed()); // most positive\n\n    net.forEach((user, balance) -> {\n        if (balance.minorUnits() < 0) owes.add(new Entry(user, balance.minorUnits()));\n        else if (balance.minorUnits() > 0) owed.add(new Entry(user, balance.minorUnits()));\n    });\n\n    List<Transfer> transfers = new ArrayList<>();\n    while (!owes.isEmpty() && !owed.isEmpty()) {\n        Entry debtor = owes.poll(), creditor = owed.poll();\n        long amount = Math.min(-debtor.amount(), creditor.amount());\n\n        transfers.add(new Transfer(debtor.user(), creditor.user(), amount));\n\n        long debtorLeft = debtor.amount() + amount;\n        long creditorLeft = creditor.amount() - amount;\n        if (debtorLeft < 0) owes.add(new Entry(debtor.user(), debtorLeft));\n        if (creditorLeft > 0) owed.add(new Entry(creditor.user(), creditorLeft));\n    }\n    return transfers;\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Greedy is not provably minimal",
+      "text": "Minimising transfers exactly is NP-hard — it reduces to a subset-sum-style partition problem. Greedy gives at most *n − 1*, which is good and usually optimal in practice. **Say this.** Claiming greedy is optimal is a wrong answer confidently delivered; naming the bound and the hardness is a right one."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "`n` people, `m` expenses.",
+      "headers": [
+        "Operation",
+        "Cost"
+      ],
+      "rows": [
+        [
+          "Add an expense",
+          "O(k) for k participants"
+        ],
+        [
+          "Compute all balances",
+          "O(m × k) — a fold over the ledger"
+        ],
+        [
+          "Settle",
+          "O(n log n) — heap operations over net balances"
+        ],
+        [
+          "Transfers produced",
+          "≤ n − 1"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups you should have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Multiple currencies",
+          "text": "`Money` already carries one, so addition across currencies must fail rather than coerce. Conversion needs a rate *and a timestamp* — a balance converted at today's rate silently rewrites history."
+        },
+        {
+          "title": "Edit or delete an expense",
+          "text": "Free, because balances are derived. This is the payoff for the ledger decision and worth pointing at explicitly."
+        },
+        {
+          "title": "Partial settlement",
+          "text": "A payment is just another ledger entry with a `SETTLEMENT` type. Do not special-case it into the balance code."
+        },
+        {
+          "title": "Do not simplify across people who do not know each other",
+          "text": "Real Splitwise constrains simplification to a group. Netting A→B→C into A→C is mathematically fine and socially strange."
+        },
+        {
+          "title": "Show a running activity feed",
+          "text": "The ledger is already an event log, so the feed is a projection of it. Another payoff for storing expenses rather than balances."
+        },
+        {
+          "title": "Scale it",
+          "text": "The HLD pivot: the ledger is append-only and shards by group, balances become a materialised view, and settlement runs on demand rather than on write."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state before you are asked"
+    },
+    {
+      "type": "list",
+      "items": [
+        "An expense where the payer is not a participant — legal: they paid, they owe nothing, everyone else owes them.",
+        "Exact split whose shares do not sum to the total → reject loudly at construction.",
+        "Percentage split not summing to 100 → same.",
+        "Splitting an amount among more people than there are minor units — £0.02 three ways gives [1, 1, 0]. Someone gets nothing, and the total still balances.",
+        "A user in a group with zero net balance must not appear in the settlement at all.",
+        "Self-transfer: a user paying themselves is a no-op, not a ledger entry."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Money type",
+          "`double` or `float`",
+          "Integer minor units, or `BigDecimal` with a rounding mode"
+        ],
+        [
+          "Rounding",
+          "Ignores the remainder",
+          "`allocate` preserves the total; mentions rotating who absorbs it"
+        ],
+        [
+          "Source of truth",
+          "Stores balances",
+          "Stores the ledger and derives balances"
+        ],
+        [
+          "Splits",
+          "If-else on a split type",
+          "One `SplitStrategy` interface, three implementations"
+        ],
+        [
+          "Settlement",
+          "Pairwise, n² transfers",
+          "Net out, then greedy match, ≤ n − 1"
+        ],
+        [
+          "Honesty",
+          "Claims greedy is minimal",
+          "Names the n − 1 bound and that exact minimisation is NP-hard"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The 45-minute plan",
+      "text": "**0–6** clarify split types, currency, edits, and who eats the rounding. **6–10** say “integer minor units” and draw the ledger. **10–20** classes plus `SplitStrategy`. **20–30** code `allocate` and `EqualSplit` — the money invariant is the highest-value code you will write. **30–40** settlement with the heap, and the NP-hard caveat. **40–45** edits, or multi-currency."
+    }
+  ],
+  "kind": "LLD",
+  "topic": "LLD Interview Problems",
+  "difficulty": "Hard",
+  "origin": "editorial",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "slug": "design-splitwise"
+}

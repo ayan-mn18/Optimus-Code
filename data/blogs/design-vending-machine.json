@@ -1,0 +1,286 @@
+{
+  "problemSlug": "design-vending-machine-42-82",
+  "title": "Design a Vending Machine",
+  "summary": "The canonical State pattern question. It is asked because the naive version — a pile of booleans and nested ifs — works, and then falls apart the moment someone presses refund at the wrong moment.",
+  "coverEmoji": "🥤",
+  "tags": [
+    "OOP",
+    "State Pattern",
+    "Design Patterns",
+    "Concurrency"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.hellointerview.com/community/questions/beverage-vending-system/cmkr2w9l80cph08adwuu5vnfh",
+      "title": "Design a vending machine system",
+      "source": "Hello Interview",
+      "kind": "aggregate",
+      "quote": "Asked at: Netflix",
+      "note": "A multi-location variant: customers order through a central platform and collect at a chosen machine.",
+      "companies": [
+        {
+          "name": "Netflix"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "awesome-low-level-design — vending machine",
+      "url": "https://github.com/ashishps1/awesome-low-level-design/blob/main/problems/vending-machine.md",
+      "source": "GitHub",
+      "kind": "repo",
+      "note": "Requirements and reference implementations."
+    },
+    {
+      "title": "Design a vending machine system",
+      "url": "https://www.hellointerview.com/community/questions/beverage-vending-system/cmkr2w9l80cph08adwuu5vnfh",
+      "source": "Hello Interview",
+      "kind": "discussion",
+      "note": "The multi-location variant, with candidate discussion."
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What you are actually being asked",
+      "text": "This is a **State pattern** question and the interviewer knows you know that. What they are actually watching is whether you can say *why* — that the same input means different things depending on where the machine is, and that encoding that in booleans produces an `if` ladder nobody can extend."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "A machine holds products in slots. A customer inserts coins or notes, selects a product, and the machine either dispenses it with change, or refuses and refunds. It must never dispense without payment, and never keep money without dispensing."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Which denominations, and can it always make change?",
+          "text": "A machine that cannot make exact change has to refuse the sale *before* taking the money. This is the requirement that catches people out."
+        },
+        {
+          "title": "Can a customer cancel mid-transaction?",
+          "text": "Yes, always. It is the transition that breaks boolean-based designs, which is exactly why they ask."
+        },
+        {
+          "title": "One product per transaction, or several?",
+          "text": "Assume one unless told otherwise, and say you are assuming it."
+        },
+        {
+          "title": "Who refills it, and is that a separate role?",
+          "text": "An operator interface is a nice scope boundary — mention it, keep it out unless asked."
+        },
+        {
+          "title": "What happens on a power cut mid-dispense?",
+          "text": "Almost always out of scope, but naming it shows you think about partial failure."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why booleans fail"
+    },
+    {
+      "type": "paragraph",
+      "text": "The version everyone writes first:"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "The version that gets you cut",
+      "code": "// Do not write this.\nif (hasMoney && !dispensing && selected != null && stock.get(selected) > 0) {\n    if (insertedAmount >= price.get(selected)) {\n        if (canMakeChange(insertedAmount - price.get(selected))) {\n            dispense();\n        } else { refund(); }\n    } else { /* wait for more money */ }\n} else if (...) { /* six more branches */ }"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Four booleans is sixteen combinations, of which perhaps five are legal — and nothing in the code says which.",
+        "Adding *“card payment”* touches every branch.",
+        "The rule *“cancel is legal while collecting money but not while dispensing”* is nowhere; it is an emergent property of the ordering."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The state machine"
+    },
+    {
+      "type": "mermaid",
+      "title": "Five states, and every transition is a method",
+      "caption": "`HasMoney` is the only state that accepts a cancel refund. That rule is now a property of one class instead of a condition scattered across a ladder.",
+      "code": "stateDiagram-v2\n    [*] --> Idle\n    Idle --> HasMoney : insertCoin()\n    Idle --> Idle : select() / reject \"insert money\"\n    HasMoney --> HasMoney : insertCoin()\n    HasMoney --> Idle : cancel() / refund all\n    HasMoney --> Dispensing : select() / funds ok, stock ok, change ok\n    HasMoney --> HasMoney : select() / insufficient or no change\n    Dispensing --> ReturningChange : product released\n    ReturningChange --> Idle : change returned\n    Idle --> OutOfService : stockEmpty() or coinJam()\n    OutOfService --> Idle : refill()"
+    },
+    {
+      "type": "mermaid",
+      "title": "Class design",
+      "caption": "The machine holds a state object and delegates. It contains no `if` about what is currently happening.",
+      "code": "classDiagram\n    class VendingMachine {\n        -State state\n        -Inventory inventory\n        -CoinBox coins\n        -int credit\n        +void insert(Coin c)\n        +void select(String code)\n        +void cancel()\n        +void setState(State s)\n    }\n    class State {\n        <<interface>>\n        +void insert(VendingMachine m, Coin c)\n        +void select(VendingMachine m, String code)\n        +void cancel(VendingMachine m)\n    }\n    class Inventory {\n        -Map~String, Slot~ slots\n        +boolean available(String code)\n        +Product release(String code)\n    }\n    class CoinBox {\n        -Map~Coin, Integer~ held\n        +boolean canMakeChange(int amount)\n        +List~Coin~ dispenseChange(int amount)\n    }\n    State <|.. IdleState\n    State <|.. HasMoneyState\n    State <|.. DispensingState\n    State <|.. OutOfServiceState\n    VendingMachine --> State\n    VendingMachine o-- Inventory\n    VendingMachine o-- CoinBox"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "HasMoneyState.java",
+      "code": "/** Every rule about \"what does select mean right now\" lives in one class. */\nfinal class HasMoneyState implements State {\n\n    @Override public void insert(VendingMachine m, Coin coin) {\n        m.addCredit(coin);          // still collecting, stay put\n    }\n\n    @Override public void cancel(VendingMachine m) {\n        m.refundCredit();           // legal here, and only here\n        m.setState(new IdleState());\n    }\n\n    @Override public void select(VendingMachine m, String code) {\n        if (!m.inventory().available(code))       { m.display(\"Sold out\");       return; }\n        int price = m.inventory().priceOf(code);\n        if (m.credit() < price)                   { m.display(\"Insert more\");    return; }\n\n        // Check change BEFORE releasing the product. Releasing first and then\n        // discovering you cannot make change is the bug that eats money.\n        int changeDue = m.credit() - price;\n        if (!m.coins().canMakeChange(changeDue))  { m.display(\"Exact change only\"); return; }\n\n        m.setState(new DispensingState());\n        m.dispense(code, changeDue);\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Check change before releasing the product",
+      "text": "Release first and you have handed over a drink you cannot give change for. The order — verify stock, verify funds, **verify change**, then release — is the correctness argument, and stating it unprompted is worth more than the pattern."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Why State beats an enum plus a switch",
+      "text": "An enum with a `switch` is the same logic with worse locality: adding a state means finding every `switch` in the file. With a class per state, adding `CardPaymentState` is a new file and one transition. Say that; it is the answer to *“why not just an enum?”*"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Making change"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "CoinBox.java",
+      "code": "/** Greedy is correct for canonical coin systems (1, 5, 10, 25 · 1, 2, 5, 10).\n *  Say that qualifier out loud — for an arbitrary set it is wrong, and the\n *  correct answer is the coin-change DP. */\nList<Coin> dispenseChange(int amount) {\n    List<Coin> out = new ArrayList<>();\n    for (Coin coin : Coin.descending()) {\n        while (amount >= coin.value() && held.get(coin) > 0) {\n            amount -= coin.value();\n            held.merge(coin, -1, Integer::sum);\n            out.add(coin);\n        }\n    }\n    if (amount != 0) throw new IllegalStateException(\"canMakeChange lied\");\n    return out;\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The qualifier is the point",
+      "text": "*“Greedy works because these denominations are canonical; for an arbitrary set I would need the coin-change DP.”* Interviewers ask this exact follow-up. Volunteering it is free credit."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency"
+    },
+    {
+      "type": "paragraph",
+      "text": "One physical machine has one customer, so this is usually out of scope — say that, then say what changes if it is not:"
+    },
+    {
+      "type": "list",
+      "items": [
+        "The Netflix-style variant, where orders arrive through a central platform, is genuinely concurrent: two customers can reserve the last can.",
+        "Stock decrement must be atomic with the sale, or the machine oversells.",
+        "The state object itself becomes shared mutable state. Per-machine locking is fine; a global lock across machines is not."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups you should have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Add card payment",
+          "text": "A new state, or a `PaymentMethod` strategy the money-collecting state delegates to. Both defensible; pick one and say why."
+        },
+        {
+          "title": "Support multiple items in one transaction",
+          "text": "Credit stops being consumed by one selection, so `HasMoney` gains a basket. The state machine shape does not change, which is the point."
+        },
+        {
+          "title": "Refill and audit by an operator",
+          "text": "A separate interface and an `OutOfService` transition. Worth noting the operator must not be able to trigger a dispense."
+        },
+        {
+          "title": "The machine cannot make change",
+          "text": "Refuse before accepting, display “exact change only”, and reject coins that would create unchangeable credit."
+        },
+        {
+          "title": "Central platform, many machines",
+          "text": "The Netflix variant. Stock becomes a distributed reservation, and the machine is now a consumer of an order queue rather than the source of truth."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state before you are asked"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Select before inserting money → rejected in `IdleState`, no credit touched.",
+        "Cancel while dispensing → ignored. The `Dispensing` state simply has no `cancel` behaviour, which is the pattern doing its job.",
+        "Exact money, zero change → must not call the change machinery at all.",
+        "Sold out after selection but before dispense → only possible in the concurrent variant; the reservation is what prevents it.",
+        "Coin inserted while out of service → returned immediately, never banked."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Structure",
+          "Booleans and nested ifs",
+          "A class per state"
+        ],
+        [
+          "Why State",
+          "“It is the pattern for this”",
+          "Explains that the same input means different things per state"
+        ],
+        [
+          "Ordering",
+          "Dispenses then computes change",
+          "Verifies change *before* releasing"
+        ],
+        [
+          "Change algorithm",
+          "Greedy, unqualified",
+          "Greedy, with the canonical-denominations caveat"
+        ],
+        [
+          "Cancel",
+          "An `if` somewhere",
+          "A behaviour that only one state has"
+        ],
+        [
+          "Extensibility",
+          "Adding card payment touches everything",
+          "A new state class and one transition"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The 45-minute plan",
+      "text": "**0–5** clarify denominations, cancel, change. **5–10** show the boolean version and kill it. **10–16** draw the state diagram. **16–32** code `State`, `Idle`, `HasMoney`, and the dispense path. **32–38** change-making with the greedy caveat. **38–45** card payment or the multi-machine variant."
+    }
+  ],
+  "kind": "LLD",
+  "topic": "LLD Interview Problems",
+  "difficulty": "Medium",
+  "origin": "editorial",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "slug": "design-vending-machine"
+}

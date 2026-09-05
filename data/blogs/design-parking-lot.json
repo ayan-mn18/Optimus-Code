@@ -1,0 +1,317 @@
+{
+  "problemSlug": "design-parking-lot-42-82",
+  "title": "Design a Parking Lot",
+  "summary": "The most-asked LLD question there is, and the one most often failed for the same reason: candidates model the world instead of the requirements. Here is the class design, the two decisions that actually get graded, and where the concurrency bug hides.",
+  "coverEmoji": "🅿️",
+  "tags": [
+    "OOP",
+    "Design Patterns",
+    "Strategy",
+    "Concurrency",
+    "Interview Favourite"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "LeetCode 1603 — Design Parking System",
+      "url": "https://leetcode.com/problems/design-parking-system/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "The stripped-down coding version: three counters. Useful as a warm-up, not as the interview answer."
+    },
+    {
+      "title": "Parking Lot — low level design breakdown",
+      "url": "https://www.hellointerview.com/learn/low-level-design/problem-breakdowns/parking-lot",
+      "source": "Hello Interview",
+      "kind": "article",
+      "note": "A full worked breakdown with the requirement-gathering framing."
+    },
+    {
+      "title": "awesome-low-level-design — parking lot",
+      "url": "https://github.com/ashishps1/awesome-low-level-design/blob/main/problems/parking-lot.md",
+      "source": "GitHub",
+      "kind": "repo",
+      "note": "Reference implementations in several languages."
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What you are actually being asked",
+      "text": "This question has no algorithm in it. It is **entirely** a test of whether you can turn a vague brief into a class diagram without either over-modelling or hard-coding. The two decisions being graded are *how a spot is chosen* and *how the fee is computed* — and both are graded on whether you made them replaceable."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a parking lot. A vehicle arrives, is assigned a spot that fits it, and gets a ticket. On exit the system computes a fee from the time parked and frees the spot."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The failure mode is modelling the world",
+      "text": "There is no credit for `Wheel`, `Colour`, or an `Owner` class. Every class you add has to be justified by a requirement someone stated. Interviewers cut candidates for a sprawling diagram far more often than for a small one."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Multiple floors, or one?",
+          "text": "Changes whether `ParkingLot` holds spots or holds floors. Ask; do not assume a multi-storey car park because the phrase sounds impressive."
+        },
+        {
+          "title": "How many vehicle types, and can a big spot take a small car?",
+          "text": "This single answer decides the allocation strategy. If a motorcycle may take a car spot, allocation becomes a fit problem rather than a lookup."
+        },
+        {
+          "title": "How is the fee calculated?",
+          "text": "Flat rate, hourly, first hour free, different per vehicle type, weekend rates? You will not implement all of them — you will implement one behind an interface."
+        },
+        {
+          "title": "Multiple entry and exit gates?",
+          "text": "This is the concurrency question in disguise. Two gates assigning the same spot is the bug they are looking for."
+        },
+        {
+          "title": "Reservations, or first come first served?",
+          "text": "Reservations add a whole state to the spot lifecycle. Confirm it is out of scope before you skip it."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Agreed before any class is drawn.",
+      "headers": [
+        "Type",
+        "Requirement"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Park a vehicle: assign a fitting free spot, issue a ticket"
+        ],
+        [
+          "Functional",
+          "Unpark: compute the fee from duration, free the spot"
+        ],
+        [
+          "Functional",
+          "Report free spots per floor and per type"
+        ],
+        [
+          "Non-functional",
+          "Assignment is O(1), not a scan of every spot"
+        ],
+        [
+          "Non-functional",
+          "Two gates must never be handed the same spot"
+        ],
+        [
+          "Explicitly out",
+          "Payments, number-plate recognition, reservations, multi-lot"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Class design"
+    },
+    {
+      "type": "mermaid",
+      "title": "The shape that gets full marks",
+      "caption": "`ParkingLot` coordinates and owns nothing clever. The two things that vary — **which spot** and **how much** — are interfaces, and that is the entire point of the exercise.",
+      "code": "classDiagram\n    class ParkingLot {\n        -List~Level~ levels\n        -SpotAllocator allocator\n        -FeeStrategy fees\n        +Ticket park(Vehicle v)\n        +Receipt unpark(Ticket t)\n    }\n    class Level {\n        -int floor\n        -Map~SpotSize, Deque~Spot~~ free\n        +Spot claim(SpotSize s)\n        +void release(Spot s)\n    }\n    class Spot {\n        -String id\n        -SpotSize size\n        -boolean occupied\n    }\n    class Vehicle {\n        <<abstract>>\n        -String plate\n        +SpotSize required()\n    }\n    class SpotAllocator {\n        <<interface>>\n        +Optional~Spot~ allocate(List~Level~ l, Vehicle v)\n    }\n    class FeeStrategy {\n        <<interface>>\n        +Money price(Ticket t, Instant out)\n    }\n    ParkingLot o-- Level\n    ParkingLot --> SpotAllocator\n    ParkingLot --> FeeStrategy\n    Level o-- Spot\n    Vehicle <|-- Car\n    Vehicle <|-- Motorcycle\n    Vehicle <|-- Truck"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Two interfaces, and say why",
+      "text": "*“Allocation and pricing are the two things every parking lot operator wants different, so they are the two things I am putting behind interfaces.”* That sentence is worth more than the rest of the diagram. It shows you know **strategy** is a response to a requirement, not a pattern you sprinkle on."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Allocation — the decision they are grading"
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive implementation scans every spot on every floor. It is O(n) per car and it is what most candidates write."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Level.java",
+      "code": "/** Free spots per size, in a deque. Claiming is O(1); so is releasing. */\nfinal class Level {\n    private final int floor;\n    private final Map<SpotSize, Deque<Spot>> free = new EnumMap<>(SpotSize.class);\n\n    Optional<Spot> claim(SpotSize size) {\n        Deque<Spot> pool = free.get(size);\n        if (pool == null || pool.isEmpty()) return Optional.empty();\n        Spot spot = pool.pop();          // O(1)\n        spot.occupy();\n        return Optional.of(spot);\n    }\n\n    void release(Spot spot) {\n        spot.vacate();\n        free.get(spot.size()).push(spot);   // O(1)\n    }\n\n    int freeCount(SpotSize size) {\n        return free.getOrDefault(size, new ArrayDeque<>()).size();   // O(1)\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NearestFirstAllocator.java",
+      "code": "/** Smallest spot that fits, lowest floor first — the policy most lots use.\n *  Swap this class, and the lot behaves completely differently. */\nfinal class NearestFirstAllocator implements SpotAllocator {\n    @Override\n    public Optional<Spot> allocate(List<Level> levels, Vehicle vehicle) {\n        for (Level level : levels) {                     // levels are floor-ordered\n            for (SpotSize size : SpotSize.fittingFrom(vehicle.required())) {\n                Optional<Spot> spot = level.claim(size); // smallest fit first\n                if (spot.isPresent()) return spot;\n            }\n        }\n        return Optional.empty();\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Say what “fits” means",
+      "text": "`SpotSize.fittingFrom(MOTORCYCLE)` returning `[SMALL, MEDIUM, LARGE]` encodes *a motorcycle may use a bigger spot but never a smaller one*. Making that ordering explicit — rather than an `if` ladder — is the difference between a design and a script."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Pricing"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "FeeStrategy.java",
+      "code": "interface FeeStrategy {\n    Money price(Ticket ticket, Instant exitedAt);\n}\n\n/** Hourly, rounded up, with a free grace period. One of many; the point is\n *  that the lot does not know which one it is holding. */\nfinal class HourlyFee implements FeeStrategy {\n    private final Map<SpotSize, Money> perHour;\n    private final Duration grace;\n\n    @Override\n    public Money price(Ticket ticket, Instant exitedAt) {\n        Duration stay = Duration.between(ticket.enteredAt(), exitedAt);\n        if (stay.compareTo(grace) <= 0) return Money.ZERO;\n        long hours = (stay.toMinutes() + 59) / 60;          // round up\n        return perHour.get(ticket.spot().size()).times(hours);\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Round up, and use a monotonic clock",
+      "text": "Two real bugs live here. Rounding **down** means a 59-minute stay is free — pricing bugs are the ones that reach production. And computing duration from wall-clock time means a daylight-saving shift or an NTP correction can produce a negative stay. Store an instant, not a local time."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The concurrency bug"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two entry gates, one free spot. Both threads read `free.size() > 0`, both pop, one gets a null or the same spot twice. This is the single most common defect in submitted answers."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Concurrent claim",
+      "code": "// The check and the take must be one atomic step. Deque.poll() returns null\n// on empty rather than throwing, so there is no separate emptiness check to\n// race against — the pop IS the check.\nOptional<Spot> claim(SpotSize size) {\n    Deque<Spot> pool = free.get(size);\n    if (pool == null) return Optional.empty();\n    Spot spot = pool.poll();               // ConcurrentLinkedDeque: atomic\n    if (spot == null) return Optional.empty();\n    spot.occupy();\n    return Optional.of(spot);\n}"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Do not** lock the whole lot — that serialises every gate in the building.",
+        "Per-level, per-size pools mean two gates contend only when they want the same size on the same floor.",
+        "`freeCount` becomes an estimate the moment there are concurrent writers. That is fine for a display board; say so rather than pretending it is exact."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups you should have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Show free spots on a display board per floor",
+          "text": "O(1) if each level keeps a counter per size. The moment you need this, the O(n) scan design is dead — which is a good argument for the deque design up front."
+        },
+        {
+          "title": "Add electric-vehicle spots with charging",
+          "text": "A new `SpotSize`? No — a new *capability*. `Spot` gets a set of features, and allocation filters on them. This is the question that separates enum-thinking from attribute-thinking."
+        },
+        {
+          "title": "Handle a lost ticket",
+          "text": "Charge the maximum daily rate. The interesting part is that this is a *policy*, so it belongs in `FeeStrategy`, not in an `if` inside `unpark`."
+        },
+        {
+          "title": "Support reservations",
+          "text": "The spot lifecycle grows a `RESERVED` state with an expiry, and allocation must skip reserved spots without leaking them if the holder never arrives."
+        },
+        {
+          "title": "Multiple lots in a city",
+          "text": "The pivot to HLD: a lot becomes a service, the display board becomes a read replica, and consistency between “spot free” and “spot taken” becomes eventual."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state before you are asked"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Lot full → `park` returns empty, and the caller decides what that means. Do not throw for an expected outcome.",
+        "Unpark with a ticket that is already settled → reject, do not double-charge and do not double-free the spot.",
+        "A vehicle type with no spot size that fits at all → rejected at the gate, not after issuing a ticket.",
+        "Exit time earlier than entry time → clamp to zero and log; never return a negative fee.",
+        "A spot released twice must not appear twice in the free pool."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Scope",
+          "Models wheels, colours, owners",
+          "Only classes a stated requirement needs"
+        ],
+        [
+          "Allocation",
+          "Scans every spot",
+          "O(1) pools per level and size"
+        ],
+        [
+          "Extensibility",
+          "`if (type == CAR)` ladders",
+          "Strategy interfaces for allocation and pricing"
+        ],
+        [
+          "Fit rules",
+          "Hard-codes which vehicle goes where",
+          "An explicit ordering of fitting sizes"
+        ],
+        [
+          "Concurrency",
+          "Not mentioned",
+          "Names the two-gate race and makes the claim atomic"
+        ],
+        [
+          "Pricing",
+          "Floats and wall-clock",
+          "Integer money, instants, rounded up"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The 45-minute plan",
+      "text": "**0–6** clarify: floors, types, fit rules, gates, pricing. **6–12** write the requirements list on the board and get agreement. **12–20** classes and the two interfaces. **20–32** code `park`, `unpark`, and one allocator. **32–38** the two-gate race. **38–45** one follow-up, ideally EV spots — it is the one that shows attribute-thinking."
+    }
+  ],
+  "kind": "LLD",
+  "topic": "LLD Interview Problems",
+  "difficulty": "Medium",
+  "origin": "editorial",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "slug": "design-parking-lot"
+}

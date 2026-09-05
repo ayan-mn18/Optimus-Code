@@ -1,0 +1,384 @@
+{
+  "problemSlug": "design-movie-ticket-booking-system-45-85",
+  "title": "Design a Movie Ticket Booking System",
+  "summary": "BookMyShow in an hour. The class diagram is routine; the interview is decided entirely by one question — what stops two people buying seat H12 at the same instant, and what happens to the hold when one of them wanders off.",
+  "coverEmoji": "🎟️",
+  "tags": [
+    "OOP",
+    "Concurrency",
+    "Locking",
+    "Transactions",
+    "Design"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.hellointerview.com/community/questions/movie-rental-system/cm5eguhaf03hi838ovglc4fdu",
+      "title": "LeetCode 1912 — reported interviews",
+      "source": "Hello Interview",
+      "kind": "aggregate",
+      "quote": "Asked at: Amazon",
+      "note": "One dated report: Amazon, mid-level, mid September 2024. The rental variant of the same inventory-and-ordering problem.",
+      "companies": [
+        {
+          "name": "Amazon",
+          "role": "Mid",
+          "date": "Sep 2024"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "LeetCode 1912 — Design Movie Rental System",
+      "url": "https://leetcode.com/problems/design-movie-rental-system/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "The algorithmic cousin: ordered multisets for cheapest-available and currently-rented reports."
+    },
+    {
+      "title": "awesome-low-level-design — movie ticket booking",
+      "url": "https://github.com/ashishps1/awesome-low-level-design/blob/main/problems/movie-ticket-booking-system.md",
+      "source": "GitHub",
+      "kind": "repo",
+      "note": "Requirements and reference implementations of the OOD version."
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What you are actually being asked",
+      "text": "Every candidate produces `Movie`, `Theatre`, `Screen`, `Show`, `Seat`, `Booking`. That diagram earns you nothing — it is assumed. The entire signal is in **seat contention**: how you stop a double-booking, how long you hold a seat, and what happens when the holder closes the tab."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "A city has theatres; theatres have screens; screens run shows of a movie at a time; each show has seats. A user searches for a movie, picks a show, selects seats, pays, and receives a booking. Two users must never end up with the same seat."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Can a user hold seats before paying?",
+          "text": "Yes — every real system does, and this is the question. A hold with a TTL is the answer; how you expire it is the follow-up."
+        },
+        {
+          "title": "How long is the hold?",
+          "text": "Five to ten minutes in practice. It has to be long enough for payment and short enough that a walk-away does not strand inventory."
+        },
+        {
+          "title": "Seat pricing — flat, or by class?",
+          "text": "Recliner, premium, standard. Another strategy interface, and worth a sentence, not five minutes."
+        },
+        {
+          "title": "Partial booking allowed?",
+          "text": "If a user asks for five seats and only three are free — all or nothing, or best effort? All-or-nothing is almost always right and simpler to reason about."
+        },
+        {
+          "title": "Cancellations and refunds?",
+          "text": "Confirm scope. A cancellation returns a seat to the pool, which reopens every concurrency question you just answered."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Class design"
+    },
+    {
+      "type": "mermaid",
+      "title": "Routine, and worth ten minutes at most",
+      "caption": "`ShowSeat` is the one that matters: seat availability is a property of the **show**, not of the physical seat. Modelling availability on `Seat` is the mistake that makes the whole thing unworkable.",
+      "code": "classDiagram\n    class Show {\n        -String id\n        -Movie movie\n        -Screen screen\n        -Instant startsAt\n        -Map~String, ShowSeat~ seats\n    }\n    class ShowSeat {\n        -Seat seat\n        -SeatStatus status\n        -String heldBy\n        -Instant holdExpiresAt\n        -Money price\n    }\n    class Seat {\n        -String label\n        -SeatClass seatClass\n    }\n    class Booking {\n        -String id\n        -User user\n        -Show show\n        -List~ShowSeat~ seats\n        -BookingStatus status\n        -Money total\n    }\n    class BookingService {\n        +Hold hold(String showId, List~String~ seats, User u)\n        +Booking confirm(String holdId, Payment p)\n        +void release(String holdId)\n    }\n    Show o-- ShowSeat\n    ShowSeat --> Seat\n    Booking o-- ShowSeat\n    BookingService ..> Show"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Availability belongs to the show, not the seat",
+      "text": "Seat H12 is a piece of furniture used by ten shows a day. If `Seat` carries a `booked` flag, booking the 6pm show marks it taken for the 9pm one too. `ShowSeat` — the seat *within a show* — is the unit of inventory, and getting that right in the first two minutes signals you have thought about this before."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The seat lifecycle"
+    },
+    {
+      "type": "mermaid",
+      "title": "Three states and a clock",
+      "caption": "`HELD` is the state that exists purely because payment takes time. Everything hard about this problem lives in getting out of it.",
+      "code": "stateDiagram-v2\n    [*] --> Available\n    Available --> Held : hold() succeeds\n    Held --> Booked : payment confirmed\n    Held --> Available : user cancels\n    Held --> Available : hold expires (TTL)\n    Booked --> Available : booking cancelled\n    Booked --> [*] : show starts"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Stopping the double-booking"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two users, one seat, same millisecond. Read-then-write loses:"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "The bug everyone writes first",
+      "code": "// WRONG. Two threads can both pass the check before either writes.\nif (showSeat.status() == AVAILABLE) {      // T1 and T2 both read AVAILABLE\n    showSeat.setStatus(HELD);              // both write; one silently loses\n    showSeat.setHeldBy(user.id());\n}"
+    },
+    {
+      "type": "table",
+      "caption": "Four ways to fix it, in ascending order of realism.",
+      "headers": [
+        "Approach",
+        "How",
+        "Trade"
+      ],
+      "rows": [
+        [
+          "`synchronized` on the show",
+          "One lock per show object",
+          "Correct in one process. Dies the moment there are two app servers"
+        ],
+        [
+          "**Compare-and-set on the row**",
+          "`UPDATE show_seats SET status=HELD WHERE id=? AND status=AVAILABLE`",
+          "The database does the atomicity. Zero extra infrastructure — **the answer to give**"
+        ],
+        [
+          "Pessimistic row lock",
+          "`SELECT ... FOR UPDATE` over the requested seats",
+          "Correct, but holds a transaction open across user think-time if you are careless"
+        ],
+        [
+          "Distributed lock in Redis",
+          "`SET seat:id user NX PX 600000`",
+          "Works across services; now you own lock expiry and the fencing-token problem"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Conditional update — the answer",
+      "code": "/** All-or-nothing. The UPDATE is the check; there is no separate read to\n *  race against. affectedRows tells us whether we won. */\nOptional<Hold> hold(String showId, List<String> seatIds, User user, Duration ttl) {\n    String holdId = UUID.randomUUID().toString();\n    Instant expiresAt = Instant.now().plus(ttl);\n\n    int claimed = jdbc.update(\"\"\"\n        UPDATE show_seats\n           SET status = 'HELD', held_by = ?, hold_expires_at = ?\n         WHERE show_id = ? AND seat_id IN (?)\n           AND (status = 'AVAILABLE'\n                OR (status = 'HELD' AND hold_expires_at < now()))\n        \"\"\", holdId, expiresAt, showId, seatIds);\n\n    if (claimed != seatIds.size()) {\n        // Someone got at least one of them first. Roll the partial claim back\n        // so we never leave a user holding three of the five they asked for.\n        releaseByHold(holdId);\n        return Optional.empty();\n    }\n    return Optional.of(new Hold(holdId, seatIds, expiresAt));\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Two details that separate answers",
+      "text": "The `OR (status = 'HELD' AND hold_expires_at < now())` clause makes expiry **lazy** — an expired hold is reclaimed by the next person who wants the seat, with no sweeper required. And rolling back a partial claim is what enforces all-or-nothing. Volunteering both is the strongest thing you can do in this question."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Expiring holds"
+    },
+    {
+      "type": "table",
+      "caption": "Do both. Say why.",
+      "headers": [
+        "Strategy",
+        "Cost",
+        "Problem"
+      ],
+      "rows": [
+        [
+          "**Lazy** — reclaim on the next attempt",
+          "Free",
+          "A seat can look taken on the seat map long after the hold died"
+        ],
+        [
+          "**Sweeper** — a job resetting expired holds",
+          "One background job",
+          "Runs at an interval, so it is always slightly behind"
+        ],
+        [
+          "**TTL store** — Redis key expiry",
+          "Automatic",
+          "Your inventory now lives in two places that can disagree"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Lazy for correctness, sweeper for the UI",
+      "text": "Lazy reclaim guarantees nobody is ever *blocked* by a dead hold. The sweeper exists so the seat map does not lie to people browsing. They solve different problems and that is why real systems run both."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Payment, and the failure that matters"
+    },
+    {
+      "type": "paragraph",
+      "text": "Confirmation is two systems agreeing: the payment provider and your seat inventory."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Charge, then confirm** — a crash between the two takes money without a seat. Recoverable by a reconciliation job; the customer is furious in the meantime.",
+        "**Confirm, then charge** — a failed payment leaves a booked seat nobody paid for. Worse: it is silent.",
+        "**The real answer:** the hold *is* the reservation. Charge while holding, and confirm only on a successful charge. If the charge fails, the hold expires on its own and the seat returns. **A payment webhook must be idempotent on the hold id**, because providers retry."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Idempotency is not optional",
+      "text": "Payment providers deliver the same webhook more than once. `confirm(holdId)` must be safe to call twice — the second call returns the existing booking rather than creating a second one. A booking table with a unique constraint on `hold_id` makes this true by construction."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "Operation",
+        "Cost"
+      ],
+      "rows": [
+        [
+          "Search shows by movie and city",
+          "O(log n) with an index on (city, movie, startsAt)"
+        ],
+        [
+          "Render a seat map",
+          "O(seats in show) — a few hundred"
+        ],
+        [
+          "Hold k seats",
+          "One conditional update, O(k)"
+        ],
+        [
+          "Confirm",
+          "O(1) — one status change plus an idempotent booking insert"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups you should have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Two app servers",
+          "text": "The `synchronized` answer dies; the conditional update does not. That is the reason to give it first rather than reaching for a distributed lock."
+        },
+        {
+          "title": "Prevent single-seat gaps",
+          "text": "Cinemas dislike leaving one orphaned seat mid-row. This is an allocation policy over contiguous runs — a nice strategy-interface follow-up."
+        },
+        {
+          "title": "Dynamic pricing",
+          "text": "`PriceStrategy` per show: weekend, opening night, seat class, occupancy-based surge. The price must be captured **on the hold**, or it can change under the user mid-payment."
+        },
+        {
+          "title": "Handle a flash sale",
+          "text": "Ten thousand people, one popular show. A queue in front of the booking service, and optimistic concurrency behind it. This is the HLD pivot."
+        },
+        {
+          "title": "Cancellations and refunds",
+          "text": "Return seats to the pool, and decide whether a refund window exists. Note that returning a seat re-opens every race you just closed."
+        },
+        {
+          "title": "Show a live seat map",
+          "text": "Push updates over websockets, and accept that the map is eventually consistent — the conditional update remains the only source of truth."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state before you are asked"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Two users requesting overlapping seat sets — the conditional update grants one and rolls back the other entirely.",
+        "A user holding seats who never returns → the hold expires and the seats come back without anyone intervening.",
+        "Payment succeeding *after* the hold expired → refund, or re-attempt the claim. Never confirm a booking on seats you no longer hold.",
+        "A show starting while seats are held → holds are void once the show begins.",
+        "Booking zero seats, or more than the per-user maximum → rejected at validation.",
+        "A duplicate payment webhook → idempotent on the hold id, returns the existing booking."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Inventory model",
+          "`booked` flag on `Seat`",
+          "`ShowSeat` — availability belongs to the show"
+        ],
+        [
+          "Contention",
+          "Read-then-write",
+          "Conditional update; the check *is* the write"
+        ],
+        [
+          "Holds",
+          "Not modelled",
+          "A TTL hold as an explicit state"
+        ],
+        [
+          "Expiry",
+          "A sweeper only",
+          "Lazy reclaim for correctness, sweeper for the UI"
+        ],
+        [
+          "Partial claims",
+          "Leaves the user with 3 of 5",
+          "Rolls back, all-or-nothing"
+        ],
+        [
+          "Payment",
+          "Charge then confirm",
+          "Charge while held; idempotent confirmation"
+        ],
+        [
+          "Scaling",
+          "`synchronized`",
+          "An answer that survives a second app server"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The 45-minute plan",
+      "text": "**0–5** clarify holds, TTL, partial booking. **5–15** classes — fast, and make sure `ShowSeat` lands. **15–22** the seat lifecycle. **22–34** the double-booking problem and the conditional update; this is the graded part, so do not rush it. **34–40** hold expiry, lazy plus sweeper. **40–45** payment idempotency."
+    }
+  ],
+  "kind": "LLD",
+  "topic": "LLD + Concurrency Interview Problems",
+  "difficulty": "Hard",
+  "origin": "editorial",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "slug": "design-movie-ticket-booking"
+}

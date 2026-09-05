@@ -1,0 +1,287 @@
+{
+  "problemSlug": "design-tic-tac-toe-game-42-82",
+  "title": "Design Tic-Tac-Toe",
+  "summary": "An n×n board where every move must report a winner in O(1). The board is a decoy — you never need it. The interview turns on whether you spot that a win is four running counters, not a scan.",
+  "coverEmoji": "⭕",
+  "tags": [
+    "Design",
+    "Array",
+    "Matrix",
+    "Game",
+    "Interview Favourite"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.hellointerview.com/community/questions/design-tic-tac-toe/cm5eh7nri04wo838oitc9peu4",
+      "title": "LeetCode 348 — reported interviews",
+      "source": "Hello Interview",
+      "kind": "aggregate",
+      "quote": "Databricks, Amazon, Meta",
+      "note": "Dated reports: Databricks (Staff) late Aug 2026, Amazon (Senior) early May 2026, Databricks (Senior) mid Apr 2026 — the last one with an n×m board and a configurable k-in-a-row win condition.",
+      "companies": [
+        {
+          "name": "Databricks",
+          "role": "Staff",
+          "date": "Aug 2026"
+        },
+        {
+          "name": "Amazon",
+          "role": "Senior",
+          "date": "May 2026"
+        },
+        {
+          "name": "Meta"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "LeetCode 348 — Design Tic-Tac-Toe",
+      "url": "https://leetcode.com/problems/design-tic-tac-toe/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "The exact problem. Medium, and the follow-up asks for better than O(n) per move."
+    },
+    {
+      "title": "Design Tic-Tac-Toe — community solutions",
+      "url": "https://leetcode.com/problems/design-tic-tac-toe/solutions/",
+      "source": "LeetCode",
+      "kind": "discussion",
+      "note": "Both the O(n) scan and the O(1) counter solution."
+    },
+    {
+      "title": "awesome-low-level-design — tic tac toe",
+      "url": "https://github.com/ashishps1/awesome-low-level-design/blob/main/problems/tic-tac-toe.md",
+      "source": "GitHub",
+      "kind": "repo",
+      "note": "The OOD version, for when the interviewer wants classes rather than counters."
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What you are actually being asked",
+      "text": "Two different questions hide behind one title. The **coding** version (LeetCode 348) wants `move()` in O(1) and the board is a red herring. The **design** version wants classes, an extensible win rule and a playable game. Ask which one you are in — the answers barely overlap, and guessing wrong burns twenty minutes."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Implement `TicTacToe(int n)` with one method: `int move(int row, int col, int player)`, returning the winning player or `0`. Moves are guaranteed valid and non-repeating. A player wins by filling any row, column, or either diagonal."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The naive answer, and why it is not enough"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep an `n × n` grid; after each move, check that row, that column and both diagonals. Correct, easy, **O(n) per move** — and the stated follow-up asks you to beat it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The insight"
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "You never need the board",
+      "text": "A win means *n marks of one player in a line*. You do not need to know **which** cells — only **how many**. So keep a counter per line, add +1 for player 1 and −1 for player 2, and a line is won the moment its counter hits ±n. The grid disappears entirely."
+    },
+    {
+      "type": "mermaid",
+      "title": "Four families of counters",
+      "caption": "`rows[i]`, `cols[j]`, and two scalars for the diagonals. A move touches at most four of them, so `move` is O(1) time and the whole game is O(n) space instead of O(n²).",
+      "code": "graph TD\n    M[\"move(r, c, player)<br/>delta = +1 or −1\"]\n    M --> R[\"rows[r] += delta\"]\n    M --> C[\"cols[c] += delta\"]\n    M --> D{\"r == c ?\"}\n    D -- yes --> DG[\"diag += delta\"]\n    M --> AD{\"r + c == n−1 ?\"}\n    AD -- yes --> AG[\"anti += delta\"]\n    R --> W{\"|counter| == n ?\"}\n    C --> W\n    DG --> W\n    AG --> W\n    W -- yes --> WIN[[\"return player\"]]\n    W -- no --> NO[[\"return 0\"]]\n\n    classDef win fill:#153229,stroke:#34d399,color:#f2f2f7\n    class WIN win"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "TicTacToe.java",
+      "code": "class TicTacToe {\n    private final int n;\n    private final int[] rows;\n    private final int[] cols;\n    private int diag;      // top-left to bottom-right\n    private int anti;      // top-right to bottom-left\n\n    public TicTacToe(int n) {\n        this.n = n;\n        this.rows = new int[n];\n        this.cols = new int[n];\n    }\n\n    /** O(1) time, O(n) space. No board anywhere. */\n    public int move(int row, int col, int player) {\n        int delta = (player == 1) ? 1 : -1;\n\n        rows[row] += delta;\n        cols[col] += delta;\n        if (row == col)         diag += delta;\n        if (row + col == n - 1) anti += delta;\n\n        boolean won = Math.abs(rows[row]) == n\n                   || Math.abs(cols[col]) == n\n                   || Math.abs(diag) == n\n                   || Math.abs(anti) == n;\n\n        return won ? player : 0;\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "tic_tac_toe.py",
+      "code": "class TicTacToe:\n    def __init__(self, n: int):\n        self.n = n\n        self.rows = [0] * n\n        self.cols = [0] * n\n        self.diag = self.anti = 0\n\n    def move(self, row: int, col: int, player: int) -> int:\n        delta = 1 if player == 1 else -1\n\n        self.rows[row] += delta\n        self.cols[col] += delta\n        if row == col:\n            self.diag += delta\n        if row + col == self.n - 1:\n            self.anti += delta\n\n        if self.n in (abs(self.rows[row]), abs(self.cols[col]),\n                      abs(self.diag), abs(self.anti)):\n            return player\n        return 0"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The centre cell on an odd board",
+      "text": "On a 3×3, cell (1,1) is on **both** diagonals. Two separate `if`s — not `if / else if` — is the whole fix, and using `else if` is the most common bug in submitted solutions. It passes small tests and fails the diagonal case."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "",
+        "Naive scan",
+        "Counters"
+      ],
+      "rows": [
+        [
+          "`move`",
+          "O(n)",
+          "**O(1)**"
+        ],
+        [
+          "Space",
+          "O(n²) for the board",
+          "**O(n)**"
+        ],
+        [
+          "Detects a win immediately",
+          "Yes",
+          "Yes"
+        ],
+        [
+          "Can render the board",
+          "Yes",
+          "**No** — see below"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "What the counter trick gives up",
+      "text": "You can no longer print the board, undo a move, or answer *“is this cell taken?”* — you threw that information away. If the interviewer wants a **playable** game, keep the grid **and** the counters: O(n²) space, still O(1) moves. Volunteering that trade is worth more than the trick itself."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The design version"
+    },
+    {
+      "type": "paragraph",
+      "text": "If the interviewer wants classes rather than counters, the shape changes completely — and the extension point is the win rule, because that is what the follow-ups will move."
+    },
+    {
+      "type": "mermaid",
+      "title": "When they want an object model",
+      "caption": "`WinRule` behind an interface is what makes “now make it connect-4” a new class rather than a rewrite.",
+      "code": "classDiagram\n    class Game {\n        -Board board\n        -List~Player~ players\n        -int currentTurn\n        -WinRule rule\n        +MoveResult play(int row, int col)\n    }\n    class Board {\n        -Mark[][] cells\n        +boolean isEmpty(int r, int c)\n        +void place(int r, int c, Mark m)\n        +boolean isFull()\n    }\n    class WinRule {\n        <<interface>>\n        +boolean isWin(Board b, int r, int c, Mark m)\n    }\n    WinRule <|.. NInARowRule\n    WinRule <|.. KInARowRule\n    Game o-- Board\n    Game --> WinRule"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups you should have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "n×m board with k-in-a-row",
+          "text": "Reported verbatim at Databricks. The counter trick **dies here** — a run of k can start anywhere, so counters no longer identify a line. Scan outward from the placed cell in four directions, counting both ways: O(k) per move, which is still far better than O(n·m)."
+        },
+        {
+          "title": "Detect a draw",
+          "text": "Count moves. On an n×n board a draw is `moves == n*n` with no winner — O(1), and it is the follow-up people forget."
+        },
+        {
+          "title": "Support undo",
+          "text": "Now you need the board and a move stack. Counters are trivially reversible — subtract the delta — which is a nice property to point out."
+        },
+        {
+          "title": "More than two players",
+          "text": "The ±1 trick only works for two. Generalise to a count per (line, player), which is O(n · p) space. Say why the trick was two-player-specific rather than pretending it generalises."
+        },
+        {
+          "title": "Play on an infinite board (Gomoku)",
+          "text": "The board becomes a hash map of occupied cells and the win check is the k-in-a-row scan. This is the version that actually shows up in senior loops."
+        },
+        {
+          "title": "Add an AI opponent",
+          "text": "Minimax with alpha-beta on 3×3 is exhaustive and instant; on larger boards it needs a heuristic and a depth limit."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state before you are asked"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`n = 1` — one cell, and the first move wins on the row, the column and both diagonals at once.",
+        "The centre of an odd board sits on both diagonals; two independent `if`s, never `else if`.",
+        "The problem guarantees valid moves — say that you are trusting the contract rather than silently assuming it. If it did not, `move` needs an occupancy check, which means keeping the board.",
+        "A win is reported on the move that causes it, not on a later query.",
+        "Player values other than 1 and 2 break the ±1 encoding — validate or document."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Reading the question",
+          "Starts coding a board",
+          "Asks whether this is the coding or the design version"
+        ],
+        [
+          "Insight",
+          "Scans the row and column",
+          "Realises only *counts* matter, drops the board"
+        ],
+        [
+          "Diagonals",
+          "`else if`",
+          "Two separate checks, and explains the centre cell"
+        ],
+        [
+          "Honesty",
+          "Presents O(1) as strictly better",
+          "Names what the counters give up"
+        ],
+        [
+          "k-in-a-row",
+          "Tries to patch the counters",
+          "Recognises the trick does not survive it"
+        ],
+        [
+          "Draws",
+          "Not handled",
+          "A move counter, O(1)"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The 45-minute plan",
+      "text": "**0–4** ask which version. **4–8** state the naive O(n) scan and why the follow-up rules it out. **8–12** the counter insight, on the board, before any code. **12–22** write it — it is twenty lines. **22–30** edge cases: n=1, the centre cell, draws. **30–45** k-in-a-row, and be honest that it needs a different algorithm."
+    }
+  ],
+  "kind": "LLD",
+  "topic": "LLD Interview Problems",
+  "difficulty": "Medium",
+  "origin": "editorial",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "slug": "design-tic-tac-toe"
+}

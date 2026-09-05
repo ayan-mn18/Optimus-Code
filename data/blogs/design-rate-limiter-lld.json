@@ -1,0 +1,363 @@
+{
+  "problemSlug": "design-rate-limiter-45-85",
+  "title": "Design a Rate Limiter",
+  "summary": "Four algorithms, and the interview is decided by whether you can name what each one gets wrong. Fixed windows let through double the limit at the boundary — if you cannot explain that, nothing else you say lands.",
+  "coverEmoji": "🚦",
+  "tags": [
+    "Concurrency",
+    "Algorithms",
+    "Sliding Window",
+    "Token Bucket",
+    "Design"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.hellointerview.com/community/questions/logger-rate-limiter/cm5eh7nri04wz838onqhny0wc",
+      "title": "LeetCode 359 — reported interviews",
+      "source": "Hello Interview",
+      "kind": "aggregate",
+      "quote": "Google, Microsoft, Amazon, MongoDB, +1 more",
+      "note": "Dated reports: Google (Mid) late Aug 2026, Google (Senior) late Jul 2026, Amazon (Senior) mid Jun 2026.",
+      "companies": [
+        {
+          "name": "Google",
+          "role": "Mid",
+          "date": "Aug 2026"
+        },
+        {
+          "name": "Amazon",
+          "role": "Senior",
+          "date": "Jun 2026"
+        },
+        {
+          "name": "Microsoft"
+        },
+        {
+          "name": "MongoDB"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "LeetCode 359 — Logger Rate Limiter",
+      "url": "https://leetcode.com/problems/logger-rate-limiter/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "The stripped-down version: one message per key per ten seconds."
+    },
+    {
+      "title": "Design a Distributed Rate Limiter",
+      "url": "https://www.hellointerview.com/learn/system-design/problem-breakdowns/distributed-rate-limiter",
+      "source": "Hello Interview",
+      "kind": "article",
+      "note": "Where this problem goes once it stops being single-process."
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What you are actually being asked",
+      "text": "Not *“implement a rate limiter”* — anyone can. **Which** algorithm, and **what it gets wrong**. Every one of the four has a failure mode, and picking one without naming its failure is the answer that does not get you hired."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Allow at most *N* requests per client per time window. Answer `allow(clientId)` in O(1), using memory proportional to the number of active clients rather than the number of requests."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Per client, per endpoint, or both?",
+          "text": "The key shape decides your memory. `client:endpoint` multiplies state by the number of endpoints."
+        },
+        {
+          "title": "Is a burst acceptable?",
+          "text": "The single most important question. *“100 per minute”* and *“no more than 100 in any 60-second span”* are different systems, and only one of them tolerates 100 arriving at once."
+        },
+        {
+          "title": "What happens on rejection — drop, queue, or 429?",
+          "text": "Queuing turns a limiter into a scheduler, which is a different problem. Confirm you are rejecting."
+        },
+        {
+          "title": "One process, or many?",
+          "text": "Single-process is a data-structure question. Distributed is a consensus question. Ask before you start."
+        },
+        {
+          "title": "Is approximate acceptable?",
+          "text": "Almost always yes, and it buys you the cheap algorithms. Get it agreed."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The four algorithms"
+    },
+    {
+      "type": "table",
+      "caption": "Every one of these is a legitimate answer. Choosing without naming the flaw is not.",
+      "headers": [
+        "Algorithm",
+        "Memory / client",
+        "Allows bursts",
+        "What it gets wrong"
+      ],
+      "rows": [
+        [
+          "**Fixed window**",
+          "O(1) — a counter and a timestamp",
+          "Yes, badly",
+          "**2× the limit at a boundary.** 100 at 11:59:59 and 100 at 12:00:00"
+        ],
+        [
+          "**Sliding window log**",
+          "**O(N)** — a timestamp per request",
+          "No",
+          "Exact, and the memory is the problem: 10k/min per client is 10k timestamps"
+        ],
+        [
+          "**Sliding window counter**",
+          "O(1) — two counters",
+          "Slightly",
+          "Approximates by weighting the previous window. Good default"
+        ],
+        [
+          "**Token bucket**",
+          "O(1) — tokens and a timestamp",
+          "Yes, *deliberately*",
+          "Bursts up to the bucket size. Usually a feature, not a bug"
+        ]
+      ]
+    },
+    {
+      "type": "mermaid",
+      "title": "The fixed-window boundary problem",
+      "caption": "A limit of 100 per minute admits 200 requests inside one second, because the counter resets on a wall-clock boundary rather than relative to the traffic.",
+      "code": "flowchart LR\n    subgraph W1[\"Window 11:59:00 – 11:59:59\"]\n        A[\"100 requests<br/>at 11:59:59\"]\n    end\n    subgraph W2[\"Window 12:00:00 – 12:00:59\"]\n        B[\"100 requests<br/>at 12:00:00\"]\n    end\n    A --> X[\"200 requests in 1 second<br/><b>limit says 100/min</b>\"]\n    B --> X\n\n    classDef bad fill:#3a1f22,stroke:#f4696b,color:#f2f2f7\n    class X bad"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Token bucket — the one to reach for"
+    },
+    {
+      "type": "paragraph",
+      "text": "Tokens refill at a constant rate; each request spends one. Empty bucket means rejection. It is O(1) in time and space, needs no timer thread, and it expresses burst tolerance as a number you can tune."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "TokenBucket.java",
+      "code": "/** Lazy refill: no background thread, no timer. Tokens are computed from\n *  elapsed time at the moment they are needed — which is why this is O(1)\n *  space per client and survives a process that was paused for an hour. */\nfinal class TokenBucket {\n    private final double capacity;      // burst size\n    private final double refillPerNano; // steady-state rate\n    private double tokens;\n    private long lastRefillNanos;\n\n    synchronized boolean allow() {\n        long now = System.nanoTime();   // monotonic: never walks backwards\n        tokens = Math.min(capacity, tokens + (now - lastRefillNanos) * refillPerNano);\n        lastRefillNanos = now;\n\n        if (tokens < 1.0) return false;\n        tokens -= 1.0;\n        return true;\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "`nanoTime`, never `currentTimeMillis`",
+      "text": "Wall-clock time goes backwards — NTP corrections, daylight saving, a VM resuming from a snapshot. A limiter that computes elapsed time from wall clock can produce a negative interval and hand out unlimited tokens. `System.nanoTime()` is monotonic; use it and say why."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "SlidingWindowCounter.java",
+      "code": "/** O(1) memory, and it does not have the fixed-window boundary bug. The\n *  estimate assumes traffic was uniform in the previous window — which is\n *  the approximation you are agreeing to, and should say so. */\nboolean allow(long nowMillis) {\n    long window = nowMillis / windowMillis;\n    if (window != currentWindow) {\n        previousCount = (window == currentWindow + 1) ? currentCount : 0;\n        currentCount = 0;\n        currentWindow = window;\n    }\n\n    double elapsed = (nowMillis % windowMillis) / (double) windowMillis;\n    double estimate = previousCount * (1 - elapsed) + currentCount;\n\n    if (estimate >= limit) return false;\n    currentCount++;\n    return true;\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The LeetCode variant"
+    },
+    {
+      "type": "paragraph",
+      "text": "LeetCode 359 is the degenerate case — limit of one per key per ten seconds — and it has one real trap."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Logger.java",
+      "code": "class Logger {\n    private final Map<String, Integer> lastPrinted = new HashMap<>();\n\n    public boolean shouldPrintMessage(int timestamp, String message) {\n        Integer last = lastPrinted.get(message);\n        if (last != null && timestamp < last + 10) return false;\n        lastPrinted.put(message, timestamp);\n        return true;\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "This map never shrinks",
+      "text": "One entry per distinct message, forever. Interviewers ask *“what happens after a billion unique messages?”* and the answer is an OOM. Fixes: an LRU bound on the map, a periodic sweep of entries older than the window, or a bucketed queue of keys to expire. **Volunteering this before being asked is the whole point of the question.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`synchronized` per bucket is usually enough — buckets are per client, so contention only happens within one client's traffic.",
+        "A single global lock serialises every client and is the common mistake.",
+        "For a genuinely hot key, an atomic compare-and-swap loop on a packed `(tokens, timestamp)` long avoids the monitor entirely.",
+        "`ConcurrentHashMap.computeIfAbsent` for bucket creation, or two threads create two buckets for one client and each gets the full limit."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Going distributed"
+    },
+    {
+      "type": "paragraph",
+      "text": "The moment there are two servers, per-process limiters give each client N × servers. The options, in ascending cost:"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "Approach",
+        "Accuracy",
+        "Cost"
+      ],
+      "rows": [
+        [
+          "Divide the limit by server count",
+          "Poor under uneven load",
+          "Free"
+        ],
+        [
+          "Sticky routing by client",
+          "Exact, per client",
+          "A routing constraint, and rebalancing breaks it"
+        ],
+        [
+          "Central Redis counter",
+          "Exact",
+          "A network hop on every request, and a new SPOF"
+        ],
+        [
+          "Redis with local batching",
+          "Approximate",
+          "Lease N tokens locally, refresh periodically. What most production systems do"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "The sentence that lands",
+      "text": "*“In one process I would use a token bucket for the burst control. Across a fleet I would lease tokens from Redis in batches rather than checking centrally per request — it trades exactness for one fewer network hop on the hot path, and rate limits are a control, not an accounting system.”*"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups you should have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Different limits per tier",
+          "text": "Free versus paid. The bucket's capacity and refill rate become per-client config, which is why they are fields and not constants."
+        },
+        {
+          "title": "Bound the memory",
+          "text": "The unbounded-map problem, above. An LRU over buckets, evicting clients idle longer than one window."
+        },
+        {
+          "title": "Tell the caller when to retry",
+          "text": "A token bucket knows exactly when the next token arrives, so `Retry-After` is computable rather than guessed. Nice detail to volunteer."
+        },
+        {
+          "title": "Never reject a paying customer",
+          "text": "Queue instead of drop, with a bounded queue and a deadline. Say clearly that this is no longer a rate limiter."
+        },
+        {
+          "title": "Limit by cost, not count",
+          "text": "Expensive endpoints spend more tokens. The bucket already supports it — spend *k* instead of 1."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state before you are asked"
+    },
+    {
+      "type": "list",
+      "items": [
+        "First request from an unseen client — bucket starts full, so the first burst is allowed. Confirm that is intended.",
+        "Clock going backwards → monotonic time makes this impossible rather than merely unlikely.",
+        "A limit of zero → reject everything, without dividing by zero in the refill.",
+        "A process paused for an hour → lazy refill caps at capacity, so it does not release an hour of tokens at once.",
+        "Two threads creating a bucket for the same new client → `computeIfAbsent`, not get-then-put."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Algorithm choice",
+          "Picks one",
+          "Names all four and what each gets wrong"
+        ],
+        [
+          "Fixed window",
+          "Uses it silently",
+          "Draws the 2× boundary case unprompted"
+        ],
+        [
+          "Time source",
+          "`currentTimeMillis`",
+          "`nanoTime`, and explains monotonicity"
+        ],
+        [
+          "Memory",
+          "Unbounded map",
+          "Notices the leak before being asked"
+        ],
+        [
+          "Refill",
+          "A background timer thread",
+          "Lazy refill from elapsed time"
+        ],
+        [
+          "Distributed",
+          "“Put it in Redis”",
+          "Local leases, and names the accuracy traded"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The 45-minute plan",
+      "text": "**0–5** clarify burst tolerance and single versus multi process. **5–12** the four algorithms and their failure modes — this is the highest-value ten minutes. **12–25** code the token bucket. **25–32** concurrency and the unbounded-map fix. **32–45** distributed, landing on local leases."
+    }
+  ],
+  "kind": "LLD",
+  "topic": "LLD + Concurrency Interview Problems",
+  "difficulty": "Hard",
+  "origin": "editorial",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "slug": "design-rate-limiter-lld"
+}

@@ -1,0 +1,467 @@
+{
+  "problemSlug": "design-cache-45-85",
+  "title": "Design an LRU Cache",
+  "summary": "Everyone knows it is a hash map plus a doubly linked list. The interview is decided by what you do after that: why not a singly linked list, what breaks under concurrency, and what changes when the cache has to survive a restart.",
+  "coverEmoji": "🗃️",
+  "tags": [
+    "Cache",
+    "Hash Map",
+    "Linked List",
+    "Design",
+    "Concurrency",
+    "Interview Favourite"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.hellointerview.com/community/questions/lru-cache/cm5eh7nrh04r2838os7lk8nwf",
+      "title": "LeetCode 146 — reported interviews",
+      "source": "Hello Interview",
+      "kind": "aggregate",
+      "quote": "Oracle, Netflix, Amazon, Snapchat",
+      "note": "Dated reports: Oracle (Principal) early Aug 2026, Amazon (Mid) early Aug 2026, Oracle (Staff) early Aug 2026. The page claims 100+ reports behind an account.",
+      "companies": [
+        {
+          "name": "Oracle",
+          "role": "Principal",
+          "date": "Aug 2026"
+        },
+        {
+          "name": "Amazon",
+          "role": "Mid",
+          "date": "Aug 2026"
+        },
+        {
+          "name": "Netflix"
+        },
+        {
+          "name": "Snapchat"
+        }
+      ]
+    },
+    {
+      "url": "https://www.hellointerview.com/community/questions/lru-cache-implementation/cmk5avhlo00x708adxjp1vuil",
+      "title": "Implement LRU Cache — reported at Shopify",
+      "source": "Hello Interview",
+      "kind": "aggregate",
+      "note": "Three separate Senior-level reports: early Jul 2026, late May 2026, early Mar 2026.",
+      "companies": [
+        {
+          "name": "Shopify",
+          "role": "Senior",
+          "date": "Jul 2026"
+        }
+      ]
+    },
+    {
+      "url": "https://www.hellointerview.com/community/questions/lru-photo-cache/cmnmgy0jh1fmd08ad0hfr6bon",
+      "title": "LRU cache with photo storage",
+      "source": "Hello Interview",
+      "kind": "aggregate",
+      "note": "A variant: put(byte[] photo) returns a generated UUID, get(String id) retrieves it. Same structure, different key.",
+      "companies": [
+        {
+          "name": "Microsoft",
+          "role": "Senior",
+          "date": "Apr 2026"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "LeetCode 146 — LRU Cache",
+      "url": "https://leetcode.com/problems/lru-cache/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "The canonical problem. Medium, and the O(1) requirement is the whole point."
+    },
+    {
+      "title": "LeetCode 460 — LFU Cache",
+      "url": "https://leetcode.com/problems/lfu-cache/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "The Hard follow-up. Ask for it if the LRU goes quickly."
+    },
+    {
+      "title": "LRU Cache — community solutions",
+      "url": "https://leetcode.com/problems/lru-cache/solutions/",
+      "source": "LeetCode",
+      "kind": "discussion",
+      "note": "Including the LinkedHashMap one-liner, which you should know and should not lead with."
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What you are actually being asked",
+      "text": "Nobody is testing whether you have memorised *hash map plus doubly linked list*. They are testing whether you can explain **why every other structure fails the O(1) requirement**, and whether you notice that `get` is a write. Get to the answer in ten minutes, then spend the hour on eviction policy, concurrency and persistence."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Build a fixed-capacity cache with two operations, both in **O(1) average time**:"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`int get(int key)` — return the value, or `-1` if absent. **A hit counts as a use.**",
+        "`void put(int key, int value)` — insert or update. If this pushes the cache over capacity, evict the *least recently used* entry."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The trap is in `get`",
+      "text": "`get` mutates the cache. A hit has to move that entry to the front of the recency order, which means `get` takes a write lock, not a read lock. Candidates who model `get` as a pure read write a cache that evicts the hottest key under load."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Is capacity in entries or bytes?",
+          "text": "LeetCode says entries. Real caches are bounded by memory, which turns eviction into *evict until the incoming value fits* — a loop, not a single removal. Ask, then say which one you are building."
+        },
+        {
+          "title": "Does an update count as a use?",
+          "text": "`put` on an existing key: does it refresh recency? Almost always yes, and it is a one-line difference. Say it out loud so the interviewer knows you thought about it."
+        },
+        {
+          "title": "What happens at capacity zero?",
+          "text": "A cache that cannot hold anything is a legal input and a free correctness point. `put` should be a no-op, not a crash."
+        },
+        {
+          "title": "Single-threaded?",
+          "text": "Ask early. The answer changes the data structure, not just the locking — see the concurrency section."
+        },
+        {
+          "title": "Do I need eviction callbacks?",
+          "text": "Real caches notify on eviction so callers can flush dirty state. Mention it; do not build it unless asked."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why the obvious structures fail"
+    },
+    {
+      "type": "table",
+      "caption": "Every one of these is a real answer someone has given. Knowing why they fail is what buys you the trie… sorry, the linked list.",
+      "headers": [
+        "Structure",
+        "get",
+        "Find LRU",
+        "Why it fails"
+      ],
+      "rows": [
+        [
+          "Hash map alone",
+          "O(1)",
+          "**O(n)**",
+          "Nothing records order"
+        ],
+        [
+          "Hash map + timestamps",
+          "O(1)",
+          "**O(n)**",
+          "Finding the minimum timestamp is a scan"
+        ],
+        [
+          "Hash map + min-heap on time",
+          "O(1)",
+          "O(log n)",
+          "Not O(1), and updating a key's priority means finding it in the heap"
+        ],
+        [
+          "Hash map + array/`ArrayList`",
+          "O(1)",
+          "O(1) at the end",
+          "Moving an element to the front is **O(n)** memmove"
+        ],
+        [
+          "Hash map + singly linked list",
+          "O(1)",
+          "O(1)",
+          "Unlinking a node needs its **predecessor** — O(n) to find"
+        ],
+        [
+          "Hash map + **doubly** linked list",
+          "O(1)",
+          "O(1)",
+          "Nothing fails. This is the answer"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Say the singly-linked-list line out loud",
+      "text": "*“A singly linked list gets me O(1) at the head but unlinking an arbitrary node needs its predecessor, so I would be scanning. The back pointer is what makes removal O(1).”* That one sentence is the difference between reciting a solution and explaining one."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The structure"
+    },
+    {
+      "type": "mermaid",
+      "title": "Hash map into a doubly linked list",
+      "caption": "The map gives O(1) access to the *node*, not the value — that indirection is what makes removal O(1). Sentinel head and tail nodes remove every null check from the pointer surgery.",
+      "code": "graph LR\n    subgraph M[\"HashMap&lt;K, Node&gt;\"]\n        k1[\"key A\"]; k2[\"key B\"]; k3[\"key C\"]\n    end\n    H([\"head<br/><i>sentinel</i>\"]) <--> A[\"A<br/>most recent\"]\n    A <--> B[\"B\"]\n    B <--> C[\"C<br/>least recent\"]\n    C <--> T([\"tail<br/><i>sentinel</i>\"])\n    k1 -.-> A\n    k2 -.-> B\n    k3 -.-> C\n\n    classDef s fill:#1a1a22,stroke:#32323f,color:#a1a1b0\n    classDef n fill:#2a1f5e,stroke:#8b7bff,color:#f2f2f7\n    class H,T s\n    class A,B,C n"
+    },
+    {
+      "type": "mermaid",
+      "title": "Class design",
+      "caption": "`Node` is deliberately dumb. All invariants live in `LRUCache`, which is the only thing allowed to touch pointers.",
+      "code": "classDiagram\n    class LRUCache {\n        -int capacity\n        -Map~Integer, Node~ map\n        -Node head\n        -Node tail\n        +int get(int key)\n        +void put(int key, int value)\n        -void addFirst(Node n)\n        -void unlink(Node n)\n        -Node evictLast()\n    }\n    class Node {\n        +int key\n        +int value\n        +Node prev\n        +Node next\n    }\n    LRUCache \"1\" o-- \"*\" Node : owns"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Why `Node` stores its own key",
+      "text": "On eviction you have the tail *node* and you need to delete its entry from the map. Without `node.key` you cannot, and you end up with a map full of pointers to unlinked nodes — a leak that passes every test and dies in production."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The code"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "LRUCache.java",
+      "code": "class LRUCache {\n    private static final class Node {\n        final int key;          // needed to evict from the map\n        int value;\n        Node prev, next;\n        Node(int key, int value) { this.key = key; this.value = value; }\n    }\n\n    private final int capacity;\n    private final Map<Integer, Node> map = new HashMap<>();\n    // Sentinels: every insert and removal is now unconditional pointer work.\n    private final Node head = new Node(0, 0);\n    private final Node tail = new Node(0, 0);\n\n    LRUCache(int capacity) {\n        this.capacity = capacity;\n        head.next = tail;\n        tail.prev = head;\n    }\n\n    public int get(int key) {\n        Node node = map.get(key);\n        if (node == null) return -1;\n        unlink(node);          // a hit is a use\n        addFirst(node);\n        return node.value;\n    }\n\n    public void put(int key, int value) {\n        if (capacity <= 0) return;\n\n        Node existing = map.get(key);\n        if (existing != null) {\n            existing.value = value;\n            unlink(existing);\n            addFirst(existing);\n            return;\n        }\n\n        if (map.size() == capacity) {\n            Node lru = tail.prev;\n            unlink(lru);\n            map.remove(lru.key);        // this is why Node holds its key\n        }\n\n        Node fresh = new Node(key, value);\n        map.put(key, fresh);\n        addFirst(fresh);\n    }\n\n    private void addFirst(Node n) {\n        n.prev = head;\n        n.next = head.next;\n        head.next.prev = n;\n        head.next = n;\n    }\n\n    private void unlink(Node n) {\n        n.prev.next = n.next;\n        n.next.prev = n.prev;\n        n.prev = n.next = null;   // help GC, and make use-after-unlink fail loudly\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "lru_cache.py",
+      "code": "class LRUCache:\n    \"\"\"OrderedDict is a hash map over a doubly linked list — the same structure,\n    already written. Say that, then be ready to build it by hand anyway.\"\"\"\n\n    def __init__(self, capacity: int):\n        self.capacity = capacity\n        self.store: \"OrderedDict[int, int]\" = OrderedDict()\n\n    def get(self, key: int) -> int:\n        if key not in self.store:\n            return -1\n        self.store.move_to_end(key)        # O(1): relinks, does not copy\n        return self.store[key]\n\n    def put(self, key: int, value: int) -> None:\n        if self.capacity <= 0:\n            return\n        if key in self.store:\n            self.store.move_to_end(key)\n        self.store[key] = value\n        if len(self.store) > self.capacity:\n            self.store.popitem(last=False)  # evict the oldest end"
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The library answer is a trap you should spring yourself",
+      "text": "Java has `LinkedHashMap` with `accessOrder=true` and `removeEldestEntry`; Python has `OrderedDict`; both are exactly this structure. **Mention it, then build it by hand.** Leading with the library reads as dodging the question; mentioning it after shows you know the ecosystem. If the interviewer says “just use the library”, you have saved twenty minutes for the follow-ups."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "Operation",
+        "Time",
+        "Space"
+      ],
+      "rows": [
+        [
+          "`get` hit",
+          "O(1) — one map lookup, two pointer rewrites",
+          "—"
+        ],
+        [
+          "`get` miss",
+          "O(1)",
+          "—"
+        ],
+        [
+          "`put` new key",
+          "O(1) amortised, plus O(1) eviction",
+          "—"
+        ],
+        [
+          "`put` existing key",
+          "O(1)",
+          "—"
+        ],
+        [
+          "Total",
+          "—",
+          "O(capacity) — one node and one map entry per key"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "“O(1)” is amortised, and you should say so",
+      "text": "Hash map operations are O(1) *average*. A resize is O(n), and an adversarial key set degrades lookups. It never matters for the interview, but naming it costs one sentence and separates you from someone reciting a complexity table."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency — the follow-up that decides it"
+    },
+    {
+      "type": "paragraph",
+      "text": "*“Now make it thread-safe.”* The naive answer is `synchronized` on both methods. The graded answer starts by naming why this is harder than it looks."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Every operation is a write.** `get` relinks nodes, so a read-write lock gives you nothing — all callers take the exclusive lock anyway.",
+        "**The list is a single point of contention.** Every hit touches `head`. Throughput is capped by one cache line no matter how many cores you have.",
+        "**`ConcurrentHashMap` alone is not enough.** It protects the map; the list pointers are still raced. Two threads unlinking adjacent nodes corrupt the chain."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "What real caches actually do.",
+      "headers": [
+        "Approach",
+        "Cost",
+        "When"
+      ],
+      "rows": [
+        [
+          "One lock over both structures",
+          "Correct, does not scale",
+          "The right first answer. Say it, then improve it"
+        ],
+        [
+          "**Striped / sharded cache** — N independent LRUs, key hashed to a shard",
+          "N× the contention headroom; eviction becomes per-shard",
+          "The standard production answer"
+        ],
+        [
+          "Approximate LRU with a **CLOCK** bit",
+          "Lock-free reads — a hit just sets a bit",
+          "When reads dominate and exactness is negotiable"
+        ],
+        [
+          "Write-ahead buffer (Caffeine's design)",
+          "Reads append to a ring buffer, replayed in batch",
+          "Highest throughput, most machinery"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "The sentence that lands",
+      "text": "*“Because `get` mutates recency, a read-write lock buys nothing — so I would shard the cache by key hash and accept that LRU becomes per-shard rather than global. That is the trade real caches make.”* Sharding is the answer they are listening for."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups you should have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Make it an LFU cache",
+          "text": "LeetCode 460. Frequency buckets: a map from key to node, plus a map from frequency to a doubly linked list of nodes at that frequency, plus a running `minFreq`. Promotion moves a node between buckets in O(1); eviction takes the tail of the `minFreq` bucket."
+        },
+        {
+          "title": "Add TTL per entry",
+          "text": "Store an expiry on the node. Lazy expiry on read is O(1) and leaks memory for keys never read again; a background sweeper reclaims it at the cost of a thread. Most caches do both."
+        },
+        {
+          "title": "Make it thread-safe and measure it",
+          "text": "Shard by `key.hashCode()`. Say up front that global LRU becomes approximate — a hot key in one shard can evict entries a global policy would have kept."
+        },
+        {
+          "title": "Bound by bytes, not entries",
+          "text": "Eviction becomes a `while` loop, and a single value larger than the whole capacity has to be rejected rather than looped on forever."
+        },
+        {
+          "title": "Survive a restart",
+          "text": "This is the pivot to HLD. Write-through to disk for durability, or a warm-up that replays a key log on boot. Redis with `maxmemory-policy allkeys-lru` is this exact structure with persistence bolted on."
+        },
+        {
+          "title": "Distribute it",
+          "text": "Consistent hashing to place keys on nodes, which means eviction is per-node and there is no global recency order at all. Naming that loss is the answer."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state before you are asked"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`capacity = 0` → every `put` is a no-op, every `get` returns `-1`.",
+        "`put` on an existing key updates the value **and** refreshes recency — it must not grow the map.",
+        "Evicting when `capacity == 1` — the node being evicted may be the one just inserted if you order the operations wrong. Insert after evicting.",
+        "`get` on a key that was evicted returns `-1`, and the map must not still hold it.",
+        "Negative and zero values are legal payloads; `-1` is only a sentinel for the *return* of `get`. If values can be `-1`, the contract needs `Integer`/`Optional` instead."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Structure choice",
+          "“Hash map and a doubly linked list”",
+          "Explains why singly linked and heap both fail"
+        ],
+        [
+          "`get` semantics",
+          "Treats it as a read",
+          "Notices it is a write, and says so before being asked"
+        ],
+        [
+          "Node contents",
+          "Stores only the value",
+          "Stores the key, and explains the eviction reason"
+        ],
+        [
+          "Pointer code",
+          "Null checks everywhere",
+          "Sentinels, so insert and unlink are unconditional"
+        ],
+        [
+          "Library awareness",
+          "Does not know `LinkedHashMap`",
+          "Mentions it after building, not instead of"
+        ],
+        [
+          "Concurrency",
+          "“Add `synchronized`”",
+          "Sharding, and names what LRU loses when you shard"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The 45-minute plan",
+      "text": "**0–5** clarify capacity units and whether `get` refreshes. **5–10** walk the failed structures out loud, land on the doubly linked list. **10–25** code it: sentinels first, then `get`, then `put`, then eviction. **25–32** edge cases and tests. **32–45** concurrency and one of LFU or TTL. If you are still writing pointer code at minute 30, you clarified too little and typed too much."
+    }
+  ],
+  "kind": "LLD",
+  "topic": "LLD + Concurrency Interview Problems",
+  "difficulty": "Hard",
+  "origin": "editorial",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "slug": "design-lru-cache"
+}

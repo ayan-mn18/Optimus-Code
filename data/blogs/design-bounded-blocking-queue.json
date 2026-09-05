@@ -1,0 +1,372 @@
+{
+  "problemSlug": "design-bounded-blocking-queue-44-84",
+  "title": "Design a Bounded Blocking Queue",
+  "summary": "Thirty lines of code and an hour of conversation. This is the question that finds out whether you actually understand condition variables, or have only ever copied the pattern — and the lost-wakeup bug is where it finds out.",
+  "coverEmoji": "🧵",
+  "tags": [
+    "Concurrency",
+    "Threads",
+    "Condition Variables",
+    "Producer Consumer",
+    "Interview Favourite"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.hellointerview.com/community/questions/bounded-blocking-queue/cm5eguhad02xe838ov1averay",
+      "title": "LeetCode 1188 — reported interviews",
+      "source": "Hello Interview",
+      "kind": "aggregate",
+      "quote": "Late July, 2026 | OpenAI | Staff",
+      "note": "The page also lists a follow-up variant, “Design a Queue with a Dead Letter Queue”.",
+      "companies": [
+        {
+          "name": "OpenAI",
+          "role": "Staff",
+          "date": "Jul 2026"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "LeetCode 1188 — Design Bounded Blocking Queue",
+      "url": "https://leetcode.com/problems/design-bounded-blocking-queue/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "The exact problem. Medium, and one of the few genuinely concurrent LeetCode questions."
+    },
+    {
+      "title": "Design Bounded Blocking Queue — community solutions",
+      "url": "https://leetcode.com/problems/design-bounded-blocking-queue/solutions/",
+      "source": "LeetCode",
+      "kind": "discussion",
+      "note": "Semaphore, monitor and lock-plus-condition variants side by side."
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What you are actually being asked",
+      "text": "Whether you know why the wait is a **`while`** and not an **`if`**. Everything else in this problem — the deque, the capacity check, the size method — is trivial. That one keyword is the question, and the interviewer will ask you to justify it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Implement a thread-safe FIFO queue with a fixed capacity:"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`enqueue(int element)` — adds to the tail. **Blocks** while the queue is full.",
+        "`int dequeue()` — removes from the head and returns it. **Blocks** while the queue is empty.",
+        "`int size()` — the current count."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Multiple producer and consumer threads call these concurrently. No busy-waiting, no dropped elements, no deadlock."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Is a timeout or a non-blocking variant needed?",
+          "text": "`offer(e, timeout)` and `poll(timeout)` are the real-world API. Confirm scope — the timed version has its own trap, covered below."
+        },
+        {
+          "title": "Does the queue ever shut down?",
+          "text": "A queue nobody can close means consumers block forever at the end of the run. Real systems need a poison pill or a `close()`; LeetCode does not."
+        },
+        {
+          "title": "Strict FIFO across producers?",
+          "text": "Yes within the queue. Note that *which* blocked producer wakes first is not FIFO unless the lock is fair — and fairness costs throughput."
+        },
+        {
+          "title": "Can I use the standard library?",
+          "text": "`ArrayBlockingQueue` is exactly this. Ask, because if the answer is yes the interview is over in one line — which itself tells you the answer is no."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The structure"
+    },
+    {
+      "type": "mermaid",
+      "title": "One lock, two waiting rooms",
+      "caption": "Separate conditions for *not full* and *not empty* mean a producer finishing wakes a **consumer**, not another producer. One shared condition works but wakes the wrong threads constantly.",
+      "code": "graph TD\n    P1[\"Producer 1\"] --> L{\"ReentrantLock\"}\n    P2[\"Producer 2\"] --> L\n    C1[\"Consumer 1\"] --> L\n    C2[\"Consumer 2\"] --> L\n    L --> Q[\"ArrayDeque&lt;Integer&gt;<br/>capacity = N\"]\n    Q -. \"full → producers wait\" .-> NF([\"notFull<br/><i>Condition</i>\"])\n    Q -. \"empty → consumers wait\" .-> NE([\"notEmpty<br/><i>Condition</i>\"])\n    NF -. \"signalled by dequeue\" .-> P1\n    NE -. \"signalled by enqueue\" .-> C1\n\n    classDef cond fill:#12222b,stroke:#22d3ee,color:#f2f2f7\n    class NF,NE cond"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The code"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "BoundedBlockingQueue.java",
+      "code": "class BoundedBlockingQueue {\n    private final Deque<Integer> items = new ArrayDeque<>();\n    private final int capacity;\n\n    private final ReentrantLock lock = new ReentrantLock();\n    private final Condition notFull  = lock.newCondition();\n    private final Condition notEmpty = lock.newCondition();\n\n    public BoundedBlockingQueue(int capacity) { this.capacity = capacity; }\n\n    public void enqueue(int element) throws InterruptedException {\n        lock.lock();\n        try {\n            // while, NOT if. See below — this is the whole question.\n            while (items.size() == capacity) notFull.await();\n            items.addLast(element);\n            notEmpty.signal();          // wake ONE consumer\n        } finally {\n            lock.unlock();              // finally, or an exception wedges the queue\n        }\n    }\n\n    public int dequeue() throws InterruptedException {\n        lock.lock();\n        try {\n            while (items.isEmpty()) notEmpty.await();\n            int value = items.removeFirst();\n            notFull.signal();           // wake ONE producer\n            return value;\n        } finally {\n            lock.unlock();\n        }\n    }\n\n    public int size() {\n        lock.lock();\n        try {\n            return items.size();\n        } finally {\n            lock.unlock();\n        }\n    }\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why `while` and not `if`"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Three independent reasons, and you should be able to give all three",
+      "text": "**1. Spurious wakeups.** `await()` is permitted by the JLS to return without any signal at all. **2. Barging.** Between the signal and the woken thread reacquiring the lock, a *third* thread can enter, take the lock and take the slot — the condition was true when signalled and false by the time you run. **3. `signalAll`.** If several waiters wake for one slot, only one can have it. In all three cases the woken thread must **re-check**, and `if` does not re-check."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "The bug, in full",
+      "code": "// WRONG — this queue will overflow under load.\nif (items.size() == capacity) notFull.await();\nitems.addLast(element);          // capacity may be full again by now\n\n// Timeline that breaks it:\n//   T1 producer: queue full, calls await(), releases the lock\n//   T2 consumer: dequeues, calls notFull.signal(), releases the lock\n//   T3 producer: (was never blocked) takes the lock, enqueues, queue full again\n//   T1 producer: wakes, reacquires the lock, does NOT re-check, enqueues\n//                -> size is now capacity + 1"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "`signal` or `signalAll`"
+    },
+    {
+      "type": "table",
+      "caption": "Both are correct here. Knowing why is the follow-up.",
+      "headers": [
+        "",
+        "`signal()`",
+        "`signalAll()`"
+      ],
+      "rows": [
+        [
+          "Threads woken",
+          "One",
+          "All waiters on that condition"
+        ],
+        [
+          "Cost",
+          "O(1)",
+          "Thundering herd — everyone wakes, one wins, the rest re-block"
+        ],
+        [
+          "Safe with two conditions",
+          "Yes — a producer only ever signals consumers",
+          "Yes"
+        ],
+        [
+          "Safe with **one** shared condition",
+          "**No** — may wake a producer when a consumer was needed",
+          "Yes"
+        ],
+        [
+          "Use when",
+          "Waiters are interchangeable, as here",
+          "Waiters want different conditions, or the state change unblocks several"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "The sentence that lands",
+      "text": "*“Two conditions let me use `signal` instead of `signalAll`, because a producer only ever needs to wake a consumer. With a single shared condition I would be forced into `signalAll` to avoid waking the wrong kind of thread and deadlocking.”*"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The `synchronized` version"
+    },
+    {
+      "type": "paragraph",
+      "text": "If the interviewer bans `ReentrantLock`, the monitor version is the same shape with one real loss."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Monitor version",
+      "code": "public synchronized void enqueue(int element) throws InterruptedException {\n    while (items.size() == capacity) wait();   // one wait set for everyone\n    items.addLast(element);\n    notifyAll();   // MUST be notifyAll: one wait set means notify() can wake\n                   // another producer, which re-blocks, and nobody makes progress\n}\n\npublic synchronized int dequeue() throws InterruptedException {\n    while (items.isEmpty()) wait();\n    int value = items.removeFirst();\n    notifyAll();\n    return value;\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "`notify()` here is a deadlock",
+      "text": "An object monitor has exactly **one** wait set, so producers and consumers queue together. `notify()` picks an arbitrary waiter — if a producer wakes another producer while the queue is still full, both go back to waiting and the system stalls with work available. `notifyAll()` is mandatory in the monitor version, and that is precisely the cost that two `Condition` objects buy you out of."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The semaphore version"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Semaphores — no explicit waiting at all",
+      "code": "private final Semaphore slots;    // = capacity\nprivate final Semaphore filled;   // = 0\nprivate final ReentrantLock mutex = new ReentrantLock();\n\npublic void enqueue(int element) throws InterruptedException {\n    slots.acquire();                       // blocks while full\n    mutex.lock();\n    try { items.addLast(element); } finally { mutex.unlock(); }\n    filled.release();\n}\n\npublic int dequeue() throws InterruptedException {\n    filled.acquire();                      // blocks while empty\n    mutex.lock();\n    try { return items.removeFirst(); } finally { mutex.unlock(); }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Elegant, and be ready for the trap",
+      "text": "The counting semaphores *are* the capacity invariant, so there is no condition to re-check and no `while`. Note the ordering: acquire the semaphore **before** the mutex. Reverse them and a thread holding the mutex blocks on a semaphore that only a mutex-holder can release — a textbook deadlock, and a favourite thing to ask about."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "Operation",
+        "Cost"
+      ],
+      "rows": [
+        [
+          "`enqueue` / `dequeue`",
+          "O(1) once the lock is held"
+        ],
+        [
+          "Space",
+          "O(capacity)"
+        ],
+        [
+          "Contention",
+          "One lock; every operation serialises. See below"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "One lock is a throughput ceiling",
+      "text": "Producers and consumers touch opposite ends of the queue but contend on the same lock. `LinkedBlockingQueue` uses **two** locks — one per end — so a producer and a consumer can run genuinely in parallel. Naming that is a strong senior signal; implementing it is usually out of scope."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups you should have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Add a timeout",
+          "text": "`notFull.awaitNanos(remaining)` in the loop. The trap: on a spurious wake you must recompute the *remaining* time, not restart the full timeout — otherwise a 1-second offer can block for minutes."
+        },
+        {
+          "title": "Add a non-blocking `offer` / `poll`",
+          "text": "`tryLock`, check, return false rather than waiting. Now the queue supports back-pressure without blocking a caller."
+        },
+        {
+          "title": "Shut the queue down",
+          "text": "A `closed` flag checked inside the wait loop, plus `signalAll` so every waiter re-checks and exits. Without it, consumers block forever at end of stream."
+        },
+        {
+          "title": "Add a dead letter queue",
+          "text": "Listed as the follow-up on the reported OpenAI question. Failed items go to a second bounded queue — and it must be bounded too, or a poison message becomes an OOM."
+        },
+        {
+          "title": "Make it lock-free",
+          "text": "A Michael-Scott queue for the unbounded case; bounded needs a ring buffer with CAS on head and tail. Say the words, and say it is rarely worth it against `ArrayBlockingQueue`."
+        },
+        {
+          "title": "Multiple priorities",
+          "text": "A heap instead of a deque, and FIFO within a priority needs a sequence number as the tiebreaker or equal-priority items reorder."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state before you are asked"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`capacity = 1` — degenerates to a handoff; every enqueue blocks until the previous is consumed.",
+        "`capacity = 0` — either reject at construction, or implement a synchronous handoff. Do not silently accept and deadlock.",
+        "`InterruptedException` must propagate, not be swallowed. Catching and ignoring it makes the thread uncancellable.",
+        "`unlock()` in a `finally` — an exception between lock and unlock wedges every other thread permanently.",
+        "`size()` is a snapshot and is stale the moment it returns. Say so; do not let a caller use it to decide whether to enqueue.",
+        "Interrupt while waiting → the thread must leave the wait loop without consuming an element."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "The wait loop",
+          "`if`",
+          "`while`, with all three reasons"
+        ],
+        [
+          "Conditions",
+          "One shared condition",
+          "Two, and explains the `signal` versus `signalAll` consequence"
+        ],
+        [
+          "Unlock",
+          "After the body",
+          "In a `finally`"
+        ],
+        [
+          "Monitor version",
+          "`notify()`",
+          "`notifyAll()`, and explains the single wait set"
+        ],
+        [
+          "Semaphores",
+          "Acquires the mutex first",
+          "Semaphore before mutex, and names the deadlock"
+        ],
+        [
+          "Throughput",
+          "One lock, unremarked",
+          "Notes the two-lock split `LinkedBlockingQueue` uses"
+        ],
+        [
+          "Interrupts",
+          "Swallowed",
+          "Propagated"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The 45-minute plan",
+      "text": "**0–4** clarify timeouts, shutdown, library use. **4–8** draw one lock and two conditions. **8–18** write it — it is thirty lines. **18–26** explain `while` with the three-thread timeline; this is the part they are grading. **26–34** `signal` versus `signalAll`, and the monitor version. **34–45** timeouts or the dead letter queue."
+    }
+  ],
+  "kind": "LLD",
+  "topic": "Concurrency Interview Problems",
+  "difficulty": "Medium",
+  "origin": "editorial",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "slug": "design-bounded-blocking-queue"
+}

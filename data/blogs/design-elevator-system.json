@@ -1,0 +1,332 @@
+{
+  "problemSlug": "design-elevator-system-42-82",
+  "title": "Design an Elevator System",
+  "summary": "A box that goes up and down is a scheduling problem wearing a disguise. The class diagram takes ten minutes; the hour is decided by which car answers a hall call, and whether you can defend the answer.",
+  "coverEmoji": "🛗",
+  "tags": [
+    "OOP",
+    "State Machine",
+    "Strategy",
+    "Scheduling",
+    "Concurrency"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Elevator — low level design breakdown",
+      "url": "https://www.hellointerview.com/learn/low-level-design/problem-breakdowns/elevator",
+      "source": "Hello Interview",
+      "kind": "article",
+      "note": "Worked breakdown with the requirement framing and the dispatch discussion."
+    },
+    {
+      "title": "Elevator System Low-Level Design",
+      "url": "https://www.geeksforgeeks.org/system-design/elevator-system-low-level-design-lld/",
+      "source": "GeeksforGeeks",
+      "kind": "article",
+      "note": "Requirements, class breakdown and a reference implementation."
+    },
+    {
+      "title": "awesome-low-level-design — elevator system",
+      "url": "https://github.com/ashishps1/awesome-low-level-design/blob/main/problems/elevator-system.md",
+      "source": "GitHub",
+      "kind": "repo",
+      "note": "Reference implementations across languages."
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What you are actually being asked",
+      "text": "Everyone can draw `Elevator`, `Floor`, `Button`. Nobody gets hired for that. The question is **which car answers a hall call, and why** — and whether you understand that a hall call and a car call are different things. Get the classes down fast and spend the time on dispatch."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "A building with *F* floors and *C* elevator cars. People press an up or down button on a floor; people inside a car press a destination floor. Move the cars so everyone gets where they are going without anyone waiting forever."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Hall call versus car call",
+      "text": "A **hall call** is *“someone on floor 7 wants to go down”* — it has a direction and no destination, and any car can serve it. A **car call** is *“the person in car 2 wants floor 3”* — it has a destination, no direction, and only that car can serve it. Conflating the two is the single most common modelling error, and it makes correct dispatch impossible."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "How many cars, how many floors?",
+          "text": "One car is a toy. The whole problem is dispatch across several, so confirm C > 1 or you are answering a different question."
+        },
+        {
+          "title": "Are there express cars, or floor restrictions?",
+          "text": "Basements, penthouses and service cars turn dispatch into a constrained search. Confirm scope before you build for it."
+        },
+        {
+          "title": "What is being optimised — wait time or travel time?",
+          "text": "They are different objectives and they disagree. Average wait, worst-case wait, and total energy give three different schedulers. Pick one out loud."
+        },
+        {
+          "title": "Capacity limits?",
+          "text": "If a car can be full, dispatch has to model load and a full car has to skip a hall call it already accepted."
+        },
+        {
+          "title": "Real time, or simulated ticks?",
+          "text": "Say you will model time as discrete steps. It makes the design testable and sidesteps a thread-per-elevator discussion you do not need yet."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Class design"
+    },
+    {
+      "type": "mermaid",
+      "title": "Cars own movement, the controller owns policy",
+      "caption": "`ElevatorCar` knows how to move and nothing about fairness. `Dispatcher` knows about fairness and nothing about motors. That seam is what the follow-ups will push on.",
+      "code": "classDiagram\n    class ElevatorSystem {\n        -List~ElevatorCar~ cars\n        -Dispatcher dispatcher\n        +void hallCall(int floor, Direction d)\n        +void carCall(int carId, int floor)\n        +void step()\n    }\n    class ElevatorCar {\n        -int id\n        -int currentFloor\n        -Direction direction\n        -DoorState doors\n        -TreeSet~Integer~ stopsAhead\n        +void addStop(int floor)\n        +void step()\n        +boolean canServe(int floor, Direction d)\n    }\n    class Dispatcher {\n        <<interface>>\n        +ElevatorCar select(List~ElevatorCar~ cars, HallCall call)\n    }\n    class HallCall {\n        -int floor\n        -Direction direction\n    }\n    ElevatorSystem o-- ElevatorCar\n    ElevatorSystem --> Dispatcher\n    Dispatcher ..> HallCall\n    Dispatcher <|.. NearestCarDispatcher\n    Dispatcher <|.. LookDispatcher"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The car is a state machine"
+    },
+    {
+      "type": "mermaid",
+      "title": "One car, four states",
+      "caption": "Doors are a state, not a boolean. A car with open doors cannot move, and every real-world safety rule hangs off that fact.",
+      "code": "stateDiagram-v2\n    [*] --> Idle\n    Idle --> MovingUp : stop above\n    Idle --> MovingDown : stop below\n    MovingUp --> DoorsOpen : arrived at a stop\n    MovingDown --> DoorsOpen : arrived at a stop\n    MovingUp --> MovingUp : more stops above\n    MovingDown --> MovingDown : more stops below\n    DoorsOpen --> Idle : no stops left\n    DoorsOpen --> MovingUp : stops above\n    DoorsOpen --> MovingDown : stops below"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Dispatch — where the interview is won"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three answers, in ascending order of how impressed the interviewer will be."
+    },
+    {
+      "type": "table",
+      "caption": "The third one is what real controllers do.",
+      "headers": [
+        "Strategy",
+        "How it picks",
+        "What it gets wrong"
+      ],
+      "rows": [
+        [
+          "**FCFS**",
+          "First free car, in request order",
+          "A car passes your floor going the right way and does not stop. Obviously wrong to anyone who has used a lift"
+        ],
+        [
+          "**Nearest car**",
+          "Minimum `|currentFloor − callFloor|`",
+          "Ignores direction: sends a car that is moving away, and starves the top floors"
+        ],
+        [
+          "**LOOK / SCAN**",
+          "Prefer a car already moving toward the call **in the same direction**; otherwise the nearest idle car",
+          "This is the real answer. Cost is bounded worst-case wait, which is the trade you name"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "LookDispatcher.java",
+      "code": "/** Prefer a car that is already coming your way — the sweep is what makes\n *  the system feel fair without any explicit fairness accounting. */\nfinal class LookDispatcher implements Dispatcher {\n\n    @Override\n    public ElevatorCar select(List<ElevatorCar> cars, HallCall call) {\n        return cars.stream()\n            .min(Comparator.comparingInt(car -> cost(car, call)))\n            .orElseThrow();\n    }\n\n    private int cost(ElevatorCar car, HallCall call) {\n        int distance = Math.abs(car.currentFloor() - call.floor());\n\n        // Already sweeping toward the call, in the call's direction: cheapest.\n        if (car.direction() == call.direction() && movingToward(car, call)) {\n            return distance;\n        }\n        // Idle: cheap, but slightly worse than a car already on its way.\n        if (car.direction() == Direction.NONE) {\n            return distance + PENALTY_IDLE;\n        }\n        // Moving the wrong way: it must finish its sweep first, so the real\n        // cost is the rest of its run plus the trip back.\n        return distance + PENALTY_WRONG_WAY + car.stopsAhead().size();\n    }\n\n    private boolean movingToward(ElevatorCar car, HallCall call) {\n        return car.direction() == Direction.UP\n            ? call.floor() >= car.currentFloor()\n            : call.floor() <= car.currentFloor();\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "The sentence that lands",
+      "text": "*“I would use a LOOK sweep: a car keeps going one direction, serves everything ahead of it, and only reverses when nothing is left that way. Fairness comes out of the sweep for free, instead of me maintaining a fairness counter.”*"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why a `TreeSet` for stops"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ElevatorCar.java",
+      "code": "/** Stops are a sorted set, not a queue. Sorted gives \"next stop in this\n *  direction\" in O(log n); a set makes a duplicate press a no-op, which is\n *  exactly what a real button does. */\nprivate final TreeSet<Integer> stopsAhead = new TreeSet<>();\n\nvoid step() {\n    if (stopsAhead.isEmpty()) { direction = Direction.NONE; return; }\n\n    Integer next = direction == Direction.DOWN\n        ? stopsAhead.floor(currentFloor)      // nearest stop at or below\n        : stopsAhead.ceiling(currentFloor);   // nearest stop at or above\n\n    if (next == null) {                       // nothing ahead — reverse (LOOK)\n        direction = direction == Direction.UP ? Direction.DOWN : Direction.UP;\n        return;\n    }\n    if (next == currentFloor) { openDoors(); stopsAhead.remove(next); return; }\n    currentFloor += direction == Direction.UP ? 1 : -1;\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "A set, not a list",
+      "text": "Pressing 5 twice must not queue two stops. Using a `Set` makes that true by construction instead of by an `if (!stops.contains(f))` you will forget somewhere."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "`C` cars, `F` floors, `S` stops queued on one car.",
+      "headers": [
+        "Operation",
+        "Cost"
+      ],
+      "rows": [
+        [
+          "Hall call → dispatch",
+          "O(C) — score every car"
+        ],
+        [
+          "Car call → add stop",
+          "O(log S)"
+        ],
+        [
+          "One simulation tick per car",
+          "O(log S)"
+        ],
+        [
+          "Memory",
+          "O(C × F) worst case, one stop per floor per car"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency"
+    },
+    {
+      "type": "paragraph",
+      "text": "Buttons are pressed by people, so calls arrive from many threads while the simulation loop is moving cars."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Each car owns its own stop set.** Give every car a lock, or a single-threaded actor loop fed by a queue. Do not put one lock around the whole building.",
+        "**Dispatch reads car state while cars mutate it.** The scores are a snapshot and will be slightly stale — that is acceptable for a scheduling hint and you should say so rather than locking every car to score it.",
+        "**Assignment must be atomic.** Two hall calls dispatched concurrently can both pick the same idle car and both assume it is theirs. Assign under the car's own lock, and re-check it is still idle."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups you should have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Add capacity and weight limits",
+          "text": "The car reports load; a full car stops accepting hall calls but must still serve car calls from the people inside. Dispatch has to skip it *without* dropping the call."
+        },
+        {
+          "title": "Add express cars and floor restrictions",
+          "text": "`canServe(floor)` per car, checked before scoring. It turns dispatch into a filter-then-score, which is a one-line change if the interface is right."
+        },
+        {
+          "title": "Emergency and maintenance mode",
+          "text": "A state on the car that drops every stop and returns to a designated floor. Worth mentioning that safety overrides are never a strategy — they bypass the dispatcher entirely."
+        },
+        {
+          "title": "Optimise for energy rather than wait",
+          "text": "Swap the dispatcher. If the interviewer asks and your answer is “swap the dispatcher”, the design worked."
+        },
+        {
+          "title": "Prove nobody starves",
+          "text": "LOOK bounds worst-case wait at roughly two full sweeps. Nearest-car does not, and that is the concrete reason to prefer it."
+        },
+        {
+          "title": "A building with 100 floors and 20 cars",
+          "text": "Zoning: cars serve floor bands so sweeps are shorter. This is the HLD pivot — the same reasoning as sharding."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state before you are asked"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Same floor pressed twice → one stop, because stops are a set.",
+        "A hall call on the floor a car is already stopped at with doors open → serve it now, do not queue it.",
+        "All cars busy → the call queues; it must not be dropped or reassigned twice.",
+        "Requesting the floor you are already on → doors open, no movement.",
+        "A car reversing with stops both above and below → LOOK finishes the current direction first; verify it does not oscillate."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": null,
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Modelling",
+          "One `Request` type",
+          "Separates hall calls from car calls"
+        ],
+        [
+          "Dispatch",
+          "Nearest car, unexplained",
+          "LOOK, with the starvation argument"
+        ],
+        [
+          "Car state",
+          "Booleans for moving and doors",
+          "An explicit state machine"
+        ],
+        [
+          "Stops",
+          "A list or queue",
+          "A sorted set — dedupe and directional lookup for free"
+        ],
+        [
+          "Extensibility",
+          "Dispatch logic inline",
+          "A `Dispatcher` interface, swapped in the follow-up"
+        ],
+        [
+          "Concurrency",
+          "Not mentioned",
+          "Per-car locking, and dispatch scores as a stale snapshot"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The 45-minute plan",
+      "text": "**0–6** clarify cars, floors, objective. **6–10** hall call versus car call — get this on the board early. **10–18** classes and the car state machine. **18–30** code the car's `step` and one dispatcher. **30–38** compare FCFS, nearest and LOOK out loud. **38–45** capacity or zoning."
+    }
+  ],
+  "kind": "LLD",
+  "topic": "LLD Interview Problems",
+  "difficulty": "Hard",
+  "origin": "editorial",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "slug": "design-elevator-system"
+}
