@@ -221,7 +221,12 @@ export async function getBlog(user, slug) {
     'load blog',
   );
   if (!row) throw ApiError.notFound('Blog not found');
-  if (row.status !== 'published' && row.author_id !== user?.id) throw ApiError.notFound('Blog not found');
+  // A draft is visible to its author, and — for machine-written ones, which
+  // have no author — to any signed-in reader, because otherwise a pipeline
+  // draft would be invisible to the very people meant to review it.
+  const ownDraft = row.author_id && row.author_id === user?.id;
+  const reviewable = !row.author_id && Boolean(user);
+  if (row.status !== 'published' && !ownDraft && !reviewable) throw ApiError.notFound('Blog not found');
 
   if (row.status === 'published') {
     // Best-effort: a failed counter must never cost the reader the article.
@@ -251,11 +256,25 @@ export async function getBlog(user, slug) {
 }
 
 export async function listMyBlogs(user) {
-  const rows = unwrap(
-    await db.from('blogs').select(LIST_FIELDS).eq('author_id', user.id).order('updated_at', { ascending: false }),
-    'load your blogs',
-  );
-  return { items: rows.map((row) => toBlog(row, { user })) };
+  const [mine, awaitingReview] = await Promise.all([
+    unwrap(
+      await db.from('blogs').select(LIST_FIELDS).eq('author_id', user.id).order('updated_at', { ascending: false }),
+      'load your blogs',
+    ),
+    // Machine-written drafts belong to nobody, so they show up for everyone
+    // as a review queue rather than sitting unseen.
+    unwrap(
+      await db.from('blogs').select(LIST_FIELDS).is('author_id', null).eq('status', 'draft')
+        .order('updated_at', { ascending: false }),
+      'load drafts awaiting review',
+    ),
+  ]);
+
+  const seen = new Set();
+  const items = [...mine, ...awaitingReview]
+    .filter((row) => !seen.has(row.id) && seen.add(row.id))
+    .map((row) => toBlog(row, { user }));
+  return { items };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -304,7 +323,11 @@ export async function updateBlog(user, id, payload) {
     'load blog for update',
   );
   if (!existing) throw ApiError.notFound('Blog not found');
-  if (existing.author_id !== user.id) throw ApiError.forbidden('This blog belongs to someone else');
+  // Machine-written posts have no author, so any signed-in reviewer may edit
+  // and publish them. A post with an author still belongs to that author.
+  if (existing.author_id && existing.author_id !== user.id) {
+    throw ApiError.forbidden('This blog belongs to someone else');
+  }
 
   const patch = { updated_at: new Date().toISOString() };
   if (payload.title !== undefined) patch.title = payload.title;

@@ -65,19 +65,28 @@ export async function extractEvidence(page, question, { fetchImpl = fetch } = {}
     schema: SCHEMA,
     schemaName: 'evidence',
     effort: 'low',
-    maxTokens: 3000,
+    maxTokens: 6000,   // reasoning tokens count against this; be generous
     fetchImpl,
   });
 
   if (result.kind === 'none' || !result.companies?.length) return null;
+
+  // Optional fields arrive as null under strict mode; strip them so the
+  // published JSON stays clean.
+  const tidy = (value) => (value === null || value === '' ? undefined : value);
 
   return {
     url: page.url,
     title: page.title ?? page.url,
     source: page.source ?? page.host,
     kind: result.kind,
-    note: result.note,
-    companies: result.companies,
+    note: tidy(result.note),
+    companies: result.companies.map((company) => ({
+      name: company.name,
+      role: tidy(company.role),
+      date: tidy(company.date),
+      quote: company.quote,
+    })),
     // Kept for validate.js so the quote check runs against what we actually read.
     _pageText: page.text,
   };

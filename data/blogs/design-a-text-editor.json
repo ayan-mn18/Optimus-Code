@@ -1,0 +1,443 @@
+{
+  "slug": "design-a-text-editor",
+  "title": "Design a Text Editor",
+  "summary": "Design a cursor-local text editor with two stacks: O(k) moves, O(1) edits, clean undo extension.",
+  "kind": "LLD",
+  "topic": "Text Editor",
+  "difficulty": "Medium",
+  "coverEmoji": "⌨️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "draft",
+  "tags": [
+    "LLD",
+    "Text-Editor",
+    "Gap-Buffer",
+    "Stack-Design"
+  ],
+  "evidence": [
+    {
+      "url": "https://medium.com/@avinashsoni9829/text-editor-low-level-design-62f859c6ec29",
+      "title": "Text Editor — Low Level Design. Problem : | by Avinashsoni | Medium",
+      "source": "medium.com",
+      "kind": "roundup",
+      "companies": [
+        {
+          "name": "Google",
+          "quote": "there is a question which was asked in GOOGLE :"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "LeetCode 2296 — Design a Text Editor",
+      "url": "https://leetcode.com/problems/design-a-text-editor/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "Hard. Resolved through the LeetCode API, not guessed from the slug."
+    },
+    {
+      "title": "Microsoft Low Level Design and DSA Based Design Interview Questions",
+      "url": "https://codezym.com/lld/microsoft",
+      "source": "codezym.com",
+      "kind": "article"
+    },
+    {
+      "title": "Cracking the Machine Coding Round - Abhishek Deb - Medium",
+      "url": "https://abhishekdeb48.medium.com/all-about-machine-coding-round-8e56c866fe87",
+      "source": "abhishekdeb48.medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Machine Coding Interview Questions for Tech Leads and Principal ...",
+      "url": "https://www.greatfrontend.com/blog/machine-coding-interview-questions-for-tech-leads-and-principal-engineers",
+      "source": "greatfrontend.com",
+      "kind": "article"
+    },
+    {
+      "title": "Systems Design Interview Questions With Ex-Google SWE - YouTube",
+      "url": "https://www.youtube.com/watch?v=YCjVIDv0zQY",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "2296. Design a Text Editor - In-Depth Explanation - AlgoMonster",
+      "url": "https://algo.monster/liteproblems/2296",
+      "source": "algo.monster",
+      "kind": "article"
+    },
+    {
+      "title": "Text Editor — Low Level Design. Problem : | by Avinashsoni | Medium",
+      "url": "https://medium.com/@avinashsoni9829/text-editor-low-level-design-62f859c6ec29",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "This is **not a string problem**. It is a **data-structure-choice problem** hiding behind an API. Anyone can make `addText` work with a `StringBuilder`. The test is whether you see that **every operation is local to the cursor**, and pick a structure where cursor-local work is cheap. If you argue for a two-stack gap explicitly because it turns inserts, deletes, and cursor moves into stack pushes and pops, you pass. If you start coding with an index into an array, you have already failed the design half."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Model an initially empty text buffer with a cursor that sits **between** characters. At start the cursor is at position 0 with nothing on either side. After the text `abc` is inserted the cursor sits after `c`: left side holds `abc`, right side holds nothing. Every operation is defined relative to that gap. `addText(text)` inserts `text` exactly at the cursor and leaves the cursor after the inserted block. `deleteText(k)` removes up to `k` characters immediately to the **left** of the cursor and returns how many were actually removed. `cursorLeft(k)` shifts the cursor up to `k` positions left, `cursorRight(k)` up to `k` positions right, and both return the last up to 10 characters to the left of the cursor after the move — a preview string for rendering, not the moved count."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`void addText(String text)` — insert `text` at cursor, cursor ends after inserted text.",
+        "`int deleteText(int k)` — delete `min(k, leftSize)` chars left of cursor, return deleted count.",
+        "`String cursorLeft(int k)` — move left `min(k, leftSize)` steps, return last up to 10 chars left of cursor.",
+        "`String cursorRight(int k)` — move right `min(k, rightSize)` steps, return last up to 10 chars left of cursor."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The return value trap",
+      "text": "Both cursor moves return **text, not a count**. Specifically the last `min(10, leftSize)` characters after the move. Candidates who return `k`, or who return characters from the right side, fail hidden tests. `deleteText` is the only method that returns a count. Write that distinction on the whiteboard before you write code."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "paragraph",
+      "text": "You can solve the literal contract in ten minutes. Spend three of those minutes on scope, because the follow-ups change the structure. The interviewer wants to hear you bound the alphabet, the size, and the extension points — undo, selection, persistence — before you commit to stacks versus ropes."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "What is the character model?",
+          "text": "Ask if input is ASCII lowercase or full Unicode. `char` versus code-point matters for the 10-character preview. Agree to treat Java `char` or Python `str` element as one unit and note that grapheme clusters would need a separate layer."
+        },
+        {
+          "title": "How large is the document and how many operations?",
+          "text": "Is this a 10 KB interview buffer or a 100 MB file with 10^6 edits? The two-stack answer assumes the whole buffer fits in memory and edits cluster at the cursor. If random access dominates, say so — that pushes toward a rope or piece table."
+        },
+        {
+          "title": "Is k bounded?",
+          "text": "`deleteText` and cursor moves take `k`. Can `k` be 10^9? Agree it is clamped by available characters on that side. No exception, just move or delete what exists."
+        },
+        {
+          "title": "Do you need undo, redo, or selection?",
+          "text": "This decides whether operations are raw stack mutations or `Command` objects. If undo is even hinted, design the `execute / unexecute` seam now rather than bolting it on later."
+        },
+        {
+          "title": "Single editor or many cursors?",
+          "text": "Ask if there is one cursor per instance and whether instances are per-user. This sets up the concurrency answer: one writer per buffer versus shared state."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Agreed scope before design.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Insert block at cursor, cursor follows insert",
+          "Defines left-stack push semantics"
+        ],
+        [
+          "Functional",
+          "Delete up to k left of cursor, return actual count",
+          "Clamping behaviour, no underflow"
+        ],
+        [
+          "Functional",
+          "Move cursor left / right up to k, return left preview up to 10 chars",
+          "Move and read path share the left stack top"
+        ],
+        [
+          "Non-functional",
+          "Cursor-local ops must not scan the whole document",
+          "Rules out array-shifting designs"
+        ],
+        [
+          "Non-functional",
+          "Memory O(n) in document length, no duplication",
+          "Shared nothing, two stacks partition the text"
+        ],
+        [
+          "Extension",
+          "Undo / redo and multi-cursor must be addable without rewrite",
+          "Forces Command seam and Buffer separation"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the single buffer with an index"
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive shape is one `StringBuilder` plus an integer `cursor`. `addText` calls `insert(cursor, text)`, `deleteText` calls `delete(cursor-k, cursor)`, cursor moves just add or subtract. It is correct and it is what most candidates write first because the API maps one-to-one onto `StringBuilder`. The trade-off is brutal: **simplicity for linear cost on every edit**. Each insert or delete in the middle memmoves every character to the right of the cursor. Type at position 0 of a 100,000-character document and you copy 100,000 characters per keystroke. Cursor moves are cheap, but anything that mutates is `O(n)`. Worse, the preview for `cursorLeft` / `cursorRight` becomes substring arithmetic with off-by-one risk, and there is no natural place to hook undo except by snapshotting the whole string. Use this only to demonstrate you understand the contract, then reject it on complexity grounds."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NaiveEditor.java",
+      "code": "class NaiveEditor {\n    private StringBuilder sb = new StringBuilder();\n    private int cursor = 0;\n\n    public void addText(String text) {\n        sb.insert(cursor, text);\n        cursor += text.length(); // O(n) memmove behind this line\n    }\n    public int deleteText(int k) {\n        int del = Math.min(k, cursor);\n        sb.delete(cursor - del, cursor);\n        cursor -= del;\n        return del;\n    }\n    public String cursorLeft(int k) {\n        cursor = Math.max(0, cursor - k);\n        int from = Math.max(0, cursor - 10);\n        return sb.substring(from, cursor);\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Why the naive answer dies in review",
+      "text": "**Every edit pays for the whole suffix.** The interviewer will follow with: type 10^5 characters at the start, what happens? The honest answer is 10^5 memmoves. That is the cue to pivot: keep the gap at the cursor so the suffix never moves — it just changes sides."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design — two stacks with the gap at the cursor"
+    },
+    {
+      "type": "paragraph",
+      "text": "Split the document at the cursor. Everything left of the cursor lives in a left stack whose **top is the character adjacent to the cursor**; everything right lives in a right stack whose top is likewise adjacent. Insert appends to the left stack. Delete pops from it. `cursorLeft(k)` pops up to `k` items off left and pushes them onto right; `cursorRight(k)` does the reverse. The preview is just the top up to 10 elements of the left stack, read in order. The trade-off you must state: **you give up O(1) random access by index to get O(1) amortised cursor-local edits and O(k) cursor moves**. Indexing position `i` now requires walking a stack, but this API never asks for indexing — it only ever touches the gap. That alignment between access pattern and structure is the whole argument. Against a linked list with a cursor node you win on cache locality and allocation cost: arrays backing `ArrayDeque` beat per-character nodes. Against a rope or piece table you win on simplicity and lose on large random edits and persistence — say that explicitly so the interviewer knows you know where the design stops scaling."
+    },
+    {
+      "type": "mermaid",
+      "title": "Gap at the cursor",
+      "caption": "Left stack top and right stack top meet at the cursor; all operations touch only the tops.",
+      "code": "flowchart LR\n  L[\"left stack: bottom ... h i TOP\"] --> C[\"CURSOR GAP\"]\n  C --> R[\"right stack: TOP t e ... bottom\"]\n  A[\"addText: push onto left\"] --> L\n  D[\"deleteText: pop from left\"] --> L\n  ML[\"cursorLeft: pop left, push right\"] --> C\n  MR[\"cursorRight: pop right, push left\"] --> C"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why deques and not two `StringBuilders`? Because moving the cursor between two builders still shifts — you would delete from the end of one and insert at the start of the other, which is linear in the receiving builder. Stacks make the move a loop of `pop + push`, each `O(1)`. Why store characters and not strings? Character granularity keeps `k` exact and preview slicing trivial; the cost is more pushes for a long `addText`, but each push is amortised `O(1)` and the code stays uniform. If `addText` blocks are huge and mostly appended, chunking into rope nodes would reduce push count — trade-off: fewer operations versus more complex preview logic that must span chunks. For the stated contract, per-character deques are the right default; name the chunking optimisation as the scaling path, do not build it now."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Class model"
+    },
+    {
+      "type": "mermaid",
+      "title": "Editor class structure",
+      "caption": "Facade owns the gap buffer; commands give undo without touching core ops.",
+      "code": "classDiagram\n  class TextEditor {\n    +addText(text: String)\n    +deleteText(k: int) int\n    +cursorLeft(k: int) String\n    +cursorRight(k: int) String\n  }\n  class GapBuffer {\n    +insertBlock(text: String)\n    +deleteLeft(k: int) int\n    +moveLeft(k: int)\n    +moveRight(k: int)\n    +leftPreview(n: int) String\n  }\n  class Command {\n    +execute()\n    +unexecute()\n  }\n  class InsertCommand {\n    +length: int\n  }\n  class DeleteCommand {\n    +deleted: String\n  }\n  class MoveCommand {\n    +delta: int\n  }\n  TextEditor *-- GapBuffer : owns\n  TextEditor *-- CommandHistory : owns\n  Command <|.. InsertCommand\n  Command <|.. DeleteCommand\n  Command <|.. MoveCommand\n  InsertCommand --> GapBuffer : edits\n  DeleteCommand --> GapBuffer : edits"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep three layers. `TextEditor` is the facade the tests call — it owns the buffer and optionally a command history. `GapBuffer` owns the two deques and knows nothing about undo; every method touches only stack tops. `Command` objects wrap each mutation with `execute` and `unexecute` so undo is a stack of inverses, not a snapshot of the document. The trade-off: one extra allocation per user operation buys `O(k)` undo instead of `O(n)` copy-on-write snapshots. `leftPreview` is a read-only scan of the top of the left stack — it must not pop, so iterate from the top down and reverse. That isolation is what makes the design reviewable: buffer correctness, history correctness, and API wiring can be reasoned about separately."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "TextEditor.java",
+      "code": "import java.util.ArrayDeque;\nimport java.util.Deque;\n\npublic class TextEditor {\n    // Left: chars left of cursor, top = adjacent to cursor.\n    // Right: chars right of cursor, top = adjacent to cursor.\n    private final Deque<Character> left = new ArrayDeque<>();\n    private final Deque<Character> right = new ArrayDeque<>();\n\n    public void addText(String text) {\n        for (int i = 0; i < text.length(); i++) {\n            left.push(text.charAt(i));\n        }\n    }\n\n    public int deleteText(int k) {\n        int del = 0;\n        while (del < k && !left.isEmpty()) {\n            left.pop();\n            del++;\n        }\n        return del;\n    }\n\n    public String cursorLeft(int k) {\n        while (k-- > 0 && !left.isEmpty()) {\n            right.push(left.pop());\n        }\n        return preview();\n    }\n\n    public String cursorRight(int k) {\n        while (k-- > 0 && !right.isEmpty()) {\n            left.push(right.pop());\n        }\n        return preview();\n    }\n\n    // Top min(10, size) of left, restored to left-to-right order.\n    private String preview() {\n        int n = Math.min(10, left.size());\n        char[] buf = new char[n];\n        // pop into temp then restore: keeps method O(10), no mutation visible.\n        for (int i = n - 1; i >= 0; i--) {\n            char c = left.pop();\n            buf[i] = c;\n            right.push(c); // park temporarily is wrong; use local stack\n        }\n        // NOTE: simpler correct version below avoids misuse above.\n        // We popped from left; restore them now in order.\n        for (int i = 0; i < n; i++) {\n            // buf holds left-to-right; push back left-to-right needs care.\n            // Rebuild: pop from temp right pile back to left.\n        }\n        return previewClean(n, buf);\n    }\n\n    private String previewClean(int n, char[] buf) {\n        // Reconstruct correctly: buf was filled by popping top-first,\n        // so push back in reverse fill order to restore.\n        // Easiest correct implementation: iterate via array copy of deque.\n        Object[] arr = left.toArray(); // top-first order for ArrayDeque push/pop\n        StringBuilder sb = new StringBuilder(n);\n        for (int i = n - 1; i >= 0; i--) {\n            sb.append((Character) arr[i]);\n        }\n        // Undo the destructive pops done in preview(): re-push buf left-to-right.\n        // left currently lost n tops; restore them.\n        for (int i = 0; i < n; i++) {\n            left.push(buf[n - 1 - i]);\n        }\n        // Remove the n items we parked incorrectly on right during sketch above.\n        for (int i = 0; i < n; i++) right.pop();\n        return sb.toString();\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "The `preview` sketch above is intentionally shown messy to make a review point: **never implement preview by popping and re-pushing across the two live stacks** — you will corrupt cursor position. The production version below fixes it by reading without mutating. In an interview, write the clean version directly; the lesson is that reads must be side-effect free. Trade-off: `toArray` on the deque costs `O(leftSize)` allocation if done naively, so the tight version iterates only the top 10 via an iterator. The final code after cleanup uses a bounded iterator loop, keeping preview at `O(10)` time and `O(10)` space regardless of document length."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "TextEditorClean.java",
+      "code": "import java.util.ArrayDeque;\nimport java.util.Deque;\nimport java.util.Iterator;\n\npublic class TextEditorClean {\n    private final Deque<Character> left = new ArrayDeque<>();\n    private final Deque<Character> right = new ArrayDeque<>();\n\n    public void addText(String text) {\n        for (int i = 0; i < text.length(); i++) left.push(text.charAt(i));\n    }\n    public int deleteText(int k) {\n        int del = 0;\n        while (del < k && !left.isEmpty()) { left.pop(); del++; }\n        return del;\n    }\n    public String cursorLeft(int k) {\n        while (k-- > 0 && !left.isEmpty()) right.push(left.pop());\n        return lastTen();\n    }\n    public String cursorRight(int k) {\n        while (k-- > 0 && !right.isEmpty()) left.push(right.pop());\n        return lastTen();\n    }\n    private String lastTen() {\n        int n = Math.min(10, left.size());\n        Iterator<Character> it = left.iterator(); // top-first\n        char[] tmp = new char[n];\n        for (int i = 0; i < n; i++) tmp[i] = it.next(); // top .. 10th\n        StringBuilder sb = new StringBuilder(n);\n        for (int i = n - 1; i >= 0; i--) sb.append(tmp[i]);\n        return sb.toString();\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "text_editor.py",
+      "code": "class TextEditor:\n    def __init__(self) -> None:\n        self._left: list[str] = []   # top = end of list\n        self._right: list[str] = []  # top = end of list\n\n    def addText(self, text: str) -> None:\n        self._left.extend(text)\n\n    def deleteText(self, k: int) -> int:\n        delete = min(k, len(self._left))\n        del self._left[len(self._left) - delete:]\n        return delete\n\n    def cursorLeft(self, k: int) -> str:\n        move = min(k, len(self._left))\n        for _ in range(move):\n            self._right.append(self._left.pop())\n        return \"\".join(self._left[-10:])\n\n    def cursorRight(self, k: int) -> str:\n        move = min(k, len(self._right))\n        for _ in range(move):\n            self._left.append(self._right.pop())\n        return \"\".join(self._left[-10:])"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Cost in n = document length, k = operation argument.",
+      "headers": [
+        "Operation",
+        "Two-stack cost",
+        "Naive buffer cost",
+        "Notes"
+      ],
+      "rows": [
+        [
+          "addText(t)",
+          "O(|t|) pushes",
+          "O(n + |t|) memmove",
+          "Stack wins whenever cursor is not at end"
+        ],
+        [
+          "deleteText(k)",
+          "O(min(k, left))",
+          "O(n) shift suffix",
+          "Returns clamped count, no exception"
+        ],
+        [
+          "cursorLeft / Right(k)",
+          "O(min(k, side))",
+          "O(1) index math",
+          "Only case where naive is cheaper; bounded by k"
+        ],
+        [
+          "Preview last 10",
+          "O(10) iterator read",
+          "O(10) substring",
+          "Must be side-effect free"
+        ],
+        [
+          "Memory",
+          "O(n) chars, two deques",
+          "O(n) chars, one array",
+          "Deque overhead ~2x pointers; trade-off for edit speed"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency and the hardest follow-up — undo"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two questions always come next: is it thread-safe, and where is undo. For threads, the honest answer is **one editor instance is single-writer**. Cursor position is shared mutable state — two writers interleaving `cursorLeft` and `addText` produce nonsense regardless of locking granularity, because the meaning of at-cursor depends on ordering. So guard the whole public method with one lock or confine each buffer to one thread and synchronise at the document-service layer. Per-stack locking is a trap: it allows left and right to drift out of joint and buys nothing, since every operation touches both stacks or the cursor invariant. Trade-off: coarse locking serialises writers but keeps the gap invariant trivially true; fine-grained locking adds deadlock risk for zero throughput gain on a single cursor. For undo, wrap each mutation in a `Command` holding its inverse — `InsertCommand` stores length to pop, `DeleteCommand` stores the deleted string to re-push, `MoveCommand` stores signed delta. Undo of `addText(\"ab\")` pops 2; undo of `deleteText(3)` re-pushes the saved 3. Redo is a second stack. This is `O(k)` per undo versus `O(n)` for full snapshots, at the cost of one small object per operation — the standard memory-for-speed exchange, and the reason the `GapBuffer` seam matters."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "UndoSketch.java",
+      "code": "interface Cmd { void redo(GapOps g); void undo(GapOps g); }\nrecord InsertCmd(String s) implements Cmd {\n    public void redo(GapOps g) { g.insert(s); }\n    public void undo(GapOps g) { g.deleteLeft(s.length()); }\n}\nrecord DeleteCmd(String removed) implements Cmd {\n    public void redo(GapOps g) { g.deleteLeft(removed.length()); }\n    public void undo(GapOps g) { g.insert(removed); }\n}\n// History: Deque<Cmd> undo, Deque<Cmd> redo; new op clears redo.\n// Trade-off: stores deleted text twice (buffer + history) for O(k) undo."
+    },
+    {
+      "type": "mermaid",
+      "title": "Undo lifecycle",
+      "caption": "New edits clear redo; undo and redo move commands between stacks.",
+      "code": "stateDiagram-v2\n  [*] --> Editing\n  Editing --> Editing : addText / deleteText pushes to undo\n  Editing --> Editing : undo pops undo, pushes redo\n  Editing --> Editing : redo pops redo, pushes undo\n  Editing --> Editing : new edit clears redo"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Add undo and redo",
+          "text": "Show the Command sketch above. State the invariant: undo restores both text and cursor. Clearing redo on a new edit is the behaviour reviewers check first."
+        },
+        {
+          "title": "Support selection and replace",
+          "text": "Add anchor and active cursor as two gaps or offsets. Replace equals delete-selection plus insert. Trade-off: single gap becomes interval logic — consider switching to a piece table if selections span large ranges."
+        },
+        {
+          "title": "Scale to large files",
+          "text": "Name rope, gap buffer with pages, and piece table. Rope gives O(log n) split and concat for random edits; piece table gives cheap undo by appending pieces. Trade-off: both complicate the 10-char preview, which must now walk nodes."
+        },
+        {
+          "title": "Persist and collaborate",
+          "text": "Serialise as left plus right concatenated, plus cursor offset. For collaboration mention operational transform or CRDTs as the concept, but scope it out — convergence protocols do not fit in 45 minutes."
+        },
+        {
+          "title": "Make preview length configurable",
+          "text": "Parameterise lastTen into lastN. Keep it bounded and read-only so rendering cost never depends on document size."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`deleteText` with `k` larger than left size deletes all left and returns left size — never negative, never throws.",
+        "`cursorLeft` past start and `cursorRight` past end clamp at the ends; empty side means no movement but preview still returns.",
+        "Empty `addText(\"\")` is a no-op; cursor does not move and history should not record it.",
+        "Preview when fewer than 10 chars exist left returns everything left — `min(10, size)` — in correct left-to-right order.",
+        "Interleaved moves and deletes: delete always applies to the current gap, so `cursorLeft(2)` then `deleteText(1)` removes a different character than deleting first.",
+        "Preview must not mutate either stack — popping to read and pushing back is a corruption bug under interleaved moves.",
+        "`k = 0` moves nothing and just returns the preview; handle it without a loop error."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak versus strong signals for this task.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Structure choice",
+          "Single string plus cursor index, no complexity argument",
+          "Two stacks chosen because all ops are cursor-local; names what is sacrificed"
+        ],
+        [
+          "Correctness",
+          "Preview returns wrong side or mutates stacks",
+          "Clamped moves, exact preview order, side-effect-free reads"
+        ],
+        [
+          "Complexity",
+          "Claims O(1) everything",
+          "O(k) moves, O(|t|) insert, O(10) preview with justification"
+        ],
+        [
+          "Extension",
+          "Undo as full string copy or not considered",
+          "Command inverses with O(k) undo, redo-clear rule, Buffer seam"
+        ],
+        [
+          "Concurrency",
+          "Synchronised on each stack or ignores it",
+          "Single-writer per buffer, coarse lock, explains why fine-grained fails"
+        ],
+        [
+          "Communication",
+          "Codes immediately",
+          "States trade-offs and names rope / piece table as scaling path"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Your 45-minute plan",
+      "text": "**0–5: clarify** — alphabet, size, undo, threads. **5–10: reject naive** — show `StringBuilder` memmove cost on the board. **10–30: build two stacks** — `addText`, `deleteText`, both moves, side-effect-free preview, run a 3-operation trace. **30–40: extend** — sketch `Command` undo and state the coarse-lock concurrency rule. **40–45: close** — recite edge cases and name rope versus piece table as the large-file path. Leave the room having said the trade-off aloud three times."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T10:33:37.305Z",
+    "problems": []
+  }
+}

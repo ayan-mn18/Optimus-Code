@@ -48,7 +48,7 @@ FIRST-HAND interview reports naming companies — not tutorials.`,
     schema: INTAKE_SCHEMA,
     schemaName: 'intake',
     effort: 'low',
-    maxTokens: 1500,
+    maxTokens: 4000,
     fetchImpl,
   });
 

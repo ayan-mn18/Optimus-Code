@@ -15,6 +15,41 @@ export class LlmError extends Error {
   }
 }
 
+/**
+ * Strict structured output demands that `required` name EVERY key in
+ * `properties` — omitting one is a 400, not a looser contract. So an optional
+ * field has to be expressed as a nullable type instead. This walks a schema and
+ * makes that true, so callers can write schemas the way they think about them.
+ */
+export function strictify(node) {
+  if (Array.isArray(node)) return node.map(strictify);
+  if (!node || typeof node !== 'object') return node;
+
+  const out = { ...node };
+  // A caller that explicitly wants an open object means it — strict mode simply
+  // cannot express that, which is why such schemas go through json_object mode.
+  if (out.additionalProperties === true) return out;
+  if (out.properties && typeof out.properties === 'object') {
+    const keys = Object.keys(out.properties);
+    const required = new Set(out.required ?? keys);
+
+    out.properties = Object.fromEntries(
+      keys.map((key) => {
+        const child = strictify(out.properties[key]);
+        // Anything the caller left out of `required` becomes explicitly nullable.
+        if (!required.has(key) && typeof child.type === 'string') {
+          return [key, { ...child, type: [child.type, 'null'] }];
+        }
+        return [key, child];
+      }),
+    );
+    out.required = keys;
+    out.additionalProperties = false;
+  }
+  if (out.items) out.items = strictify(out.items);
+  return out;
+}
+
 export const llmConfigured = () => Boolean(env.ai.apiKey);
 
 /**
@@ -30,6 +65,7 @@ export async function chat({
   system,
   user,
   schema,
+  json = false,
   schemaName = 'result',
   tools,
   messages,
@@ -47,16 +83,20 @@ export async function chat({
       ...(system ? [{ role: 'system', content: system }] : []),
       { role: 'user', content: user },
     ],
-    // Muse Spark exposes reasoning effort; providers that do not understand the
-    // field ignore it rather than failing.
-    reasoning: { effort },
+    // OpenAI-style scalar. Meta rejects the nested `reasoning` object outright
+    // ("unknown parameter `reasoning`"), so this is the portable spelling.
+    reasoning_effort: effort,
   };
 
   if (schema) {
     body.response_format = {
       type: 'json_schema',
-      json_schema: { name: schemaName, strict: true, schema },
+      json_schema: { name: schemaName, strict: true, schema: strictify(schema) },
     };
+  } else if (json) {
+    // Strict schemas must close every object, so a document with free-form
+    // blocks cannot be expressed as one. We validate it ourselves instead.
+    body.response_format = { type: 'json_object' };
   }
   if (tools) {
     body.tools = tools;
