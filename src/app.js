@@ -17,6 +17,7 @@ import systemDesignRoutes from './routes/system-design.routes.js';
 import assessmentRoutes from './routes/assessment.routes.js';
 import billingRoutes from './routes/billing.routes.js';
 import blogRoutes from './routes/blog.routes.js';
+import researchRoutes from './routes/research.routes.js';
 
 export function createApp() {
   const app = express();
@@ -64,6 +65,7 @@ export function createApp() {
   app.use('/api/assessments', assessmentRoutes);
   app.use('/api/billing', billingRoutes);
   app.use('/api/blogs', blogRoutes);
+  app.use('/api/research', researchRoutes);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

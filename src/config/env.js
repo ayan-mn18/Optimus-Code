@@ -50,6 +50,22 @@ export const env = {
     baseUrl: (process.env.LLM_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/$/, ''),
     model: process.env.LLM_MODEL ?? 'gpt-4o-mini',
   },
+  research: {
+    // Firecrawl does both search and scrape, so there is no separate search vendor.
+    firecrawlKey: process.env.FIRECRAWL_API_KEY?.trim() ?? '',
+    firecrawlUrl: (process.env.FIRECRAWL_URL ?? 'https://api.firecrawl.dev/v2').replace(/\/$/, ''),
+    // Rung 3: only reached when Firecrawl refuses a host outright (it blocks Reddit).
+    browserUseKey: process.env.BROWSER_USE_API_KEY?.trim() ?? '',
+    browserUseUrl: (process.env.BROWSER_USE_URL ?? 'https://api.browser-use.com/api/v2').replace(/\/$/, ''),
+    enabled: Boolean(process.env.FIRECRAWL_API_KEY?.trim()),
+    maxSearches: Number(process.env.RESEARCH_MAX_SEARCHES ?? 8),
+    maxFetches: Number(process.env.RESEARCH_MAX_FETCHES ?? 10),
+    concurrency: Number(process.env.RESEARCH_CONCURRENCY ?? 3),
+    // A run that finds nothing must still cost a bounded amount.
+    timeoutMs: Number(process.env.RESEARCH_TIMEOUT_MIN ?? 8) * 60_000,
+    autoPublish: process.env.RESEARCH_AUTO_PUBLISH === 'true',
+  },
+
   runner: {
     enabled: Boolean(process.env.JUDGE0_URL?.trim()),
     provider: (process.env.CODE_RUNNER_PROVIDER ?? 'judge0').trim().toLowerCase(),
