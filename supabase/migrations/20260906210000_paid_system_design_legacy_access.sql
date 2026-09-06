@@ -10,4 +10,5 @@ alter table public.subscriptions
 
 update public.users
 set billing_exempt = true
-where billing_exempt = false;
+where billing_exempt = false
+  and created_at < timestamptz '2026-09-06 13:20:00+00';
