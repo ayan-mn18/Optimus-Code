@@ -2,6 +2,8 @@ import { db, unwrap } from '../lib/supabase.js';
 import { ApiError } from '../lib/errors.js';
 import { todayIn, addDays, daysBetween } from '../lib/dates.js';
 import { sendGreenStreakNotification, sendRedDayNotification } from './notification.service.js';
+import { getProblemById, getProblemCatalog } from './problem-catalog.service.js';
+import { getOrSetCached, invalidateCache } from '../lib/cache.js';
 
 const PROBLEM_FIELDS = [
   'id', 'slug', 'title', 'kind', 'topic', 'subtopic', 'difficulty', 'description',
@@ -110,10 +112,10 @@ function shuffle(items) {
 }
 
 export async function getEnrollment(userId) {
-  return unwrap(
+  return getOrSetCached(`enrollment:${userId}`, 5_000, async () => unwrap(
     await db.from('enrollments').select('*').eq('user_id', userId).maybeSingle(),
     'load enrollment',
-  );
+  ));
 }
 
 export async function enroll(userId, { goals, timezone }) {
@@ -124,7 +126,7 @@ export async function enroll(userId, { goals, timezone }) {
   };
   const existing = await getEnrollment(userId);
   if (existing) {
-    return unwrap(
+    const updated = unwrap(
       await db
         .from('enrollments')
         .update({ ...targets, status: 'active' })
@@ -133,9 +135,11 @@ export async function enroll(userId, { goals, timezone }) {
         .single(),
       'update enrollment',
     );
+    invalidateCache(`enrollment:${userId}`);
+    return updated;
   }
 
-  return unwrap(
+  const created = unwrap(
     await db
       .from('enrollments')
       .insert({ user_id: userId, ...targets, started_on: todayIn(timezone) })
@@ -143,6 +147,8 @@ export async function enroll(userId, { goals, timezone }) {
       .single(),
     'create enrollment',
   );
+  invalidateCache(`enrollment:${userId}`);
+  return created;
 }
 
 async function requireEnrollment(userId) {
@@ -275,7 +281,7 @@ async function getSolvedProblemIds(userId) {
  */
 async function pickDailyProblems(userId, today, targets) {
   const [problems, assignments, solvedIds] = await Promise.all([
-    unwrap(await db.from('problems').select(PROBLEM_FIELDS).order('order_index'), 'load problems'),
+    getProblemCatalog({ fields: PROBLEM_FIELDS }),
     unwrap(
       await db
         .from('daily_assignments')
@@ -555,8 +561,8 @@ async function isMalformedToday(userId, date, log) {
  * today's set — generating it on first visit of the day.
  */
 export async function getToday(user) {
-  const enrollment = await requireEnrollment(user.id);
   const today = todayIn(user.timezone);
+  const enrollment = await requireEnrollment(user.id);
   const closedDays = await closeOpenDays(user.id, today);
 
   let log = unwrap(
@@ -615,25 +621,26 @@ export async function getToday(user) {
     }
   }
 
-  const assignments = unwrap(
-    await db
-      .from('daily_assignments')
-      .select(`position, round, carried_over, problem:problems(${PROBLEM_FIELDS})`)
-      .eq('user_id', user.id)
-      .eq('assigned_on', today)
-      .order('round')
-      .order('position'),
-    'load today assignments',
-  );
-
-  const solvedRows = unwrap(
-    await db
-      .from('user_problems')
-      .select('problem_id, solved_on, is_bonus, time_spent_min')
-      .eq('user_id', user.id)
-      .eq('status', 'solved'),
-    'load solved rows',
-  );
+  const [assignments, solvedRows] = await Promise.all([
+    unwrap(
+      await db
+        .from('daily_assignments')
+        .select(`position, round, carried_over, problem:problems(${PROBLEM_FIELDS})`)
+        .eq('user_id', user.id)
+        .eq('assigned_on', today)
+        .order('round')
+        .order('position'),
+      'load today assignments',
+    ),
+    unwrap(
+      await db
+        .from('user_problems')
+        .select('problem_id, solved_on, is_bonus, time_spent_min')
+        .eq('user_id', user.id)
+        .eq('status', 'solved'),
+      'load solved rows',
+    ),
+  ]);
   const solvedMap = new Map(solvedRows.map((row) => [row.problem_id, row]));
   log = (await refreshDayCounters(user.id, today)) ?? log;
 
@@ -725,10 +732,7 @@ export async function extendToday(user) {
 export async function markSolved(user, problemId, { timeSpentMin = null, notes = null } = {}) {
   await requireEnrollment(user.id);
   const today = todayIn(user.timezone);
-  const problem = unwrap(
-    await db.from('problems').select(PROBLEM_FIELDS).eq('id', problemId).maybeSingle(),
-    'load problem',
-  );
+  const problem = await getProblemById(problemId, PROBLEM_FIELDS);
   if (!problem) throw ApiError.notFound('Problem not found');
   if (problem.kind !== 'DSA') {
     throw ApiError.badRequest('System Design completion requires a passed Optimus assessment');
@@ -786,10 +790,7 @@ export async function markSolved(user, problemId, { timeSpentMin = null, notes =
 export async function completeAssessedProblem(user, problemId) {
   await requireEnrollment(user.id);
   const today = todayIn(user.timezone);
-  const problem = unwrap(
-    await db.from('problems').select(PROBLEM_FIELDS).eq('id', problemId).maybeSingle(),
-    'load assessed problem',
-  );
+  const problem = await getProblemById(problemId, PROBLEM_FIELDS);
   if (!problem) throw ApiError.notFound('Problem not found');
   if (problem.kind === 'DSA') throw ApiError.badRequest('DSA problems do not use Optimus assessments');
 
@@ -827,10 +828,7 @@ export async function completeAssessedProblem(user, problemId) {
 
 export async function unmarkSolved(user, problemId) {
   const today = todayIn(user.timezone);
-  const problem = unwrap(
-    await db.from('problems').select('kind').eq('id', problemId).maybeSingle(),
-    'load problem kind',
-  );
+  const problem = await getProblemById(problemId, 'kind');
   if (!problem) throw ApiError.notFound('Problem not found');
   if (problem.kind !== 'DSA') throw ApiError.badRequest('System Design assessment results cannot be unchecked');
 
@@ -861,7 +859,14 @@ export async function getStreak(user) {
         .order('log_date', { ascending: false }),
       'load logs for streak',
     ),
-    unwrap(await db.from('users').select('freezes_used').eq('id', user.id).single(), 'load freeze balance'),
+    unwrap(
+      await db
+        .from('users')
+        .select('freezes_used, current_streak, longest_streak, green_days, total_solved, last_complete_on, last_streak_day')
+        .eq('id', user.id)
+        .single(),
+      'load freeze balance',
+    ),
     countSolved(user.id),
   ]);
 
@@ -904,20 +909,21 @@ export async function getStreak(user) {
     freezes: freezeBalance({ greenDays, freezesUsed: account.freezes_used }),
   };
 
-  unwrap(
-    await db
-      .from('users')
-      .update({
-        current_streak: current,
-        longest_streak: Math.max(longest, current),
-        green_days: greenDays,
-        total_solved: solvedCount,
-        last_complete_on: lastCompleteOn,
-        last_streak_day: lastStreakDay,
-      })
-      .eq('id', user.id),
-    'update standings',
-  );
+  const standings = {
+    current_streak: current,
+    longest_streak: Math.max(longest, current),
+    green_days: greenDays,
+    total_solved: solvedCount,
+    last_complete_on: lastCompleteOn,
+    last_streak_day: lastStreakDay,
+  };
+  const standingsChanged = Object.entries(standings).some(([field, value]) => account[field] !== value);
+  if (standingsChanged) {
+    unwrap(
+      await db.from('users').update(standings).eq('id', user.id),
+      'update standings',
+    );
+  }
 
   return streak;
 }

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { db, unwrap } from '../lib/supabase.js';
+import { getOrSetCached, invalidateCache } from '../lib/cache.js';
 import { validate } from '../middleware/validate.js';
 import { issueWaitlistInvite } from '../services/invite.service.js';
 
@@ -23,9 +24,11 @@ const joinSchema = z.object({
 
 /** Total signups — drives the counter on the landing page. */
 async function waitlistCount() {
-  const { count, error } = await db.from('waitlist').select('*', { count: 'exact', head: true });
-  if (error) throw Object.assign(new Error(`count waitlist: ${error.message}`), { status: 500 });
-  return count ?? 0;
+  return getOrSetCached('waitlist:count', 15_000, async () => {
+    const { count, error } = await db.from('waitlist').select('*', { count: 'exact', head: true });
+    if (error) throw Object.assign(new Error(`count waitlist: ${error.message}`), { status: 500 });
+    return count ?? 0;
+  });
 }
 
 router.get('/', async (_req, res, next) => {
@@ -59,6 +62,8 @@ router.post('/', joinLimiter, validate(joinSchema), async (req, res, next) => {
         .single(),
       'join waitlist',
     );
+
+    invalidateCache('waitlist:count');
 
     const invite = await issueWaitlistInvite(entry);
 

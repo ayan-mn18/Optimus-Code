@@ -2,6 +2,7 @@ import DodoPayments from 'dodopayments';
 import { env } from '../config/env.js';
 import { db, unwrap } from '../lib/supabase.js';
 import { ApiError } from '../lib/errors.js';
+import { getOrSetCached, invalidateCache } from '../lib/cache.js';
 
 export const PRICING = {
   monthly: { amount: 10, currency: 'USD', interval: 'month' },
@@ -41,11 +42,13 @@ export function publicSubscription(row) {
 }
 
 export async function getSubscription(userId) {
-  const row = unwrap(
-    await db.from('subscriptions').select('*').eq('user_id', userId).maybeSingle(),
-    'load subscription',
-  );
-  return publicSubscription(row);
+  return getOrSetCached(`subscription:${userId}`, 15_000, async () => {
+    const row = unwrap(
+      await db.from('subscriptions').select('*').eq('user_id', userId).maybeSingle(),
+      'load subscription',
+    );
+    return publicSubscription(row);
+  });
 }
 
 export async function createCheckout(user, plan, { client = dodo } = {}) {
@@ -75,6 +78,7 @@ export async function createCheckout(user, plan, { client = dodo } = {}) {
     ),
     'record pending checkout',
   );
+  invalidateCache(`subscription:${user.id}`);
   return { checkoutUrl: session.checkout_url };
 }
 
@@ -139,6 +143,7 @@ export async function processDodoWebhook(event, webhookId) {
       ),
       'sync subscription webhook',
     );
+    invalidateCache(`subscription:${userId}`);
     return { duplicate: false, handled: true };
   } catch (error) {
     await db.from('payment_webhook_events').delete().eq('id', webhookId);

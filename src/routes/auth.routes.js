@@ -11,6 +11,7 @@ import { signAccessToken, issueRefreshToken, rotateRefreshToken, revokeAllRefres
 import { validate } from '../middleware/validate.js';
 import { requireAuth } from '../middleware/auth.js';
 import { getEnrollment } from '../services/challenge.service.js';
+import { invalidateCache } from '../lib/cache.js';
 
 const router = Router();
 const googleClient = new OAuth2Client();
@@ -167,6 +168,7 @@ router.post('/refresh', validate(z.object({ refreshToken: z.string().min(10) }))
 router.post('/logout', requireAuth, async (req, res, next) => {
   try {
     await revokeAllRefreshTokens(req.user.id);
+    invalidateCache(`auth:user:${req.user.id}`);
     res.status(204).end();
   } catch (err) {
     next(err);
@@ -202,6 +204,7 @@ router.patch(
         await db.from('users').update(patch).eq('id', req.user.id).select('*').single(),
         'update profile',
       );
+      invalidateCache(`auth:user:${req.user.id}`);
       res.json({ user: publicUser(user) });
     } catch (err) {
       next(err);

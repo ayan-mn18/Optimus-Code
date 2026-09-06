@@ -53,7 +53,7 @@ router.patch('/goals', validate(z.object({ goals: goalsSchema })), saveGoals);
 
 router.get('/today', async (req, res, next) => {
   try {
-    const [today, streak] = [await getToday(req.user), await getStreak(req.user)];
+    const [today, streak] = await Promise.all([getToday(req.user), getStreak(req.user)]);
     res.json({ ...today, streak });
   } catch (err) {
     next(err);
@@ -62,7 +62,7 @@ router.get('/today', async (req, res, next) => {
 
 router.post('/extend', async (req, res, next) => {
   try {
-    const [today, streak] = [await extendToday(req.user), await getStreak(req.user)];
+    const [today, streak] = await Promise.all([extendToday(req.user), getStreak(req.user)]);
     res.status(201).json({ ...today, streak });
   } catch (err) {
     next(err);

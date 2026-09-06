@@ -1,6 +1,7 @@
 import { db, unwrap } from '../lib/supabase.js';
 import { todayIn, addDays } from '../lib/dates.js';
 import { getStreak } from './challenge.service.js';
+import { getProblemCatalog } from './problem-catalog.service.js';
 
 const DIFFICULTIES = ['Easy', 'Medium', 'Hard'];
 
@@ -10,7 +11,7 @@ export async function getOverview(user, { heatmapDays = 182 } = {}) {
   const since = addDays(today, -(heatmapDays - 1));
 
   const [problems, solved, logs, streak, assignments] = await Promise.all([
-    unwrap(await db.from('problems').select('id, kind, topic, difficulty'), 'load problems'),
+    getProblemCatalog({ fields: 'id, kind, topic, difficulty', orderBy: null }),
     unwrap(
       await db
         .from('user_problems')
@@ -116,7 +117,7 @@ export async function getOverview(user, { heatmapDays = 182 } = {}) {
 /** Complete problem explorer payload; filtering and pagination stay client-side. */
 export async function listProblems(user) {
   const [problems, solved] = await Promise.all([
-    unwrap(await db.from('problems').select('*').eq('kind', 'DSA').order('order_index'), 'load DSA problems'),
+    getProblemCatalog({ fields: '*', kind: 'DSA' }),
     unwrap(
       await db
         .from('user_problems')

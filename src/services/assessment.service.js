@@ -4,6 +4,7 @@ import { env } from '../config/env.js';
 import { db, unwrap } from '../lib/supabase.js';
 import { ApiError } from '../lib/errors.js';
 import { completeAssessedProblem } from './challenge.service.js';
+import { getProblemById } from './problem-catalog.service.js';
 
 const PROMPT_VERSION = 'optimus-system-design-mcq-v2';
 const OPEN_STATUSES = ['generating', 'active', 'grading'];
@@ -159,10 +160,7 @@ async function loadOwnedAttempt(userId, attemptId) {
 
 export async function createAssessment(user, problemId) {
   assertLlmConfigured();
-  const problem = unwrap(
-    await db.from('problems').select('*').eq('id', problemId).in('kind', ['LLD', 'HLD']).maybeSingle(),
-    'load assessment problem',
-  );
+  const problem = await getProblemById(problemId, '*', ['LLD', 'HLD']);
   if (!problem?.assessment_enabled) throw ApiError.notFound('Assessment problem not found');
 
   const existing = unwrap(
@@ -227,7 +225,7 @@ export async function getAssessment(user, attemptId) {
   const attempt = await loadOwnedAttempt(user.id, attemptId);
   const [answers, problem] = await Promise.all([
     unwrap(await db.from('assessment_answers').select('*').eq('attempt_id', attempt.id), 'load assessment answers'),
-    unwrap(await db.from('problems').select('id, title, kind, topic, subtopic, difficulty').eq('id', attempt.problem_id).single(), 'load assessment problem'),
+    getProblemById(attempt.problem_id, 'id, title, kind, topic, subtopic, difficulty'),
   ]);
   return { attempt: publicAttempt(attempt, answers), problem };
 }
@@ -294,14 +292,18 @@ export async function submitAssessment(user, attemptId) {
       result = scoreMultipleChoice(question, answer.answer);
       total += result.score;
       results.push({ questionId: question.id, ...result });
-      unwrap(
+    }
+
+    await Promise.all(results.map(async (result) => {
+      const answer = answerByQuestion.get(result.questionId);
+      return unwrap(
         await db
           .from('assessment_answers')
           .update({ score: result.score, feedback: result.feedback, test_results: result.testResults ?? null, graded_at: new Date().toISOString() })
           .eq('id', answer.id),
         'store assessment grade',
       );
-    }
+    }));
 
     const passed = total / attempt.question_set.length > 0.8;
     const completedAt = new Date().toISOString();

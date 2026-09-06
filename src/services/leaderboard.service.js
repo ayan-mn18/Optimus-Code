@@ -60,7 +60,7 @@ export async function getLeaderboard(viewer, { metric = 'streak' } = {}) {
   const ranked = rank(sorted);
   const meIndex = ranked.findIndex((entry) => entry.userId === viewer.id);
 
-  const self = unwrap(
+  const self = rows.find((row) => row.id === viewer.id) ?? unwrap(
     await db
       .from('users')
       .select('id, name, avatar_seed, current_streak, longest_streak, green_days, total_solved, last_complete_on, last_streak_day, created_at')

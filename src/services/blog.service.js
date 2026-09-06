@@ -1,5 +1,6 @@
 import { db, unwrap } from '../lib/supabase.js';
 import { ApiError } from '../lib/errors.js';
+import { getOrSetCached, invalidateCache } from '../lib/cache.js';
 
 const LIST_FIELDS = [
   'id', 'slug', 'title', 'summary', 'kind', 'problem_id', 'topic', 'difficulty',
@@ -163,6 +164,17 @@ async function likedSlugs(user, blogIds) {
 /* -------------------------------------------------------------------------- */
 
 export async function listBlogs(user, { kind, topic, company, tag, search, problemId, sort, page, pageSize }) {
+  const isPublic = !user;
+  const cacheKey = isPublic
+    ? `blogs:list:${JSON.stringify({ kind, topic, company, tag, search, problemId, sort, page, pageSize })}`
+    : null;
+  if (cacheKey) {
+    return getOrSetCached(cacheKey, 30_000, () => listBlogsUncached(user, { kind, topic, company, tag, search, problemId, sort, page, pageSize }));
+  }
+  return listBlogsUncached(user, { kind, topic, company, tag, search, problemId, sort, page, pageSize });
+}
+
+async function listBlogsUncached(user, { kind, topic, company, tag, search, problemId, sort, page, pageSize }) {
   let query = db.from('blogs').select(LIST_FIELDS).eq('status', 'published');
   if (kind) query = query.eq('kind', kind);
   if (topic) query = query.eq('topic', topic);
@@ -228,26 +240,22 @@ export async function getBlog(user, slug) {
   const reviewable = !row.author_id && Boolean(user);
   if (row.status !== 'published' && !ownDraft && !reviewable) throw ApiError.notFound('Blog not found');
 
-  if (row.status === 'published') {
-    // Best-effort: a failed counter must never cost the reader the article.
-    const { data } = await db.rpc('increment_blog_views', { p_slug: slug });
-    if (typeof data === 'number') row.views = data;
-  }
-
-  const [liked, related] = await Promise.all([
+  const [viewCount, liked, related] = await Promise.all([
+    row.status === 'published'
+      ? db.rpc('increment_blog_views', { p_slug: slug }).then(({ data, error }) => error ? null : data).catch(() => null)
+      : Promise.resolve(null),
     likedSlugs(user, [row.id]),
-    unwrap(
-      await db
+    db
         .from('blogs')
         .select(LIST_FIELDS)
         .eq('status', 'published')
         .eq('kind', row.kind)
         .neq('id', row.id)
         .order('views', { ascending: false })
-        .limit(3),
-      'load related blogs',
-    ),
+        .limit(3)
+      .then((result) => unwrap(result, 'load related blogs')),
   ]);
+  if (typeof viewCount === 'number') row.views = viewCount;
 
   return {
     blog: toBlog(row, { user, liked: liked.has(row.id) }),
@@ -314,6 +322,8 @@ export async function createBlog(user, payload) {
     'create blog',
   );
 
+  invalidateCache('blogs:list:');
+  invalidateCache('blogs:problem-slugs:');
   return toBlog(row, { user });
 }
 
@@ -360,6 +370,8 @@ export async function updateBlog(user, id, payload) {
     await db.from('blogs').update(patch).eq('id', id).select(FULL_FIELDS).single(),
     'update blog',
   );
+  invalidateCache('blogs:list:');
+  invalidateCache('blogs:problem-slugs:');
   return toBlog(row, { user });
 }
 
@@ -372,21 +384,27 @@ export async function deleteBlog(user, id) {
   if (existing.author_id !== user.id) throw ApiError.forbidden('This blog belongs to someone else');
 
   unwrap(await db.from('blogs').delete().eq('id', id), 'delete blog');
+  invalidateCache('blogs:list:');
+  invalidateCache('blogs:problem-slugs:');
 }
 
 export async function toggleBlogLike(user, id) {
   const { data, error } = await db.rpc('toggle_blog_like', { p_blog_id: id, p_user_id: user.id });
   if (error) throw ApiError.notFound('Blog not found');
   const result = Array.isArray(data) ? data[0] : data;
+  invalidateCache('blogs:list:');
   return { liked: Boolean(result?.liked), likes: result?.likes ?? 0 };
 }
 
 /** Slug per problem id, so the System Design catalogue can deep-link to a write-up. */
 export async function blogSlugsByProblem(problemIds) {
   if (!problemIds.length) return new Map();
-  const rows = unwrap(
-    await db.from('blogs').select('slug, problem_id').eq('status', 'published').in('problem_id', problemIds),
-    'load blog links',
-  );
-  return new Map(rows.filter((row) => row.problem_id).map((row) => [row.problem_id, row.slug]));
+  const key = `blogs:problem-slugs:${[...new Set(problemIds)].sort().join(',')}`;
+  return getOrSetCached(key, 30_000, async () => {
+    const rows = unwrap(
+      await db.from('blogs').select('slug, problem_id').eq('status', 'published').in('problem_id', problemIds),
+      'load blog links',
+    );
+    return new Map(rows.filter((row) => row.problem_id).map((row) => [row.problem_id, row.slug]));
+  });
 }

@@ -1,6 +1,20 @@
 import { db, unwrap } from '../lib/supabase.js';
 import { verifyAccessToken } from '../lib/tokens.js';
 import { ApiError } from '../lib/errors.js';
+import { getOrSetCached } from '../lib/cache.js';
+
+const SESSION_USER_TTL_MS = 5_000;
+
+function loadSessionUser(userId) {
+  return getOrSetCached(`auth:user:${userId}`, SESSION_USER_TTL_MS, async () => unwrap(
+    await db
+      .from('users')
+      .select('id, email, name, timezone, avatar_seed, picture_url, auth_provider, show_on_leaderboard, created_at')
+      .eq('id', userId)
+      .maybeSingle(),
+    'load session user',
+  ));
+}
 
 export async function requireAuth(req, _res, next) {
   try {
@@ -12,14 +26,7 @@ export async function requireAuth(req, _res, next) {
     }
 
     const payload = verifyAccessToken(token);
-    const user = unwrap(
-      await db
-        .from('users')
-        .select('id, email, name, timezone, avatar_seed, picture_url, auth_provider, show_on_leaderboard, created_at')
-        .eq('id', payload.sub)
-        .maybeSingle(),
-      'load session user',
-    );
+    const user = await loadSessionUser(payload.sub);
 
     if (!user) throw ApiError.unauthorized('Account no longer exists');
 
@@ -41,14 +48,7 @@ export async function optionalAuth(req, _res, next) {
 
   try {
     const payload = verifyAccessToken(token);
-    req.user = unwrap(
-      await db
-        .from('users')
-        .select('id, email, name, timezone, avatar_seed, picture_url, auth_provider, show_on_leaderboard, created_at')
-        .eq('id', payload.sub)
-        .maybeSingle(),
-      'load session user',
-    ) ?? undefined;
+    req.user = await loadSessionUser(payload.sub) ?? undefined;
   } catch {
     // An expired or malformed token reads as an anonymous visitor here.
   }

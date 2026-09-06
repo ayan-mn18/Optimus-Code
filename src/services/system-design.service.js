@@ -1,6 +1,7 @@
 import { db, unwrap } from '../lib/supabase.js';
 import { ApiError } from '../lib/errors.js';
 import { blogSlugsByProblem } from './blog.service.js';
+import { getProblemById, getProblemCatalog } from './problem-catalog.service.js';
 
 const FIELDS = [
   'id', 'slug', 'title', 'kind', 'topic', 'subtopic', 'difficulty', 'description',
@@ -9,12 +10,8 @@ const FIELDS = [
 ].join(', ');
 
 export async function listSystemDesign(user, { kind, topic, difficulty, status, search }) {
-  let query = db.from('problems').select(FIELDS).eq('kind', kind).order('order_index');
-  if (topic) query = query.eq('topic', topic);
-  if (difficulty) query = query.eq('difficulty', difficulty);
-
   const [problems, solved] = await Promise.all([
-    unwrap(await query, 'load System Design catalogue'),
+    getProblemCatalog({ fields: FIELDS, kind, topic, difficulty }),
     unwrap(
       await db
         .from('user_problems')
@@ -56,10 +53,7 @@ export async function listSystemDesign(user, { kind, topic, difficulty, status, 
 
 export async function getSystemDesignProblem(user, problemId) {
   const [problem, solved] = await Promise.all([
-    unwrap(
-      await db.from('problems').select(FIELDS).eq('id', problemId).in('kind', ['LLD', 'HLD']).maybeSingle(),
-      'load System Design problem',
-    ),
+    getProblemById(problemId, FIELDS, ['LLD', 'HLD']),
     unwrap(
       await db
         .from('user_problems')
