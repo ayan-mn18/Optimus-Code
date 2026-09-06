@@ -12,7 +12,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { env } from '../src/config/env.js';
-import { runPipeline } from '../src/services/research/pipeline.js';
+import { mapWithConcurrency, runPipeline } from '../src/services/research/pipeline.js';
 import { slugify } from '../src/services/blog.service.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -72,27 +72,40 @@ if (!queue.length) {
 
 console.log(`model: ${env.ai.model}`);
 console.log(`firecrawl: ${env.research.firecrawlKey ? 'configured' : 'MISSING'} · browser use: ${env.research.browserUseKey ? 'configured' : 'not set'}`);
-console.log(`queue: ${queue.length}\n`);
+console.log(`queue: ${queue.length}`);
+const startedAt = Date.now();
+
+// Articles are wholly independent, so they run several at a time. Per-stage
+// concurrency inside a run still applies, and fetchPage rate-limits per host,
+// so widening this does not make us rude to any one site.
+const lanes = Number(flag('concurrency', env.research.concurrency));
+console.log(`running ${lanes} at a time\n`);
 
 let ok = 0;
-for (const job of queue) {
-  const label = typeof job === 'string' ? job : job.title;
-  console.log(`── ${label}`);
-  try {
-    const result = await runPipeline(job, {
-      onStage: (message) => console.log(`   ${message}`),
-      force: Boolean(flag('force')),
-    });
-    if (result.skipped) { console.log(`   skipped: ${result.skipped}\n`); continue; }
-    console.log(`   ✓ ${result.slug} — ${result.blocks} blocks, ~${result.readMinutes} min, `
-      + `${result.evidence} sources → ${result.companies} companies, status ${result.status}`);
-    if (result.problems?.length) console.log(`   ! unresolved: ${result.problems.join('; ')}`);
-    console.log();
-    ok += 1;
-  } catch (error) {
-    console.error(`   ✗ ${error.message}\n`);
-  }
-}
+let done = 0;
 
-console.log(`done — ${ok}/${queue.length} written. Publish with: npm run seed:blogs`);
+const results = await mapWithConcurrency(queue, lanes, async (job) => {
+  const label = typeof job === 'string' ? job : job.title;
+  try {
+    const result = await runPipeline(job, { force: Boolean(flag('force')) });
+    done += 1;
+    if (result.skipped) {
+      console.log(`[${done}/${queue.length}] · ${label} — skipped: ${result.skipped}`);
+      return null;
+    }
+    ok += 1;
+    console.log(`[${done}/${queue.length}] ✓ ${result.slug} — ${result.blocks} blocks, `
+      + `~${result.readMinutes} min, ${result.evidence} sources → ${result.companies} companies, ${result.status}`);
+    if (result.problems?.length) console.log(`            ! ${result.problems.join('; ')}`);
+    return result;
+  } catch (error) {
+    done += 1;
+    console.error(`[${done}/${queue.length}] ✗ ${label} — ${error.message}`);
+    return null;
+  }
+});
+
+const elapsed = ((Date.now() - startedAt) / 60_000).toFixed(1);
+console.log(`\ndone — ${ok}/${queue.length} written in ${elapsed}m. Publish with: npm run seed:blogs`);
+void results;
 process.exit(0);

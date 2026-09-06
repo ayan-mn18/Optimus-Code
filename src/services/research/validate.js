@@ -16,10 +16,44 @@ const KNOWN_WIDGETS = new Set(['file-system-trie']);
 /** Whitespace is the only thing we forgive — markdown reflows it constantly. */
 const normalise = (value) => String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
 
-/** Gate 1: every company quote is a literal span of the page it came from. */
-export function checkProvenance(evidence) {
-  const kept = [];
+/**
+ * Gate 0: a quote that appears on several different pages is site furniture,
+ * not evidence.
+ *
+ * LinkedIn renders a "recommended posts" sidebar on every post, so the same
+ * promotional blurb was scraped from four different URLs and counted as four
+ * independent corroborations of one claim. The quote check cannot catch that —
+ * the text genuinely is on every page. Recurrence is the tell.
+ */
+export function dropBoilerplate(evidence) {
+  const seen = new Map();
+  for (const item of evidence) {
+    for (const company of item.companies ?? []) {
+      const key = normalise(company.quote);
+      if (!key) continue;
+      seen.set(key, (seen.get(key) ?? new Set()).add(item.url));
+    }
+  }
+
+  const boilerplate = new Set([...seen.entries()].filter(([, urls]) => urls.size > 1).map(([key]) => key));
   const dropped = [];
+  const kept = [];
+
+  for (const item of evidence) {
+    const companies = (item.companies ?? []).filter((company) => {
+      const isChrome = boilerplate.has(normalise(company.quote));
+      if (isChrome) dropped.push(`${item.url} :: ${company.name} (quote repeats across pages)`);
+      return !isChrome;
+    });
+    if (companies.length) kept.push({ ...item, companies });
+  }
+  return { evidence: kept, dropped };
+}
+
+/** Gate 1: every company quote is a literal span of the page it came from. */
+export function checkProvenance(rawEvidence) {
+  const { evidence, dropped } = dropBoilerplate(rawEvidence);
+  const kept = [];
 
   for (const item of evidence) {
     const haystack = normalise(item._pageText);

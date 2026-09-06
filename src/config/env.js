@@ -61,6 +61,10 @@ export const env = {
     maxSearches: Number(process.env.RESEARCH_MAX_SEARCHES ?? 8),
     maxFetches: Number(process.env.RESEARCH_MAX_FETCHES ?? 10),
     concurrency: Number(process.env.RESEARCH_CONCURRENCY ?? 3),
+    // Pages are network-bound; extraction waits on a reasoning model. Both are
+    // independent per item, so both run several at a time.
+    fetchConcurrency: Number(process.env.RESEARCH_FETCH_CONCURRENCY ?? 4),
+    llmConcurrency: Number(process.env.RESEARCH_LLM_CONCURRENCY ?? 4),
     // A run that finds nothing must still cost a bounded amount.
     timeoutMs: Number(process.env.RESEARCH_TIMEOUT_MIN ?? 8) * 60_000,
     autoPublish: process.env.RESEARCH_AUTO_PUBLISH === 'true',

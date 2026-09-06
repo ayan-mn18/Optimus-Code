@@ -158,3 +158,47 @@ test('fallback search queries name no website', async () => {
     assert.ok(!harvest.includes(site), `harvest must not favour ${site} — that bakes today's best source into tomorrow's search`);
   }
 });
+
+test('a quote that repeats across pages is site furniture, not corroboration', () => {
+  // The real failure: LinkedIn renders a recommended-posts sidebar on every
+  // post, so one promotional blurb was scraped from four URLs and counted as
+  // four independent sources. Each quote IS on each page, so the substring
+  // check passes — recurrence is the only tell.
+  const chrome = 'Excited to share a high-score interview experience from a Bugfree user';
+  const evidence = ['a', 'b', 'c', 'd'].map((id) => ({
+    url: `https://www.linkedin.com/posts/${id}`,
+    companies: [{ name: 'LinkedIn', quote: chrome }],
+    _pageText: `Some unrelated post about ${id}. ${chrome}. More text.`,
+  }));
+
+  const { evidence: kept, dropped } = checkProvenance(evidence);
+  assert.deepEqual(kept, [], 'boilerplate must not survive as four corroborating sources');
+  assert.equal(dropped.length, 4);
+  assert.ok(dropped[0].includes('repeats across pages'));
+});
+
+test('a genuine quote appearing on exactly one page still survives', () => {
+  const page = 'Round 3. They asked me to design a bounded blocking queue at Uber.';
+  const { evidence } = checkProvenance([
+    { url: 'https://example.com/one', companies: [{ name: 'Uber', quote: 'design a bounded blocking queue at Uber' }], _pageText: page },
+    { url: 'https://example.com/two', companies: [{ name: 'Grab', quote: 'asked me to implement an ATM dispenser' }], _pageText: 'They asked me to implement an ATM dispenser in round 2.' },
+  ]);
+  assert.equal(evidence.length, 2, 'distinct quotes from distinct pages are unaffected');
+});
+
+test('mapWithConcurrency preserves order and caps what is in flight', async () => {
+  const { mapWithConcurrency } = await import('../src/services/research/pipeline.js');
+  let inFlight = 0;
+  let peak = 0;
+
+  const out = await mapWithConcurrency([1, 2, 3, 4, 5, 6, 7, 8], 3, async (n) => {
+    peak = Math.max(peak, ++inFlight);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    inFlight--;
+    return n * 2;
+  });
+
+  assert.deepEqual(out, [2, 4, 6, 8, 10, 12, 14, 16], 'results stay in input order');
+  assert.ok(peak <= 3, `never more than 3 in flight, saw ${peak}`);
+  assert.ok(peak > 1, 'and it actually parallelised');
+});

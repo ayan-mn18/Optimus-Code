@@ -15,6 +15,22 @@ import {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const BLOG_DIR = path.join(here, '..', '..', '..', 'data', 'blogs');
 
+/** Runs `worker` over `items` with a fixed number in flight, preserving order. */
+export async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await worker(items[index], index);
+    }
+  });
+
+  await Promise.all(runners);
+  return results;
+}
+
 export const STAGES = ['intake', 'resolve', 'harvest', 'extract', 'compose', 'validate', 'publish'];
 
 /* ---------------------------------------------------------------- intake -- */
@@ -109,13 +125,17 @@ export async function harvest(job, { onProgress = () => {}, fetchImpl = fetch } 
 
   candidates.sort((a, b) => scoreCandidate(b) - scoreCandidate(a));
 
-  const pages = [];
-  for (const hit of candidates.slice(0, env.research.maxFetches)) {
-    const page = await fetchPage(hit.url, { fetchImpl });
-    pages.push({ ...page, title: hit.title, source: page.host });
-    onProgress(`${page.ok ? 'read' : 'skipped'}: ${page.host}`);
-  }
-  return pages;
+  // Fetches are independent and mostly network-bound, so they run in parallel.
+  // fetchPage still rate-limits per host internally, so this stays polite.
+  return mapWithConcurrency(
+    candidates.slice(0, job.template === 'concept' ? 4 : env.research.maxFetches),
+    env.research.fetchConcurrency,
+    async (hit) => {
+      const page = await fetchPage(hit.url, { fetchImpl });
+      onProgress(`${page.ok ? 'read' : 'skipped'}: ${page.host}`);
+      return { ...page, title: hit.title, source: page.host };
+    },
+  );
 }
 
 /* -------------------------------------------------------------- assemble -- */
@@ -168,19 +188,30 @@ export async function runPipeline(request, { onStage = () => {}, fetchImpl = fet
   note(job.leetcode ? `resolve: LeetCode ${job.leetcode.id}` : 'resolve: no LeetCode twin');
 
   // 3. harvest
+  //
+  // Concept pages skip provenance entirely. "Asked in companies" is meaningless
+  // for a page about consistent hashing, and harvesting for it would spend the
+  // most expensive part of the pipeline on evidence nobody would publish. They
+  // still get reference material, just far less of it.
   onStage('harvest');
-  const pages = await harvest(job, { onProgress: note, fetchImpl });
+  const wantsProvenance = job.template === 'problem';
+  const pages = wantsProvenance
+    ? await harvest(job, { onProgress: note, fetchImpl })
+    : await harvest({ ...job, searchQueries: [`${job.title} explained`, `${job.title} trade-offs`] },
+      { onProgress: note, fetchImpl });
+
   const readable = pages.filter((page) => page.ok);
-  note(`harvest: ${readable.length}/${pages.length} pages readable`);
+  note(`harvest: ${readable.length}/${pages.length} pages readable${wantsProvenance ? '' : ' (concept — no provenance pass)'}`);
   if (!readable.length) throw new Error('No readable sources found');
 
   // 4. extract
   onStage('extract');
-  const raw = [];
-  for (const page of readable) {
-    const found = await extractEvidence(page, job.title, { fetchImpl }).catch(() => null);
-    if (found) raw.push(found);
-  }
+  // One call per page, and they do not depend on each other — the sequential
+  // version spent most of a run waiting on a reasoning model one page at a time.
+  const raw = wantsProvenance
+    ? (await mapWithConcurrency(readable, env.research.llmConcurrency, (page) =>
+      extractEvidence(page, job.title, { fetchImpl }).catch(() => null))).filter(Boolean)
+    : [];
   const { evidence, dropped } = checkProvenance(raw);
   note(`extract: ${evidence.length} sources with company claims, ${dropped.length} claims dropped on quote check`);
 
