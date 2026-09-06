@@ -4,7 +4,10 @@ import { ApiError } from '../lib/errors.js';
 
 export async function requirePro(req, _res, next) {
   try {
-    if (!env.billing.enabled) {
+    // Accounts that existed before paid System Design access was introduced
+    // keep their permanent complimentary access. This is a database flag, not
+    // an email/domain heuristic, so future exceptions can be granted safely.
+    if (req.user.billing_exempt || !env.billing.enabled) {
       next();
       return;
     }

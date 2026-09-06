@@ -44,6 +44,7 @@ const publicUser = (user) => ({
   avatarSeed: user.avatar_seed,
   pictureUrl: user.picture_url ?? null,
   authProvider: user.auth_provider ?? 'password',
+  billingExempt: Boolean(user.billing_exempt),
   showOnLeaderboard: user.show_on_leaderboard ?? true,
   createdAt: user.created_at,
 });

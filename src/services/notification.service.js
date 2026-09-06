@@ -3,7 +3,7 @@ import { env } from '../config/env.js';
 import { todayIn } from '../lib/dates.js';
 import { email, emailConfigured } from './email.service.js';
 import { sendPendingWaitlistInvites } from './invite.service.js';
-import { greenStreakEmail, milestoneEmail, redDayEmail, streakRiskEmail } from '../emails/templates.js';
+import { billingEmail, greenStreakEmail, milestoneEmail, redDayEmail, streakRiskEmail } from '../emails/templates.js';
 
 const dashboardUrl = `${env.email.appUrl}/dashboard`;
 export const GREEN_STREAK_STEP = 7;
@@ -306,12 +306,71 @@ export async function runStreakRiskNotifications(
   return { checked: logs.length, sent };
 }
 
+/** Sends one reminder roughly three days before an automatic renewal. */
+export async function runSubscriptionRenewalReminders(
+  now = new Date(),
+  { sender = email, enabled = emailConfigured() } = {},
+) {
+  if (!enabled) return { checked: 0, sent: 0 };
+
+  const start = now.toISOString();
+  const end = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString();
+  const subscriptions = unwrap(
+    await db
+      .from('subscriptions')
+      .select('id, user_id, plan, current_period_end, renewal_reminder_sent_at')
+      .eq('status', 'active')
+      .eq('cancel_at_period_end', false)
+      .is('renewal_reminder_sent_at', null)
+      .gte('current_period_end', start)
+      .lte('current_period_end', end)
+      .limit(100),
+    'load subscription renewal reminders',
+  );
+  if (!subscriptions.length) return { checked: 0, sent: 0 };
+
+  const users = unwrap(
+    await db.from('users').select('id, email, name').in('id', [...new Set(subscriptions.map(({ user_id: userId }) => userId))]),
+    'load subscription reminder users',
+  );
+  const userById = new Map(users.map((user) => [user.id, user]));
+  let sent = 0;
+  for (const subscription of subscriptions) {
+    const user = userById.get(subscription.user_id);
+    if (!user?.email) continue;
+    try {
+      const result = await sender.send({
+        to: user.email,
+        message: billingEmail({
+          kind: 'reminder',
+          name: user.name,
+          plan: subscription.plan,
+          nextBillingDate: subscription.current_period_end,
+          loginUrl: `${env.email.appUrl}/settings`,
+        }),
+        idempotencyKey: `billing-renewal/${subscription.id}/${subscription.current_period_end}`,
+      });
+      if (!result.sent) continue;
+
+      unwrap(
+        await db.from('subscriptions').update({ renewal_reminder_sent_at: new Date().toISOString() }).eq('id', subscription.id).is('renewal_reminder_sent_at', null),
+        'record subscription renewal reminder',
+      );
+      sent += 1;
+    } catch (error) {
+      console.error('[email] subscription renewal reminder failed:', error instanceof Error ? error.message : error);
+    }
+  }
+  return { checked: subscriptions.length, sent };
+}
+
 export function startEmailNotificationWorker() {
   if (!emailConfigured()) return () => {};
 
   const run = () => {
     Promise.all([
       runStreakRiskNotifications(),
+      runSubscriptionRenewalReminders(),
       sendPendingGreenStreakEmails(),
       sendPendingWaitlistInvites(),
       sendPendingMilestoneEmails(),

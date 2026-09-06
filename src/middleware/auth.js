@@ -9,7 +9,7 @@ function loadSessionUser(userId) {
   return getOrSetCached(`auth:user:${userId}`, SESSION_USER_TTL_MS, async () => unwrap(
     await db
       .from('users')
-      .select('id, email, name, timezone, avatar_seed, picture_url, auth_provider, show_on_leaderboard, created_at')
+      .select('id, email, name, timezone, avatar_seed, picture_url, auth_provider, billing_exempt, show_on_leaderboard, created_at')
       .eq('id', userId)
       .maybeSingle(),
     'load session user',

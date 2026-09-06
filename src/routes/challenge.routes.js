@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
+import { ApiError } from '../lib/errors.js';
 import {
   enroll,
   getEnrollment,
@@ -27,8 +28,8 @@ router.get('/', async (req, res, next) => {
 const goalsSchema = z
   .object({
     DSA: z.number().int().min(0).max(20).default(3),
-    LLD: z.number().int().min(0).max(10).default(1),
-    HLD: z.number().int().min(0).max(10).default(1),
+    LLD: z.number().int().min(0).max(10).default(0),
+    HLD: z.number().int().min(0).max(10).default(0),
   })
   .refine((goals) => {
     const total = goals.DSA + goals.LLD + goals.HLD;
@@ -37,6 +38,9 @@ const goalsSchema = z
 
 async function saveGoals(req, res, next) {
   try {
+    if (!req.user.billing_exempt && (req.body.goals.LLD > 0 || req.body.goals.HLD > 0)) {
+      throw new ApiError(402, 'Optimus Pro is required for LLD and HLD daily goals');
+    }
     const enrollment = await enroll(req.user.id, {
       goals: req.body.goals,
       timezone: req.user.timezone,
@@ -47,7 +51,7 @@ async function saveGoals(req, res, next) {
   }
 }
 
-router.post('/enroll', validate(z.object({ goals: goalsSchema.default({ DSA: 3, LLD: 1, HLD: 1 }) })), saveGoals);
+router.post('/enroll', validate(z.object({ goals: goalsSchema.default({ DSA: 3, LLD: 0, HLD: 0 }) })), saveGoals);
 
 router.patch('/goals', validate(z.object({ goals: goalsSchema })), saveGoals);
 

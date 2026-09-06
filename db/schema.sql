@@ -19,6 +19,9 @@ create table if not exists public.users (
   timezone      text not null default 'UTC',
   avatar_seed   text not null default 'optimus',
   picture_url   text,
+  -- Permanent complimentary Pro access for accounts that predate the paid
+  -- System Design rollout. New accounts default to paid access.
+  billing_exempt boolean not null default false,
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
 );
@@ -45,6 +48,7 @@ alter table public.users alter column password_hash drop not null;
 alter table public.users add column if not exists google_sub text;
 alter table public.users add column if not exists auth_provider text not null default 'password';
 alter table public.users add column if not exists picture_url text;
+alter table public.users add column if not exists billing_exempt boolean not null default false;
 create unique index if not exists users_google_sub_idx on public.users (google_sub) where google_sub is not null;
 alter table public.users drop constraint if exists users_auth_provider_check;
 alter table public.users add constraint users_auth_provider_check
@@ -292,9 +296,12 @@ create table if not exists public.subscriptions (
   checkout_session_id      text,
   current_period_end       timestamptz,
   cancel_at_period_end     boolean not null default false,
+  renewal_reminder_sent_at timestamptz,
   created_at               timestamptz not null default now(),
   updated_at               timestamptz not null default now()
 );
+
+alter table public.subscriptions add column if not exists renewal_reminder_sent_at timestamptz;
 
 create table if not exists public.payment_webhook_events (
   id           text primary key,

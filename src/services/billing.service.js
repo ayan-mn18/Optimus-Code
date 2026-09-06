@@ -3,6 +3,7 @@ import { env } from '../config/env.js';
 import { db, unwrap } from '../lib/supabase.js';
 import { ApiError } from '../lib/errors.js';
 import { getOrSetCached, invalidateCache } from '../lib/cache.js';
+import { isBillingEmailEvent, sendBillingEmailForEvent } from './billing-email.service.js';
 
 export const PRICING = {
   monthly: { amount: 10, currency: 'USD', interval: 'month' },
@@ -22,6 +23,8 @@ const STATUS_BY_EVENT = {
   'subscription.failed': 'failed',
   'subscription.expired': 'expired',
 };
+
+const SUBSCRIPTION_EVENTS = new Set(Object.keys(STATUS_BY_EVENT));
 
 const dodo = env.billing.enabled
   ? new DodoPayments({
@@ -52,6 +55,9 @@ export async function getSubscription(userId) {
 }
 
 export async function createCheckout(user, plan, { client = dodo } = {}) {
+  if (user.billing_exempt) {
+    throw new ApiError(409, 'Your account already has complimentary Optimus Pro access');
+  }
   if (!client) throw new ApiError(503, 'Billing is not configured');
   const productId = plan === 'monthly' ? env.billing.monthlyProductId : env.billing.annualProductId;
   if (!productId) throw new ApiError(503, `${plan} billing product is not configured`);
@@ -107,43 +113,62 @@ export async function processDodoWebhook(event, webhookId) {
   if (inserted.error) throw Object.assign(new Error(`record billing webhook: ${inserted.error.message}`), { status: 500 });
 
   try {
-    if (!event.type?.startsWith('subscription.')) return { duplicate: false, handled: false };
+    if (!SUBSCRIPTION_EVENTS.has(event.type) && !isBillingEmailEvent(event.type)) {
+      return { duplicate: false, handled: false };
+    }
     const data = event.data ?? {};
     let userId = data.metadata?.user_id ?? null;
     let existing = null;
-    if (!userId && data.subscription_id) {
+    if (data.subscription_id) {
       existing = unwrap(
         await db.from('subscriptions').select('*').eq('provider_subscription_id', data.subscription_id).maybeSingle(),
         'find webhook subscription',
       );
-      userId = existing?.user_id ?? null;
+      userId ??= existing?.user_id ?? null;
     }
-    if (!userId) return { duplicate: false, handled: false };
+    if (!userId && data.customer?.email) {
+      const customer = unwrap(
+        await db.from('users').select('id').eq('email', data.customer.email.toLowerCase()).maybeSingle(),
+        'find billing customer',
+      );
+      userId = customer?.id ?? null;
+    }
 
-    const explicitStatus = STATUS_BY_EVENT[event.type];
-    const allowedStatus = ['pending', 'active', 'on_hold', 'paused', 'cancelled', 'failed', 'expired'];
-    const status = explicitStatus ?? (allowedStatus.includes(data.status) ? data.status : existing?.status ?? 'pending');
-    const plan = data.metadata?.plan ?? existing?.plan;
-    if (!['monthly', 'annual'].includes(plan)) throw ApiError.badRequest('Webhook is missing a valid plan');
+    // Payment and dunning events can be delivered without a subscription row
+    // (for example, before the subscription.active event). They still deserve
+    // a customer email when DoDo includes the checkout metadata/email.
+    if (!userId && !data.customer?.email) return { duplicate: false, handled: false };
 
-    unwrap(
-      await db.from('subscriptions').upsert(
-        {
-          user_id: userId,
-          provider: 'dodo',
-          plan,
-          status,
-          provider_customer_id: data.customer?.customer_id ?? data.customer_id ?? existing?.provider_customer_id ?? null,
-          provider_subscription_id: data.subscription_id ?? existing?.provider_subscription_id ?? null,
-          current_period_end: data.next_billing_date ?? data.expires_at ?? existing?.current_period_end ?? null,
-          cancel_at_period_end: Boolean(data.cancel_at_next_billing_date ?? data.cancel_at_period_end),
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'user_id' },
-      ),
-      'sync subscription webhook',
-    );
-    invalidateCache(`subscription:${userId}`);
+    if (SUBSCRIPTION_EVENTS.has(event.type)) {
+      const explicitStatus = STATUS_BY_EVENT[event.type];
+      const allowedStatus = ['pending', 'active', 'on_hold', 'paused', 'cancelled', 'failed', 'expired'];
+      const status = explicitStatus ?? (allowedStatus.includes(data.status) ? data.status : existing?.status ?? 'pending');
+      const plan = data.metadata?.plan ?? existing?.plan
+        ?? (data.product_id && data.product_id === env.billing.annualProductId ? 'annual' : 'monthly');
+      if (!['monthly', 'annual'].includes(plan)) throw ApiError.badRequest('Webhook is missing a valid plan');
+
+      unwrap(
+        await db.from('subscriptions').upsert(
+          {
+            user_id: userId,
+            provider: 'dodo',
+            plan,
+            status,
+            provider_customer_id: data.customer?.customer_id ?? data.customer_id ?? existing?.provider_customer_id ?? null,
+            provider_subscription_id: data.subscription_id ?? existing?.provider_subscription_id ?? null,
+            current_period_end: data.next_billing_date ?? data.expires_at ?? existing?.current_period_end ?? null,
+            cancel_at_period_end: Boolean(data.cancel_at_next_billing_date ?? data.cancel_at_period_end),
+            renewal_reminder_sent_at: event.type === 'subscription.renewed' ? null : existing?.renewal_reminder_sent_at ?? null,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'user_id' },
+        ),
+        'sync subscription webhook',
+      );
+      invalidateCache(`subscription:${userId}`);
+    }
+
+    await sendBillingEmailForEvent(event, webhookId, { userId, existing });
     return { duplicate: false, handled: true };
   } catch (error) {
     await db.from('payment_webhook_events').delete().eq('id', webhookId);

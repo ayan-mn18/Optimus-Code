@@ -178,6 +178,118 @@ export function greenStreakEmail({ name, streakLength, longestStreak, loginUrl }
   };
 }
 
+/** Billing lifecycle messages sent from signed DoDo webhook events. */
+export function billingEmail({
+  kind,
+  name,
+  plan,
+  amount,
+  currency = 'USD',
+  invoiceUrl,
+  nextBillingDate,
+  loginUrl,
+  updatePaymentUrl,
+}) {
+  const planLabel = plan === 'annual' ? 'annual' : 'monthly';
+  const formattedAmount = amount == null
+    ? null
+    : new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(Number(amount) / 100);
+  const dateLabel = nextBillingDate
+    ? new Intl.DateTimeFormat('en-US', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(nextBillingDate))
+    : null;
+  const invoiceLink = invoiceUrl
+    ? `<p style="margin:18px 0 0"><a href="${escapeHtml(invoiceUrl)}" style="color:${COLORS.brandPale};font-weight:700">Download your invoice</a></p>`
+    : '';
+  const primaryUrl = updatePaymentUrl || loginUrl;
+  const action = updatePaymentUrl ? 'Update payment method' : 'Open Optimus Code';
+
+  const copy = {
+    welcome: {
+      subject: 'Welcome to Optimus Pro',
+      eyebrow: 'Payment confirmed',
+      title: 'Your Pro access is ready.',
+      preheader: 'Your Optimus Pro subscription is active.',
+      intro: `Hi ${firstName(name)}. Your ${planLabel} Optimus Pro subscription is active. LLD, HLD, AI assessments, and coding tasks are now unlocked.`,
+      footnote: 'You can manage your subscription and payment method from your DoDo customer portal.',
+    },
+    receipt: {
+      subject: 'Your Optimus Pro receipt',
+      eyebrow: 'Payment receipt',
+      title: 'Payment received.',
+      preheader: 'Your Optimus Pro invoice is ready.',
+      intro: `Hi ${firstName(name)}. We received your ${planLabel} Optimus Pro payment${formattedAmount ? ` of ${escapeHtml(formattedAmount)}` : ''}.`,
+      footnote: 'Keep this email for your records. Your next automatic charge is handled by DoDo Payments.',
+    },
+    renewal: {
+      subject: 'Optimus Pro renewed successfully',
+      eyebrow: 'Subscription renewed',
+      title: 'Your practice continues.',
+      preheader: 'Your Optimus Pro subscription renewed.',
+      intro: `Hi ${firstName(name)}. Your ${planLabel} Optimus Pro subscription renewed${formattedAmount ? ` for ${escapeHtml(formattedAmount)}` : ''}${dateLabel ? `. Your next billing date is ${escapeHtml(dateLabel)}` : ''}.`,
+      footnote: 'Your invoice is included below for your records.',
+    },
+    failed: {
+      subject: 'Action needed: Optimus Pro payment failed',
+      eyebrow: 'Payment issue',
+      title: 'Your payment needs attention.',
+      preheader: 'DoDo could not complete your Optimus Pro payment.',
+      intro: `Hi ${firstName(name)}. DoDo could not complete your Optimus Pro ${planLabel} payment. Update your payment method to keep LLD and HLD access active.`,
+      footnote: 'DoDo may retry the charge automatically. We will email you when payment recovers.',
+    },
+    reminder: {
+      subject: 'Your Optimus Pro renewal is coming up',
+      eyebrow: 'Autopay reminder',
+      title: 'Your next renewal is close.',
+      preheader: `Your Optimus Pro subscription renews ${dateLabel ?? 'soon'}.`,
+      intro: `Hi ${firstName(name)}. Your Optimus Pro ${planLabel} subscription is scheduled to renew${dateLabel ? ` on ${escapeHtml(dateLabel)}` : ' soon'}. Your saved payment method will be charged automatically.`,
+      footnote: 'No action is needed unless you want to change your payment method or cancel before renewal.',
+    },
+    action: {
+      subject: 'Action needed to keep Optimus Pro active',
+      eyebrow: 'Subscription attention',
+      title: 'Please update your payment method.',
+      preheader: 'Your Optimus Pro subscription needs a payment update.',
+      intro: `Hi ${firstName(name)}. DoDo has paused or could not renew your Optimus Pro subscription. Update your payment method to restore uninterrupted access.`,
+      footnote: 'Your access remains subject to the subscription status reported by DoDo Payments.',
+    },
+    cancelled: {
+      subject: 'Your Optimus Pro subscription was cancelled',
+      eyebrow: 'Subscription update',
+      title: 'Your subscription is cancelled.',
+      preheader: 'Your Optimus Pro subscription has been cancelled.',
+      intro: `Hi ${firstName(name)}. Your Optimus Pro ${planLabel} subscription was cancelled. You can resubscribe any time to unlock LLD and HLD again.`,
+      footnote: 'Your DSA library remains free for every signed-in account.',
+    },
+  }[kind] ?? {
+    subject: 'Optimus Pro subscription update',
+    eyebrow: 'Subscription update',
+    title: 'Your Optimus Pro subscription changed.',
+    preheader: 'There is an update to your Optimus Pro subscription.',
+    intro: `Hi ${firstName(name)}. Your Optimus Pro ${planLabel} subscription was updated.`,
+    footnote: 'Open Optimus Code to review your account.',
+  };
+
+  const stats = [
+    formattedAmount ? stat('Amount', formattedAmount, COLORS.good) : '',
+    stat('Plan', planLabel, COLORS.brandPale),
+    dateLabel ? stat('Next billing', dateLabel, COLORS.accent) : '',
+  ].filter(Boolean).join('');
+
+  return {
+    subject: copy.subject,
+    html: layout({
+      preheader: copy.preheader,
+      eyebrow: copy.eyebrow,
+      title: copy.title,
+      intro: copy.intro,
+      content: `${stats ? `<table role="presentation" width="100%" cellspacing="8" cellpadding="0" border="0" style="margin-top:22px"><tr>${stats}</tr></table>` : ''}${invoiceLink}`,
+      cta: primaryUrl ? { label: action, url: primaryUrl } : undefined,
+      footnote: copy.footnote,
+    }),
+    text: `${copy.title}\n\n${copy.intro.replace(/<[^>]*>/g, '')}${invoiceUrl ? `\n\nInvoice: ${invoiceUrl}` : ''}${primaryUrl ? `\n\nOpen Optimus Code: ${primaryUrl}` : ''}`,
+  };
+}
+
 function pluralWord(count, word) {
   return Number(count) === 1 ? word : `${word}s`;
 }

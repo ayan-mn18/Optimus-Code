@@ -32,7 +32,10 @@ router.use(requireAuth);
 
 router.get('/subscription', async (req, res, next) => {
   try {
-    res.json({ subscription: await getSubscription(req.user.id) });
+    res.json({
+      subscription: await getSubscription(req.user.id),
+      billingExempt: Boolean(req.user.billing_exempt),
+    });
   } catch (error) {
     next(error);
   }

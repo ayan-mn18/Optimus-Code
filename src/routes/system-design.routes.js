@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../middleware/auth.js';
+import { requirePro } from '../middleware/subscription.js';
 import { validate } from '../middleware/validate.js';
 import { getSystemDesignProblem, listSystemDesign } from '../services/system-design.service.js';
 
 const router = Router();
 router.use(requireAuth);
+router.use(requirePro);
 
 const listSchema = z.object({
   kind: z.enum(['LLD', 'HLD']).default('LLD'),
