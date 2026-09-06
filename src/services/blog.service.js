@@ -246,7 +246,7 @@ export async function getBlog(user, slug) {
   // View accounting is deliberately off the critical path. It is best-effort
   // telemetry and should never add a Supabase round trip to reading an article.
   if (row.status === 'published') {
-    void db.rpc('increment_blog_views', { p_slug: slug }).catch(() => {});
+    void Promise.resolve(db.rpc('increment_blog_views', { p_slug: slug })).catch(() => {});
   }
 
   const [liked, related] = await Promise.all([
