@@ -58,13 +58,42 @@ FIRST-HAND interview reports naming companies — not tutorials.`,
 
 /* --------------------------------------------------------------- harvest -- */
 
+/**
+ * Ranks a search hit by how likely it is to carry provenance — never by which
+ * site it came from. A personal blog naming a company and a round outranks a
+ * famous site publishing a tutorial, which is the whole point: the pipeline
+ * should keep finding sources nobody thought to list.
+ */
+export function scoreCandidate(hit) {
+  const text = `${hit.title} ${hit.snippet}`.toLowerCase();
+  let score = 0;
+
+  // Someone recounting their own interview — the strongest signal there is.
+  if (/asked me|i was asked|my interview|interview experience/.test(text)) score += 5;
+  if (/\bround \d|onsite|machine coding|lld round|hiring manager/.test(text)) score += 3;
+  // A named company plus a level reads like a report rather than an explainer.
+  if (/\b(sde|swe|senior|staff|l\d|intern)\b/.test(text)) score += 2;
+  if (/\b(19|20)\d\d\b/.test(text)) score += 1;              // a date to cite
+  if (/asked at|companies asking|reported at/.test(text)) score += 2;
+
+  // Tutorials explain the problem; they almost never say who asked it.
+  if (/tutorial|complete guide|step by step|implementation in|how to implement/.test(text)) score -= 3;
+  if (/course|playlist|subscribe/.test(text)) score -= 2;
+
+  return score;
+}
+
+
 /** Search, then read what looks like it might carry provenance. */
 export async function harvest(job, { onProgress = () => {}, fetchImpl = fetch } = {}) {
+  // Deliberately site-neutral. Naming a site here would bake yesterday's
+  // best source into tomorrow's search; ranking below sorts on what a page
+  // looks like, not on where it is hosted.
   const queries = (job.searchQueries?.length ? job.searchQueries : [
     `"${job.title}" interview experience asked round`,
     `${job.title} interview question asked at company`,
-    `geeksforgeeks interview experience "${job.title}"`,
-    `${job.title} low level design interview asked`,
+    `"${job.title}" asked me in my interview`,
+    `${job.title} machine coding round interview experience`,
   ]).slice(0, env.research.maxSearches);
 
   const seen = new Set();
@@ -78,10 +107,7 @@ export async function harvest(job, { onProgress = () => {}, fetchImpl = fetch } 
     onProgress(`searched: ${query}`);
   }
 
-  // Prefer pages whose title or snippet smells like a first-hand account.
-  const smellsFirstHand = (hit) =>
-    /interview experience|asked me|interview questions|onsite|round \d/i.test(`${hit.title} ${hit.snippet}`);
-  candidates.sort((a, b) => Number(smellsFirstHand(b)) - Number(smellsFirstHand(a)));
+  candidates.sort((a, b) => scoreCandidate(b) - scoreCandidate(a));
 
   const pages = [];
   for (const hit of candidates.slice(0, env.research.maxFetches)) {

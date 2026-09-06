@@ -135,3 +135,26 @@ test('research jobs table applies and constrains its status', async () => {
   );
   await database.close();
 });
+
+test('candidates are ranked on what a page looks like, never on its host', async () => {
+  const { scoreCandidate } = await import('../src/services/research/pipeline.js');
+
+  const report = { title: 'Amazon SDE-II interview experience', snippet: 'Round 1 LLD, they asked me to design a parking lot, 2024' };
+  const unknownBlog = { title: 'some personal blog', snippet: 'I was asked this at Swiggy in my SDE-2 onsite round 3' };
+  const famousTutorial = { title: 'Design a Parking Lot — Complete Guide', snippet: 'Step by step implementation in Java' };
+
+  assert.ok(scoreCandidate(report) > scoreCandidate(famousTutorial));
+  assert.ok(
+    scoreCandidate(unknownBlog) > scoreCandidate(famousTutorial),
+    'an unknown blog carrying a first-hand account must outrank a well-known tutorial',
+  );
+  assert.ok(scoreCandidate(famousTutorial) < 0, 'tutorials are penalised — they explain, they do not attribute');
+});
+
+test('fallback search queries name no website', async () => {
+  const source = await fs.readFile(new URL('../src/services/research/pipeline.js', import.meta.url), 'utf8');
+  const harvest = source.slice(source.indexOf('export async function harvest'), source.indexOf('/* -------------------------------------------------------------- assemble'));
+  for (const site of ['geeksforgeeks', 'hellointerview', 'reddit', 'medium', 'leetcode']) {
+    assert.ok(!harvest.includes(site), `harvest must not favour ${site} — that bakes today's best source into tomorrow's search`);
+  }
+});
