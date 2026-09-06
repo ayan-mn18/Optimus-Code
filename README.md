@@ -240,8 +240,12 @@ and the server independently verifies the exact selections. Passing requires mor
 
 ### Billing — `/api/billing`
 
-`GET /pricing` is public. Authenticated users create Dodo checkout sessions and read their
-subscription. `/webhook` verifies Standard Webhooks signatures and processes events idempotently.
+`GET /pricing` is public. DSA remains free for every signed-in account; LLD and HLD catalogues,
+assessments, and coding tasks require an active Dodo subscription. Accounts that existed before
+the paid System Design rollout are stored as permanent billing exceptions. Authenticated users
+create Dodo checkout sessions and read their subscription. `/webhook` verifies Standard Webhooks
+signatures and processes events idempotently. Payment receipts, invoice links, failed-payment
+alerts, and upcoming-renewal reminders are delivered through the configured email transport.
 
 ## Environment
 
