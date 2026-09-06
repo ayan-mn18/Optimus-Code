@@ -52,6 +52,18 @@ jobs:
           TEMP_ENV=$(mktemp)
           trap 'rm -f "$TEMP_ENV"' EXIT
           printf '%s\n' "$OPTIMUS_PROD_ENV" > "$TEMP_ENV"
+
+          # Never let an old repository secret replace a working live runtime
+          # environment. The billing rollout requires all of these values; an
+          # incomplete secret is skipped so the deploy job can use the current
+          # encrypted SSM parameter until the repository secret is refreshed.
+          for key in DODO_PAYMENTS_API_KEY DODO_PAYMENTS_ENVIRONMENT DODO_PAYMENTS_WEBHOOK_KEY DODO_MONTHLY_PRODUCT_ID DODO_ANNUAL_PRODUCT_ID; do
+            if ! grep -Eq "^${key}=.+" "$TEMP_ENV"; then
+              echo "OPTIMUS_PROD_ENV is missing ${key}; preserving the existing SSM environment."
+              exit 0
+            fi
+          done
+
           node scripts/push-env.js "$TEMP_ENV"
           DB_URL=$(awk -F= '$1 == "SUPABASE_DB_URL" { value = substr($0, index($0, "=") + 1); gsub(/^"|"$/, "", value); print value; exit }' "$TEMP_ENV")
           if [ -z "$DB_URL" ]; then
