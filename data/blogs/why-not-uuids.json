@@ -1,0 +1,295 @@
+{
+  "slug": "why-not-uuids",
+  "title": "Why not UUIDs?",
+  "summary": "Random UUIDs buy coordination-free uniqueness and pay for it in database locality, storage, and ordering. Use them at the edge, never as your clustered primary key.",
+  "kind": "HLD",
+  "problemSlug": "why-not-uuids-97-321",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Medium",
+  "coverEmoji": " f3b2",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "IDs",
+    "Databases",
+    "Consensus"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is a UUID, and what is it used for? - CockroachDB",
+      "url": "https://www.cockroachlabs.com/blog/what-is-a-uuid/",
+      "source": "cockroachlabs.com",
+      "kind": "article"
+    },
+    {
+      "title": "Universally unique identifier - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Universally_unique_identifier",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "The Problem With UUIDs - YouTube",
+      "url": "https://www.youtube.com/watch?v=wkqwyrcuPs0",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A **UUID gives you uniqueness without coordination — nothing else.** It does not give you order, locality, compactness, or debuggability. If you use a random 128-bit value as your clustered primary key, you are trading away write locality and cache efficiency to avoid calling a coordinator. That is almost always a bad trade."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a UUID actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A UUID is a 128-bit identifier, usually rendered as 32 hex characters with dashes like `550e8400-e29b-41d4-a716-446655440000`. The bits encode a version. **v4** is 122 bits of randomness. **v1** embeds a timestamp plus a node identifier. **v7** embeds a millisecond timestamp plus randomness so values sort roughly in time order. **v3/v5** are hashes of a namespace and name. Generated correctly, collisions are so unlikely you can ignore them. That property holds with zero network calls, zero locks, and zero single points of failure. That is the entire appeal, and interviewers want you to stop there and name what you *do not* get: no monotonicity guarantee for v4, no small size, no index friendliness, no human meaning."
+    },
+    {
+      "type": "paragraph",
+      "text": "Developers reach for UUIDv4 in distributed systems for three honest reasons. First, any app server, function, phone, or edge device can mint an ID without asking a database or coordinator for permission, so inserts never block on ID assignment. Second, IDs are globally safe to merge: two shards, two regions, or two tenants can generate keys independently and you can still `UNION` the tables without collision. Third, random IDs do not leak business information like creation order or volume. **Trade-off:** you buy availability and merge safety during partitions, and you pay every day afterward in physical storage layout. Decentralized creation is valuable — random physical ordering is not."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: why randomness hurts the database"
+    },
+    {
+      "type": "paragraph",
+      "text": "Most relational tables with a primary key use a clustered `B+Tree`: the rows live inside the index, sorted by primary key. A sequential key always appends to the rightmost leaf page. The page is hot, it is already in the buffer pool, the write is dense, and the write-ahead log stays compact. A random UUIDv4 lands on a uniformly random leaf page. That page is probably cold, probably full, and probably unrelated to the previous insert. The engine must read it in, split it if full, move half the rows to a new page, update parent pointers, and log all of it. Do that millions of times and your logically append-only workload becomes physically random writes. **Trade-off:** logical independence of generators versus physical contiguity on disk. You cannot have both with pure randomness."
+    },
+    {
+      "type": "mermaid",
+      "title": "Sequential vs random insert path",
+      "caption": "Random keys turn appends into scattered page splits.",
+      "code": "flowchart TD\n  G[Client generates key] --> I[INSERT reaches storage engine]\n  I --> R{Key pattern?}\n  R -->|Sequential| A[Go to rightmost leaf page]\n  A --> B[Page hot in buffer pool]\n  B --> C[Fill densely, split rarely]\n  R -->|UUIDv4 random| X[Go to random leaf page]\n  X --> Y[Page cold, read from disk]\n  Y --> Z[Page full, split in half]\n  Z --> W[Update parents, emit extra WAL]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Page splits are not just extra CPU. They leave both pages half-empty, so the table fragments. Fragmentation means fewer rows per 16KB page, more pages per scan, lower buffer-pool hit rate, and more I/O for every range query. Secondary indexes are worse: each one stores a copy of the primary key per entry, so a 16-byte UUID bloats every index versus a 4-byte or 8-byte integer. A table with three secondary indexes pays the UUID tax four times. Autovacuum, backups, replication, and crash recovery all move those extra bytes too. **Trade-off:** 16 bytes looks tiny in isolation and huge at scale when it is multiplied by rows, indexes, replicas, and cache misses."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of random UUIDs as primary keys",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "No coordinator for ID creation",
+          "Random B-Tree inserts, frequent page splits",
+          "Write throughput drops and tail latency spikes under load"
+        ],
+        [
+          "Globally mergeable without conflicts",
+          "16 bytes vs 4-8 bytes, amplified in every secondary index",
+          "Larger working set, more disk, more RAM for same rows"
+        ],
+        [
+          "No enumerable order leaked",
+          "No time order, painful debugging and range scans",
+          "Cannot answer what happened after X without a second column"
+        ],
+        [
+          "Works during partitions",
+          "Breaks log and snapshot ordering assumptions",
+          "Consensus and replication still need a sequence number anyway"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure one is **insert collapse on a large table**. It works fine to a few million rows, then throughput falls off a cliff while disk IOPS and write-ahead volume climb. You will see buffer-pool eviction storms, checkpoint stalls, and `INSERT` p99 growing from milliseconds to hundreds of milliseconds. The tree depth may even grow a level because half-empty pages waste fan-out. Engineers blame the disk or the cloud. The disk is innocent. **Trade-off exposed:** you optimized for generator availability and pessimized the hottest path in the system — the write path. If your workload is write-heavy, this alone disqualifies UUIDv4 as the clustered key."
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure two is **silent memory starvation**. The table no longer fits in RAM, range scans that used to be sequential become random, and replicas lag because they replay bloated logs. You will see page-cache hit ratio sag, replica lag grow linearly with write rate, backup windows double, and storage bills jump without row growth to justify it. Secondary-index lookups suffer most because each lookup carries a fat key through multiple tree levels. **Trade-off exposed:** uniqueness is a logical property, but performance is a physical property. A key that is logically perfect and physically scattered will evict data you actually need to keep hot."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Symptoms that point at UUIDs",
+      "text": "Suspect the primary key when **writes slow down as the table grows but CPU stays low**, when **IOPS and log volume grow faster than row count**, when **identical hardware holds far fewer rows than expected**, and when **replicas lag only on the UUID-keyed tables**. Confirm with index fragmentation, average page fill factor, and buffer-pool miss rate — not with guesses."
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure three is specific to fault tolerance and consensus, and it is the reason this topic sits in that track. Distributed logs, state machines, and exactly-once pipelines need a **total order**: log index, term plus offset, or monotonic sequence. UUIDv4 provides none of that. Two events minted on different hosts are not comparable, so you cannot decide which happened first, which retry is newer, or which snapshot covers which writes. If you use the UUID as the dedupe key *and* the order key, replays become nondeterministic and failover can resurrect stale state. The fix is always a second ordering column, which means you now maintain two identities for every row. **Trade-off:** use UUIDs for identity and idempotency, use a sequencer for order. Conflating the two breaks recovery."
+    },
+    {
+      "type": "mermaid",
+      "title": "Identity vs order in a replicated log",
+      "caption": "Consensus still needs a sequence number even if rows have UUIDs.",
+      "code": "flowchart LR\n  C1[Client retry with same UUID] --> L[Log assign next index]\n  L --> R1[Replica 1 applies index 101]\n  L --> R2[Replica 2 applies index 101]\n  R1 --> S[State table keyed by UUID]\n  R2 --> S\n  S --> D[Dedupe by UUID, order by log index]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code: what the cost looks like"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "schema_compare.sql",
+      "code": "-- BAD: random clustered key. Every insert lands anywhere.\nCREATE TABLE orders_bad (\n  id CHAR(36) PRIMARY KEY, -- UUIDv4 as text is worst: 36 bytes + collation\n  created_at TIMESTAMP NOT NULL,\n  amount_cents INT NOT NULL\n) ENGINE=InnoDB;\n\n-- BETTER: time-ordered binary key, still decentralised.\nCREATE TABLE orders_good (\n  id BINARY(16) PRIMARY KEY, -- UUIDv7, monotonic prefix\n  created_at TIMESTAMP NOT NULL,\n  amount_cents INT NOT NULL\n) ENGINE=InnoDB;\n\n-- BEST for write locality if you can tolerate a coordinator:\n-- BIGINT auto-increment clustered key + UUID as external public ID.\nCREATE TABLE orders_hybrid (\n  seq BIGINT AUTO_INCREMENT PRIMARY KEY, -- clustered, append-only\n  public_id BINARY(16) NOT NULL UNIQUE, -- UUIDv7 exposed to clients\n  created_at TIMESTAMP NOT NULL,\n  amount_cents INT NOT NULL,\n  KEY idx_public_id (public_id)\n) ENGINE=InnoDB;"
+    },
+    {
+      "type": "paragraph",
+      "text": "The hybrid pattern is the opinionated default you should defend. Keep an 8-byte monotonic integer as the internal clustered key so writes append and pages stay dense. Expose a UUIDv7 or ULID to the outside world so clients can generate, retry safely, and merge across shards without leaking sequence. Yes, you store two IDs and pay one extra unique index. **Trade-off:** one extra index lookup on the external path in exchange for fast writes, compact storage, and meaningful order internally. That is cheap compared to fragmenting the entire table. Never store UUIDs as 36-character text if you can store 16 bytes binary — text doubles the damage and breaks sort order under most collations."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Fixes that keep decentralization without the randomness tax"
+    },
+    {
+      "type": "table",
+      "caption": "ID options when you cannot tolerate a single ID allocator",
+      "headers": [
+        "Option",
+        "How it works",
+        "Cost you still pay"
+      ],
+      "rows": [
+        [
+          "UUIDv7 / ULID",
+          "Timestamp prefix + randomness, roughly sortable",
+          "Clock skew can break monotonicity; still 16 bytes"
+        ],
+        [
+          "Snowflake-style 64-bit",
+          "Timestamp + shard ID + per-node sequence",
+          "Needs unique worker IDs and clock discipline"
+        ],
+        [
+          "DB auto-increment + external UUID",
+          "Internal int for storage, UUID only at API edge",
+          "Extra index; cross-shard moves need remapping"
+        ],
+        [
+          "Pure UUIDv4 as PK",
+          "Full randomness, zero coordination",
+          "Worst locality, largest bloat, no order — avoid"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "If you must stay coordinator-free, pick **UUIDv7**. The leading timestamp bits restore append-like behavior: concurrent inserts cluster on nearby pages instead of scattering across the whole tree. It does not fully equal integers — it is still twice the width and still sensitive to clock jumps — but it removes most of the page-split storm. Snowflake-style 64-bit IDs are even better for storage and sort speed, but they reintroduce a small coordination problem: every generator needs a unique shard identifier. **Trade-off:** UUIDv7 minimizes operational complexity, Snowflake minimizes bytes. Choose Snowflake when you control the fleet and clocks; choose UUIDv7 when clients you do not control mint IDs."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with requirements, not the ID",
+          "text": "Ask about write rate, table size, need for ordering, need for offline creation, and merge across shards. Say explicitly: if we need time-range scans or a replicated log, pure random IDs fail that requirement."
+        },
+        {
+          "title": "Name the storage mechanism",
+          "text": "Draw the clustered B+Tree, show append versus random insert, explain page splits, fill factor, WAL amplification, and secondary-index key copying. This is where you prove you understand physical design."
+        },
+        {
+          "title": "Quantify the bloat",
+          "text": "Compare 4-byte int versus 16-byte UUID versus 36-byte text across rows plus indexes plus replicas. Show why cache fit matters more than disk size."
+        },
+        {
+          "title": "Split identity from order",
+          "text": "Propose UUID for idempotency and external identity, monotonic sequence for log index and internal order. Explain how retries reuse the UUID while the log assigns the order."
+        },
+        {
+          "title": "Handle clocks and coordination",
+          "text": "Discuss clock skew for v7 and ULID, worker-ID assignment for Snowflake, and what happens during partition. State the fallback: logical clocks or database-assigned sequence on the write path."
+        },
+        {
+          "title": "Land with a decision",
+          "text": "Recommend hybrid or v7 with reasons and state the remaining risk. Never end with it depends without picking. The pick is the signal."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Collisions are the risk, so longer is always safer.** No. Collision probability is already negligible. The real risks are page splits, cache misses, and missing order — all of which get worse as keys get wider.",
+        "**Random IDs spread load, so they fix hotspots.** They spread *B-Tree* writes at the cost of fragmentation. Shard hotspots are fixed by shard-key choice and request routing, not by randomizing the primary key on a single node.",
+        "**UUIDs are ordered because they look hexadecimal.** Only v1 and v7 have a time prefix that sorts. v4 is explicitly unordered. Sorting v4 strings gives you random order with extra steps.",
+        "**Exposing integers is insecure, so internals must be UUIDs.** Enumeration is an authorization bug, not an ID-type bug. Use unpredictable external IDs and keep compact internal keys — do not let a security concern dictate physical storage layout.",
+        "**v7 solves everything, so the debate is over.** v7 restores locality but keeps the 16-byte width, still duplicates the key in every secondary index, and still depends on wall clocks. It is a major improvement, not a free lunch."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to avoid it"
+    },
+    {
+      "type": "table",
+      "caption": "Decision guide for ID choice",
+      "headers": [
+        "Use random UUIDs when",
+        "Avoid them when",
+        "Do this instead"
+      ],
+      "rows": [
+        [
+          "Clients create IDs offline and retry independently",
+          "The column is the clustered primary key on a huge table",
+          "UUIDv7 binary, or int internally plus UUID externally"
+        ],
+        [
+          "You merge data from unrelated systems or tenants",
+          "You need range scans by creation time",
+          "Time-prefixed ID plus indexed timestamp"
+        ],
+        [
+          "You need opaque public IDs that do not leak volume",
+          "You run consensus, event sourcing, or exactly-once replay",
+          "UUID for dedupe plus separate monotonic log sequence"
+        ],
+        [
+          "Dedupe key for idempotent ingestion",
+          "Working set must fit in RAM or replicas already lag",
+          "64-bit Snowflake-style integer"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The rule is blunt on purpose: **never cluster on randomness**. Randomness belongs at the edge where independence matters; monotonicity belongs at the core where storage and recovery live. If an interviewer pushes you toward a single global UUID primary key for elegance, push back with physics — pages, caches, logs, and snapshots do not care how elegant the API looks. **Trade-off restated one last time:** independence at creation time costs contiguity at write time. Isolate that cost to an external identifier so the database never pays it on every insert."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Use **UUIDs for identity without coordination, never for order or storage locality** — expose a v7 at the edge, cluster on a monotonic key inside, and let consensus assign the sequence."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:00:45.469Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,433 @@
+{
+  "slug": "fizz-buzz-multithreaded",
+  "title": "Fizz Buzz Multithreaded",
+  "summary": "Coordinate 4 threads to print 1..n in order with shared counter, guard conditions, and precise wakeups — why monitor + while + notifyAll wins interviews over semaphores or spin.",
+  "kind": "LLD",
+  "problemSlug": "fizz-buzz-multithreaded-44-84",
+  "topic": "Concurrency Interview Problems",
+  "difficulty": "Medium",
+  "coverEmoji": "🧵",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Multithreading",
+    "Java"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.geeksforgeeks.org/interview-experiences/microsoft-interview-experience-3-years-experienced-2/",
+      "title": "Microsoft Interview Experience (3+ Years Experienced) - GeeksforGeeks",
+      "source": "geeksforgeeks.org",
+      "kind": "report",
+      "companies": [
+        {
+          "name": "Microsoft",
+          "quote": "Then we had some discussion about https://leetcode.com/problems/fizz-buzz-multithreaded/"
+        }
+      ]
+    },
+    {
+      "url": "https://devsunite.com/resources/faang-interview-questions/databricks",
+      "title": "Databricks Interview Questions: Track Your Progress | DevsUnite",
+      "source": "devsunite.com",
+      "kind": "roundup",
+      "companies": [
+        {
+          "name": "Databricks",
+          "quote": "27 real coding interview questions recently asked at Databricks"
+        }
+      ]
+    },
+    {
+      "url": "https://www.dsaprep.dev/blog/nvidia-coding-interview-questions",
+      "title": "NVIDIA Coding Interview Questions (2026 Guide) | DSA Prep",
+      "source": "dsaprep.dev",
+      "kind": "aggregate",
+      "companies": [
+        {
+          "name": "NVIDIA",
+          "quote": "| 36 | **Fizz Buzz Multithreaded** | Concurrency | all | [LeetCode ->](https://leetcode.com/problems/fizz-buzz-multithreaded) |"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "LeetCode 1195 — Fizz Buzz Multithreaded",
+      "url": "https://leetcode.com/problems/fizz-buzz-multithreaded/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "Medium. Resolved through the LeetCode API, not guessed from the slug."
+    },
+    {
+      "title": "Microsoft Interview Experience (3+ Years Experienced) - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/interview-experiences/microsoft-interview-experience-3-years-experienced-2/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Concurrency & Multithreading COMPLETE Crash Course - YouTube",
+      "url": "https://www.youtube.com/watch?v=Rot2QnaUqBU",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Databricks Interview Questions: Track Your Progress | DevsUnite",
+      "url": "https://devsunite.com/resources/faang-interview-questions/databricks",
+      "source": "devsunite.com",
+      "kind": "article"
+    },
+    {
+      "title": "NVIDIA Coding Interview Questions (2026 Guide) | DSA Prep",
+      "url": "https://www.dsaprep.dev/blog/nvidia-coding-interview-questions",
+      "source": "dsaprep.dev",
+      "kind": "article"
+    },
+    {
+      "title": "Interview Practice Problems for Multithreading | by LiveRunGrow",
+      "url": "https://medium.com/acing-the-software-engineer-interview/interview-practice-problem-for-multithreading-8f3830cce844",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Learn Low Level Design (LLD) and prepare for interviews ... - GitHub",
+      "url": "https://github.com/ashishps1/awesome-low-level-design",
+      "source": "github.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "This is not a FizzBuzz test. It is a **ordered handoff under shared mutable state** test. The interviewer wants to see if you can define *who runs when* with no gaps, no duplicates, and clean termination — using `wait` in a `while`, visible shared state, and a wakeup discipline you can defend. Anyone can write the divisibility check. Few can prove every number is printed **exactly once** when four threads race on `curr`."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "You are given `n`. Four threads run concurrently, each calling one method repeatedly until `n` is done. A shared sequence `1..n` must be emitted in order, with each value claimed by exactly one thread: multiples of 3 only go to the `fizz` thread, multiples of 5 only go to the `buzz` thread, multiples of both go to the `fizzbuzz` thread, and everything else goes to the `number` thread. Each method receives a callback that performs the actual output — `printFizz`, `printBuzz`, `printFizzBuzz`, or `printNumber` — and you must invoke it at the right moment. The driver starts all four threads and they must cooperate to completion without skipping, duplicating, reordering, or hanging after `n`."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`fizz(Runnable printFizz)` — invoke `printFizz.run()` iff current value is divisible by 3 and not by 5.",
+        "`buzz(Runnable printBuzz)` — invoke `printBuzz.run()` iff current value is divisible by 5 and not by 3.",
+        "`fizzbuzz(Runnable printFizzBuzz)` — invoke iff divisible by both 3 and 5.",
+        "`number(Runnable printNumber)` — invoke iff divisible by neither; typically prints the value itself via closure.",
+        "All four methods must return once `curr > n`. Output order must equal `1, 2, fizz, 4, buzz, ...` exactly."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Who owns the counter and the output?",
+          "text": "Agree that the `FizzBuzz` instance owns `curr = 1` and each callback owns printing. Your job is coordination only. This rules out solutions where threads print directly with `System.out` inside the class, which breaks testability."
+        },
+        {
+          "title": "What does termination look like?",
+          "text": "Ask whether each method should spin until `curr > n` and then return, even if another thread did the last increment. The answer is yes — every worker loops on `while (curr <= n)`. If you exit on `if`, late threads hang forever on `wait()`."
+        },
+        {
+          "title": "Are spurious wakeups and interrupts in scope?",
+          "text": "State upfront you will guard `wait()` with `while`, not `if`, and propagate `InterruptedException`. Interviewers deduct heavily for `if (notMyTurn) wait()` because it breaks on spurious wakeup."
+        },
+        {
+          "title": "Is ordering across threads strict?",
+          "text": "Confirm total order is required, not just per-thread correctness. That forces a single serialization point — one monitor or one atomic sequencer — and kills designs where each thread sleeps and hopes."
+        },
+        {
+          "title": "What n range and what primitive is allowed?",
+          "text": "Ask if you may use `synchronized + wait/notifyAll`, `Semaphore`, or `Lock + Condition`. Say you will start with the monitor because it is shortest to prove correct, then show the precise-wakeup variant as a follow-up."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Scope agreed before writing code.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Each i in 1..n printed exactly once, in order",
+          "The correctness invariant everything else serves"
+        ],
+        [
+          "Functional",
+          "Correct thread claims each i by divisibility",
+          "Fizz vs buzz vs fizzbuzz vs number routing"
+        ],
+        [
+          "Functional",
+          "All threads terminate without hang or lost wakeup",
+          "Most failures hide in the last 2 values"
+        ],
+        [
+          "Non-functional",
+          "No busy-spin, no sleep-based guessing",
+          "Sleep tuning is not synchronization"
+        ],
+        [
+          "Non-functional",
+          "Memory visibility for curr across threads",
+          "Without it, threads can stall on stale reads"
+        ],
+        [
+          "Constraint",
+          "Callbacks supplied by caller, throw nothing",
+          "You call print once per claim, holding the lock briefly"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the naive approach and why it fails"
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive answer is a `volatile int curr` plus four threads that loop, check `if (isMine(curr)) print and curr++`, otherwise `Thread.sleep(1)` or `Thread.yield()`. A slightly more advanced naive version uses `synchronized` but calls `notify()` instead of `notifyAll()`, or guards with `if` instead of `while`. All three look plausible on a whiteboard and all three are wrong in ways the interviewer is waiting to expose. The sleep version has no happens-before agreement on *who goes next* — it trades correctness for timing luck, burns CPU, adds latency to every number, and still races on the check-then-act sequence `read curr, decide, increment`. Two threads can both see `curr == 3`, both decide they own it, and you get duplicate output plus a skipped value. The `notify()` version deadlocks probabilistically: if the `number` thread consumes `3` and wakes the `buzz` thread, and `buzz` finds it is not its turn, it goes back to sleep without waking the true owner, and the system stalls even though work remains. The `if`-guarded `wait()` version dies on spurious wakeup — the JVM is allowed to return from `wait()` with no `notify`, and a thread that does not recheck its predicate will print out of turn."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "BrokenSpin.java",
+      "code": "class BrokenSpin {\n    volatile int curr = 1;\n    final int n;\n    BrokenSpin(int n) { this.n = n; }\n    // WRONG: check-then-act races, sleep is not coordination.\n    public void fizz(Runnable printFizz) {\n        while (curr <= n) {\n            if (curr % 3 == 0 && curr % 5 != 0) {\n                printFizz.run(); // two threads can enter here\n                curr++;          // lost update, duplicate, skip\n            } else {\n                try { Thread.sleep(1); } catch (InterruptedException e) { return; }\n            }\n        }\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "The trade-off is blunt: spinning looks lock-free and simple, but you pay with **unbounded CPU, no ordering guarantee, and a race on every increment**. A correct design must make *read predicate, print, increment* atomic under one lock, and must wake *everyone* when ownership changes unless you can name the exact next owner. That is why the interview answer uses a single monitor, a `while (curr <= n)` outer loop, an inner `while`-style predicate check, and `notifyAll()` after every state change. You accept O(threads) wakeups per number — 4 wakeups times n — because n is small and the proof of no missed signal is one sentence: every mutation broadcasts, every waiter rechecks."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Never defend sleep as synchronization",
+      "text": "If you write `sleep(10)` to let another thread run, you have announced you do not have a protocol. The interviewer will follow up with *what if the machine stalls for 50ms* and your design collapses. Use `wait` to release the lock and sleep atomically until a state change, not wall-clock hope."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design — one monitor, one counter, broadcast"
+    },
+    {
+      "type": "paragraph",
+      "text": "Hold a single invariant: **`curr` is the smallest not-yet-printed value, and only the thread whose predicate matches `curr` may consume it**. All four methods synchronize on the same monitor (`synchronized` methods on `this`), loop while `curr <= n`, and inside the lock do exactly one of three things: if `curr > n`, broadcast and return; else if `curr` is mine, run the callback, increment, broadcast; else `wait()`. The callback runs while holding the lock — deliberate and opinionated. Releasing the lock before printing would let another thread interleave output and break total order. Since the callback is a trivial append or print, holding the lock for microseconds is cheaper than the complexity of a two-phase commit. The trade-off you name aloud: `notifyAll()` causes a thundering herd of 3 wasted wakeups per number, versus `notify()` or per-thread `Condition` objects that wake exactly one thread but require you to compute the next owner (`curr+1` divisibility) correctly including the termination case. For an interview, herd plus simplicity wins because correctness is reviewable in 30 seconds. For production with many workers, precise wakeup wins because wasted context switches dominate."
+    },
+    {
+      "type": "mermaid",
+      "title": "Coordination protocol",
+      "caption": "Every worker runs the same loop; only the predicate differs.",
+      "code": "flowchart TD\n  A[\"Shared curr = 1, limit n\"] --> B[\"Worker acquires monitor\"]\n  B --> C{\"curr greater than n?\"}\n  C -->|yes| D[\"notifyAll and return\"]\n  C -->|no| E{\"Is curr mine?\"}\n  E -->|yes| F[\"Run callback, curr++, notifyAll\"]\n  F --> B\n  E -->|no| G[\"wait, atomically release lock\"]\n  G --> B"
+    },
+    {
+      "type": "paragraph",
+      "text": "The semaphore alternative is worth naming so you look senior: four semaphores, only the owner of `curr` holds a permit, and the finishing thread hands the permit to the owner of `curr+1`. That gives O(1) wakeups per number and no herd, but the handoff function must map every integer to exactly one semaphore and must release the right one when `curr` passes `n`, otherwise one thread leaks a permit and `join` hangs. The monitor version has no routing function to get wrong — the predicate lives in each thread. Choose the monitor when the grader values a provable 20-line answer; choose semaphores or four `Condition` queues when the follow-up explicitly asks for minimal wakeups. Either way the sequencer stays centralised — decentralised guessing is what failed in Approach 1."
+    },
+    {
+      "type": "mermaid",
+      "title": "Structure",
+      "caption": "One shared sequencer, four competing workers.",
+      "code": "classDiagram\n  class FizzBuzz {\n    -int n\n    -int curr\n    +FizzBuzz(int n)\n    +fizz(Runnable printFizz)\n    +buzz(Runnable printBuzz)\n    +fizzbuzz(Runnable printFizzBuzz)\n    +number(Runnable printNumber)\n  }\n  class WorkerFizz {\n    +run()\n  }\n  class WorkerBuzz {\n    +run()\n  }\n  class WorkerFizzBuzz {\n    +run()\n  }\n  class WorkerNumber {\n    +run()\n  }\n  FizzBuzz <.. WorkerFizz : calls fizz\n  FizzBuzz <.. WorkerBuzz : calls buzz\n  FizzBuzz <.. WorkerFizzBuzz : calls fizzbuzz\n  FizzBuzz <.. WorkerNumber : calls number"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "FizzBuzz.java",
+      "code": "class FizzBuzz {\n    private final int n;\n    private int curr = 1; // guarded by this\n\n    public FizzBuzz(int n) {\n        this.n = n;\n    }\n\n    // Only the thread whose predicate matches curr may consume it.\n    // Every state change uses notifyAll: simple, no missed signal.\n    public synchronized void fizz(Runnable printFizz) throws InterruptedException {\n        while (curr <= n) {\n            if (curr % 3 == 0 && curr % 5 != 0) {\n                printFizz.run();\n                curr++;\n                notifyAll();\n            } else {\n                wait();\n            }\n        }\n    }\n\n    public synchronized void buzz(Runnable printBuzz) throws InterruptedException {\n        while (curr <= n) {\n            if (curr % 5 == 0 && curr % 3 != 0) {\n                printBuzz.run();\n                curr++;\n                notifyAll();\n            } else {\n                wait();\n            }\n        }\n    }\n\n    public synchronized void fizzbuzz(Runnable printFizzBuzz) throws InterruptedException {\n        while (curr <= n) {\n            if (curr % 3 == 0 && curr % 5 == 0) {\n                printFizzBuzz.run();\n                curr++;\n                notifyAll();\n            } else {\n                wait();\n            }\n        }\n    }\n\n    public synchronized void number(Runnable printNumber) throws InterruptedException {\n        while (curr <= n) {\n            if (curr % 3 != 0 && curr % 5 != 0) {\n                printNumber.run();\n                curr++;\n                notifyAll();\n            } else {\n                wait();\n            }\n        }\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read this code as a proof, not just syntax. `synchronized` gives mutual exclusion *and* visibility — every read of `curr` sees the latest write. `wait()` inside the `else` atomically releases the lock so the true owner can enter; that atomicity is why `sleep` can never substitute. The `while (curr <= n)` outer loop handles both spurious wakeups and the shutdown race: a thread woken after the last increment rechecks, sees `curr > n`, and returns instead of printing garbage. `notifyAll()` after `curr++` is the liveness argument — the next owner is guaranteed to be among those woken. The common optimisation question is whether to hoist `printFizz.run()` outside the lock for throughput. Do not, here. The print *is* the linearization point; moving it outside lets two consecutive values interleave in the output buffer and breaks the observable order the test asserts on. Throughput cost is negligible because the critical section is a few instructions."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "fizzbuzz.py",
+      "code": "import threading\n\nclass FizzBuzz:\n    def __init__(self, n: int):\n        self.n = n\n        self.curr = 1\n        self.cond = threading.Condition()\n\n    def _run(self, pred, action):\n        while True:\n            with self.cond:\n                while self.curr <= self.n and not pred(self.curr):\n                    self.cond.wait()\n                if self.curr > self.n:\n                    self.cond.notify_all()  # wake stragglers so join() ends\n                    return\n                action()\n                self.curr += 1\n                self.cond.notify_all()\n\n    def fizz(self, printFizz):\n        self._run(lambda x: x % 3 == 0 and x % 5 != 0, printFizz)\n\n    def buzz(self, printBuzz):\n        self._run(lambda x: x % 5 == 0 and x % 3 != 0, printBuzz)\n\n    def fizzbuzz(self, printFizzBuzz):\n        self._run(lambda x: x % 3 == 0 and x % 5 == 0, printFizzBuzz)\n\n    def number(self, printNumber):\n        self._run(lambda x: x % 3 != 0 and x % 5 != 0, printNumber)"
+    },
+    {
+      "type": "table",
+      "caption": "Cost of the monitor design with 4 threads.",
+      "headers": [
+        "Dimension",
+        "Bound",
+        "Note"
+      ],
+      "rows": [
+        [
+          "Time",
+          "O(n) claims, O(n) broadcasts",
+          "Each value causes 1 print + 1 notifyAll waking 3 sleepers"
+        ],
+        [
+          "Wasted wakeups",
+          "O(n) (~3 per value)",
+          "The price of simplicity; precise Conditions cut it to O(1) per value"
+        ],
+        [
+          "Space",
+          "O(1) beyond output",
+          "One int + one monitor; no queue or per-value allocation"
+        ],
+        [
+          "Contention",
+          "Serialised on one lock",
+          "Required by total order; throughput is n small so irrelevant"
+        ],
+        [
+          "Alternative (semaphores)",
+          "O(n) handoffs, 1 wakeup each",
+          "Faster but handoff routing must be perfect incl. termination"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency — the hardest follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "The follow-up that separates hires is *make wakeups precise without breaking termination*. The interviewer will say: `notifyAll` wakes three threads that do nothing — fix it with `Lock + Condition` or `Semaphore`. The strong answer sketches four `Condition` objects (or four semaphores with one initial permit routed by `curr == 1`) and a `nextCondition(curr+1)` router, then immediately names the two traps. First, the router must be total: every integer maps to exactly one queue, and `15` must map to `fizzbuzz`, not `fizz`. Second, termination must wake *all* queues when `curr` passes `n`, otherwise the three non-finishing threads wait forever and the test times out. That is why even the precise version keeps a broadcast-on-exit path. A second hard follow-up is reentrancy and exception safety: if a callback throws, `curr` must not advance and the lock must still release — in Java, `synchronized` releases automatically but you should not increment before the callback returns. A third is fairness and starvation: with `synchronized` there is no FIFO guarantee, but starvation is impossible here because only one thread is ever runnable per state — the other three fail their predicate and re-wait. Name that explicitly; it shows you reason about liveness, not just syntax."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Three bugs that fail hidden tests",
+      "text": "**`if` instead of `while` around `wait()`** — passes locally, fails on spurious wakeup. **`notify()` instead of `notifyAll()`** — passes for small `n`, deadlocks when the wrong thread is woken near the end. **Missing broadcast on exit** — the last increment wakes one thread, the other two sleep forever and the runner hangs. Fix all three with the loop shape above: `while (curr <= n) { if (mine) { act; curr++; notifyAll(); } else wait(); }`."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Replace broadcast with precise wakeup",
+          "text": "Show one `ReentrantLock` with four `Condition`s, `signal()` only the owner of `curr+1` plus `signalAll()` when `curr > n`. Trade-off: 4x less context switching for 3x more code and a router to verify."
+        },
+        {
+          "title": "Semaphore handoff version",
+          "text": "Initialise permits as `fizz:0, buzz:0, fizzbuzz:0, number:1` (since 1 is a number), each thread `acquire`s, checks `curr > n`, releases next owner and returns, else prints if owner or hands off. Trade-off: elegant steady state, brittle startup and shutdown."
+        },
+        {
+          "title": "Generalise to k rules",
+          "text": "Replace four methods with a list of `(predicate, action)` pairs and N worker threads scanning for the first match. Trade-off: extensible but predicate order becomes the spec — first match wins must be documented."
+        },
+        {
+          "title": "Prove exactly-once",
+          "text": "Offer the invariant proof: `curr` only increments under lock immediately after the matching callback, so each value has one increment and one print. Interviewers promote candidates who state invariants unprompted."
+        },
+        {
+          "title": "Test it deterministically",
+          "text": "Propose a single-threaded driver calling methods in a fixed thread pool with a `StringBuffer` sink, assert full string for `n=15`, plus a stress run with `n=1000` and timeout detection for hangs. Trade-off: string compare catches order bugs that per-thread counters miss."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`n = 0` or negative — all four methods must return immediately without printing or waiting.",
+        "`n = 1`, `n = 3`, `n = 5`, `n = 15` — boundary values where the owner changes; walk `15` explicitly.",
+        "Thread start order is arbitrary — correctness cannot depend on `number` starting first.",
+        "Spurious wakeup — every `wait()` rechecks its predicate in a loop.",
+        "Interrupt during `wait()` — propagate `InterruptedException`, do not swallow and continue.",
+        "Slow callback — holding the lock during print serialises output by design; document it."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak vs strong signals for this problem.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Coordination",
+          "Sleep / yield / busy-spin on volatile",
+          "Single monitor, wait releases lock, broadcast on change"
+        ],
+        [
+          "Predicate discipline",
+          "`if` guard, prints out of turn on wakeup",
+          "`while` guard, recheck after every wakeup"
+        ],
+        [
+          "Liveness",
+          "`notify()`, hangs on some n",
+          "`notifyAll()` + broadcast-on-exit, all threads join"
+        ],
+        [
+          "Atomicity",
+          "Check outside lock, increment outside lock",
+          "Predicate + print + increment in one critical section"
+        ],
+        [
+          "Trade-off talk",
+          "Claims one solution is always best",
+          "Names herd vs precision cost and when to switch"
+        ],
+        [
+          "Proof",
+          "It worked in my run",
+          "States exactly-once invariant and termination argument"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "45-minute plan",
+      "text": "Minutes 0–5: restate routing and termination, agree on `synchronized + wait/notifyAll`. Minutes 5–15: write the `curr` loop for one method, then clone to four — narrate the invariant as you go. Minutes 15–25: dry-run `n=5` with threads starting in adversarial order, show no skip or duplicate. Minutes 25–35: handle the three gotchas — `while` not `if`, `notifyAll` not `notify`, broadcast on exit. Minutes 35–45: deliver one follow-up (precise `Condition` wakeup or semaphore handoff) and the exactly-once proof. Close by stating the trade-off in one sentence."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:35:00.604Z",
+    "problems": []
+  }
+}

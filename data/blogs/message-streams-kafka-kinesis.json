@@ -1,0 +1,295 @@
+{
+  "slug": "message-streams-kafka-kinesis",
+  "title": "Message streams (Kafka, Kinesis)",
+  "summary": "Message streams are durable partitioned logs: ordering only inside a partition, scale by adding partitions, and every choice trades latency, cost, and operability.",
+  "kind": "HLD",
+  "problemSlug": "message-streams-kafka-90-300",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🌊",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Kafka",
+    "Kinesis",
+    "Streaming"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Kafka vs Kinesis 2026: $0.015/Shard-Hour, 5x Latency Gap",
+      "url": "https://tech-insider.org/kafka-vs-kinesis-2026/",
+      "source": "tech-insider.org",
+      "kind": "article"
+    },
+    {
+      "title": "Apache Kafka® vs Amazon Kinesis: What's the Difference? - Confluent",
+      "url": "https://www.confluent.io/compare/kafka-vs-kinesis/",
+      "source": "confluent.io",
+      "kind": "article"
+    },
+    {
+      "title": "AWS Kinesis vs. Kafka: Comparing Architectures, Features, and Cost",
+      "url": "https://instaclustr.medium.com/aws-kinesis-vs-kafka-comparing-architectures-features-and-cost-99ac1bb75f1c",
+      "source": "instaclustr.medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Kafka Connect - Amazon Kinesis Data Streams",
+      "url": "https://docs.aws.amazon.com/streams/latest/dev/using-other-services-kafka-connect.html",
+      "source": "docs.aws.amazon.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A message stream is **not a queue**. It is a **durable, replayable, partitioned log**. Producers append, consumers pull by offset, and storage is decoupled from consumption. If you remember only one thing: **scale comes from partitioning, and partitioning destroys global ordering**. Every stream design is a negotiation between parallelism and order."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "A topic or stream is a named log split into N ordered sub-logs. In Kafka those are **partitions**; in Kinesis those are **shards**. A record has a key, a value, and a position — an **offset** in Kafka, a **sequence number** in Kinesis. Producers append to the tail. Brokers persist the append and replicate it. Consumers track their own position and request *give me what is after X*. That pull model is the whole point: the broker does not track who processed what, it just keeps bytes for a retention window and lets any number of consumer groups replay them independently. This is why streams serve fan-out, reprocessing, and audit for free, and why they are terrible as work queues with per-message ack and per-message TTL. Retention is time- or size-based, not *delete after consume*. If you need *consume once then disappear*, use a queue like SQS or RabbitMQ. If you need *append once, read many times, replay on demand*, use a stream."
+    },
+    {
+      "type": "paragraph",
+      "text": "Ordering, durability, and availability are all scoped to the partition, not the stream. Records with the same key go to the same partition because the producer hashes the key modulo N. That gives you **per-key FIFO** and nothing stronger. There is no total order across partitions, and anyone who promises you one is selling a single-partition system with no parallelism. Durability comes from replication: Kafka waits for acknowledgements from in-sync replicas before it considers a write committed; Kinesis replicates synchronously across availability zones before it returns success. In both cases the trade-off is identical: **stronger acknowledgement = higher p99 write latency and lower effective throughput**. `acks=all` and synchronous cross-AZ replication are correct for payments and inventory, and wasteful for clickstream and metrics where loss of a fraction of a percent is irrelevant."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: append, partition, pull"
+    },
+    {
+      "type": "paragraph",
+      "text": "The write path is deliberately stupid to stay fast. Producer serializes, picks a partition by key hash or round-robin if keyless, batches, compresses, and appends. The broker writes sequentially to segment files — sequential disk I/O, page-cache friendly, no random seeks. Replication follows the leader: followers pull, the leader advances the high-watermark only when a quorum has the record. The read path is equally simple: consumers fetch sequentially from their last offset, broker serves from page cache if the consumer is caught up, from disk if it is replaying history. That is why a healthy stream does almost no disk reads, and why a lagging consumer or a backfill job can collapse broker throughput — it flips the workload from memory-served to disk-served. Consumer groups divide partitions among live consumers; each partition is owned by exactly one consumer in a group at a time. Add consumers and you parallelize up to N, the partition count. Add more consumers than partitions and the extras sit idle. This ceiling surprises everyone once."
+    },
+    {
+      "type": "mermaid",
+      "title": "Partitioned log and consumer group",
+      "caption": "One ordered log per partition, one owner per partition per group.",
+      "code": "flowchart LR\n  Prod[\"Producers\"] --> Part[\"Topic: hash key to partition\"]\n  Part --> P0[\"P0 ordered log\"]\n  Part --> P1[\"P1 ordered log\"]\n  Part --> P2[\"P2 ordered log\"]\n  P0 --> G[\"Consumer Group\"]\n  P1 --> G\n  P2 --> G\n  G --> Store[\"Downstream store / service\"]\n  P0 -. replay .-> NewC[\"New consumer group replays from offset 0\"]\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "Offsets are the contract that makes replay possible, and they are owned by the consumer, not the broker. In Kafka the group commits offsets back to an internal topic; in Kinesis the client library checkpoints sequence numbers to a separate store. Commit synchronously after processing and you get **at-least-once**: crashes cause redelivery, so downstream must be idempotent. Buffer commits and you get loss on crash. Transactional producers plus idempotent consumers can approach effectively-once *within* the stream and a compatible sink, but the trade-off is brutal: fencing, transaction coordinators, higher latency, lower throughput, and far harder operations. Default to at-least-once plus an idempotency key in your sink — usually the record key plus offset in a database with a unique constraint. It is boring, it works, and it survives rebalances."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How scaling really works: the partition is the unit"
+    },
+    {
+      "type": "paragraph",
+      "text": "Throughput scales with partition count because each partition is an independent append path with its own leader and its own consumer assignment. Double partitions, roughly double ingest and egress — until you hit the real ceilings: broker network, disk bandwidth, file-handle and index overhead per partition, ZooKeeper-free metadata propagation cost, and rebalance time. Kafka lets you choose partition count per topic and add more later, but you cannot reduce it without rebuilding the topic, and adding partitions re-hashes keys so per-key locality changes. Kinesis makes the unit explicit as a shard with a provisioned throughput envelope; you split or merge shards to scale, and each split is an operational event that changes hash routing and forces consumers to handle parent-to-child handoff. On-demand modes hide resharding but charge you for the abstraction with higher per-byte cost and less predictable p99 under burst. The trade-off never disappears: **fixed shards/partitions give predictable cost and painful elasticity; elastic modes give hands-off scaling and unpredictable cost plus throttling surprises**. Pick based on how bursty you are, not on ideology."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Parallelism knob:** partition/shard count. More units = more write leaders and more concurrent consumers. Cost: more open files, more replication traffic, slower leader election and rebalances.",
+        "**Per-unit ceiling:** single partition write speed is bounded by leader disk and network. Hot keys collapse N partitions to 1. Fix with better key design or keyless round-robin, trading away per-key order.",
+        "**Consumer scaling ceiling:** max useful consumers per group = partition count. Need more parallelism? Either over-partition up front or split the topic by bounded context.",
+        "**Retention knob:** longer retention = larger disks and slower recovery, but free replay and backfill. Shorter retention = cheaper and faster, but a lagging consumer becomes data loss.",
+        "**Batching knob:** larger `batch.size` and `linger.ms` = higher throughput and compression, worse produce latency. This is the first dial to turn for p99 vs MB/s."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "Kafka vs Kinesis trade-offs that actually decide interviews.",
+      "headers": [
+        "Dimension",
+        "Kafka behavior",
+        "Kinesis behavior",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Operations",
+          "You own brokers, replication, upgrades, partition balancing — or pay a managed service to hide it",
+          "No brokers to run; AWS owns availability and storage",
+          "Kafka trades toil for control; Kinesis trades control for toil reduction"
+        ],
+        [
+          "Elasticity",
+          "Add partitions manually; scaling brokers is a migration",
+          "Split/merge shards or use on-demand auto-scaling",
+          "Kafka is sticky and step-scaled; Kinesis is reshard-driven, with throttling risk if keys are skewed"
+        ],
+        [
+          "Ordering",
+          "Strict order only inside a partition",
+          "Strict order only inside a shard",
+          "Identical model — global ordering requires single partition/shard and kills throughput"
+        ],
+        [
+          "Retention/replay",
+          "Configurable by time and bytes; consumers control offset arbitrarily",
+          "Bounded retention window; replay via trim-horizon or timestamp",
+          "Kafka favors long replay and event sourcing; Kinesis favors bounded transport"
+        ],
+        [
+          "Ecosystem",
+          "Connect, Streams, Flink, Schema Registry, MirrorMaker for cross-region",
+          "Lambda event sources, Firehose delivery, KCL checkpointing",
+          "Kafka wins for complex processing graphs; Kinesis wins for glue to serverless and S3"
+        ],
+        [
+          "Cost shape",
+          "Pay for brokers/disks even when idle; cheap per byte at sustained high volume",
+          "Pay per shard-hour plus per-byte put/get; cheap at low/spiky volume",
+          "Crossover is real: idle Kafka is expensive, busy Kinesis is expensive"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is **hot partition**. One key dominates — a top merchant, a noisy device, a `null` key that hashes unevenly — and one partition grows while others idle. Symptom: produce p99 spikes and `RecordTooLarge` or throttling on one shard, consumer lag concentrated on one assignment, end-to-end latency bimodal. Dashboards show flat aggregate throughput but one consumer thread pinned at 100%. Fix is not *add partitions*; fix is *fix the key*. Split the hot key with a suffix (`merchant-id#1..8`), accept that strict per-merchant order becomes per-bucket order, or go keyless and give up order for even spread. The trade-off is explicit: **uniform load or strict order — pick one per topic**. Do not let anyone tell you consistent hashing solves skew; it spreads keys, not popularity."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second family is **consumer lag and rebalance storms**. A slow downstream, a bad deploy that increases processing time 2x, or a garbage-collection pause causes the group to miss heartbeats. The group rebalances, partitions shuffle to new owners, every new owner replays from last commit, lag spikes further, more heartbeats miss. Symptom: sawtooth lag graph, duplicate processing storm, broker fetch queue saturated, and if retention is short, the tail gets truncated before consumers catch up — lag becomes permanent loss. Mitigations that work: static group membership to survive rolling restarts, incremental cooperative rebalancing instead of stop-the-world, over-provision consumers slightly, commit offsets frequently in small batches, and set retention with headroom for your worst backfill, not your average lag. For Kinesis specifically, watch for **shard iterator expiry and provisioned-throughput exceeded**: symptom is `ProvisionedThroughputExceededException` plus Lambda concurrent-batch failures even though average traffic looks fine — the cause is almost always key skew plus too-aggressive polling."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`consumer_lag_seconds growing + broker CPU flat` → downstream is slow or one partition is hot, not a broker problem.",
+        "`rebalance rate spiking + duplicate rate spiking` → session timeouts too tight, GC pauses, or oversized `max.poll.records` causing long processing between polls.",
+        "`produce p99 up + ISR shrinking` → broker disk/network saturated or replica falling behind; reduce batch, add leaders, or stop serving historical fetches from hot brokers.",
+        "`Kinesis throttling errors on one shard only` → hash-key skew; split shard will not help until key design changes.",
+        "`Oldest record age approaching retention` → you are about to convert lag into loss; page now, not when truncation starts."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The config that matters"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ProducerConfig.java",
+      "code": "Properties p = new Properties();\np.put(\"acks\", \"all\");              // durability: leader + ISR must ack\np.put(\"enable.idempotence\", \"true\"); // dedupe producer retries, per-partition order\np.put(\"compression.type\", \"lz4\");    // trade CPU for network/disk\np.put(\"batch.size\", 65536);           // bigger batch = more throughput\np.put(\"linger.ms\", 20);               // wait to fill batch = more latency\np.put(\"max.in.flight.requests.per.connection\", 5); // keep pipelined with idempotence\np.put(\"key.serializer\", \"org.apache.kafka.common.serialization.StringSerializer\");\n// key = routing + order + idempotency. Null key = no order, even spread."
+    },
+    {
+      "type": "paragraph",
+      "text": "This one block encodes four trade-offs interviewers probe. `acks=all` with idempotence buys no-loss retries and per-partition order at the cost of an extra replica round-trip on every batch — expect higher p99 than `acks=1`. Compression buys 3-5x less network and disk for a few milliseconds of CPU; pick `lz4` for speed, `zstd` for ratio when you are network-bound. `batch.size` plus `linger.ms` buys throughput by delaying sends; 20ms of linger is invisible to a backfill and fatal to interactive chat. And the key serializer line is architecture: a meaningful business key preserves order and enables idempotent upserts downstream, a null key maximizes spread and destroys both. For Kinesis the mirror knobs are partition-key choice, `RecordMaxBufferedTime` aggregation, and retry with backoff on throttling — same trade-offs, different names. State the trade-off aloud or you lose points."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the workload, not the logo",
+          "text": "Ask: events per second, average and p99 record size, keys and cardinality, need for per-key order, retention need, number of independent readers, and burst ratio. Then compute partitions: required ingest / per-partition sustainable ingest, rounded up with 30-50% headroom. Say the math out loud."
+        },
+        {
+          "title": "Draw the log, then the groups",
+          "text": "Sketch producers → topic with N partitions → two consumer groups with independent offsets (real-time serving vs warehouse sink). Explain why adding a new use case does not touch producers — new group replays history. This is the replay argument that justifies a stream over RPC."
+        },
+        {
+          "title": "Force the ordering question",
+          "text": "Say: order holds only inside a key-partition. If the prompt says global order for all orders, push back: that forces one partition and caps throughput. Propose per-user or per-entity order plus a downstream reconciler, and name the trade-off."
+        },
+        {
+          "title": "Design for failure and reprocessing",
+          "text": "Specify at-least-once plus idempotent sink, dead-letter handling for poison records, lag and oldest-record-age alerts, and retention sized for worst-case backfill. Mention rebalance behavior and exactly what happens when a consumer dies mid-batch."
+        },
+        {
+          "title": "Close with Kafka vs Kinesis decision",
+          "text": "Recommend Kinesis when team is small, traffic is spiky or modest, and downstream is Lambda/S3 — you rent elasticity. Recommend Kafka when volume is sustained and high, replay needs are long, or processing graph is complex — you buy control and pay operational cost. Never recommend both."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**\\\"Streams give exactly-once for free.\\\"** No. Default is at-least-once with redelivery. True end-to-end exactly-once needs transactions plus an idempotent sink and costs latency and complexity.",
+        "**\\\"More partitions are always better.\\\"** Each partition costs file handles, indexes, replication chatter, and rebalance time. Over-partitioning slows recovery and leader election. Size for 12-18 months of growth, not 10x fantasy.",
+        "**\\\"Kinesis auto-scales so I never think about shards.\\\"** On-demand absorbs bursts but throttles on sustained skew and bills per byte. Hot keys throttle identically in both systems.",
+        "**\\\"Kafka is a queue with longer retention.\\\"** Queues delete on ack and route to one consumer. Logs keep everything and broadcast to every group. Retention, offset ownership, and replay semantics are opposite.",
+        "**\\\"Global order plus horizontal scale.\\\"** Impossible with independent partitions. You get key-order at scale, or total order at single-partition speed.",
+        "**\\\"Retention is free storage.\\\"** Long retention inflates restore time, disk cost, and rebalance catch-up. Tiered storage helps but makes historical fetches slower — another latency vs cost trade."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use a stream for transport and replay, not for state or tasks.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Event backbone, CDC, clickstream with multiple readers",
+          "Use stream",
+          "Fan-out plus replay beats point-to-point RPC; retention decouples producers from consumers"
+        ],
+        [
+          "Need per-entity order + reprocessing (orders, ledger)",
+          "Use stream with business key",
+          "Per-key FIFO plus idempotent sink is the correct pattern; size partitions for hot keys"
+        ],
+        [
+          "Spiky, low-ops workload feeding Lambda/S3",
+          "Prefer Kinesis",
+          "No brokers, native triggers; trade per-byte cost for zero toil"
+        ],
+        [
+          "Sustained high volume, long replay, Flink/Streams joins",
+          "Prefer Kafka",
+          "Cheaper per byte at scale, richer processing and schema ecosystem; pay operational cost"
+        ],
+        [
+          "Task queue with per-message ack, delay, priority",
+          "Do not use stream",
+          "Log has no per-message visibility timeout or priority; use a real queue"
+        ],
+        [
+          "Request-response RPC between services",
+          "Do not use stream",
+          "Adds latency, ordering headaches, and operational load for no replay benefit"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Use a **partitioned durable log** when many consumers need **ordered-per-key, replayable** events at scale — **Kafka** for sustained volume and control, **Kinesis** for managed elasticity — and default to **at-least-once plus an idempotent sink** because ordering stops at the partition boundary."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:19:07.839Z",
+    "problems": []
+  }
+}

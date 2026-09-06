@@ -1,0 +1,300 @@
+{
+  "slug": "follow-following-model-on-relational-db",
+  "title": "Follow-Following Model on Relational DB",
+  "summary": "Follow-following on a relational DB is a directed edge table with two covering indexes. One narrow table handles all reads if you index both directions and never trust cached counts.",
+  "kind": "HLD",
+  "problemSlug": "follow-following-model-on-relational-db-149-328",
+  "topic": "Resources Efficient & Extensible System Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🔗",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Relational DB",
+    "Social Graph",
+    "System Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "How to design a relational database for user following other users?",
+      "url": "https://softwareengineering.stackexchange.com/questions/289443/how-to-design-a-relational-database-for-user-following-other-users",
+      "source": "softwareengineering.stackexchange.com",
+      "kind": "article"
+    },
+    {
+      "title": "Relational Model",
+      "url": "https://users.dimi.uniud.it/~massimo.franceschet/ns/syllabus/learn/database/RM.html",
+      "source": "users.dimi.uniud.it",
+      "kind": "article"
+    },
+    {
+      "title": "What Is NoSQL? NoSQL Databases Explained - MongoDB",
+      "url": "https://www.mongodb.com/resources/basics/databases/nosql-explained",
+      "source": "mongodb.com",
+      "kind": "article"
+    },
+    {
+      "title": "database design for 'followers' and 'followings'? - Stack Overflow",
+      "url": "https://stackoverflow.com/questions/4895809/database-design-for-followers-and-followings",
+      "source": "stackoverflow.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A follow is a **directed edge between two user IDs**. One narrow edge table with the composite key `(follower_id, followee_id)` plus the reverse index does the entire job. Every alternative — arrays, comma-separated lists, separate `followers` and `following` tables — trades a small write-time convenience for read-time pain you cannot index your way out of."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "You have a `users` table keyed by an immutable integer `user_id`, and a `follows` table where each row means exactly one fact: **`A follows B`**. The row is `(follower_id, followee_id, created_at)`. The primary key is `(follower_id, followee_id)`. Direction matters: row `(7, 42)` does not imply `(42, 7)`. Mutual follow is simply two rows, not a special state. Unfollow is a row delete, not a flag flip, unless you need audit history. `created_at` exists so reverse-chronological listing and keyset pagination have a deterministic tiebreaker. There is no `id` surrogate key on this table because nothing ever references a follow row by itself; everything queries by one endpoint of the edge. That is the whole model, and if you add anything else on day one you are guessing."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape and not the obvious shortcuts? Storing `following_ids` as an array or serialized list inside `users` violates atomicity and destroys indexing. To answer `who follows B?` you would scan every user row and parse every list — a full table scan for a point lookup. Maintaining two tables, one for followers and one for following, duplicates every write and guarantees drift: one succeeds, the other fails, and now `A` thinks it follows `B` but `B` disagrees. A single edge table makes the write atomic — one `INSERT`, one `DELETE` — and pushes both access patterns into indexes, which is exactly what a relational engine is good at. **Trade-off:** you pay one extra index on write to get both directions fast on read."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Writes are idempotent edge insertions guarded by the primary key. `INSERT ... ON CONFLICT DO NOTHING` makes double-tap follow and retried requests safe without application-level locking. The primary key check also rejects self-follows only if you add an explicit `CHECK (follower_id <> followee_id)` — the key alone will not stop it. Deletes are point deletes on the full key, which is why the composite primary key is ordered `(follower_id, followee_id)`: unfollow and duplicate-insert checks hit the leading column. The reverse direction, `who follows me?`, cannot use that ordering efficiently, so you carry a second composite index on `(followee_id, follower_id)` or `(followee_id, created_at, follower_id)` if listing is always time-ordered. **Trade-off:** every follow write now maintains two B-trees instead of one, roughly doubling write amplification, in exchange for both lists staying logarithmic instead of linear."
+    },
+    {
+      "type": "mermaid",
+      "title": "Follow edge write and read paths",
+      "caption": "One edge table serves both directions through two indexes; counts and lists sit above, never beside, the source of truth.",
+      "code": "flowchart LR\n  API[API server] --> W[Insert edge follower to followee]\n  W --> T[(follows table)]\n  T --> IDX1[PK follower followee]\n  T --> IDX2[Index followee follower]\n  API --> R1[Get following by follower]\n  API --> R2[Get followers by followee]\n  R1 --> IDX1\n  R2 --> IDX2\n  API --> CNT[Counters and cache]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Reads split into four shapes, and the index design must name each one. `following(A)` filters on `follower_id = A` and orders by `created_at desc` — served by the primary key if you include `created_at` as a covering column, or by a dedicated `(follower_id, created_at)` index at larger scale. `followers(B)` filters on `followee_id = B` — served only by the reverse index. `isFollowing(A, B)` is a point select on the full key and costs one B-tree probe. `mutual(A, B)` is two point probes, or a self-join when listing mutuals in bulk. Counts are `SELECT COUNT(*)` on one side of the index, which is fast for ordinary users and catastrophic for accounts with millions of followers because the engine still walks the index range. That asymmetry is why counters exist, and why they must be treated as a cache, not truth. **Trade-off:** exact counts from the index are always correct but unbounded in cost; materialized counters are bounded in cost but can drift."
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "follows.sql",
+      "code": "CREATE TABLE users (\n  user_id      BIGINT PRIMARY KEY,\n  handle       TEXT NOT NULL UNIQUE,\n  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()\n);\n\nCREATE TABLE follows (\n  follower_id  BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,\n  followee_id  BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,\n  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),\n  PRIMARY KEY (follower_id, followee_id),\n  CHECK (follower_id <> followee_id)\n);\n\n-- Serves: who follows B, newest first, without touching the heap.\nCREATE INDEX follows_followee_created_idx\n  ON follows (followee_id, created_at DESC, follower_id);\n\n-- Optional covering variant for: who does A follow, newest first.\nCREATE INDEX follows_follower_created_idx\n  ON follows (follower_id, created_at DESC, followee_id);\n\nCREATE TABLE user_counters (\n  user_id        BIGINT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,\n  followers_cnt  BIGINT NOT NULL DEFAULT 0,\n  following_cnt  BIGINT NOT NULL DEFAULT 0,\n  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()\n);"
+    },
+    {
+      "type": "table",
+      "caption": "Core schema decisions and what each one costs.",
+      "headers": [
+        "Decision",
+        "Why you do it",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Composite PK `(follower, followee)`",
+          "Enforces uniqueness in storage; duplicate follow becomes a constraint hit, not application logic",
+          "Inserts probe the PK first; hot followee values cluster poorly if IDs are sequential and time-correlated"
+        ],
+        [
+          "Surrogate `id` PK plus unique constraint",
+          "Stable row handle if you need per-edge audit or moderation queues",
+          "Every lookup now needs the secondary unique index anyway, so you maintain two structures for one fact — skip it unless edges are first-class entities"
+        ],
+        [
+          "Reverse index on `(followee, created_at)`",
+          "Makes the followers list as fast as the following list; without it one direction is a full scan",
+          "Second B-tree doubles write I/O and storage for this table; acceptable because rows are tiny"
+        ],
+        [
+          "`created_at` in the edge",
+          "Deterministic ordering, keyset pagination, spam and growth analytics for free",
+          "Slightly wider index entries; clock skew across writers means ties need `(created_at, follower_id)` as tiebreaker"
+        ],
+        [
+          "Separate `user_counters` table",
+          "Profile pages need counts, not lists; avoids `COUNT(*)` over million-row ranges",
+          "Counter and edge can disagree under races and retries; needs transactional increment or async reconciliation"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Reads you must support"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers check whether you enumerate the read shapes before choosing indexes. The profile header needs two numbers and one boolean: follower count, following count, and `does viewer follow this profile?`. The followers and following tabs need paginated ID lists, usually hydrated from a user service or cache, not joined in SQL. The feed and suggestion paths need set operations: mutuals, `friends who follow X`, and `does A follow B` in bulk for a list of `B` values. Bulk checks must be a single `WHERE follower_id = A AND followee_id IN (...)` query, never N round trips. Joins against `users` inside the edge query look elegant in a diagram and perform badly at scale because they defeat covering indexes and drag wide profile rows through the database. Return IDs from the relational store, hydrate elsewhere. **Trade-off:** two-step hydration adds a network hop but keeps the edge query narrow, cacheable, and independent of profile schema churn."
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "follow_queries.sql",
+      "code": "-- A follows B? Single B-tree probe.\nSELECT 1 FROM follows\n WHERE follower_id = $viewer AND followee_id = $profile;\n\n-- Bulk check: which of these 50 profiles does the viewer follow?\nSELECT followee_id FROM follows\n WHERE follower_id = $viewer AND followee_id = ANY($candidates);\n\n-- Following list, newest first, keyset page.\nSELECT followee_id, created_at FROM follows\n WHERE follower_id = $user\n   AND (created_at, followee_id) < ($cursor_ts, $cursor_id)\n ORDER BY created_at DESC, followee_id DESC\n LIMIT 50;\n\n-- Followers list, newest first, keyset page.\nSELECT follower_id, created_at FROM follows\n WHERE followee_id = $user\n   AND (created_at, follower_id) < ($cursor_ts, $cursor_id)\n ORDER BY created_at DESC, follower_id DESC\n LIMIT 50;\n\n-- Mutual follows of A and B (people both follow).\nSELECT f1.followee_id\n  FROM follows f1 JOIN follows f2\n    ON f1.followee_id = f2.followee_id\n WHERE f1.follower_id = $a AND f2.follower_id = $b\n LIMIT 50;\n\n-- Idempotent follow / unfollow.\nINSERT INTO follows (follower_id, followee_id)\nVALUES ($a, $b) ON CONFLICT DO NOTHING;\nDELETE FROM follows WHERE follower_id = $a AND followee_id = $b;"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "This design fails in three predictable places, and each has a distinct symptom. First, offset pagination breaks on active accounts: rows insert and delete between page fetches, so `OFFSET 50` skips or repeats entries and users see the same faces twice. The fix is keyset pagination on `(created_at, id)` as shown above, which is stable under concurrent writes at the cost of forbidding random page jumps. Second, counters drift as soon as follow and counter update are not atomic. A retried request inserts the edge once because of `ON CONFLICT DO NOTHING` but increments the counter twice if the increment is unconditional. The symptom is a profile showing more followers than the list contains. The fix is to increment only when the insert actually inserted a row — check the affected-row count in the same transaction — or reconcile asynchronously and accept temporary staleness. Third, celebrity rows create a write and read hotspot: millions of edges share one `followee_id`, so the reverse index range is enormous, counts are expensive, and cache invalidation for that one key hammers the database. **Trade-off:** you special-case high-follower accounts with precomputed lists and longer cache lifetimes, accepting seconds of staleness to protect the primary."
+    },
+    {
+      "type": "table",
+      "caption": "Failure, symptom you observe, and the fix that actually holds.",
+      "headers": [
+        "Failure",
+        "Symptom",
+        "Fix and its cost"
+      ],
+      "rows": [
+        [
+          "Offset pagination under churn",
+          "Duplicate or missing users when scrolling followers",
+          "Keyset on `(created_at, id)`; lose jump-to-page-N"
+        ],
+        [
+          "Counter drift from retries",
+          "`followers_cnt` disagrees with list length",
+          "Increment only on real insert in one transaction, plus periodic `COUNT(*)` reconciliation job"
+        ],
+        [
+          "Celebrity hotspot",
+          "P99 spikes on one profile; cache stampede on invalidation",
+          "Longer TTL plus async refresh for top accounts; serve stale list rather than miss"
+        ],
+        [
+          "Missing reverse index",
+          "Following tab fast, followers tab times out",
+          "Add `(followee_id, created_at)` index; pay double write amplification"
+        ],
+        [
+          "Cascading delete of a large account",
+          "Long transaction holds locks, blocks writes",
+          "Soft-delete user row, drain edges in batches offline"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The celebrity trap",
+      "text": "Do not design around the average user. One account with ten million followers makes `COUNT(*)` and full-list hydration pathological while everyone else stays trivial. **Decide up front: exact counts for small accounts, cached approximate counts for large ones.** If you promise exact real-time counts for every account on a relational store, you have promised something you cannot deliver under write load."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Scaling without leaving relational"
+    },
+    {
+      "type": "paragraph",
+      "text": "You do not need a different database until well past the point most designs die. Keep rows narrow — two bigints plus a timestamp is under 40 bytes plus overhead — so hundreds of millions of edges fit comfortably in B-trees with high fan-out. Serve lists from the covering indexes so queries never visit the heap. Put read replicas in front of the follower and following reads because this workload is overwhelmingly read-heavy, and route follow and unfollow writes to the primary. Cache list pages and the `isFollowing` boolean per viewer-profile pair with short TTLs, and cache counts separately with longer TTLs, because counts tolerate staleness far better than membership checks. When a single instance stops holding the write rate, shard by hash of `follower_id` for following-heavy workloads or by `followee_id` for follower-heavy ones — and admit that no single shard key serves both directions locally. Cross-shard queries like mutuals then become scatter-gather, which is the real reason very large graphs eventually add a graph or wide-column layer. **Trade-off:** sharding postpones the database limit but converts cheap joins into application-level fan-out."
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "counters.sql",
+      "code": "-- Correct counter maintenance: only count real state changes.\n-- In one transaction (pseudo-logic, Postgres syntax):\nBEGIN;\nINSERT INTO follows (follower_id, followee_id)\nVALUES ($a, $b) ON CONFLICT DO NOTHING;\n-- GET DIAGNOSTICS rowcount, or check RETURNING in app code.\n-- Only when a row was actually inserted:\nINSERT INTO user_counters (user_id, followers_cnt, following_cnt)\nVALUES ($b, 1, 0), ($a, 0, 1)\nON CONFLICT (user_id) DO UPDATE SET\n  followers_cnt = user_counters.followers_cnt + CASE WHEN user_counters.user_id = $b THEN 1 ELSE 0 END,\n  following_cnt = user_counters.following_cnt + CASE WHEN user_counters.user_id = $a THEN 1 ELSE 0 END;\nCOMMIT;\n-- Reconciliation job (hourly for hot accounts, daily otherwise):\n-- UPDATE user_counters SET followers_cnt = (SELECT COUNT(*) FROM follows WHERE followee_id = $b) WHERE user_id = $b;"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Extensibility: blocks, requests, close friends"
+    },
+    {
+      "type": "paragraph",
+      "text": "Follow-up requirements arrive within months: private accounts need pending requests, everyone needs block and mute, products add close-friends or notification levels. Resist the urge to grow a `status` enum inside `follows` because it corrupts the meaning of the row. If `follows` contains rows for blocked, pending, and active relationships, every existing query needs `AND status = 'active'`, every index needs the status column to stay covering, and counts silently include people who should not be counted. The cleaner split is: keep `follows` as the active-edge set only, and put lifecycle in adjacent tables — `follow_requests(follower, followee, status, updated_at)` for pending and declined, `blocks(blocker, blocked, created_at)` checked before any insert or read. Accepting a request becomes a transaction that deletes the request row and inserts the edge. Close-friends and notify-flags are properties of an existing edge, so they belong either as extra columns maintained only for active edges or as a small side table keyed by the same composite key. **Trade-off:** more tables mean more joins on write, but reads on the hot path keep their narrow, fast shape instead of filtering through dead states."
+    },
+    {
+      "type": "table",
+      "caption": "When the relational edge model fits and when it stops fitting.",
+      "headers": [
+        "Use it when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Relationships are directed edges with per-edge ordering and counts",
+          "You need multi-hop traversals at query time: friends-of-friends-of-friends, shortest path, community detection"
+        ],
+        [
+          "Both directions must be fast and consistent: followers and following",
+          "Write rate exceeds single-primary capacity and both shard keys are hot — scatter-gather dominates"
+        ],
+        [
+          "Team is constrained to a relational store and needs transactions",
+          "Feed ranking needs the whole adjacency neighborhood in milliseconds across millions of nodes"
+        ],
+        [
+          "Edge count is in millions to low billions with narrow rows",
+          "Edges carry heavy payloads and document-style access; a document store models the aggregate better"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "State the contract in one breath",
+          "text": "Directed follow, idempotent follow and unfollow, followers list, following list, counts, is-following check. Ask whether private accounts, blocks, and mutuals are in scope before drawing anything."
+        },
+        {
+          "title": "Draw two tables and stop",
+          "text": "Show `users` and `follows(follower_id, followee_id, created_at)` with the composite PK and the reverse index. Say why no surrogate key and why no second table — interviewers score the rejection of alternatives."
+        },
+        {
+          "title": "Walk both query directions",
+          "text": "Write the following-list and followers-list queries and point each at its index. Name the one that breaks without the reverse index; that is the check they are waiting for."
+        },
+        {
+          "title": "Solve pagination and counts explicitly",
+          "text": "Commit to keyset on `(created_at, id)` with a limit, and to materialized counters reconciled against `COUNT(*)`. Explain the drift mechanism and the affected-row-count guard."
+        },
+        {
+          "title": "Name the hotspot and the extension",
+          "text": "Close with the celebrity account problem and where blocks and pending requests live without polluting the edge table. That answer separates a medium pass from a strong one."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`One row per user with a list of IDs is more efficient.` It stores fewer rows and answers nothing efficiently — both directions become scans, updates rewrite the whole list, and concurrent follows serialize on one row.",
+        "``Followers` and `following` need separate tables.` They are the same fact read from opposite ends. Two tables double writes and create a new inconsistency mode with zero new capability.",
+        "`NoSQL is required because the table gets big.` Row count is not the problem; unindexed access is. Hundreds of millions of narrow indexed rows are routine for a relational engine — missing the reverse index is what falls over.",
+        "`COUNT(*)` is fine for counts at any scale.` It is exact and unbounded. For large accounts the index range walk dominates P99, which is why counts are materialized and reconciled.",
+        "`A surrogate auto-increment PK is always needed.` On a pure edge table it adds storage and an extra structure without serving any query; the composite natural key already enforces the only invariant that matters."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Model follow as **one directed edge row `(follower_id, followee_id)` with a composite primary key and a reverse index**, paginate by keyset, and serve counts from reconciled counters — because that makes both directions logarithmic, writes idempotent, and extensions additive."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:25:50.444Z",
+    "problems": []
+  }
+}

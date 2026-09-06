@@ -1,0 +1,268 @@
+{
+  "slug": "decomposition-pattern",
+  "title": "Decomposition Pattern",
+  "summary": "Decomposition is how you earn independent scaling: split by business boundary and scaling profile so hot services scale without dragging the rest, at the cost of network calls and operational overhead.",
+  "kind": "HLD",
+  "problemSlug": "decomposition-pattern-90-199",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": " f9e9",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Decomposition-Pattern",
+    "Microservices"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Decomposition of Microservices Architecture | by Mehmet Ozkaya",
+      "url": "https://medium.com/design-microservices-architecture-with-patterns/decomposition-of-microservices-architecture-c8e8cec453e",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Decomposition Pattern - an overview | ScienceDirect Topics",
+      "url": "https://www.sciencedirect.com/topics/computer-science/decomposition-pattern",
+      "source": "sciencedirect.com",
+      "kind": "article"
+    },
+    {
+      "title": "Microservice Architecture Patterns Part 1: Decomposition Patterns",
+      "url": "https://hackernoon.com/microservice-architecture-patterns-part-1-decomposition-patterns",
+      "source": "hackernoon.com",
+      "kind": "article"
+    },
+    {
+      "title": "[PDF] Structural Decomposition Pattern - OMG Wiki",
+      "url": "https://www.omgwiki.org/OMGSysML/lib/exe/fetch.php?media=sysml-roadmap:imcecop-structuraldecompositionpattern-281014-1357-32.pdf",
+      "source": "omgwiki.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Decomposition is not folder structure. It is **deciding what can scale, deploy, and fail independently**. If two so-called services must be scaled together, deployed together, or share one database, you did not decompose them — you built a distributed monolith with extra latency. The only passing test: can I add 20 replicas of *this* piece without touching the rest?"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What decomposition actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Decomposition is partitioning a system into independently ownable units, each with its own code, data, scaling policy, and failure domain. Each unit exposes a versioned contract — `RPC`, `REST`, or events — and hides everything else. The boundary is drawn where three things align: a coherent business responsibility, a distinct data ownership need, and a distinct runtime profile. Search is read-heavy, cacheable, and latency-sensitive. Checkout is write-heavy, transactional, and correctness-sensitive. Keeping them in one process forces one scaling knob, one deployment risk, and one database contention point for two workloads that want opposite things."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this is a scalability pattern and not just hygiene: a monolith scales as a unit. When only checkout is saturated, you replicate the *entire* monolith — search, recommendations, admin, everything — which wastes compute and amplifies database contention. Decomposition lets you scale the hot path horizontally while leaving the cold path at two replicas. The trade-off is explicit every time: you trade cheap in-process calls and single transactions for independent horizontal scaling and blast-radius isolation, and you pay for it in network hops, eventual consistency, and operating N services instead of one."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism, end to end"
+    },
+    {
+      "type": "paragraph",
+      "text": "You do not start from infrastructure. You start from request flows and data writes. Map which operations are frequent versus rare, read versus write, strict versus tolerant of staleness. Find the seams where communication is narrow and data ownership is clear. Then cut there, assign each piece its own store, and freeze the contract between pieces. From that point on, each service gets its own autoscaling rule, its own replica count, its own cache and connection pool, and its own deploy pipeline. Scalability comes from that independence: load on one axis no longer consumes headroom on every axis. Get the seam wrong and you get the opposite — every user request fans out to five services and the system is slower and more fragile than the monolith you replaced."
+    },
+    {
+      "type": "mermaid",
+      "title": "Decomposed request path with independent scaling",
+      "caption": "Each service scales on its own metric because it owns its own state and deployable.",
+      "code": "graph TD\n  Client[Client] --> GW[API Gateway]\n  GW --> Search[Search Service x20]\n  GW --> Checkout[Checkout Service x5]\n  GW --> Admin[Admin Service x2]\n  Search --> SearchDB[(Search Index)]\n  Checkout --> OrderDB[(Orders DB)]\n  Admin --> AdminDB[(Admin DB)]\n  Checkout --> Events[Order Events]"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The three usable strategies"
+    },
+    {
+      "type": "paragraph",
+      "text": "Decompose **by business capability** when the domain is stable and obvious: ordering, inventory, payments, notifications. Each capability maps to something the business already names and funds. This is the default choice because the boundary survives reorgs and rewrites — `PaymentService` still means something in two years. The trade-off: capabilities can be too coarse. An `OrderService` that handles cart reads, fraud checks, payment auth, and fulfillment orchestration will saturate unevenly and you will be back to scaling the whole lump. Use it to get the first cut, then split further where the load profile diverges."
+    },
+    {
+      "type": "paragraph",
+      "text": "Decompose **by subdomain with bounded contexts** when the domain language is contested. Catalog, pricing, and promotions may all say *product* and mean different things. Domain-driven decomposition gives each subdomain its own model and its own store so pricing rules do not corrupt catalog reads and vice versa. This handles complexity better than capability slicing because the boundary is semantic, not just organizational. The trade-off: it demands real domain work. Without someone who can say where `Pricing` ends and `Promotions` begins, you draw boundaries around teams instead of invariants, and every change becomes a cross-service migration. Do not use this strategy if you cannot name the invariant each context protects."
+    },
+    {
+      "type": "paragraph",
+      "text": "Decompose **by transaction, workload, or scaling profile** when one operation threatens the rest. Split reads from writes, hot from cold, synchronous from asynchronous. Search reads get their own replicas and cache; checkout writes get their own connection budget and queue; image transcoding gets pulled out of the request path entirely into workers. This is the most directly scalability-driven cut, and it is also the easiest to overdo. The trade-off: you are now splitting for non-functional reasons, which means the services share concepts and drift apart fast. A read model and a write model of the same order will diverge unless you define which side owns truth and how the other side catches up. Always pair this cut with an explicit sync mechanism — events, CDC, or periodic rebuild — or you have built two sources of truth."
+    },
+    {
+      "type": "table",
+      "caption": "What decomposition buys you, and what it bills you.",
+      "headers": [
+        "Gain",
+        "Cost",
+        "The trade-off stated plainly"
+      ],
+      "rows": [
+        [
+          "Independent horizontal scaling",
+          "Network hops and serialization on every cut",
+          "You scale only the hot service, but every boundary crossing adds 1-20ms plus tail-latency risk."
+        ],
+        [
+          "Independent deploy and rollback",
+          "Versioned contracts and compatibility burden",
+          "You ship checkout 10x a day without touching search, but you must support v1 and v2 simultaneously."
+        ],
+        [
+          "Isolated failure domains",
+          "Partial failure becomes the normal case",
+          "Checkout can stay up when recommendations die, but callers must now handle timeouts, retries, and degraded responses."
+        ],
+        [
+          "Right-sized data stores per workload",
+          "No more cross-service joins or ACID transactions",
+          "Search gets an index, orders get a relational store, but consistency across them is eventual and your code."
+        ],
+        [
+          "Team autonomy and clear ownership",
+          "N pipelines, dashboards, alerts, and runbooks",
+          "Teams move faster in isolation, but platform cost grows roughly linearly with service count."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The dominant failure is the **distributed monolith**: services that are separate deploys but coupled at runtime. The classic shape is five services sharing one relational database, or a checkout flow that makes seven synchronous calls where any one failure aborts the purchase. It looks decomposed on a slide and behaves like a monolith on call. The symptom is unmistakable: p99 latency climbs with fan-out, one slow dependency poisons every upstream, and you cannot scale any service without scaling all of them because they block on each other. If your trace waterfall is deep and serial, your boundary is wrong — you cut through a transaction instead of around it."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Chatty boundaries:** 50ms handler makes 6 serial `RPC` calls and becomes 400ms at p99. Symptom: latency scales with hop count, timeouts cascade. Fix: coarsen the API, batch, or merge the services — that seam was not a seam.",
+        "**Shared database across services:** independent deploys, one contention point. Symptom: one service's slow query or schema migration locks everyone; scaling replicas increases connection storms. Fix: split the schema and sync via events; shared tables mean shared fate.",
+        "**Wrong-sized services:** nanoservices with one table each. Symptom: deploy graph explodes, 80% of incidents are contract drift, nobody can reason about a single user flow. Fix: merge until each service justifies its own scaling rule and on-call.",
+        "**Synchronous chain where async belongs:** checkout waits on inventory, fraud, email, and analytics inline. Symptom: availability multiplies downward — four 99.9% dependencies in series yield ~99.6%, and tail latency adds. Fix: keep auth inline, push the rest to events and workers."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The second chronic failure is **inconsistent data across boundaries with no reconciliation story**. Orders says paid, inventory says reserved, payments says declined — and there is no job, event replay, or reconciliation dashboard to converge them. The symptom is not a crash; it is silent divergence discovered by support tickets: missing refunds, double shipments, counts that never match. This happens when teams adopt events for scale but keep designing like transactions are free. The rule: whoever owns the write owns the truth, everyone else holds a derived copy with a stated lag, and there is a named process — outbox, consumer, reconciler — that closes the gap. If you cannot point to it, you do not have eventual consistency. You have eventual chaos."
+    },
+    {
+      "type": "code",
+      "language": "yaml",
+      "filename": "scaling-per-service.yaml",
+      "code": "# The payoff of a correct cut: each service scales on its own signal.\n# Search is CPU/read-heavy -> many replicas. Checkout is connection-\n# limited -> few replicas + queue. Admin barely scales at all.\napiVersion: autoscaling/v2\nkind: HorizontalPodAutoscaler\nmetadata:\n  name: search-service\nspec:\n  scaleTargetRef:\n    apiVersion: apps/v1\n    kind: Deployment\n    name: search-service\n  minReplicas: 10\n  maxReplicas: 60\n  metrics:\n  - type: Resource\n    resource:\n      name: cpu\n      target:\n        type: Utilization\n        averageUtilization: 60\n---\napiVersion: autoscaling/v2\nkind: HorizontalPodAutoscaler\nmetadata:\n  name: checkout-service\nspec:\n  scaleTargetRef:\n    apiVersion: apps/v1\n    kind: Deployment\n    name: checkout-service\n  minReplicas: 3\n  maxReplicas: 12\n  metrics:\n  - type: Pods\n    pods:\n      metric:\n        name: queue_depth\n      target:\n        type: AverageValue\n        averageValue: 100"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "paragraph",
+      "text": "No interviewer asks *explain decomposition* in isolation. They give you a monolith under load — food delivery, e-commerce, ride-hailing — and watch where you cut and why. The grading is on justification: every boundary needs a scaling or failure reason attached, not just a noun. Say *search splits from checkout because reads outnumber writes 100:1 and tolerate staleness, so search can scale on CPU with a cache while checkout scales on queue depth with a relational store*. That sentence passes. *OrderService, UserService, PaymentService* with no rationale fails."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from load, not nouns",
+          "text": "Ask for read/write ratio, hot endpoints, and consistency needs. Identify the one flow that will saturate first. Your first cut should isolate that flow — everything else is secondary."
+        },
+        {
+          "title": "Propose 3-5 services with owned data",
+          "text": "Name each service, the data only it writes, and the contract others use. Draw the per-service store explicitly. Shared database is an instant pushback — defend it or remove it."
+        },
+        {
+          "title": "Attach a scaling rule to each",
+          "text": "For each service state replica strategy: what metric, what bottleneck, what order of magnitude. This is where you prove the decomposition earns its cost."
+        },
+        {
+          "title": "Walk one request end to end",
+          "text": "Trace checkout or booking across your boundaries. Count hops, name sync versus async, and show where you use events or a queue. If the trace is 7 serial hops, expect to be challenged — merge or parallelize."
+        },
+        {
+          "title": "Name what breaks and how you degrade",
+          "text": "Kill one service on the whiteboard. Show timeouts, retries with budgets, fallbacks, and what the user still sees. Examiners promote candidates who design the degraded path, not just the happy path."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail candidates"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**More services means more scalable.** No — each cut adds latency, failure modes, and on-call load. Scale comes from isolating the bottleneck, not from counting services. Three well-cut services beat fifteen nanoservices.",
+        "**Decomposition is a backend-only choice.** The boundary dictates data ownership, cacheability, and frontend fallbacks. A boundary that forces the client to orchestrate five calls is a client-latency bug, not an architecture.",
+        "**Each microservice needs its own database technology.** It needs its own *ownership and scaling boundary*. Same engine with separate schemas and connection budgets is often correct; different engines per service without a workload reason is resume-driven design.",
+        "**Synchronous calls between services are fine if they are fast.** Fast at p50 is irrelevant. At scale you live at p99, and serial `RPC` multiplies tails and multiplies availability downward. Default to async at the boundary unless the user is literally waiting for the answer.",
+        "**Events fix coupling.** Events fix *temporal* coupling but create *semantic* coupling: schema drift, ordering, replay, and poison messages. Without versioning, idempotency, and dead-letter handling, events are just distributed tech debt."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Decomposition verdicts by situation.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "One workload dominates and starves the rest",
+          "Decompose around it",
+          "Isolate the hot path so it scales on its own knob without over-provisioning everything else."
+        ],
+        [
+          "Team is small, traffic is modest, domain is shifting",
+          "Keep the modular monolith",
+          "Decomposition cost — contracts, observability, deploys — exceeds scaling benefit. Enforce module boundaries in code instead."
+        ],
+        [
+          "Strict cross-entity transactions dominate",
+          "Decompose last, or not across the transaction",
+          "Splitting a genuinely atomic flow trades correctness work for scaling you may not need. Cut around it, keep it local."
+        ],
+        [
+          "Failure of one feature must not take the site down",
+          "Decompose for isolation",
+          "Separate availability domains with async boundaries and degraded modes, even if scaling alone would not justify it."
+        ],
+        [
+          "You cannot name the data each service owns",
+          "Do not cut yet",
+          "Without ownership the result is a distributed monolith. Clarify invariants and write paths first, then cut."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Practical default for a medium-difficulty design round: propose a modular monolith first, then decompose exactly two things — the hottest read path and the most critical write path — with owned stores and an event bridge between them. That shows restraint, names the trade-off, and leaves room to discuss sagas, idempotency, and cache invalidation where they actually matter instead of reciting patterns for a system that does not need them yet."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Decompose where scaling profiles and failure tolerance diverge, give each piece its own data and scaling rule, and connect them with explicit contracts — because independent scaling is worth the cost of network calls and eventual consistency only when the boundary isolates real load or real risk.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:14:52.622Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,306 @@
+{
+  "slug": "multi-versioning-of-files",
+  "title": "Multi Versioning of Files",
+  "summary": "File multiversioning keeps every write immutable and moves a pointer — cheap history, lock-free reads, and explicit garbage collection as the price.",
+  "kind": "HLD",
+  "problemSlug": "multi-versioning-of-files-149-326",
+  "topic": "Resources Efficient & Extensible System Design",
+  "difficulty": "Medium",
+  "coverEmoji": "📂",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Storage",
+    "Versioning"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "File Naming and Versioning - Research Data Services",
+      "url": "https://researchdata.wisc.edu/file-naming-and-versioning/",
+      "source": "researchdata.wisc.edu",
+      "kind": "article"
+    },
+    {
+      "title": "How it works: multi-versioning applications - IBM",
+      "url": "https://www.ibm.com/docs/en/cics-ts/5.6.0?topic=zos-how-it-works-multi-versioning-applications",
+      "source": "ibm.com",
+      "kind": "article"
+    },
+    {
+      "title": "Multiversion Concurrency Control (MVCC) Explained in Simple Terms",
+      "url": "https://www.youtube.com/watch?v=iM71d2krbS4",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is your file naming structure for versions & revisions? - Reddit",
+      "url": "https://www.reddit.com/r/editors/comments/uxsrok/what_is_your_file_naming_structure_for_versions/",
+      "source": "reddit.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**A versioned file is not a file that changes. It is a stable ID pointing at an ever-growing list of immutable blobs, plus one mutable pointer called `current`.** Writes never mutate bytes in place, they append a new immutable version and atomically swing the pointer. If you remember only that, every choice about storage cost, concurrency, and retention falls out naturally."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What multiversioning actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Multiversioning separates two things most designs incorrectly fuse: the **namespace** and the **bytes**. The namespace maps `file_id -> current_version_id`. The bytes map `version_id -> immutable content manifest`. A `PUT /photos/logo.png` does not overwrite `logo.png`. It creates `logo.png#v47` with new bytes, freezes `v46` forever, and then, in one atomic metadata commit, declares `v47` to be current. A `GET` without a version qualifier resolves the pointer first, then fetches bytes. A `GET?version=v46` or `GET?as_of=timestamp` skips the pointer entirely. Deletion does not remove bytes either. It appends a `DeleteMarker` version, which makes default reads return 404 while prior versions remain retrievable. That is the whole contract: versions are append-only, content-addressable, and ordered by a monotonic sequencer per file."
+    },
+    {
+      "type": "paragraph",
+      "text": "This is deliberately not `logo_v2_final_FINAL.png` in the filename. Embedding versions in names leaks history into the namespace and destroys the properties you actually want. Name-based copies cannot be switched atomically, cannot be listed as one logical file, cannot enforce retention without scanning filenames, and race badly when two writers create `v3` at once. Real versioning hides version identity in metadata and exposes it as an explicit read parameter. The filename stays stable so caches, links, and permissions keep working. History moves to a separate version index that supports `listVersions`, time-travel reads, and garbage collection without ever renaming user-visible paths. That separation is why you can add branching, retention tiers, and cross-region replication later without changing the write path."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Immutability:** once committed, a version's bytes and manifest never change. Corruption in `v47` cannot silently infect `v46`. The trade-off is you pay storage until garbage collection runs.",
+        "**Atomic currency:** there is exactly one `current_version_id` per file, moved by compare-and-swap on a generation counter. Readers either see all of the old version or all of the new one, never a mix.",
+        "** addressable history:** every version gets a system-assigned `version_id` plus wall-clock timestamp and writer ID. You can fetch, diff, or restore any of them without parsing filenames.",
+        "**Non-destructive delete:** delete writes a marker, it does not free storage. The trade-off is safety against accidental loss at the cost of needing an explicit purge path.",
+        "**Bounded mutability window:** only the pointer commit is mutable and contended. Everything else is lock-free and parallelizable, which is why reads scale even under heavy writes."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: write once, point once"
+    },
+    {
+      "type": "paragraph",
+      "text": "The write path has two phases because no object store gives you cross-object transactions. Phase one is dumb and parallel: split the incoming stream into chunks of 4-8 MB, hash each chunk with SHA-256, deduplicate against the chunk index, and upload only missing chunks as immutable objects keyed by hash. Build a manifest that lists `chunk_hashes + sizes + root_hash`. Phase two is smart and serial: conditionally write a new row to the version table with `file_id, version_id = max+1, parent = current, manifest_root, generation = expected_generation`. If the generation mismatches, another writer won the race and you retry with fresh parentage or return 409. Only after that commit succeeds do you update secondary indexes and invalidate the `current` cache. You chose this split because chunk upload can be retried and resumed safely, while the pointer move must be linearizable. The trade-off is a small window where orphan chunks exist with no version pointing at them, which the collector must handle."
+    },
+    {
+      "type": "mermaid",
+      "title": "Versioned write and read path",
+      "caption": "Writes upload immutable chunks first, then atomically move the current pointer. Reads resolve the pointer or address history directly.",
+      "code": "flowchart TD\n  A[Client PUT file bytes] --> B[Chunk split and hash]\n  B --> C[Upload missing chunks immutable]\n  C --> D[Build version manifest]\n  D --> E[CAS commit in metadata DB]\n  E --> F[Move current pointer]\n  F --> G[Serve reads from new current]\n  E --> H[Retry on generation mismatch]\n  F --> I[Async GC unreferenced chunks]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Reads are why this design survives concurrency without locks. A default `GET` does a single metadata lookup for `current_version_id`, then fetches that manifest and its chunks in parallel. A historical `GET` skips the pointer and goes straight to the requested `version_id`. In both cases the bytes being read cannot change underneath the reader, so you get snapshot isolation for free with no read locks and no blocking of writers. That is the same insight as MVCC in databases, applied to blobs. The trade-off you accept is potential staleness: if you cache the `current` mapping at edge or in the client, a reader can see `v46` for seconds after `v47` commits. Fix it by versioning the cache key, returning the committed `version_id` in the PUT response, and letting strict readers pass `If-None-Match` or require a metadata quorum read when they need read-after-write."
+    },
+    {
+      "type": "table",
+      "caption": "How you physically store versions, and what each choice costs you.",
+      "headers": [
+        "Strategy",
+        "How it stores",
+        "You gain",
+        "You pay"
+      ],
+      "rows": [
+        [
+          "Full-file copy",
+          "Each version is a complete independent object",
+          "Trivial reads and deletes, no reconstruction, no dependency chain",
+          "Write amplification and storage explode on large files with small edits; 1GB file x 100 edits = 100GB"
+        ],
+        [
+          "Chunked copy-on-write + dedup",
+          "Split into content-addressed chunks, versions share unchanged chunks via manifest",
+          "Storage proportional to changed bytes, parallel I/O, natural dedup across files",
+          "Manifest indirection on read, chunk index hotspot, need mark-and-sweep GC for orphans"
+        ],
+        [
+          "Delta / diff chain",
+          "Store base plus forward or reverse deltas",
+          "Minimal storage for append-heavy or text-like workloads",
+          "Read cost grows with chain length, corruption in base kills whole chain, compaction is complex and blocks"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "For a general file service, pick **chunked copy-on-write with content-addressed chunks**. It is the only option that stays resource-efficient across file sizes and edit patterns without making reads unpredictable. Full copies are defensible only when files are small, under about 1 MB, or versions are rare, because then the simplicity outweighs the storage waste. Delta chains look efficient on paper but fail the extensibility test: restoring `v3` out of 500 deltas means replaying the chain, and any background compaction becomes a distributed transaction. With chunked CoW you pay a fixed manifest lookup plus parallel chunk fetches on every read, and you pay a background collector process forever. That is a good trade because both costs scale with changed bytes, not with version count, and both can be tiered to cheaper storage independently."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Versioned systems rarely fail on the happy-path write. They fail months later when history accumulates, pointers diverge, and cleanup races live traffic. The dangerous property is that every correctness win, immutability and non-destructive delete, becomes a cost and availability problem if retention and collection are afterthoughts. You must design the collector, the quota path, and the consistency of `current` with the same rigor as the write path, or the first incident will be a full disk that no delete can fix because deletes only add markers."
+    },
+    {
+      "type": "table",
+      "caption": "Production failures specific to file versioning and how they present.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Why it happens"
+      ],
+      "rows": [
+        [
+          "Retention bomb",
+          "Storage grows linearly forever, delete does not free space, billing alert fires",
+          "Delete markers accumulate, no lifecycle rule purges noncurrent versions, users assume delete means free"
+        ],
+        [
+          "Orphan chunk leak",
+          "Chunk store grows while version count is flat, dedup hit rate drops",
+          "Client crashed between chunk upload and manifest commit, collector never sweeps unreferenced hashes"
+        ],
+        [
+          "GC racing a restore",
+          "Restore of an old version returns 404 or truncated file intermittently",
+          "Collector deleted chunks still referenced by a version being read, no reference count or read hold"
+        ],
+        [
+          "Split-brain current",
+          "Two clients both think their PUT is current, readers flap between v47 and v48",
+          "Pointer cached at edge without invalidation, or CAS done in object store listing instead of strongly consistent metadata DB"
+        ],
+        [
+          "Manifest bloat",
+          "ListVersions slows to seconds, PUT latency climbs on large files",
+          "Per-version manifest stores full chunk list instead of referencing parent manifest, no manifest compaction"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The delete-marker trap",
+      "text": "If `DELETE /file` returns 200 but your dashboard shows zero bytes reclaimed, you built it correctly and operated it wrong. **A versioned delete must require a second verb: `deleteMarker + purge` or `expire after N days`.** Always expose `listVersions` with `isDeleteMarker` flags and a separate privileged `purgeVersion` API. Otherwise support will learn this during an outage."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The metadata that makes it work"
+    },
+    {
+      "type": "paragraph",
+      "text": "The object store is dumb storage. The metadata database is the system. Keep one row per version with `file_id, version_id, parent_version, manifest_root, size, created_at, writer_id, is_delete_marker, storage_class`, plus a per-file row holding `current_version_id` and `generation`. The generation is incremented on every successful commit and checked on every write. Store this in a strongly consistent store with conditional writes, a relational row with optimistic locking or a key-value item with `ConditionExpression`. Do not derive currency by listing objects, timestamps are not linearizable and listings are eventually consistent. The trade-off is explicit: the metadata partition for a hot file becomes a serial bottleneck. Accept it. Correct pointer movement is worth more than parallel writes to the same file, and you still parallelize everything expensive, which is chunk upload."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "version_commit.py",
+      "code": "def put_new_version(db, chunk_index, file_id, new_bytes, expected_gen, writer):\n    # Phase 1: content-addressed, retryable, no locks\n    chunks = split(new_bytes, size_mb=8)\n    manifest = []\n    for c in chunks:\n        h = sha256(c)\n        if not chunk_index.exists(h):\n            object_store.put(key=f\"chunks/{h}\", body=c)  # immutable\n        manifest.append(h)\n    root = sha256(b\"\".join(manifest))\n\n    # Phase 2: single serializable pointer move\n    version_id = db.next_version_id(file_id)  # atomic counter per file\n    ok = db.conditional_write(\n        table=\"versions\",\n        item={\n            \"file_id\": file_id, \"version_id\": version_id,\n            \"parent\": db.get_current(file_id),\n            \"manifest_root\": root, \"chunks\": manifest,\n            \"writer\": writer, \"is_delete_marker\": False,\n        },\n        condition=\"generation == :g\",\n        params={\"g\": expected_gen},\n    )\n    if not ok:\n        raise VersionConflict(\"retry with fresh generation\")\n    db.set_current(file_id, version_id, generation=expected_gen + 1)\n    return version_id"
+    },
+    {
+      "type": "code",
+      "language": "json",
+      "filename": "lifecycle.json",
+      "code": "{\n  \"file_id\": \"photos/logo.png\",\n  \"rules\": [\n    { \"scope\": \"noncurrent\", \"keep_last_n\": 10, \"expire_after_days\": 30 },\n    { \"scope\": \"noncurrent\", \"transition_to_cold_after_days\": 7 },\n    { \"scope\": \"delete_markers\", \"purge_if_no_noncurrent_after_days\": 14 },\n    { \"scope\": \"current\", \"never_expire\": true }\n  ]\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "paragraph",
+      "text": "The interviewer is not testing whether you can append `_v2` to a string. They are testing whether you can make history cheap, reads lock-free, and the system extensible to retention, branching, and tiering without a rewrite. Start from the API and drive to the pointer design. Name the storage math out loud."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Pin the API and semantics",
+          "text": "Define `PUT -> version_id`, `GET(file, version?)`, `LIST_VERSIONS`, `RESTORE(version)`, `DELETE -> deleteMarker`, `PURGE(version)`. State that `current` moves atomically and deletes never free bytes immediately. This kills the filename-suffix answer in minute two."
+        },
+        {
+          "title": "Separate namespace from bytes",
+          "text": "Draw metadata DB holding pointers and manifests, and chunk store holding immutable bytes. Explain why listing objects cannot be the source of truth and why you need conditional writes on generation."
+        },
+        {
+          "title": "Choose the storage granularity",
+          "text": "Commit to chunked copy-on-write with hashing and dedup for large files, full copy for tiny files. Show the math: 1GB file with 1MB edit costs 1MB plus manifest, not 1GB. Name the read-reconstruction cost you accept."
+        },
+        {
+          "title": "Solve concurrent writers",
+          "text": "Show generation-based CAS, 409 on conflict, and idempotency keys for retried uploads. Explain why readers never take locks and where stale current can appear if cached."
+        },
+        {
+          "title": "Design retention and GC as first-class",
+          "text": "Add lifecycle rules, mark-and-sweep collector with reference counts or bloom plus verification, and cold tiering for noncurrent versions. State orphan handling for crashed uploads explicitly."
+        },
+        {
+          "title": "Prove extensibility and scale",
+          "text": "Show how branching, time-travel, and replication fall out of the manifest: branch is a new pointer sharing history, snapshot is a timestamp index, replication is manifest plus chunk copy. Quote numbers: versions per file, chunk size, metadata QPS."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Versioning is just keeping copies:** copies without an atomic current pointer give you races and half-visible writes. The pointer move is the system, the copies are just storage.",
+        "**More versions means slower reads:** current reads cost one pointer lookup plus chunk fetch regardless of history length. Only naive delta chains or unindexed `listVersions` degrade with version count.",
+        "**Delete frees space:** in a versioned system delete adds data. If you say delete without saying purge, expire, or collect, you have designed a leak.",
+        "**Timestamps order versions:** wall clocks skew and two writers can share a millisecond. Order by a per-file sequencer and generation, use timestamps only for `as_of` queries and lifecycle.",
+        "**Dedup is free:** chunk hashing costs CPU and the chunk index is a new hotspot and consistency problem. You pay it because it turns O(file_size) version cost into O(changed_bytes), not because it is cheap.",
+        "**Strong consistency everywhere:** you need it only for the pointer commit. Chunk uploads, replication, and GC can be eventually consistent and retried. Over-constraining the whole path kills throughput for no correctness gain."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to version and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use versioning where history has value and writes contend; avoid it where it becomes a hidden cost center.",
+      "headers": [
+        "Scenario",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "User files, docs, photos, backups",
+          "Version",
+          "Accidental overwrite is common, restore has high value, read pattern tolerates manifest lookup"
+        ],
+        [
+          "Append-heavy logs, ML checkpoints, collaborative editing",
+          "Version with chunking",
+          "Small deltas on large bases, history enables diff and rollback, dedup pays off fast"
+        ],
+        [
+          "Ephemeral caches, derived thumbnails, build artifacts",
+          "Do not version",
+          "Regenerable data, retention cost exceeds restore value, use TTL and overwrite instead"
+        ],
+        [
+          "High-frequency counters or single-row hot state",
+          "Do not version every write",
+          "Version explosion overwhelms metadata and GC; keep snapshots periodically plus a changelog"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Extensibility comes from treating the manifest as the narrow waist. Want branches? Add a second `current` pointer sharing the same history DAG, no data movement. Want time-travel `as_of` queries? Index `created_at` per file and resolve to the latest `version_id` below the timestamp. Want cost control? Tier chunk storage by reference age: current chunks on fast storage, noncurrent on cold storage, since manifests already isolate which hashes are live. Each feature touches only pointer logic or lifecycle rules, never the chunk upload path. That is the resource-efficient argument to make explicitly: you isolate mutability to one integer per file so everything else can scale horizontally, dedup globally, and age out independently."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "**Keep every write as an immutable chunked manifest and move a single `current` pointer with CAS; you get lock-free history and restores, and you pay for it with explicit retention and garbage collection.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:24:58.963Z",
+    "problems": []
+  }
+}

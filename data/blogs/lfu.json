@@ -1,0 +1,280 @@
+{
+  "slug": "lfu",
+  "title": "LFU",
+  "summary": "LFU evicts by total access count, not recency. This concept page explains the O(1) mechanism, why it beats LRU for stable hot keys and why it fails on shifting workloads, plus how to defend the trade-off in a caching design interview.",
+  "kind": "HLD",
+  "problemSlug": "lfu-95-215",
+  "topic": "Caching Mechanisms",
+  "difficulty": "Medium",
+  "coverEmoji": "📊",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Caching",
+    "LFU",
+    "Eviction"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "LFU Cache Design Explained - O(1) Frequency Eviction Algorithm",
+      "url": "https://www.youtube.com/watch?v=-xmJCjOPnJQ",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "460. LFU Cache - In-Depth Explanation - AlgoMonster",
+      "url": "https://algo.monster/liteproblems/460",
+      "source": "algo.monster",
+      "kind": "article"
+    },
+    {
+      "title": "Introduction to LRU and LFU Caching - Medium",
+      "url": "https://medium.com/@alxkm/introduction-to-lru-and-lfu-caching-concepts-implementations-and-practical-use-cases-ab90f2e168bd",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Least frequently used - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Least_frequently_used",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "LFU protects **long-term winners at the cost of reacting slowly to change**. If your hot set is stable, it beats LRU on hit rate. If popularity shifts, that same memory of the past becomes pollution that evicts the future. Every LFU discussion is about that trade-off: **stability versus agility**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "Least Frequently Used is a cache eviction policy that keeps a counter per key and, when capacity is exhausted, removes the key with the smallest count. Each `get` and each `put` that hits an existing key increments that key's counter by one. New keys enter at frequency `1`. Eviction scans for the minimum frequency present and removes one key from that group. The standard tie-breaker inside a frequency group is recency: among keys with equal count, evict the least recently used. That combination is what most interviewers mean when they say LFU, and you should state it explicitly because pure frequency without a tie-breaker is non-deterministic and untestable."
+    },
+    {
+      "type": "paragraph",
+      "text": "There are two versions you must distinguish. **Ideal LFU** remembers counts for every key ever seen, even after eviction. **Practical LFU** forgets the count on eviction and restarts a re-admitted key at `1`. Almost every in-memory cache builds practical LFU because ideal LFU needs unbounded metadata — a second index as large as your entire keyspace. The trade-off is correctness of the popularity signal versus bounded memory: practical LFU is implementable but systematically undervalues keys that churn, which is exactly why admission filters like TinyLFU were invented to recover some of that history without storing it all."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Signal:** total access count since insertion, not time since last access. A key touched 100 times yesterday outranks a key touched 10 times today.",
+        "**Mutation:** reads change eviction order. Unlike FIFO or CLOCK without extra bits, a `get` in LFU is a write to bookkeeping structures.",
+        "**Tie-break:** LRU inside equal frequency. Without it you cannot reason about scan versus point-lookup patterns that produce identical counts.",
+        "**Scope:** per-node by default. In a sharded cache each node runs independent LFU unless you add a global sketch, so hot keys can be evicted on one shard while cold on another."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: how O(1) is actually achieved"
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive implementation — a heap keyed by count — gives `O(log n)` eviction and `O(log n)` increments, which is too slow for a hot path that runs millions of operations per second. The reason the textbook O(1) design uses two hash maps plus intrusive linked lists is that frequency values move only by `+1` per hit, so you never need a general sort. You bucket keys by their exact count and maintain insertion order inside each bucket. Lookup finds the node, unlink and relink move it between buckets, and a single `minFreq` integer tells you where to evict. The trade-off is pointer complexity and memory overhead versus constant-time guarantees: you trade roughly two extra pointers plus two map entries per key to eliminate all logarithmic operations and all scans on evict."
+    },
+    {
+      "type": "mermaid",
+      "title": "LFU get and put flow",
+      "caption": "All moves are hash lookup plus linked-list splice. No scan, no heap.",
+      "code": "flowchart TD\n  REQ[Request get k or put k, v] --> HIT{Key in keyMap?}\n  HIT -->|No| MISS[Capacity full?]\n  MISS -->|Yes| EVICT[Evict LRU node from minFreq list]\n  MISS -->|No| INSERT[Create node freq=1]\n  EVICT --> INSERT\n  INSERT --> SETMIN[Set minFreq = 1]\n  HIT -->|Yes| REMOVE[Unlink node from freq=f list]\n  REMOVE --> EMPTY{List f now empty?}\n  EMPTY -->|Yes and f == minFreq| BUMP[Increment minFreq]\n  EMPTY -->|No| KEEP[Keep minFreq]\n  BUMP --> INCR[Set node freq = f+1]\n  KEEP --> INCR\n  INCR --> APPEND[Append node to list f+1 MRU end]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Concretely you keep `key -> node {value, freq, list pointers}` and `freq -> doubly-linked list ordered by recency`. New nodes go to the tail of list `1` and `minFreq` resets to `1`. On a hit you splice the node out of list `f`, push it to the tail of list `f+1`, and set `node.freq += 1`. If list `f` becomes empty and `f == minFreq`, you increment `minFreq` because no key remains at that level. Eviction pops from the head of list `minFreq` — the least recently used among the least frequently used. Every step is hash lookup plus a constant number of pointer assignments, which is why both operations stay O(1) amortised. The reason `minFreq` works without a scan is monotonicity: frequencies only increase by one and new keys only enter at `1`, so the minimum can only move up by one on hits or reset to `1` on inserts."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "lfu_o1.py",
+      "code": "from collections import defaultdict, OrderedDict\n\nclass _Node:\n    __slots__ = (\"key\", \"value\", \"freq\")\n    def __init__(self, key, value):\n        self.key = key\n        self.value = value\n        self.freq = 1\n\nclass LFUCache:\n    def __init__(self, capacity: int):\n        self.cap = capacity\n        self.min_freq = 0\n        self.by_key: dict[int, _Node] = {}\n        # freq -> OrderedDict[key, node], insertion order = recency within freq\n        self.by_freq: dict[int, OrderedDict] = defaultdict(OrderedDict)\n\n    def _touch(self, node: _Node):\n        f = node.freq\n        del self.by_freq[f][node.key]\n        if not self.by_freq[f] and f == self.min_freq:\n            self.min_freq += 1\n        node.freq = f + 1\n        self.by_freq[f + 1][node.key] = node  # tail = most recent\n\n    def get(self, key: int) -> int:\n        node = self.by_key.get(key)\n        if node is None:\n            return -1\n        self._touch(node)\n        return node.value\n\n    def put(self, key: int, value: int) -> None:\n        if self.cap == 0:\n            return\n        if key in self.by_key:\n            node = self.by_key[key]\n            node.value = value\n            self._touch(node)\n            return\n        if len(self.by_key) >= self.cap:\n            # evict LRU within lowest frequency\n            evict_key, _ = self.by_freq[self.min_freq].popitem(last=False)\n            del self.by_key[evict_key]\n        node = _Node(key, value)\n        self.by_key[key] = node\n        self.by_freq[1][key] = node\n        self.min_freq = 1"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape and not a heap or a sorted tree: the workload never asks for arbitrary ordering, only increment-by-one and remove-minimum. A heap pays `O(log n)` to restore order after every read, which doubles the cost of the hottest operation in a cache — the hit — and adds lock hold time under concurrency. The bucketed design pays with complexity instead: `O(n)` extra pointers, an `OrderedDict` per live frequency, and careful handling of empty buckets and `minFreq` drift. That is the correct trade for a single-node library cache where CPU per hit dominates. It is the wrong trade once you shard the cache across machines, because cross-node frequency comparison is impossible without coordination, so distributed systems abandon exact LFU for sketches and sampling instead."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "LFU versus the alternatives you will be asked to compare it against.",
+      "headers": [
+        "Property",
+        "LFU behaviour",
+        "Cost you pay"
+      ],
+      "rows": [
+        [
+          "Hit rate on stable Zipf workload",
+          "Best in class; long-lived hot keys are never displaced by scans",
+          "Slow to admit new hot keys; frequency debt must be overcome one hit at a time"
+        ],
+        [
+          "Hit rate on shifting / bursty workload",
+          "Poor; yesterday's winners block today's winners",
+          "Needs decay, windowing, or hybrid to stay relevant"
+        ],
+        [
+          "Scan resistance",
+          "Strong; a one-pass scan enters at freq 1 and is evicted first",
+          "Only if scan keys do not repeat enough to climb frequencies"
+        ],
+        [
+          "Read cost",
+          "O(1) but every hit mutates lists and maps",
+          "Higher constant than LRU; worse under contention, needs sharding or striping"
+        ],
+        [
+          "Memory overhead",
+          "Two maps plus linked-list pointers per entry",
+          "Meaningfully larger than LRU head; matters past tens of millions of entries"
+        ],
+        [
+          "Implementation risk",
+          "minFreq tracking, empty-bucket cleanup, tie-break order",
+          "Subtle eviction bugs that only appear at capacity under mixed get-put load"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pattern across every row is the same: LFU buys **discrimination** — the ability to tell a key hit 1000 times from a key hit twice — and pays with **inertia**. LRU forgets fast and adapts fast. LFU remembers long and adapts slowly. That is why production systems rarely deploy pure LFU. They deploy windowed or segmented hybrids that use a small LRU admission window to prove frequency before promoting into an LFU-protected segment. You get scan resistance and stability without letting stale counters pin dead keys forever. If you recommend pure LFU in a design interview without naming the workload assumption behind it, you have missed the point the interviewer is testing."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is **frequency pollution**: a key that was extremely hot during a batch job, a flash sale, or a retry storm accumulates a count of tens of thousands, then goes cold. Because practical LFU has no decay, that dead key sits in a high-frequency bucket and is effectively unevictable while genuinely hot keys arriving now climb from `1` one hit at a time and get evicted repeatedly. The symptom is a hit-rate graph that looks fine during the spike, then sags for hours after traffic returns to normal while `evictions from freq=1` stay disproportionately high and tail latency rises because the cache is serving yesterday's working set. The fix is never a bigger cache; it is aging — halving counters periodically, windowing counts, or moving to a segmented design where the protected segment is bounded."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure is **cold-start eviction and counter saturation**. Every new key starts at `1`, so a burst of legitimately hot new keys evicts each other before any of them can prove frequency, while pre-existing keys with inflated counts are immune. Operators see this as a thundering-herd on the database right after a deploy, a config push, or a cache flush, even though capacity and CPU look healthy. A related variant is frequency overflow or unbounded bucket growth in long-lived processes where a handful of keys reach enormous counts and the `by_freq` map accumulates thousands of empty intermediate lists if cleanup is lazy. Symptoms include rising memory without rising entry count, longer GC pauses from map churn, and in concurrent implementations, lock contention on the lowest-frequency list because every miss and every new insert funnels through `minFreq`."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Stale-hit dashboard:** hit rate decays slowly after a traffic shift while `freq=1` eviction share spikes — pollution, not capacity.",
+        "**Post-deploy DB surge:** miss storm immediately after flush or rollout with plenty of free memory — cold-start, every new key defenceless at count 1.",
+        "**Unevictable keys:** top-N sampled keys have huge counters but near-zero recent hits — missing decay or windowing.",
+        "**Memory creep:** entry count flat but process RSS grows — leaked empty frequency buckets or unbounded `minFreq` structures.",
+        "**P99 contention:** hit latency bimodal under threads, hottest bucket lock saturated — per-hit mutation is the bottleneck; stripe or segment."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Operational gotcha",
+      "text": "Never run pure LFU without **aging or a size-bounded protected segment**. A periodic halve-all-counters job, a sliding window, or a W-TinyLFU style split between a small LRU probation area and an LFU main area turns an unbounded memory of the past into a tunable half-life. Pick the half-life from your traffic shift timescale, not from a default."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Distributed reality: you do not get exact LFU"
+    },
+    {
+      "type": "paragraph",
+      "text": "Exact LFU assumes a single global counter per key and a single global minimum, which collapses the moment you shard by hash or replicate for availability. Cross-shard coordination per read would cost more than the cache saves, so real distributed caches approximate. The standard answers are a **Count-Min Sketch with aging** for admission plus a small LRU window, as in TinyLFU and W-TinyLFU, or **sampled eviction** where each node evicts the least frequent among a handful of randomly sampled keys. Both deliberately sacrifice exactness to keep reads coordination-free. The trade-off is a small hit-rate loss versus linear scalability: you accept that a globally lukewarm key may survive on one shard while being evicted on another, because the alternative — a global frequency service on the read path — destroys tail latency. In an HLD interview, saying exact LFU per shard plus a lightweight admission sketch is a senior answer; insisting on exact global LFU is a red flag."
+    },
+    {
+      "type": "table",
+      "caption": "When LFU helps and when it hurts. Anchor every choice to workload shape.",
+      "headers": [
+        "Use it when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Hot set is small, stable, and Zipf-distributed — feature flags, user profiles, top videos",
+          "Popularity shifts in hours or minutes — news, flash sales, trending feeds without decay"
+        ],
+        [
+          "Scans and one-hit wonders must not nuke the cache — ETL sweeps over a hot OLTP set",
+          "Bursty retries can inflate counts — poisoned frequency looks like popularity"
+        ],
+        [
+          "Hit rate matters more than agility — database protection, expensive recomputation",
+          "Write-heavy or recency-dominated access — inbox, session, real-time feed where latest matters most"
+        ],
+        [
+          "You can afford per-hit bookkeeping and extra pointers on one node",
+          "You need lock-free reads at extreme concurrency or exact global counts across shards"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from eviction policy, not code",
+          "text": "Say: capacity is fixed, hits increment, eviction removes minimum frequency with LRU tie-break. State practical versus ideal LFU and that re-admitted keys restart at 1. This takes thirty seconds and prevents the most common follow-up confusion."
+        },
+        {
+          "title": "Derive the data structure from the operations",
+          "text": "Argue why a heap is insufficient: every read mutates order, so you need increment-by-one buckets. Draw keyMap plus freqMap plus minFreq, then walk a get that empties a bucket and moves minFreq. Interviewers grade the derivation, not memorisation of the diagram."
+        },
+        {
+          "title": "Handle the edge cases out loud",
+          "text": "Capacity zero, update of existing key, eviction when multiple keys share minFreq, deleting empty frequency lists, minFreq reset on insert versus bump on hit. Writing these without prompting signals production awareness."
+        },
+        {
+          "title": "Pivot to workload fit",
+          "text": "Compare LFU against LRU on a stable versus shifting distribution. Name pollution and cold-start explicitly, then propose the fix you would ship: aging, windowing, or a segmented LRU-plus-LFU hybrid. This is where Medium becomes Senior."
+        },
+        {
+          "title": "Scale it to HLD",
+          "text": "Explain why exact LFU does not survive sharding, and replace it with per-shard approximation plus admission sketch or sampled eviction. Mention consistency of counters is explicitly sacrificed for read latency, and hit-rate loss is bounded and measurable. Close with how you would monitor: hit rate, freq-1 eviction share, and age of protected entries."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail candidates"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**LFU is always better than LRU because frequency is smarter than recency** — false on shifting workloads; smarter memory means slower adaptation, and slow adaptation loses when the hot set moves.",
+        "**LFU ignores recency entirely** — false in every usable variant; the tie-breaker is LRU within a frequency, and hybrids make recency the admission gate.",
+        "**Get is read-only** — false; in LFU every hit is a metadata write with pointer surgery, which is why concurrency and per-hit CPU cost dominate the design.",
+        "**O(1) means cheap** — false; constant time hides a large constant of two map operations plus list splice, larger than LRU, and that constant shows up as contention.",
+        "**New keys start at zero or at the average** — false in the standard contract; they start at 1, which is precisely why cold-start eviction happens and why filters exist.",
+        "**Higher capacity fixes pollution** — false; a polluted high-frequency key survives almost any capacity increase; only decay, windowing, or bounded protection fixes it."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The thread connecting every misconception is treating the counter as truth rather than as a **decaying estimate of future probability**. A count answers what happened since insertion, not what will happen next. Once you frame it that way, aging stops looking like an optimisation and starts looking like a requirement, the LRU tie-breaker stops looking arbitrary and starts looking like a recency prior inside frequency buckets, and per-shard approximation stops looking like sloppiness and starts looking like the only way to keep the estimate cheap enough to be worth keeping. Say that framing in the interview and the follow-up questions get much easier, because every design choice becomes a statement about how long the past should be allowed to vote."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**LFU evicts the lowest total-count key with LRU tie-break using bucketed frequency lists and a min pointer for O(1) ops — choose it for a stable hot set where hit rate beats agility, and ship it with aging or segmentation so stale frequencies cannot pin dead keys.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:40:33.925Z",
+    "problems": []
+  }
+}

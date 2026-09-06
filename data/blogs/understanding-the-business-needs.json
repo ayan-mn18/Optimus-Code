@@ -1,0 +1,291 @@
+{
+  "slug": "understanding-the-business-needs",
+  "title": "Understanding the Business & Needs",
+  "summary": "Business understanding is translating who pays, who suffers, and what must survive into testable constraints that drive every HLD choice.",
+  "kind": "HLD",
+  "problemSlug": "understanding-the-business--needs-148-316",
+  "topic": "User Empathy, User Experience, Future Proofing & Realistic Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🎯",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Business Needs",
+    "User Empathy",
+    "System Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Understanding and Defining Business Needs for Long-Term Success",
+      "url": "https://www.upcounsel.com/business-needs",
+      "source": "upcounsel.com",
+      "kind": "article"
+    },
+    {
+      "title": "What are trade-offs in decision-making? - 1000minds",
+      "url": "https://www.1000minds.com/articles/what-are-trade-offs",
+      "source": "1000minds.com",
+      "kind": "article"
+    },
+    {
+      "title": "Plan your business - Small Business Administration - SBA",
+      "url": "https://www.sba.gov/counseling/plan-your-business/",
+      "source": "sba.gov",
+      "kind": "article"
+    },
+    {
+      "title": "8 Types of Business Needs (Plus Definition) | Indeed.com",
+      "url": "https://www.indeed.com/career-advice/career-development/business-needs",
+      "source": "indeed.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "In HLD, **the business need is the architecture**. If you cannot name who pays, who suffers when it breaks, and what number proves success, you are drawing boxes, not designing. Every cache, queue, region, and consistency choice must trace back to a user job and a cost or risk limit — otherwise it is guessing."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "Understanding the business means converting a vague ask — *we need a food ordering platform*, *we need a booking system* — into four testable things: **1) the money motion** (where revenue is made or cost is saved), **2) the critical user jobs** (the 2-3 flows where failure loses users or money), **3) the constraints** (latency, correctness, money, time, team skill, compliance), and **4) the success metric** (orders per minute at peak, conversion rate, support tickets per 1,000 orders). Without those four, terms like *scalable* and *user-friendly* mean nothing. A design that is correct for 1,000 orders a day in one city is wrong for 2 million orders a day across time zones, even if the boxes look identical."
+    },
+    {
+      "type": "paragraph",
+      "text": "The hard part is separating **desired outcome** from **proposed solution**. Stakeholders give you solutions: *we need real-time tracking, we need microservices, we need AI recommendations*. Your job is to push back to the outcome: *the buyer must trust the order will arrive hot, so they do not cancel or call support*. That outcome can be met many ways — honest status updates, tighter prep-time estimates, proactive refunds — and most of them are cheaper than live GPS streaming. Architects who build the requested solution without extracting the outcome consistently overbuild the wrong thing. Trade-off: every hour spent clarifying saves ten hours of rework later, but you cannot clarify forever; timebox it to the top revenue and trust risks."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from vague ask to buildable constraints"
+    },
+    {
+      "type": "paragraph",
+      "text": "Use a repeatable pipeline. Do not free-associate about databases. First, identify the payer and the sufferer — they are often different people. In a marketplace the restaurant pays commission but the hungry buyer suffers a late order. Second, walk the critical path as that sufferer: search, decide, pay, wait, complain. Mark where impatience, doubt, or money loss spikes. Those spikes become your SLOs. Third, attach numbers: peak traffic, read/write ratio, acceptable inconsistency window, cost per 1,000 requests. Fourth, log the explicit non-goals: what you will *not* support in v1. That log is what lets you say no to scope creep without sounding evasive. Why this order matters: architecture flows downstream from user pain and money, never upstream from technology preference."
+    },
+    {
+      "type": "mermaid",
+      "title": "Business to architecture pipeline",
+      "caption": "Every architectural box must trace to a user job and a measurable limit.",
+      "code": "flowchart TD\n  G[Business Goal: revenue / cost / risk] --> J[Critical User Jobs]\n  J --> P[Pain Points: wait, doubt, loss]\n  P --> S[SLOs + Constraints: latency, correctness, cost]\n  S --> A[Architectural Choice: cache, queue, DB, regions]\n  A --> T[Trade-off Log + Non-goals]\n  T --> V[Validation: metric + fallback]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "User empathy is load-bearing, not soft"
+    },
+    {
+      "type": "paragraph",
+      "text": "Empathy in HLD is not *be kind*. It is **modeling tolerance accurately**. Different jobs tolerate different failures. A buyer browsing menus tolerates stale results for 30 seconds; the same buyer paying tolerates zero double-charges and wants an answer in under 2 seconds. A courier tolerates a coarse location update but does not tolerate a missed payout. A support agent tolerates a slow dashboard but does not tolerate missing order history when a customer is angry on chat. Get this wrong and you misallocate all your engineering: you will make search strongly consistent (expensive, slow, pointless) while making payments eventually consistent (cheap, fast, catastrophic). The rule is blunt: **design consistency, latency, and availability around the moment of trust or money, not uniformly across the system**."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Who is desperate, and who is casual?** A hungry buyer at 8pm will abandon after 3 seconds of spinner; a restaurant owner uploading a menu will wait 10 seconds. Do not give them the same SLO.",
+        "**What does failure feel like?** A failed search is annoyance. A failed payment is fear. A lost order after payment is betrayal. Betrayal needs idempotency, receipts, and human fallback — not a retry button.",
+        "**What is the user's fallback?** If your status page lies, the user calls support. Every ambiguous state you create becomes a support ticket. Design states a stressed human can understand.",
+        "**What device and network are real?** A courier on a cheap phone with dropping signal is not your office Wi-Fi. If you assume otherwise, your *real-time* design is fiction.",
+        "**What must still work degraded?** Ordering must work when recommendations are down. Payments must work when tracking is down. If you cannot name the degraded mode, you have no empathy, only a happy path."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "User experience as an architectural constraint"
+    },
+    {
+      "type": "paragraph",
+      "text": "UX decisions dictate backend shape more than most engineers admit. If the product promises *instant search as you type*, you have just committed to an autocomplete index, aggressive caching, and `p95 < 200ms` on the read path — you cannot serve that from a normalized relational scan. If the product promises *never lose my cart*, you have committed to durable client-side sync and server-side merge logic, not a session cookie. If the product promises *accurate arrival time*, you have committed to an event pipeline for prep and dispatch signals, plus a model for estimating, plus a strategy for when the estimate is wrong. This is why UX mockups must be interrogated in an HLD interview: each pixel of promise is a latency budget, a consistency requirement, and an ops cost."
+    },
+    {
+      "type": "paragraph",
+      "text": "Translate each core screen into a contract: **data freshness, latency budget, and failure behavior**. Example: order tracking can be 15-30 seconds stale — that lets you use polling or batched pushes instead of per-second streams, cutting write load by 10-20x. Payment confirmation cannot be stale and cannot be ambiguous — that forces idempotency keys, exactly-once *effect* via deduplication, and a ledger, not just a status column. The trade-off is explicit every time: richer, fresher UX costs more in writes, storage, and on-call pain. Choose freshness only where doubt or money justifies it. Everywhere else, embrace staleness and say so."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs behind business-driven choices.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Optimize for buyer speed over seller richness",
+          "Higher conversion on the money path; simpler SLO to meet",
+          "Seller tools stay crude; seller complaints rise; you need async backfill"
+        ],
+        [
+          "Fresh, live UX (tracking, counts, availability)",
+          "Trust and fewer *where is it?* tickets",
+          "10-100x more writes and fan-out; hot keys; brutal tail latency; higher bill"
+        ],
+        [
+          "Strong consistency for money/inventory",
+          "No oversell, no double-charge; auditable truth",
+          "Higher write latency, lower availability under partition; harder to scale regions"
+        ],
+        [
+          "Future-proofed platform (events, plugins, multi-tenant)",
+          "Faster v2/v3; new flows without rewrites",
+          "Slower v1, more moving parts, more to operate and debug on day one"
+        ],
+        [
+          "Buy managed service over self-build",
+          "Ship in weeks; offload patching and scaling",
+          "Per-request cost explodes at scale; less control over tail behavior and limits"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Business-blind designs fail in predictable ways. The most common is **optimizing the wrong path**. The team builds a beautiful recommendation engine while checkout times out under peak load. Symptom you see: `p99` checkout latency climbs from 600ms to 4s on Friday night, payment retries spike, double-charges appear, support queue explodes, and conversion drops 15% while the search service sits idle. Root cause was not a slow database — it was ranking the wrong user job as critical. Second classic: **ambiguous money states**. The order is *processing* for 20 minutes with no receipt, no idempotency key, and no reconciliation job. Symptom: users tap pay again, you get duplicate authorizations, refunds lag by days, and finance cannot reconcile. That is not a UI bug; it is missing ledger semantics."
+    },
+    {
+      "type": "paragraph",
+      "text": "The other silent killer is **success-induced cost death**. A live-everything design works at 10k daily users, then the event bus, push fan-out, and per-order polling bankrupt you at 1M users. Symptom: infrastructure bill grows faster than orders, tail latency gets spiky, on-call drowns in consumer lag alerts, and the only fix is to degrade freshness you promised in marketing. The prevention is boring: cap freshness where trust does not need it, set quotas per device and per restaurant, and load-shed non-critical writes first. If your design has no explicit shed order — *drop recommendations, then tracking granularity, never payments* — you will shed randomly under pressure."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Symptom: high cancellation during *waiting* phase → you modeled latency but not doubt; fix is honest progress events + proactive compensation, not just faster polling.",
+        "Symptom: oversell during flash sale → you chose availability over consistency for inventory; fix is reservation with TTL + single-writer decrement, accept slower checkout.",
+        "Symptom: support tickets per 1,000 orders rising while uptime is 99.99% → states are incomprehensible; fix is fewer states, user-visible receipts, and idempotent retries.",
+        "Symptom: v2 takes 6 months for a *small* change → you hardcoded v1 flows; fix is versioned events and policy isolation, but only at proven extension points."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Future proofing without building a spaceship"
+    },
+    {
+      "type": "paragraph",
+      "text": "Future proofing does not mean predicting the future. It means **isolating what changes fastest behind a stable boundary**, and leaving everything else boring. What changes fastest is almost always pricing, promotions, search ranking, notification copy, and partner integrations — not your core order ledger. So version your events (`order.v1`, `order.v2`), keep money logic in one well-tested service with a ledger, and push volatile rules into configuration or a policy component with audit logs. Do not build a generic plugin framework, multi-region active-active, or a custom workflow engine on day one unless the business constraint forces it. Each of those doubles operability cost and halves shipping speed. Trade-off stated plainly: every extension point you add taxes every current feature with indirection and testing burden; add it only where past pain or explicit roadmap justifies it."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "business_to_capacity.py",
+      "code": "def capacity_from_business(daily_orders: int, peak_factor: float = 5.0, avg_order_kb: float = 4.0):\n    # Translate a business number into architectural numbers.\n    # WHY: prevents designing for imaginary scale or missing peak by 10x.\n    avg_rps = daily_orders / 86400\n    peak_rps = avg_rps * peak_factor  # dinner rush, sale, kickoff\n    peak_writes = peak_rps            # 1 order write per order (simplified)\n    peak_reads = peak_rps * 20        # browse:pay ratio dominates reads\n    daily_storage_gb = daily_orders * avg_order_kb / 1e6\n    return {\n        \"avg_rps\": round(avg_rps, 2),\n        \"peak_order_rps\": round(peak_rps, 1),\n        \"peak_read_rps\": int(peak_reads),\n        \"daily_storage_gb\": round(daily_storage_gb, 2),\n    }\n\nprint(capacity_from_business(500_000, peak_factor=6.0))\n# -> avg ~5.8 rps, peak ~35 order-writes/s, ~700 reads/s. Boring DB handles writes.\n# Reads need cache/CDN. Do NOT start with sharding; start with cache + read replica."
+    },
+    {
+      "type": "paragraph",
+      "text": "That tiny model is the whole point of realistic design: most *scale* fear disappears once you multiply. Half a million orders a day sounds massive but is only tens of order-writes per second — any single primary can do that. The pressure is reads and bursts. So you spend complexity on caching, idempotency, and queueing the dispatch side, not on exotic write scaling. If the interviewer pushes to 50 million orders a day, *then* you talk partitioning by region or restaurant, dedup pipelines, and cost per 1,000 orders. Let the number pull the architecture, not the other way around."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Realistic design: cost, team, and ops are requirements"
+    },
+    {
+      "type": "paragraph",
+      "text": "A design that ignores cost and operability is wrong even if it scales. Every component has a bill and a pager burden: streams need consumer-lag monitoring and replay tooling, caches need invalidation discipline, multi-region needs conflict resolution and a rehearsed failover. A team of five cannot run twelve stateful systems well. Prefer managed queue, managed cache, and managed relational for v1, and isolate the one place where custom infrastructure earns its keep — usually the hot read path or the dispatch matching. State your non-goals out loud: *single region with fast backup and documented RPO/RTO, not active-active; eventual tracking, strong payments; no per-second GPS in v1*. Interviewers score this as seniority because it shows you have carried a pager. Trade-off: boring is cheaper and calmer, but can cap you later; document the migration trigger (e.g., *when peak writes exceed 2k/s or cross-region latency violates checkout SLO, split the ledger by region*)."
+    },
+    {
+      "type": "table",
+      "caption": "When a business-discovery move helps, and when it hurts.",
+      "headers": [
+        "Technique",
+        "Use when",
+        "Skip when"
+      ],
+      "rows": [
+        [
+          "Map top 3 user jobs + pain moments",
+          "Always; takes 3 minutes and focuses all later choices",
+          "Never skip — if you skip this you are guessing SLOs"
+        ],
+        [
+          "Derive SLOs from trust/money moments",
+          "Checkout, payment, inventory, payout — where doubt costs money",
+          "Background analytics, admin exports — use best-effort there"
+        ],
+        [
+          "Event versioning + policy isolation",
+          "Promotions, pricing, partner feeds churn often",
+          "Core ledger math is stable — keep it simple and strongly tested"
+        ],
+        [
+          "Degraded-mode design + shed order",
+          "Any consumer-facing peak (rush, sale, live event)",
+          "Internal tool with elastic deadline and retryable work"
+        ],
+        [
+          "Multi-region / platform abstraction",
+          "Compliance or latency SLO forces it, with numbers to prove it",
+          "v1 with one dominant market — ship single-region and monitor"
+        ]
+      ]
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Restate the money and the sufferer",
+          "text": "Open with: *The payer is X, the critical sufferer is Y, the must-not-fail job is Z, success is N*. If the interviewer corrects you, you just saved 20 minutes. Do this before any box."
+        },
+        {
+          "title": "Walk the critical path as the user",
+          "text": "Narrate search → decide → pay → wait → help. Ask where they abandon and what ambiguous states scare them. Turn answers into freshness, latency, and clarity requirements."
+        },
+        {
+          "title": "Pin numbers and non-goals",
+          "text": "Ask daily volume, peak factor, read/write ratio, consistency tolerance, budget. Propose v1 non-goals explicitly: *no live GPS, single region, eventual tracking*. Watch for nod or pushback — that is signal."
+        },
+        {
+          "title": "Tie each component to a constraint",
+          "text": "Never say *we need Kafka*. Say *dispatch bursts 10x during rush and buyers tolerate 20s staleness, so we buffer status events in a queue and push batched updates — trade-off is lag for cost and stability*. Name the trade-off every time."
+        },
+        {
+          "title": "Close with evolution and proof",
+          "text": "End with: how you validate (metric + alert + fallback), what breaks first under 10x, and the trigger to evolve. That proves future-proofing without overbuilding."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Misconceptions that fail interviews"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Empathy means adding features.** No — it means removing ambiguity and latency where trust is at stake, and deliberately degrading everywhere else.",
+        "**Better UX always means fresher data.** Fresher costs writes and fan-out. Most trust is built with honest, coarse updates plus compensation, not per-second precision.",
+        "**Future-proof means generic.** Generic frameworks slow v1 and rot. Future-proof means a stable money core plus versioned edges where change is proven.",
+        "**Business talk wastes design time.** Ten minutes on payer, peak, and shed order prevents a design that is coherent but irrelevant. Interviewers grade this as signal, not stall.",
+        "**Realistic means unambitious.** Realistic means you can name cost per 1,000 requests, who gets paged, and what you shed first — ambition with an ops plan.",
+        "**Non-functional requirements are separate.** They are the business: *checkout p95 < 1s at 5x peak or we lose 10% conversion* is both a UX and an architectural mandate."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **I design from the payer, the sufferer, and the money moment — I turn their tolerance into SLOs and shed order, spend consistency and freshness only there, and keep the rest boring, versioned, and cheap to evolve.** Then point to one choice and its trade-off to prove it."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:17:04.080Z",
+    "problems": []
+  }
+}

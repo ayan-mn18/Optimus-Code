@@ -1,0 +1,462 @@
+{
+  "slug": "design-slack-realtime-text-communication-real-time-chat",
+  "title": "Design Slack Realtime Text Communication (Real-time Chat)",
+  "summary": "Design Slack-style realtime chat where the database choice decides everything: partitioned message store, separate presence path, and idempotent fanout.",
+  "kind": "HLD",
+  "problemSlug": "design-slack-realtime-text-communication-real-time-chat-92-303",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "💬",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "WebSocket",
+    "Cassandra"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.hellointerview.com/community/questions/group-chat-threads/cm6ffodsw00003b6paxwmrf57",
+      "title": "Design Slack | Hello Interview",
+      "source": "hellointerview.com",
+      "kind": "aggregate",
+      "companies": [
+        {
+          "name": "OpenAI",
+          "quote": "Asked at: OpenAI Coinbase Databricks"
+        },
+        {
+          "name": "Coinbase",
+          "quote": "Asked at: OpenAI Coinbase Databricks"
+        },
+        {
+          "name": "Databricks",
+          "quote": "Asked at: OpenAI Coinbase Databricks"
+        }
+      ]
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=Zw36jSyMlZI",
+      "title": "Design a Slack-like ChatApp - Most Frequently Asked ... - YouTube",
+      "source": "youtube.com",
+      "kind": "roundup",
+      "companies": [
+        {
+          "name": "OpenAI",
+          "quote": "Most Frequently Asked Question in OpenAI & Meta"
+        },
+        {
+          "name": "Meta",
+          "quote": "Most Frequently Asked Question in OpenAI & Meta"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "Designing a real-time chat system like Slack or WhatsApp - LinkedIn",
+      "url": "https://www.linkedin.com/posts/solomoneseme_youre-in-a-backend-interview-they-ask-activity-7383774322848317440-KOOX",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design A Chat System - ByteByteGo | Technical Interview Prep",
+      "url": "https://bytebytego.com/courses/system-design-interview/design-a-chat-system",
+      "source": "bytebytego.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design A Chat System (WhatsApp, Facebook Messenger, Discord, Slack)",
+      "url": "https://www.youtube.com/watch?v=okrR1KXNLtA",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design Slack | Hello Interview",
+      "url": "https://www.hellointerview.com/community/questions/group-chat-threads/cm6ffodsw00003b6paxwmrf57",
+      "source": "hellointerview.com",
+      "kind": "article"
+    },
+    {
+      "title": "Ace the System Interview— Design a Chat Application - Medium",
+      "url": "https://medium.com/data-science/ace-the-system-interview-design-a-chat-application-3f34fd5b85d0",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design a Slack-like ChatApp - Most Frequently Asked ... - YouTube",
+      "url": "https://www.youtube.com/watch?v=Zw36jSyMlZI",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "This is not a WebSocket question. It is a **database and fanout question** wearing a chat costume. Anyone can draw a box labeled WebSocket server. The hire signal is: can you pick a partition key that survives a 100,000-member channel, separate the hot presence path from the durable message path, and guarantee **at-least-once delivery with exactly-once effect** without double-posting on retry?"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a realtime text communication system in the style of Slack. Users exchange direct messages and channel messages, reply in threads, see presence and typing signals, and get a persistent, searchable history that looks identical on every device. Delivery must feel instant on the happy path, typically under 200ms intra-region, and must never lose or duplicate a message when clients retry, servers crash, or recipients are offline for days. You must support small groups and very large channels, multi-device login per user, and offline push. Text only. Assume 50M daily actives, average message under 1KB, peaks at 5-10x average during work hours. History is kept forever."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`send(channelId, clientMsgId, body)` — persist and fan out exactly once per `clientMsgId`.",
+        "`fetchHistory(channelId, cursor, limit)` — paginated, newest-first or oldest-first, stable across edits.",
+        "`editDelete(messageId, newBody)` — versioned mutation, not silent overwrite.",
+        "`presence + typing` — ephemeral signals with second-scale staleness, loss is acceptable.",
+        "`offline catch-up + push` — no polling the message store from phones every second."
+      ]
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "1:1 vs channel vs thread?",
+          "text": "Ask which primitives are in scope. The answer changes the schema: DMs need a deterministic conversation id, channels need membership checks, threads need a parent pointer. Lock this before drawing anything."
+        },
+        {
+          "title": "Ordering guarantee?",
+          "text": "Ask if ordering is per-sender, per-channel, or causal with threads. Global ordering across a distributed store is a trap. Push for per-channel ordering by server timestamp plus tie-breaker id."
+        },
+        {
+          "title": "Read vs write ratio and retention?",
+          "text": "Ask expected sends per user per day, read pattern, and whether history is truly infinite. This justifies a write-optimized LSM store versus a B-tree and whether you need cold archiving."
+        },
+        {
+          "title": "Multi-device and offline?",
+          "text": "Ask if one user can hold three sockets and whether offline users get push or just catch up on reconnect. This forces per-device delivery cursors instead of per-user cursors."
+        },
+        {
+          "title": "Consistency for edits, deletes, membership?",
+          "text": "Ask if an edit must be visible instantly and if a removed member must immediately lose access. Membership and ACLs want strong consistency; messages do not. Split them early."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Agreed scope before any architecture.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Send, history fetch, edit/delete, threads, reactions",
+          "Defines message row shape and secondary indexes"
+        ],
+        [
+          "Functional",
+          "Public/private channels + DMs + membership",
+          "ACL check sits on the send path, not the DB"
+        ],
+        [
+          "Ephemeral",
+          "Presence, typing, new-message badges",
+          "Must not touch the durable store or you will melt it"
+        ],
+        [
+          "Non-functional",
+          "p50 delivery <200ms connected, durable write <500ms",
+          "Forces in-memory fanout plus async persistence overlap"
+        ],
+        [
+          "Non-functional",
+          "At-least-once delivery, idempotent apply, ordered per channel",
+          "Retry is mandatory; duplicates are a client-visible bug"
+        ],
+        [
+          "Non-functional",
+          "Horizontally scalable to 50M DAU, regional failover",
+          "Rules out single-leader RDBMS for messages"
+        ],
+        [
+          "Non-functional",
+          "Forever history, searchable text",
+          "Forces partitioned cold storage plus separate index"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the naive approach"
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive design is one relational table `messages(id, channel_id, sender, body, ts)` behind a pool of WebSocket servers, with receivers polling `SELECT * WHERE channel_id = ? ORDER BY ts`. Sends do an `INSERT`, then the server loops over members and writes to each socket. Presence is another column on `users` updated on every heartbeat. This passes a demo with 50 users and collapses for three structural reasons. First, the channel history query becomes a full scan plus sort as soon as a channel exceeds memory, and a 50k-member announcement channel turns one send into 50k synchronous socket writes on the request thread. Second, polling and heartbeat writes hammer the primary for data that is either ephemeral or rarely read, trading expensive durable IOPS for information you are allowed to lose. Third, there is no idempotency key, so a phone that retries after a timeout inserts the same text twice, and two replicas that both think they own a connection deliver twice. You cannot fix this with a bigger database. You have to split paths by durability need."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The trap to name out loud",
+      "text": "Do not put presence, typing, or delivery cursors in the message table. Ephemeral state has 100x the write rate and zero durability need. Mixing it with forever history guarantees hot rows, contended indexes, and a store that cannot compact. Interviewers fail candidates who draw one database for everything."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Separate four planes and choose storage per access pattern. The **connection plane** holds persistent sockets on stateful gateway nodes; it is sharded by `userId` with consistent hashing and keeps only socket-to-node routing in Redis with a short TTL. The **write plane** accepts `send` over HTTP or the socket, validates membership against a strongly consistent ACL store, assigns `serverSeq`, and appends to a durable log. The **read plane** serves history from a wide-partition message store keyed by `channelId`, never by scanning. The **ephemeral plane** gossips presence and typing through Redis pub/sub and never touches disk. Why this split? Trade-off stated plainly: you pay for two extra systems — a log and a cache — to buy independent scaling. Message writes scale by partition count, fanout scales by gateway count, presence scales by Redis throughput. A single Postgres primary couples them and forces you to scale the most expensive resource for the cheapest problem."
+    },
+    {
+      "type": "mermaid",
+      "title": "Slack realtime architecture",
+      "caption": "Write once to log, persist once, fan out via gateways. Presence bypasses durable storage.",
+      "code": "flowchart TD\n  ClientA[Sender Client] --> LB[Load Balancer]\n  LB --> API[Chat API]\n  API --> ACL[Membership Check]\n  ACL --> MQ[Message Bus]\n  MQ --> Writer[Persistence Worker]\n  Writer --> DB[Message Store]\n  Writer --> Search[Search Index]\n  MQ --> Fanout[Fanout Worker]\n  Fanout --> Redis[Routing Cache]\n  Redis --> GW1[Gateway A]\n  Redis --> GW2[Gateway B]\n  GW1 --> ClientB[Recipient Client]\n  GW2 --> ClientC[Other Device]\n  ClientA --> GW1\n  GW1 --> Presence[Presence Service]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Request flow is deliberately asymmetric. Send travels `client -> API -> log -> store + fanout`, receive travels `gateway -> socket push`. Use HTTP or the existing socket for send — it does not matter much because send is infrequent — but use server push over WebSocket with fallback to long-poll or SSE for receive, because polling at chat cadence is pure waste. On send the API does three cheap checks synchronously: auth, rate limit, and `isMember(channelId, userId)`. Then it generates `messageId = serverTimestamp + nodeId + rand` or accepts the client-supplied `clientMsgId` mapped to a server id, publishes to the partitioned log keyed by `channelId`, and returns `ack` immediately after the log append, not after all recipients ack. Persistence workers consume the log, write to the message store with `IF NOT EXISTS` on `clientMsgId`, update the per-channel tail cache, and emit to the search indexer asynchronously. Fanout workers look up live routes for channel members in Redis, push only to online devices via the owning gateway using RPC, and enqueue push notifications for offline devices. History reads never touch the log or the gateways; they hit the message store with `channelId + time cursor`. The trade-off: ack-after-log means a message can be acked but not yet visible in search for a second. Say it. Durability first, index freshness second."
+    },
+    {
+      "type": "table",
+      "caption": "Database per access pattern — this is the core of the answer.",
+      "headers": [
+        "Data",
+        "Store",
+        "Schema / key",
+        "Why this, trade-off"
+      ],
+      "rows": [
+        [
+          "Channel messages",
+          "Wide-column NoSQL like Cassandra / Scylla / DynamoDB",
+          "PARTITION KEY channelId, CLUSTERING createdAt + messageId",
+          "Append-heavy, range-scan reads. LSM handles writes; bounded partitions avoid hot spots. Sacrifices ad-hoc joins."
+        ],
+        [
+          "DMs",
+          "Same message store",
+          "PARTITION KEY dmThreadId derived from sorted user pair",
+          "Reuses range-scan path. No separate table, no second code path."
+        ],
+        [
+          "Membership + ACL",
+          "Strongly consistent RDBMS",
+          "membership(channelId, userId), channels(id, visibility)",
+          "Needs transactions on join/kick. Low volume, so pay for consistency here."
+        ],
+        [
+          "Session routing + presence",
+          "Redis / in-memory grid",
+          "conn:userId:deviceId -> gatewayId with TTL; presence:userId -> status",
+          "Millions of writes per minute, loss-tolerant. Never put TTL data in Cassandra."
+        ],
+        [
+          "Delivery cursors",
+          "Redis + durable inbox table",
+          "lastDelivered per device in Redis, backed by per-device inbox log",
+          "Per-device cursors allow multi-device catch-up without resending to all devices."
+        ],
+        [
+          "Full-text search",
+          "Elastic / OpenSearch async from log",
+          "Index on body + channelId + timestamp",
+          "Keeps write path fast. Trade-off: search lags writes by seconds."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Data model"
+    },
+    {
+      "type": "mermaid",
+      "title": "Core schema",
+      "caption": "Message partition is the unit of scale. Membership lives elsewhere for consistency.",
+      "code": "classDiagram\n  class User {\n    string id\n    string displayName\n  }\n  class Channel {\n    string id\n    string visibility\n  }\n  class Membership {\n    string channelId\n    string userId\n    string role\n  }\n  class Message {\n    string channelId\n    string messageId\n    string senderId\n    string body\n    long createdAt\n  }\n  class DeviceCursor {\n    string userId\n    string deviceId\n    string lastSeenId\n  }\n  User --> Membership : has\n  Channel --> Membership : controls\n  Channel --> Message : stores\n  User --> Message : sends\n  User --> DeviceCursor : tracks"
+    },
+    {
+      "type": "paragraph",
+      "text": "Partition discipline is the whole database interview. One CQL row per message inside a `channelId` partition, clustered by `createdAt` descending plus `messageId` as tie-breaker, gives you `fetch last N before cursor` as a single sequential slice — no sorting, no secondary index. Cap partition growth by time-bucketing very large channels by month or by `channelId + bucketId` when a partition approaches tens of MB; otherwise a single celebrity channel creates an unmovable hot partition and repair stalls. Threads are just messages with `parentId`; do not create a thread table on the hot path, resolve them with a clustering prefix or a separate narrow table read only when the user expands a thread. Edits are new versions with `version` incremented and `isTombstone` for deletes, so history replay stays ordered and caches invalidate by `messageId + version`. Deduplication key is `(senderId, clientMsgId)` with a TTL’d lookup — retry storm becomes a cache hit, not a duplicate row. The trade-off you must voice: time-bucketing complicates pagination across bucket boundaries, but unbounded partitions kill availability. Choose bounded partitions every time."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Core code"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ChatService.java",
+      "code": "public class ChatService {\n  private final MembershipStore acl;\n  private final DedupStore dedup;\n  private final LogPublisher log;\n  private final RateLimiter limiter;\n\n  public SendResult send(SendRequest r) {\n    if (!limiter.tryAcquire(r.senderId())) return SendResult.rateLimited();\n    if (r.body() == null || r.body().length() == 0 || r.body().length() > 8000)\n      return SendResult.rejected(\"bad-body\");\n    if (!acl.isMember(r.channelId(), r.senderId()))\n      return SendResult.rejected(\"not-member\");\n    // Exactly-once effect on at-least-once transport.\n    String serverId = dedup.getOrCreate(r.senderId(), r.clientMsgId());\n    long now = System.currentTimeMillis();\n    MessageEvent e = new MessageEvent(r.channelId(), serverId, r.senderId(), r.body(), now, r.parentId());\n    log.append(r.channelId(), e); // partitioned by channelId\n    return SendResult.acked(serverId, now);\n  }\n\n  public Page<Message> history(String channelId, String caller, Cursor cursor, int limit) {\n    if (!acl.canRead(channelId, caller)) throw new ForbiddenException();\n    return MessageStore.slice(channelId, cursor, Math.min(limit, 50));\n  }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "fanout_worker.py",
+      "code": "def on_log_event(event):\n    # 1. Durable write first, idempotent on clientMsgId\n    inserted = message_store.insert_if_absent(event)\n    if not inserted:\n        return  # retry duplicate, do not fan out twice\n    tail_cache.prepend(event.channel_id, event)\n    search_queue.offer(event)  # async, lag is acceptable\n    # 2. Fan out only to online devices\n    routes = routing_cache.get_routes(event.channel_id)  # user -> [(device, gateway)]\n    for user_id, devices in routes.items():\n        if user_id == event.sender_id:\n            continue  # sender already optimistic-acked, sync others\n        for device, gateway in devices:\n            if gateway.is_mine():\n                push_to_socket(device, event)\n            else:\n                rpc.forward(gateway, device, event)\n    offline = members(event.channel_id) - set(routes)\n    push_service.enqueue(offline, event)  # batched, collapsible"
+    },
+    {
+      "type": "paragraph",
+      "text": "The code shows the two invariants that matter. The Java send path never fans out synchronously and never writes the message store inline; it validates, deduplicates, and appends to the log, which is why p99 send latency stays flat when a channel jumps from 10 to 10,000 members. The Python worker shows why ordering of operations matters: persist before fanout, and treat the log redelivery as the retry mechanism. If the worker crashes after insert but before fanout, the log offset is not committed and replay will hit `insert_if_absent`, find the row, and skip the second fanout. If you reverse the order you get ghost messages that arrived on sockets but vanish on refresh. Optimistic UI on the sender plus server sequence reconciliation covers the gap between local echo and authoritative order."
+    },
+    {
+      "type": "table",
+      "caption": "Cost per operation — quote these without hesitating.",
+      "headers": [
+        "Operation",
+        "Path",
+        "Complexity"
+      ],
+      "rows": [
+        [
+          "Send",
+          "ACL check + log append",
+          "O(1) + O(members) async fanout, never on request thread"
+        ],
+        [
+          "History fetch",
+          "Single partition slice",
+          "O(limit), one sequential read"
+        ],
+        [
+          "Presence update",
+          "Redis SETEX + pub/sub",
+          "O(1), no durable I/O"
+        ],
+        [
+          "Join large channel",
+          "RDBMS txn + cache invalidate",
+          "O(1) txn, fanout unaffected until next send"
+        ],
+        [
+          "Search",
+          "Async index",
+          "O(log N) indexed, lags writes by ~1s"
+        ],
+        [
+          "Storage",
+          "Messages + index + inbox",
+          "~50M x 200 msgs x 500B ~= 5TB/day raw before replication"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency and the hardest follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "Concurrency lives in three places: socket ownership, log consumption, and read-modify-write on edits. Socket ownership is single-writer per device: only the gateway that holds the socket in Redis may push to it, with a fencing token incremented on reconnect so a stale gateway cannot deliver duplicates after a partition heals. Without fencing you get split-brain pushes during failover. Log partitions are consumed by one worker at a time with offset commits after persistence, giving per-channel ordering for free as long as you partition the log by `channelId`; add a second consumer to the same partition and you destroy ordering to gain nothing. Edits and deletes use lightweight transactions or conditional writes on `(messageId, version)` — last-writer-wins with a version vector is enough for text chat, and contended hot edits are rare so the extra round trip is affordable. Presence is the opposite: allow lost updates, coalesce heartbeats to every 15-30 seconds, and expire keys rather than explicitly deregistering, because a thundering reconnect after a gateway restart would otherwise stampede the database. The follow-up that ends the round is large-channel fanout: for a 100k-member announcement, do not do 100k RPCs per message. Switch to a read-fanout model where the sender writes once, gateways pull the tail on demand, and only online-device deltas are pushed, or shard the channel into subscriber segments consumed in parallel. The trade-off: push-fanout is lower latency for small groups, pull-fanout is the only thing that survives broadcast. Name the crossover explicitly around a few thousand online members."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Say this sentence",
+      "text": "**Persist before fanout, ack after log, deduplicate on client id.** If you remember nothing else, that sentence fixes duplicates, ordering, and crash recovery in one line and signals senior-level judgment."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "How do you handle a 100k-member channel?",
+          "text": "Answer: bucket the partition by time, fan out by pull not push, cache the tail in Redis, page history by bucket cursor. Push to every socket is the wrong algorithm past a few thousand online."
+        },
+        {
+          "title": "How do reconnects work?",
+          "text": "Answer: per-device lastSeenId plus inbox log replay. Client sends cursor, server replays missed slice from message store, then resumes live push. No message loss during deploys."
+        },
+        {
+          "title": "Where does encryption live?",
+          "text": "Answer: TLS in transit plus at-rest encryption by default. True end-to-end breaks server search and history sync — state the trade-off, offer per-DM opt-in if pressed."
+        },
+        {
+          "title": "How do you keep ordering sane?",
+          "text": "Answer: single log partition per channel, serverSeq as authority, client reconciles optimistic echo. Clock skew is absorbed by tie-breaker id, not NTP wishes."
+        },
+        {
+          "title": "What breaks first at 10x?",
+          "text": "Answer: presence writes, then fanout RPC mesh, then search indexing lag. Mitigate with heartbeat coalescing, gateway sharding, and async index with backpressure."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Retry with same `clientMsgId` must not duplicate — show the dedup lookup before log append.",
+        "Sender with three devices: optimistic echo on one, push to other two via per-device cursors.",
+        "Reconnect after gateway crash: old route TTL expires, new gateway claims device with higher fence token.",
+        "Removed member sends in flight: ACL check at send plus read-time filter so history does not leak.",
+        "Empty message, over-limit body, and non-member fetch — reject fast, never write then validate.",
+        "Hot partition: time-bucket large channels, paginate across buckets without N+1 queries.",
+        "Search lag after send: tell the user history is authoritative, index is eventual.",
+        "Push collapse: ten messages while offline yield one notification plus a count, not ten wakes."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "How you are graded.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Storage choice",
+          "One RDBMS for messages, presence, search",
+          "LSM message store by channelId, RDBMS only for ACL, Redis for ephemeral, async index"
+        ],
+        [
+          "Delivery",
+          "\"WebSocket makes it realtime\"",
+          "Ack-after-log, persist-before-fanout, idempotent replay, per-device cursors"
+        ],
+        [
+          "Scale",
+          "\"Add more servers\"",
+          "Partition log by channelId, gateway sharding by user hash, pull-fanout past broadcast threshold"
+        ],
+        [
+          "Trade-offs",
+          "No downside named",
+          "Every choice priced: index lag, bucket pagination cost, fencing complexity"
+        ],
+        [
+          "Follow-ups",
+          "Stuck on E2E or polling",
+          "Knows when to switch push to pull and why presence must never hit disk"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Your 45-minute plan",
+      "text": "0-5 scope: DMs, channels, threads, multi-device, forever history. 5-15 protocol: push for receive, idempotent send, ack-after-log. 15-30 databases: message partitions, ACL split, Redis presence, async search — draw keys. 30-40 hard parts: reconnect replay, fencing, large-channel pull fanout. 40-45 scale math and trade-offs. Close with: persist before fanout."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:39:52.426Z",
+    "problems": []
+  }
+}

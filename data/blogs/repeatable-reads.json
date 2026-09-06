@@ -1,0 +1,256 @@
+{
+  "slug": "repeatable-reads",
+  "title": "Repeatable Reads",
+  "summary": "Repeatable Read freezes every row you read for the life of your transaction, but deliberately leaves the predicate open. That one gap explains phantoms, write-skew, and when to pay for serializability instead.",
+  "kind": "HLD",
+  "problemSlug": "repeatable-reads-96-216",
+  "topic": "Data consistency in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": " f501",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Consistency",
+    "Transactions",
+    "Isolation"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Difference between \"read commited\" and \"repeatable read\" in SQL Server",
+      "url": "https://stackoverflow.com/questions/4034976/difference-between-read-commited-and-repeatable-read-in-sql-server",
+      "source": "stackoverflow.com",
+      "kind": "article"
+    },
+    {
+      "title": "Repeatable Read - Jepsen",
+      "url": "https://jepsen.io/consistency/models/repeatable-read",
+      "source": "jepsen.io",
+      "kind": "article"
+    },
+    {
+      "title": "Exploring Read Committed and Repeatable Read Isolation Levels",
+      "url": "https://www.pingcap.com/article/exploring-read-committed-and-repeatable-read-isolation-levels/",
+      "source": "pingcap.com",
+      "kind": "article"
+    },
+    {
+      "title": "Isolation Levels - part VII: Repeatable Read - DEV Community",
+      "url": "https://dev.to/franckpachot/isolation-levels-part-vii-repeatable-read-l11",
+      "source": "dev.to",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Repeatable Read means: if you read row `x`, every later read of `x` in the same transaction returns the same value — even while concurrent transactions commit.** It says nothing about rows you did *not* read. That asymmetry is the entire design. Choose it when your logic depends on stable inputs, not on complete sets."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Repeatable Read is a transaction isolation level sitting between Read Committed and Serializable. Under Read Committed, each statement sees newly committed data, so `SELECT balance FROM accounts WHERE id=1` can return `100` at `t1` and `200` at `t2` if someone committed in between. Under Repeatable Read, the second read must still return `100`. The database pins your view of every row you touched. The trade-off is explicit: you buy **per-row stability** without paying the full price of **predicate stability**. Your transaction is protected from fuzzy reads and dirty reads, but not from concurrent inserts or updates to rows outside your read set."
+    },
+    {
+      "type": "paragraph",
+      "text": "Formally, Repeatable Read forbids three interleavings and permits a fourth. It forbids dirty writes (`T2` overwriting `x` before `T1` commits its write to `x`), dirty reads (`T2` reading `x` written but not yet committed by `T1`), and fuzzy reads (`T1` reads `x`, `T2` modifies or deletes `x` and commits, `T1` re-reads `x` and sees a different result). It **allows phantoms**: `T1` reads all rows matching predicate `P`, `T2` inserts or updates a row so it now matches `P` and commits, `T1` re-evaluates `P` and sees a different set. Individual objects are frozen; the set is not. That is why it is cheaper than Serializable but unsafe for logic like “if count is zero, insert” or “if no seat is taken, book it.”"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Repeatable Read is not Serializable",
+      "text": "The name lies. **Repeatable rows do not imply a repeatable database.** Re-running the same `WHERE` query can return new rows. If your correctness depends on *absence* — no duplicate username, no overbooked flight, no double spend — Repeatable Read does not protect you. Say that distinction unprompted; interviewers screen for it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: locks vs snapshots"
+    },
+    {
+      "type": "paragraph",
+      "text": "Databases enforce the same guarantee two opposite ways, and the choice dictates your performance profile. Old lock-based engines take **long-duration shared locks** on every row read and hold them until commit. Nobody can update or delete those rows concurrently — writers block. Modern MVCC engines take **no read locks at all**. They assign the transaction a read timestamp at start and serve every read from that versioned snapshot. Writers never block readers; readers never block writers. The reason MVCC won for read-heavy workloads is contention: shared read locks serialize everything touching hot rows, while snapshots let thousands of readers share one old version cheaply. The price MVCC pays is storage and garbage collection of old versions, plus a messier story for read-write conflict detection at commit."
+    },
+    {
+      "type": "mermaid",
+      "title": "Repeatable Read timeline",
+      "caption": "T1 re-reads the same value because its view is pinned, while T2's new row can still appear as a phantom.",
+      "code": "flowchart TD\n  A[\"T1 BEGIN, pin snapshot S\"] --> B[\"T1 READ x = 100 from S\"]\n  B --> C[\"T2 UPDATE x = 200, COMMIT\"]\n  C --> D[\"T1 RE-READ x = 100 from S\"]\n  D --> E[\"T2 INSERT y matching P, COMMIT\"]\n  E --> F[\"T1 SEARCH P sees new y = phantom\"]\n  F --> G[\"T1 COMMIT\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the diagram left to right as a wall-clock history. `T1` anchors to snapshot `S`. When `T2` commits a change to `x`, `T1` ignores it — that suppression *is* the fuzzy-read prevention. But when `T2` commits a new row `y` that matches `T1`'s earlier predicate `P`, a second evaluation of `P` can observe `y`, because `y` was never in `T1`'s read set and therefore never pinned. Lock-based systems behave the same way for a different reason: they locked `x` but never locked the gap where `y` was inserted. Why allow this hole? Because closing it requires **predicate locking or range locking** — locking the absence of rows — which kills insert concurrency on that range. Repeatable Read is the deliberate decision to keep range inserts fast and push phantom handling to the application."
+    },
+    {
+      "type": "table",
+      "caption": "Repeatable Read trade-offs, both sides stated.",
+      "headers": [
+        "Dimension",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Read stability",
+          "No fuzzy reads; retry logic and multi-step reads are deterministic",
+          "Transaction sees stale data by design; cannot see fresh commits until next transaction"
+        ],
+        [
+          "Concurrency vs Serializable",
+          "Inserts into scanned ranges still proceed; higher throughput than Serializable",
+          "Phantoms and write-skew remain possible; application must tolerate or check them"
+        ],
+        [
+          "MVCC implementation",
+          "Readers never block writers; excellent for read-heavy analytics in transactions",
+          "Version storage bloat, vacuum and GC load, snapshot-too-old aborts on long transactions"
+        ],
+        [
+          "Lock implementation",
+          "Simple to reason about; conflict fails fast by blocking",
+          "Read locks held to commit cause blocking, deadlocks, and hot-row queueing"
+        ],
+        [
+          "Operational cost",
+          "Cheaper timestamp management than full serializability validation",
+          "Long transactions inflate abort rate and tail latency under contention"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The canonical failure is the phantom breaking an existence check. Transaction `T1` runs `SELECT COUNT(*) FROM seats WHERE flight=42 AND status='free'` and gets `1`. Transaction `T2` concurrently inserts a hold or updates another row to `free` for the same flight and commits. `T1`, believing the set is stable, runs `UPDATE seats SET status='held' WHERE flight=42 AND status='free' LIMIT 1` or inserts a booking based on the count, and either affects a different number of rows than predicted or double-books. What you see in logs is not a crash — both transactions commit successfully. You see **invariant violation discovered later**: negative inventory, duplicate unique business key handled in application code, two owners for one resource. That silent success is why phantoms are nastier than deadlocks; deadlocks at least scream."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Row count changes on re-query:** same `SELECT ... WHERE` inside one transaction returns 5 rows then 6 rows. Metrics show no error, but downstream logic branches differently the second time.",
+        "**Write-skew without overlap:** two doctors each read that one on-call slot is free, each updates *their own* assignment row. No row was read-then-written by both, so nothing conflicts, yet the constraint “at least one doctor on call” or “at most one” is violated. Symptom is two `COMMIT`s and a broken global invariant.",
+        "**Snapshot-too-old or serialization abort on long transactions:** under MVCC Repeatable Read with conflict checking, a reporting transaction open for minutes aborts at commit or errors mid-scan because required versions were garbage-collected. Symptom is spiky `40001` or snapshot errors correlated with transaction age, not QPS.",
+        "**Lock wait chains on lock-based engines:** `SHOW ENGINE INNODB STATUS` or `pg_locks` shows readers holding shared locks while writers queue, then readers queue behind writers. Symptom is p99 latency cliff and deadlock rate rising with transaction length. Fix is shorter transactions or moving to snapshot-based reads, not adding threads."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure class is write-skew, which Repeatable Read explicitly permits. `T1` reads `x` and writes `y`; `T2` reads `y` and writes `x`. Their read sets do not overlap their write sets on the same row, so neither fuzzy-read nor lost-update rules fire, yet the combined result corresponds to no serial order. Classic case is a joint account with constraint `x + y >= 0`: each transaction checks the sum, withdraws assuming the other did nothing, and together they overdraw. The database reports success. You discover it in reconciliation, not in error rates. The design lesson: Repeatable Read protects **rows you re-read**, not **constraints spanning rows you did not write**. That class needs Serializable, explicit `SELECT ... FOR UPDATE`, or a single-row atomic check."
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "repeatable_read.sql",
+      "code": "-- T1 pins its snapshot. T2's update is invisible to T1's re-read,\n-- but T2's insert can appear as a phantom.\n-- T1:\nSET TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nBEGIN;\nSELECT balance FROM accounts WHERE id = 1; -- returns 100\n-- (concurrently) T2: UPDATE accounts SET balance=200 WHERE id=1; COMMIT;\nSELECT balance FROM accounts WHERE id = 1; -- still returns 100 under RR\n-- (concurrently) T2: INSERT INTO accounts(id,balance) VALUES (2, 50); COMMIT;\nSELECT COUNT(*) FROM accounts WHERE balance >= 50; -- may return different count\nCOMMIT;"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet is the minimum you should whiteboard. The first re-read proves fuzzy-read prevention: without Repeatable Read you would see `200`. The second query proves phantom permission: the predicate `balance >= 50` matches a row `T1` never read, so the count can shift. Use it to anchor the discussion of implementation: on a locking engine the first re-read succeeds because `T1` holds a shared lock on `id=1` and `T2` would have blocked until `T1` committed — the interleaving above would serialize differently. On MVCC the interleaving runs exactly as written because reads do not block. State which behavior your system has before arguing about throughput."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Distributed twist: snapshots across nodes"
+    },
+    {
+      "type": "paragraph",
+      "text": "Single-node Repeatable Read is easy: one counter or one lock table defines snapshot order. Distributed Repeatable Read is hard because there is no single now. To give every participant the same frozen view, the system needs a globally consistent read timestamp — a timestamp oracle, hybrid logical clocks, or tightly synchronized physical clocks with commit-wait. The trade-off is unavoidable: a central oracle adds a network round trip to every transaction start and becomes a throughput bottleneck and availability risk, while decentralized clocks remove the bottleneck but force commit delays or risk snapshot skew where different shards serve slightly different times. That is why many distributed SQL systems default to snapshot-based Repeatable Read rather than lock-based: cross-shard long-duration read locks would turn every network hiccup into stalled writes everywhere."
+    },
+    {
+      "type": "mermaid",
+      "title": "Distributed snapshot read",
+      "caption": "Coordinator picks one read timestamp so all shards serve the same version.",
+      "code": "flowchart LR\n  C[\"Coordinator BEGIN\"] --> O[\"Get read timestamp Ts\"]\n  O --> S1[\"Shard A read at Ts\"]\n  O --> S2[\"Shard B read at Ts\"]\n  S1 --> M[\"Merge results in T1\"]\n  S2 --> M"
+    },
+    {
+      "type": "paragraph",
+      "text": "The diagram looks trivial and that is the point: correctness hinges entirely on `Ts`. If `Ts` is causally consistent across shards, re-reads are stable everywhere and the only anomaly left is phantoms. If shards drift — one serves `Ts`, another serves `Ts+5` — you have broken even Repeatable Read and reintroduced fuzzy reads through the back door. In an interview, name the cost honestly: cross-region Repeatable Read either pays cross-region timestamp latency on the fast path or accepts bounded staleness and documents it. There is no placement trick that gives single-digit millisecond global snapshots with strict recency; physics vetoes it."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Define it in one breath",
+          "text": "Same-row re-reads are stable; predicate re-evaluation is not. Forbids dirty and fuzzy reads, allows phantoms. Do not recite anomaly tables — state the guarantee in terms of read set vs predicate."
+        },
+        {
+          "title": "Show the two enforcements",
+          "text": "Contrast hold-read-locks-to-commit versus read-from-start-snapshot. Explain why MVCC preserves the guarantee without blocking, and what it pays in versions and GC."
+        },
+        {
+          "title": "Draw the phantom",
+          "text": "Walk a concrete interleaving: T1 counts free seats, T2 inserts a free seat, T1 recounts. Mark which operation violates nothing under Repeatable Read and which would fail under Serializable."
+        },
+        {
+          "title": "Name what still breaks",
+          "text": "Introduce write-skew with the on-call or bank-balance example. Show two transactions writing different rows after reading each other's rows — both commit, invariant dies."
+        },
+        {
+          "title": "Land the selection rule",
+          "text": "Close with when you accept the gap: multi-step reports, stable pagination, rate checks where a new row appearing is harmless — versus when you escalate to Serializable or SELECT FOR UPDATE."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail interviews"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**“Repeatable Read means fully repeatable queries.”** No. It means repeatable *row* reads. Re-running a filtered search can return new rows. If you claim otherwise, every follow-up about overbooking will collapse.",
+        "**“MVCC Repeatable Read locks rows.”** It does not need to. Snapshot isolation serves old versions. Locking is one implementation, not the definition. Confusing the two makes you mis-predict blocking and deadlock behavior.",
+        "**“Phantoms only matter for `COUNT`.”** Any logic depending on absence is exposed: uniqueness checks in code, `NOT EXISTS` guards, limit-based allocation. `UPDATE ... WHERE` can match a different number of rows than the preceding `SELECT` saw.",
+        "**“No error means serializable.”** Repeatable Read commits write-skew histories without error. Absence of aborts proves nothing. You need invariant audits or Serializable validation to catch it.",
+        "**“Read Committed with row locks is the same.”** Read Committed releases shared locks after each statement, so re-reads can shift. Repeatable Read holds the protection — lock or snapshot — to commit. Statement scope versus transaction scope is the whole difference."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "When Repeatable Read is the right call, and when it is a bug.",
+      "headers": [
+        "Use it when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Multi-step read-then-compute in one transaction needs stable inputs, e.g. read balance, compute fee, write ledger — and new unrelated rows are harmless",
+          "Correctness depends on set completeness: uniqueness, capacity limits, exactly-once allocation — new matching rows change the decision"
+        ],
+        [
+          "Read-heavy transactions must not block writers and can tolerate staleness to transaction start",
+          "Readers must see the freshest commit (leaderboards, fraud checks, config gates) — use Read Committed or linearizable reads instead"
+        ],
+        [
+          "Phantom rate is low or application re-validates affected-row counts after writes",
+          "Write-skew is possible on multi-row constraints — prefer Serializable or lock the constraint row explicitly"
+        ],
+        [
+          "Long reporting scans need a consistent cut without stopping ingestion",
+          "Transactions run for minutes on high-churn tables — snapshot retention and abort cost exceed the benefit; chunk the work or use analytical replica"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**“Repeatable Read pins every row I read to its transaction-start version so re-reads never change, but it does not lock the predicate — so concurrent inserts can still appear as phantoms and multi-row invariants need Serializable or explicit locking.”**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:33:09.569Z",
+    "problems": []
+  }
+}

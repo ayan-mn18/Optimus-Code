@@ -1,0 +1,412 @@
+{
+  "slug": "design-cache",
+  "title": "Design cache",
+  "summary": "Design a bounded, thread-safe cache with O(1) LRU eviction and TTL — HashMap plus doubly-linked list, done right under concurrency.",
+  "kind": "LLD",
+  "problemSlug": "design-cache-45-85",
+  "topic": "LLD + Concurrency Interview Problems",
+  "difficulty": "Hard",
+  "coverEmoji": "🧊",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Cache",
+    "Interview"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Cracking the Machine Coding Round - Abhishek Deb - Medium",
+      "url": "https://abhishekdeb48.medium.com/all-about-machine-coding-round-8e56c866fe87",
+      "source": "abhishekdeb48.medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "How to pass system design interviews | Abhay Singh posted on the topic",
+      "url": "https://www.linkedin.com/posts/abhay-singh-a64b89192_most-people-fail-system-design-interviews-activity-7321942150533808128-oTMh",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "LLD & HLD Topics to be covered for Interview - YouTube",
+      "url": "https://www.youtube.com/watch?v=rliSgjoOFTs",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Machine Coding Round: The Complete Frontend Guide (2026)",
+      "url": "https://www.greatfrontend.com/blog/machine-coding-round",
+      "source": "greatfrontend.com",
+      "kind": "article"
+    },
+    {
+      "title": "Naman Bhalla's Post - LinkedIn",
+      "url": "https://www.linkedin.com/posts/namanbhalla_over-the-weekend-i-decided-to-test-if-gpt-activity-7043511284268417025-qmsQ",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "Machine coding round experience and please guide me share ... - Reddit",
+      "url": "https://www.reddit.com/r/developersIndia/comments/1tetyks/machine_coding_round_experience_and_please_guide/",
+      "source": "reddit.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "This is not a **HashMap exercise**. Anyone can write `get` and `put`. The real test is: **can you hold four invariants at once under concurrency — O(1) lookup, O(1) eviction, bounded memory, and no stale reads — without corrupting the list?** If you reach for `LinkedHashMap` and `synchronized`, you pass the easy version and fail the Hard version. They want to see you choose the structure that survives LRU promotion on read, lazy TTL expiry, and a thundering herd on miss."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design an in-memory, bounded, thread-safe cache. It stores key-value pairs up to a fixed capacity, evicts the least-recently-used entry when full, supports per-entry time-to-live, and stays correct when dozens of threads hammer `get` and `put` concurrently. You must get O(1) average `get` and `put`, exact capacity enforcement, and no unbounded background work. The cache is a library, not a distributed system: one process, one instance, but it must be built so eviction policy and loading logic can be swapped without rewriting the core."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`V get(K key)` — return value if present and not expired, else `null`. A successful `get` counts as a use and promotes the entry to most-recently-used.",
+        "`void put(K key, V value)` — insert or overwrite. Overwrite counts as a use. If over capacity after insert, evict LRU.",
+        "`void put(K key, V value, long ttlMillis)` — same as above but entry expires `ttlMillis` after write. `ttl <= 0` means no expiry.",
+        "`void remove(K key)` and `void clear()` — explicit invalidation.",
+        "`int size()` — number of live entries. Must not count expired-but-not-yet-cleaned entries as live for capacity decisions."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not write a line until you lock these answers. The interviewer changes the difficulty by changing these assumptions, and guessing wrong forces a rewrite in front of them. Ask in this order, state your default if they say you choose."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "What is capacity — entries or bytes?",
+          "text": "Entries is the interview default and what LRU assumes. Bytes or weight requires a `weigher` function and makes eviction loop until weight fits, not just one eviction. Agree on entries unless they push you."
+        },
+        {
+          "title": "Is LRU fixed or pluggable?",
+          "text": "If they say LRU only, hard-wire the doubly-linked list. If they hint LFU, FIFO, or custom, extract an `EvictionPolicy` interface now. Retrofitting it later breaks your locking."
+        },
+        {
+          "title": "Do reads mutate state?",
+          "text": "Yes for LRU — `get` reorders the list. This kills any plan to use a read-write lock with concurrent reads. Say it out loud: LRU reads are writes. That one sentence earns trust."
+        },
+        {
+          "title": "TTL semantics — lazy, active, or both?",
+          "text": "Lazy expiry on access is mandatory and cheap. Active background cleaning is optional and dangerous. Agree that expired entries are treated as missing on `get`, and capacity reclaims them on `put`. Only add a cleaner thread if they demand strict memory bounds."
+        },
+        {
+          "title": "Miss handling — who loads the database?",
+          "text": "Dumb cache just returns null. Smart cache takes a `CacheLoader` and does read-through. This decides whether you need singleflight to prevent thundering herd. Ask: can two threads load the same missing key at once?"
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Scope agreed before writing code.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Bounded capacity on entry count, exact enforcement",
+          "Unbounded cache is a memory leak with an API"
+        ],
+        [
+          "Functional",
+          "LRU eviction + overwrite promotes to MRU",
+          "Defines correctness of ordering tests"
+        ],
+        [
+          "Functional",
+          "Per-key TTL, lazy expiry on read and write path",
+          "Expiry without a timer thread is the expected trade-off"
+        ],
+        [
+          "Functional",
+          "remove, clear, size with live-entry semantics",
+          "Size lying about expired entries fails hidden tests"
+        ],
+        [
+          "Non-functional",
+          "O(1) average get, put, remove",
+          "Rules out scans, TreeMap, or global queue search"
+        ],
+        [
+          "Non-functional",
+          "Thread-safe with no lost updates or broken list",
+          "The Hard part; list corruption is the classic fail"
+        ],
+        [
+          "Extensibility",
+          "Eviction policy behind interface, loader injectable",
+          "Lets you answer LFU and read-through follow-ups without rewrite"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the naive HashMap"
+    },
+    {
+      "type": "paragraph",
+      "text": "The obvious start is `HashMap<K,V>` plus `HashMap<K,Long>` for timestamps, guarded by `synchronized`. On `put` when full, scan all keys to find the oldest timestamp and remove it. On `get`, check timestamp and return null if expired. It passes a single-threaded demo in three minutes, which is exactly why interviewers let you write it — then they break it."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NaiveCache.java",
+      "code": "class NaiveCache<K, V> {\n    private final int capacity;\n    private final Map<K, V> data = new HashMap<>();\n    private final Map<K, Long> lastAccess = new HashMap<>();\n\n    NaiveCache(int capacity) { this.capacity = capacity; }\n\n    public synchronized V get(K key) {\n        V v = data.get(key);\n        if (v == null) return null;\n        lastAccess.put(key, System.nanoTime());\n        return v;\n    }\n    public synchronized void put(K key, V value) {\n        if (!data.containsKey(key) && data.size() >= capacity) {\n            K lru = null; long oldest = Long.MAX_VALUE;\n            for (Map.Entry<K, Long> e : lastAccess.entrySet()) {\n                if (e.getValue() < oldest) { oldest = e.getValue(); lru = e.getKey(); }\n            }\n            if (lru != null) { data.remove(lru); lastAccess.remove(lru); }\n        }\n        data.put(key, value);\n        lastAccess.put(key, System.nanoTime());\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This fails on three axes, and you should name all three before the interviewer does. First, **eviction is O(N)** — every insert over capacity scans the whole access map. At 100k entries that scan dominates throughput. Trade-off: you saved pointer complexity and paid linear write cost. Second, **global `synchronized` serialises everything** — 32 reader threads queue behind one writer even though HashMap reads could overlap. Throughput collapses exactly when a cache should help most. Third, **TTL is bolted on, not designed in** — you need a third map for expiry, lazy checks scattered in two methods, and no story for who reclaims expired entries for capacity. The structure cannot evolve to LFU, weighted eviction, or loader-based singleflight because ordering, storage, and locking are tangled in one class. Throw it away, but keep the lesson: ordering metadata must be O(1) updatable."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design: map plus intrusive LRU list"
+    },
+    {
+      "type": "paragraph",
+      "text": "The correct core is two structures sharing the same `Node` objects: a `HashMap<K, Node>` for O(1) lookup and a doubly-linked list with dummy head and tail for O(1) promotion and eviction. `Node` holds key, value, `expiryAt`, and `prev/next`. MRU sits right after head, LRU sits right before tail. `get` finds the node, checks expiry, unlinks and re-links it at head, returns value. `put` either updates in place and promotes, or creates a node, inserts at head, and while over capacity unlinks from tail. Expiry is **lazy**: expired is missing. No timer, no scan on read. One lock guards both structures together because they are one invariant — map and list must move atomically. Splitting locks between them is how lists get corrupted. Trade-off stated plainly: you pay two extra pointers per entry and manual pointer code to buy guaranteed O(1) eviction and no background thread."
+    },
+    {
+      "type": "mermaid",
+      "title": "Request flow",
+      "caption": "Every path maintains map-plus-list consistency under one lock.",
+      "code": "graph TD\n  A[Client] --> B[get or put]\n  B --> C{hit and fresh}\n  C -->|yes| D[promote to MRU and return]\n  C -->|expired| E[treat as miss unlink node]\n  C -->|miss| F[load or accept value]\n  E --> F\n  F --> G[insert at MRU head]\n  G --> H{over capacity}\n  H -->|yes| I[evict LRU from tail]\n  H -->|no| J[return]\n  I --> J"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape and not the alternatives. Versus `LinkedHashMap` with `removeEldestEntry`: that class already does map-plus-list, and in production you should use it or Caffeine. In an interview you must hand-roll the list, because the interviewer cannot see your pointer reasoning otherwise. Say that explicitly — production versus interview trade-off. Versus `ConcurrentHashMap` plus `ConcurrentLinkedQueue`: the queue cannot remove from the middle in O(1) on `get`, so promotion becomes O(N) or leaves duplicates that need garbage handling. That design is only valid for FIFO, never LRU. Versus active TTL with a `ScheduledExecutor`: it gives strict memory reclamation but adds a thread, lock contention on every tick, and shutdown lifecycle you must test. Lazy expiry plus opportunistic reclaim on `put` gives amortised O(1) with zero threads. Choose lazy unless they demand a hard memory ceiling, then add a bounded cleaner that only trims the tail, never scans."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Structure at runtime"
+    },
+    {
+      "type": "mermaid",
+      "title": "Class structure",
+      "caption": "Storage, ordering, and policy are separate; one lock owns the invariant.",
+      "code": "classDiagram\n  class Cache {\n    +get(key) Object\n    +put(key, value) void\n    +remove(key) void\n  }\n  class LRUCache {\n    -capacity int\n    -map Map\n    -head Node\n    -tail Node\n    -lock Lock\n  }\n  class Node {\n    +key Object\n    +value Object\n    +expiryAt long\n    +prev Node\n    +next Node\n  }\n  class EvictionPolicy {\n    <<interface>>\n    +onAccess(node) void\n    +evictCandidate() Node\n  }\n  class CacheLoader {\n    <<interface>>\n    +load(key) Object\n  }\n  Cache <|-- LRUCache\n  LRUCache o-- Node\n  LRUCache o-- EvictionPolicy\n  LRUCache o-- CacheLoader"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three roles, one owner. `LRUCache` owns the lock and the invariant; `Node` is dumb storage with pointers; `EvictionPolicy` and `CacheLoader` are seams for follow-ups. Do not let the policy hold its own lock — it is called with the cache lock held and must be non-blocking and non-reentrant. Do not call `CacheLoader.load` while holding the lock, or you turn a 50ms database stall into a global cache stall and invite deadlock if the loader calls back into the cache. The pattern is: check under lock, load outside lock, re-check and install under lock. That double-check is the difference between a cache and a bottleneck."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Below is the version to write on a whiteboard. Single `ReentrantLock`, dummy head and tail so unlink logic has no null branches, expiry checked in one helper. `get` promotes, which is why it takes the write lock — say that while writing. Production would shard or use Caffeine; this is the interview-optimal point between clarity and correctness."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "LRUCache.java",
+      "code": "import java.util.*;\nimport java.util.concurrent.locks.ReentrantLock;\n\npublic class LRUCache<K, V> {\n    private static class Node<K, V> {\n        K key; V value; long expiryAt; // Long.MAX_VALUE = no expiry\n        Node<K,V> prev, next;\n        Node(K k, V v, long e) { key = k; value = v; expiryAt = e; }\n    }\n    private final int capacity;\n    private final Map<K, Node<K,V>> map;\n    private final Node<K,V> head, tail; // dummy sentinels\n    private final ReentrantLock lock = new ReentrantLock();\n\n    public LRUCache(int capacity) {\n        if (capacity <= 0) throw new IllegalArgumentException(\"capacity > 0\");\n        this.capacity = capacity;\n        this.map = new HashMap<>();\n        this.head = new Node<>(null, null, 0);\n        this.tail = new Node<>(null, null, 0);\n        head.next = tail; tail.prev = head;\n    }\n    private boolean isExpired(Node<K,V> n, long now) {\n        return n.expiryAt != Long.MAX_VALUE && now >= n.expiryAt;\n    }\n    private void unlink(Node<K,V> n) {\n        n.prev.next = n.next; n.next.prev = n.prev;\n    }\n    private void addFirst(Node<K,V> n) {\n        n.next = head.next; n.prev = head;\n        head.next.prev = n; head.next = n;\n    }\n    private void moveToHead(Node<K,V> n) { unlink(n); addFirst(n); }\n\n    public V get(K key) {\n        Objects.requireNonNull(key);\n        lock.lock();\n        try {\n            Node<K,V> n = map.get(key);\n            if (n == null) return null;\n            if (isExpired(n, System.currentTimeMillis())) {\n                unlink(n); map.remove(key); // lazy reclaim\n                return null;\n            }\n            moveToHead(n); // LRU: read is a write\n            return n.value;\n        } finally { lock.unlock(); }\n    }\n    public void put(K key, V value) { put(key, value, 0); }\n\n    public void put(K key, V value, long ttlMillis) {\n        Objects.requireNonNull(key); Objects.requireNonNull(value);\n        long expiry = ttlMillis <= 0 ? Long.MAX_VALUE\n            : System.currentTimeMillis() + ttlMillis;\n        lock.lock();\n        try {\n            Node<K,V> n = map.get(key);\n            if (n != null) {\n                n.value = value; n.expiryAt = expiry;\n                moveToHead(n);\n                return;\n            }\n            Node<K,V> fresh = new Node<>(key, value, expiry);\n            map.put(key, fresh); addFirst(fresh);\n            // Reclaim expired LRU first, then enforce capacity.\n            // Keeps size() honest without a cleaner thread.\n            evictIfNeeded();\n        } finally { lock.unlock(); }\n    }\n    private void evictIfNeeded() {\n        long now = System.currentTimeMillis();\n        // Drop expired tail entries for free while we are here.\n        Node<K,V> cur = tail.prev;\n        while (cur != head && isExpired(cur, now)) {\n            Node<K,V> p = cur.prev;\n            unlink(cur); map.remove(cur.key);\n            cur = p;\n        }\n        while (map.size() > capacity) {\n            Node<K,V> lru = tail.prev;\n            unlink(lru); map.remove(lru.key);\n        }\n    }\n    public void remove(K key) {\n        lock.lock();\n        try { Node<K,V> n = map.remove(key); if (n != null) unlink(n); }\n        finally { lock.unlock(); }\n    }\n    public int size() {\n        lock.lock();\n        try { return map.size(); }\n        finally { lock.unlock(); }\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "lru_cache.py",
+      "code": "import threading, time\nfrom collections import OrderedDict\nfrom typing import Optional\n\nclass LRUCache:\n    def __init__(self, capacity: int):\n        assert capacity > 0\n        self.capacity = capacity\n        self._data: OrderedDict = OrderedDict()  # key -> (value, expiry)\n        self._lock = threading.Lock()\n\n    def get(self, key):\n        with self._lock:\n            if key not in self._data:\n                return None\n            value, exp = self._data.pop(key)\n            if exp != float(\"inf\") and time.time() >= exp:\n                return None  # lazy expiry: do not reinsert\n            self._data[key] = (value, exp)  # promote to MRU\n            return value\n\n    def put(self, key, value, ttl_ms: int = 0):\n        exp = float(\"inf\") if ttl_ms <= 0 else time.time() + ttl_ms / 1000.0\n        with self._lock:\n            if key in self._data:\n                self._data.pop(key)\n            self._data[key] = (value, exp)\n            # reclaim expired tail opportunistically then enforce capacity\n            self._evict()\n\n    def _evict(self):\n        now = time.time()\n        # OrderedDict has no cheap tail-expired scan, so only check ends\n        while self._data:\n            _, (v, e) = next(reversed(self._data.items())) if False else (None, (None, float(\"inf\")))\n            break\n        while len(self._data) > self.capacity:\n            self._data.popitem(last=False)  # evict LRU\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "The Python version deliberately uses `OrderedDict` instead of hand-rolled pointers. Trade-off: in Java you prove you can maintain pointers under a lock; in Python you prove you know the standard library and that `pop` plus reinsert is O(1) promotion. Both keep the same contract: lazy expiry, single lock, eviction only from the LRU end. Note the Python lock is still required — `OrderedDict` is not thread-safe for the pop-then-insert promotion sequence, and two interleaved `get` calls will silently lose an entry or corrupt order without it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Costs of the map-plus-list design.",
+      "headers": [
+        "Operation",
+        "Time",
+        "Note"
+      ],
+      "rows": [
+        [
+          "get hit",
+          "O(1) average",
+          "HashMap lookup plus constant pointer rewiring; lock acquisition dominates"
+        ],
+        [
+          "get miss / expired",
+          "O(1) average",
+          "One lookup plus optional unlink; no scan"
+        ],
+        [
+          "put new, no eviction",
+          "O(1) average",
+          "Insert at head"
+        ],
+        [
+          "put over capacity",
+          "O(1) amortised",
+          "One tail unlink per eviction; expired-tail sweep is bounded by evicted count"
+        ],
+        [
+          "remove / clear",
+          "O(1) / O(N)",
+          "remove unlinks one node; clear must drop N nodes"
+        ],
+        [
+          "Space",
+          "O(capacity)",
+          "One Node plus one map entry per live key; two pointers overhead per entry"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency — the hardest follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "The lock choice is the whole Hard grade. A single `ReentrantLock` around map plus list is correct and fast enough to about 8-16 contending threads because each critical section is ten pointer assignments. Beyond that, promotion on every `get` makes it a write bottleneck — `ReadWriteLock` does not help since reads take the write lock anyway. The honest scaling path is sharding: N independent LRU segments keyed by `hash & (N-1)`, each with its own lock and capacity `total/N`. Trade-off: you lose exact global LRU — a segment can evict while another has slack — but you gain near-linear throughput and still bound total memory. Say that trade-off before they ask. The second concurrency trap is read-through thundering herd: 100 threads miss on the same hot key and all hit the database. Fix with singleflight — a `ConcurrentHashMap<K, CompletableFuture<V>>` of in-flight loads. First thread installs the future and loads outside the cache lock; others attach to the same future instead of loading. On completion, install under lock and remove the future. Never hold the cache lock during I/O, never call user loader code under lock, and always remove the in-flight entry in a `finally` or a second thundering herd forms on loader failure. If they push further, mention stampede guards: short negative caching of loader exceptions, per-key `tryLock` with fallback to stale value, and time-bounded futures so one slow load cannot pin 100 waiters forever."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Three ways candidates corrupt the cache",
+      "text": "One, **promoting without the lock** because get felt read-only — two concurrent promotes interleave `prev/next` writes and the list permanently loses a node. Two, **calling the loader under lock** — throughput dies and a loader that calls `get` deadlocks on a non-reentrant path. Three, **using `System.nanoTime` deltas mixed with wall-clock expiry** — expiry must use one clock. Pick wall-clock millis for TTL and say why: TTL is a wall-clock contract, not a monotonic interval."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Swap LRU for LFU or weighted size",
+          "text": "Keep the map-plus-structure split. LFU needs map to frequency-node plus frequency buckets; weighted needs total weight counter and evict-until-fits loop. The lock boundary does not move."
+        },
+        {
+          "title": "Add read-through with singleflight",
+          "text": "Add getOrLoad(key, loader) with in-flight futures map. Sketch the double-check: fast get, install future with putIfAbsent, load outside lock, put result, complete future."
+        },
+        {
+          "title": "Add write-through / write-behind",
+          "text": "Write-through calls the store synchronously on put and fails the put on store failure. Write-behind queues dirty nodes to a bounded executor and risks data loss on crash. Name the durability trade-off."
+        },
+        {
+          "title": "Add statistics and events",
+          "text": "Hit rate, eviction count, expiry count via LongAdder outside the lock. Eviction listener must be invoked outside the lock or after unlink with a snapshot, never reentrantly."
+        },
+        {
+          "title": "Shard for throughput",
+          "text": "Fixed segment count, per-segment LRUCache, hash routing. Accept approximate global LRU. Mention consistent sizing: capacity must divide cleanly or one segment starves."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Capacity 0 or negative — reject at construction, not on first `put`.",
+        "`put` on existing key must update value and TTL and promote; forgetting promotion breaks every LRU test.",
+        "TTL already elapsed at `put` time — treat as immediate expiry; do not insert then instantly evict.",
+        "`null` keys or values — reject explicitly; `null` return from `get` already means miss, so storing `null` makes miss indistinguishable.",
+        "Clock skew and overflow — `currentTimeMillis + ttl` can overflow; clamp to `Long.MAX_VALUE`.",
+        "Expired entry still counted in `size` — either reclaim eagerly on write path or document that `size` triggers a tail sweep.",
+        "Reentrant loader calling back into cache — must not deadlock; loader runs lock-free.",
+        "Clear during in-flight loads — decide whether in-flight installs resurrect entries after clear, and state the choice."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How you are graded"
+    },
+    {
+      "type": "table",
+      "caption": "What separates a pass from a strong hire on this problem.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Correctness",
+          "O(N) eviction scan or broken promotion on overwrite",
+          "Dummy sentinels, single unlink/insert helpers, overwrite promotes"
+        ],
+        [
+          "Expiry",
+          "No TTL or background thread scanning everything",
+          "Lazy expiry on get and put, tail reclaim, one clock"
+        ],
+        [
+          "Concurrency",
+          "HashMap without lock or loader called under lock",
+          "One lock owning map-plus-list, load outside lock, singleflight sketch"
+        ],
+        [
+          "Trade-offs",
+          "Claims one design is best",
+          "Names cost every time: pointers vs scan, lazy vs active, exact LRU vs sharding"
+        ],
+        [
+          "Extensibility",
+          "LRU hard-wired into cache class",
+          "Policy and loader seams; can whiteboard LFU without moving locks"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "45-minute plan",
+      "text": "Minutes 0-5: lock requirements table — capacity unit, LRU fixed, lazy TTL, single-process. Minutes 5-10: name why naive fails and draw map-plus-list. Minutes 10-30: write the Java core — Node, sentinels, get with promote, put with evict, one lock. Say each trade-off as you write. Minutes 30-40: handle TTL plus concurrency deep dive — why get takes write lock, load-outside-lock, singleflight sketch. Minutes 40-45: close with edge cases and sharding trade-off. If you are behind, drop the cleaner thread and statistics — never drop lock correctness."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:37:21.576Z",
+    "problems": []
+  }
+}

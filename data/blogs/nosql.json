@@ -1,0 +1,315 @@
+{
+  "slug": "nosql",
+  "title": "NOSql",
+  "summary": "NoSQL trades joins and rigid schemas for horizontal scale and per-access-pattern data models. This guide covers the four models, the partitioning mechanism, and when to pick them.",
+  "kind": "HLD",
+  "problemSlug": "nosql-92-203",
+  "topic": "Databases",
+  "difficulty": "Easy",
+  "coverEmoji": "🗄️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "hld",
+    "databases",
+    "nosql",
+    "system-design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What Is NoSQL? NoSQL Databases Explained - MongoDB",
+      "url": "https://www.mongodb.com/resources/basics/databases/nosql-explained",
+      "source": "mongodb.com",
+      "kind": "article"
+    },
+    {
+      "title": "How do NoSQL databases work? Simply Explained! - YouTube",
+      "url": "https://www.youtube.com/watch?v=0buKQHokLK8",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Introduction to NoSQL - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/introduction-to-nosql/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "NoSQL is not a product, it is a trade: **give up cross-row joins and global constraints so you can shard data and evolve schema without coordinated migrations.** Pick the model by access pattern first, scale second. Get the partition key wrong and no amount of nodes saves you."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What NoSQL is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A NoSQL store keeps records outside the strict table-row model and outside the guarantee that any arbitrary join will be fast. The label covers four distinct storage shapes that share only two properties: records do not require a fixed schema enforced on write, and the system is built to split data across many independent machines from day one. That means a single logical item — a user profile, a session, a sensor reading, an edge between two people — is stored and retrieved as a unit, without assembling it at read time from five normalized tables. The reason this matters for design is access locality: you pay the cost of joining and validating once at write time by denormalizing, so reads for a known key hit one partition and return in single-digit milliseconds. The price is explicit: no free-form relational queries, weaker cross-partition consistency, and application code now owns data-shape discipline that a relational schema used to enforce."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Document:** self-contained objects with nested fields, fetched by ID or indexed attributes. Best when each entity has its own shape and is read mostly whole.",
+        "**Key-value:** opaque blob behind a single key with no server-side structure. Best when lookup is always by exact key and speed matters more than query power.",
+        "**Wide-column:** sparse two-dimensional map of row-key plus named columns grouped in families, with time-ordered versions. Best for massive, append-heavy, time-series or per-row sparse data.",
+        "**Graph:** nodes plus first-class edges optimized for traversal. Best when the question is about relationships and hops, not about single rows."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: how it actually scales"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every scalable NoSQL engine does the same three things, regardless of logo. First, it hashes or range-splits the dataset by a partition key into non-overlapping shards, each owned by a different node. A routing layer maps `hash(key)` to the owner, so adding nodes reassigns key ranges instead of making one machine bigger. Second, each shard is replicated to two or more peers for survival, with writes acknowledged by a quorum or by a leader depending on tuning. Third, it refuses expensive global work: no multi-shard joins, no cross-shard serializable transactions by default, no instant global secondary indexes. That refusal is deliberate. A query that touches one partition can run in parallel on a hundred machines with no coordination; a query that touches all partitions cannot. This is why throughput grows almost linearly when your keys spread evenly, and why it collapses when they do not. Consistency becomes a dial — acknowledge one replica for speed, majority for safety — because in a partitioned network you cannot have perfect availability and perfect agreement at the same instant."
+    },
+    {
+      "type": "mermaid",
+      "title": "NoSQL request path",
+      "caption": "One key routes to one partition; replicas handle failure, not joins.",
+      "code": "graph TD\n  C[Client] --> D[Partition-aware driver]\n  D -->|hash key = A-M| P1[Partition 1 primary]\n  D -->|hash key = N-Z| P2[Partition 2 primary]\n  P1 --> R1A[Replica 1A]\n  P1 --> R1B[Replica 1B]\n  P2 --> R2A[Replica 2A]\n  P2 --> R2B[Replica 2B]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Share-nothing partitioning is the whole performance story. A relational primary scales by buying a larger box and keeping indexes and locks in one place, which works until memory, IOPS, or write-lock contention caps you. A NoSQL cluster scales by adding more small owners, each with its own CPU, memory, and disk, and by guaranteeing that the hot path never needs them to agree. That is why single-key reads and appends can sustain millions of operations per second across a fleet: each request does constant work on one machine. The trade-off is that any operation that breaks the partition boundary — a scan, an aggregation, a multi-key transaction — turns into scatter-gather across the network and inherits tail latency from the slowest shard. Good designs therefore shape keys and denormalize documents so the common read is single-partition. If you cannot name the partition key for your top three queries, you have not designed anything yet."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The four models in detail"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Document stores"
+    },
+    {
+      "type": "paragraph",
+      "text": "A document is a nested object, typically encoded like JSON, stored and fetched as a unit. Fields can differ from one document to the next, arrays and sub-objects are allowed inline, and you can index paths inside the object for filtered lookup. This fits product catalogs, profiles, and content objects where each entity is heterogeneous — a shirt has size and color, a phone has memory and radios — and you almost always need the whole entity at once. The design win is schema evolution without `ALTER TABLE`: add a field to new writes, backfill lazily on read, keep old readers tolerant. The cost is document growth and duplication. Because related data is embedded for locality, updates to shared data must touch many documents, large documents cause read amplification, and unbounded arrays will eventually exceed size limits and wreck page caches. Choose document when reads are entity-centric and writes rarely span entities."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Key-value stores"
+    },
+    {
+      "type": "paragraph",
+      "text": "Key-value is the narrowest contract: `GET`, `PUT`, and `DELETE` by exact key, with the value treated as opaque bytes plus a TTL. There is no query language inside the value, no joins, often no secondary indexes. That narrowness is why it is the fastest option for sessions, tokens, feature flags, shopping carts, and caches — the server does a hash lookup and returns, with no parsing or planning. Persistence and replication vary from pure in-memory with snapshotting to durable logs, but the access pattern does not change. The trade-off is total inflexibility on reads: if you need to find “all sessions for users in Berlin” you must maintain that index yourself or pick a different model. Key-value also punishes large values and chatty access; a 1 MB blob fetched 10,000 times per second will saturate network before CPU. Use it when the key is known at request time and the value is always consumed whole."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Wide-column stores"
+    },
+    {
+      "type": "paragraph",
+      "text": "Wide-column keeps a sparse map keyed by row key, then column, then timestamp. Rows can have millions of columns, columns need not exist for other rows, and cells keep multiple timestamped versions so you get natural time ordering and efficient range scans. Column families group columns with the same storage and compaction behavior, which lets the engine compress and expire telemetry, events, and ledger histories very efficiently. This is the right shape for IoT ingest, metrics, messaging histories, and any workload that appends by time and scans contiguous ranges. The reason it handles petabyte scale is log-structured storage: writes are sequential appends, reads by row key plus time slice hit one SSTable range. The trade-off is modeling burden. You must design the row key to make your scan contiguous — often `device_id#hour_bucket` rather than bare `device_id` — and ad-hoc filtering on non-key columns requires separate index tables you maintain. Pick it for write-heavy, time-ordered, scan-friendly data, not for small relational entities."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Graph stores"
+    },
+    {
+      "type": "paragraph",
+      "text": "Graph engines store vertices and edges as first-class records with pointers optimized for hopping, not scanning. A traversal like “friends of friends who bought X” follows adjacency lists in memory instead of repeatedly joining massive tables, which is why two-to-six hop queries stay fast even as total data grows. Properties live on both nodes and edges, so risk, recommendation, fraud, and permission checks map naturally. The trade-off is partitioning pain. Graphs are interconnected by definition, so cutting them into independent shards without cutting many edges is hard; most graph workloads scale vertically or rely on read replicas rather than true sharding. Supernodes — a celebrity with 50 million followers, a central payment account — create hot adjacency lists that serialize traversals and blow up memory. Use graph when the relationship is the query and hop depth is bounded; do not use it as a generic document or analytics store."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What you gain and what you pay for with NoSQL.",
+      "headers": [
+        "Property",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Scalability",
+          "Add nodes for near-linear throughput on key-based work",
+          "Must design partition key up front; resharding is operational work"
+        ],
+        [
+          "Schema",
+          "Ship new fields without global migrations; handle sparse data cleanly",
+          "App code owns validation; drift and silent type errors spread"
+        ],
+        [
+          "Query power",
+          "Single-partition reads at predictable low latency",
+          "No efficient ad-hoc joins; scatter-gather scans are slow and costly"
+        ],
+        [
+          "Consistency",
+          "Tunable: fast acknowledged writes, quorum when you need safety",
+          "Defaults are often eventual; read-your-write needs explicit design"
+        ],
+        [
+          "Operations",
+          "Built-in replication, failover, multi-region patterns",
+          "Distributed failure modes: hot keys, clock skew, compaction storms"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The recurring mistake is treating flexibility as free. A schemaless store does not remove schema, it moves schema enforcement from the database into every writer and reader. That is a win when product attributes change weekly and sparse fields would leave a relational table mostly nulls, because you avoid locking migrations and storage waste. It is a loss when money or inventory is involved and two writers disagree on field meaning, because there is no central constraint to reject bad data. Similarly, horizontal scale is only cheap if load spreads. Ten nodes do not help if 80% of traffic hashes to one key range; they just give you nine idle machines and one burning one. Name the trade every time you choose: document embedding buys read locality at the cost of multi-document update pain, key-value buys speed at the cost of queryability, wide-column buys ingest at the cost of modeling effort, graph buys traversals at the cost of shardability."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Hot partition / hot key:** symptom is one node at 95% CPU and throttling while others idle, plus rising p99 but stable p50. Cause is a celebrity key, a monotonic timestamp key, or a bad hash choice. Fix is key salting, bucketing by time, or splitting the hot entity.",
+        "**Unbounded document or adjacency growth:** symptom is slowly climbing read latency and sudden failures when a size limit hits. A cart with 10,000 line items or a node with millions of edges no longer fits the locality assumption. Fix is capping arrays, paginating embedded lists, offloading blobs.",
+        "**Stale or surprising reads:** symptom is user writes a profile then immediately sees the old version, or two replicas disagree. Cause is eventual consistency with single-replica reads. Fix is read-after-write routing to leader, versioning, or quorum reads on critical paths.",
+        "**Secondary-index fan-out:** symptom is a simple filter query times out under load while key lookups are fine. The index forces a scatter across all shards. Fix is a purpose-built index table keyed for that query, or moving that query to an analytics store.",
+        "**Compaction and TTL storms:** symptom is periodic latency spikes and disk saturation in wide-column stores. Heavy overwrites plus mass expirations trigger background rewrites. Fix is tuned compaction, staggered TTLs, and separating hot and cold column families."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Hot keys kill horizontal scale",
+      "text": "Throughput scales with key spread, not node count. If your partition key is `date` for a global event or a single `merchant_id` for 60% of orders, you built a single-machine system with extra steps. Salt, bucket, or composite the key so load fans out."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete shape"
+    },
+    {
+      "type": "paragraph",
+      "text": "Contrast the relational approach of forcing every product into identical columns with the document approach of storing only present attributes. The relational version wastes space on nulls and forces a migration for every new product type; the document version stays sparse and evolves without locks. The discipline shifts to the application: validate required fields on write, tolerate missing fields on read, and never let two writers invent different names for the same concept. The second snippet shows the other half of NoSQL design — choosing a partition key that spreads load and keeps common reads single-shard."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "catalog.py",
+      "code": "# Relational mindset: every row pays for every column.\n# row = (101, \"T-Shirt\", \"Blue\", \"M\", NULL, NULL)\n# row = (102, \"Smartphone\", NULL, NULL, \"8GB\", \"128GB\")\n\n# Document mindset: store only what exists, read whole entity by ID.\nproducts = [\n    {\"_id\": \"prod:101\", \"name\": \"T-Shirt\", \"color\": \"Blue\", \"size\": \"M\"},\n    {\"_id\": \"prod:102\", \"name\": \"Smartphone\", \"ram\": \"8GB\", \"storage\": \"128GB\"},\n]\n\ndef get_product(db, product_id: str):\n    # Single-partition point lookup. No join, no scan.\n    doc = db.find_one({\"_id\": product_id})\n    if doc is None:\n        return None\n    # Readers must tolerate missing fields: schema lives in code.\n    return {\n        \"name\": doc[\"name\"],\n        \"color\": doc.get(\"color\"),\n        \"size\": doc.get(\"size\"),\n        \"ram\": doc.get(\"ram\"),\n    }"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "keys.py",
+      "code": "# BAD partition key: all writes for today land on one shard.\n# row_key = f\"2026-09-06#{device_id}\"  # monotonic, hot\n\n# GOOD: bucket by device + hour so writes spread and scans stay contiguous.\n# Wide-column row key: keeps one device-hour on one partition.\ndef row_key(device_id: str, hour_bucket: str) -> str:\n    return f\"{device_id}#{hour_bucket}\"  # e.g. \"sensor-42#2026-09-06-14\"\n\n# Key-value session: exact-key access, TTL handles expiry, no query needed.\n# SET session:{token} <blob> EX 1800\ndef session_key(token: str) -> str:\n    return f\"session:{token}\""
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in interviews"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the access patterns first",
+          "text": "List top 3-5 queries with shape and rate: point lookup by ID, time-range scan, traversal depth. Then map each to a model. Interviewers fail candidates who pick a database before stating reads versus writes."
+        },
+        {
+          "title": "Choose the partition key on the whiteboard",
+          "text": "Propose a key, then attack it: cardinality, evenness, growth. Show bucketing for time series and salting for hot entities. This one decision proves you understand horizontal scale."
+        },
+        {
+          "title": "State consistency per operation",
+          "text": "Say which writes need quorum or leader reads and which tolerate staleness. Feed and catalog reads can lag; payments and inventory cannot. Tunable consistency is the expected vocabulary."
+        },
+        {
+          "title": "Handle evolution and fan-out",
+          "text": "Explain lazy backfill for new document fields, index tables for non-key queries, and why cross-shard transactions are avoided. Offer denormalization plus async repair instead of distributed joins."
+        },
+        {
+          "title": "Size failure and ops",
+          "text": "Close with hot-key mitigation, TTL and compaction policy, replica count versus quorum math, and when to add a second system for search or analytics rather than stretching the primary. Easy track still expects failure thinking."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**“NoSQL means no schema.”** It means schema-on-read. The shape still exists; it is enforced by validators and code reviews instead of the engine. Unowned evolution produces corrupt, unreadable history.",
+        "**“NoSQL is always faster.”** It is faster for key-routed work and slower for joins and ad-hoc analytics. A normalized join on a small dataset often beats a scatter-gather scan on a large cluster.",
+        "**“It scales infinitely.”** It scales linearly only while keys spread and operations stay single-partition. Hot keys, supernodes, and global secondary queries flatten the curve immediately.",
+        "**“Consistency does not matter.”** It matters the moment money, inventory, or auth is involved. Know when to pay for quorum, leader reads, or conditional writes.",
+        "**“One model fits all.”** Document, key-value, wide-column, and graph solve different shapes. A feed, a session cache, telemetry, and fraud detection rarely belong in the same engine."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Selection guide by workload shape.",
+      "headers": [
+        "Situation",
+        "Use NoSQL",
+        "Why / what instead"
+      ],
+      "rows": [
+        [
+          "Product catalog with sparse, evolving attributes",
+          "Yes — document",
+          "Embedding keeps reads single-fetch; migrations disappear"
+        ],
+        [
+          "Sessions, tokens, carts by exact key",
+          "Yes — key-value with TTL",
+          "Hash lookup is cheapest; no query planner in the path"
+        ],
+        [
+          "High-rate sensor or event ingest with time scans",
+          "Yes — wide-column",
+          "Append-optimized, time-ordered, compresses well"
+        ],
+        [
+          "Fraud, recommendations, permissions with hops",
+          "Yes — graph",
+          "Traversal follows pointers instead of repeated joins"
+        ],
+        [
+          "Ledger, inventory, bookings needing strict invariants",
+          "No — relational",
+          "Need cross-row constraints and serializable transactions"
+        ],
+        [
+          "Ad-hoc BI over many dimensions",
+          "No — warehouse / OLAP",
+          "Columnar engines beat scatter-gather filters"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "Use NoSQL when **access is key-routed, schema varies, and load needs sharding** — and accept weaker ad-hoc queries and application-owned consistency as the price."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:23:23.621Z",
+    "problems": []
+  }
+}

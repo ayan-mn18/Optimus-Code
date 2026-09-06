@@ -1,0 +1,364 @@
+{
+  "slug": "database-replication-and-it-s-types",
+  "title": "Database Replication and it's types",
+  "summary": "Database replication copies the write log from a primary to standbys to buy read scale and failover — paid for with lag, conflicts, and operational complexity. This guide covers sync vs async, topologies, failure modes, and what to say in HLD.",
+  "kind": "HLD",
+  "problemSlug": "database-replication-and-its-types-92-205",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "🔁",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "Replication"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Database Replication: The Ultimate Guide for 2026 - Skyvia",
+      "url": "https://skyvia.com/blog/database-replication/",
+      "source": "skyvia.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Database Replication, and Why is it Important? | Aerospike",
+      "url": "https://aerospike.com/blog/what-is-database-replication/",
+      "source": "aerospike.com",
+      "kind": "article"
+    },
+    {
+      "title": "Database replication: Types, methods, and how it works - Fivetran",
+      "url": "https://www.fivetran.com/learn/database-replication",
+      "source": "fivetran.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Database Replication? 3 Main Types - Qlik",
+      "url": "https://www.qlik.com/us/data-replication/database-replication",
+      "source": "qlik.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Replication does **not** make your database faster at writes. It trades **write latency and complexity for read scale and survival**. Every replica is a promise you now have to keep: keep it caught up, route to it correctly, and decide what happens when it falls behind. If you cannot name which of those three you are buying — scale, availability, or geographic locality — do not add a replica."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Database replication is continuous copying of **committed state** from one database node to one or more other nodes, so each replica can serve reads or take over writes without a restore step. The unit of copying is not a file. It is the database's own change log — the write-ahead log in Postgres, the binlog in MySQL — replayed in commit order on the standby. That is why a replica understands tables, transactions, and constraints, while a disk copy does not. The primary accepts writes, appends them to the log, and ships that log. Replicas replay it. Clients either read from replicas to shed load from the primary, or wait idle as hot standbys until failover."
+    },
+    {
+      "type": "paragraph",
+      "text": "Be exact about what it is not. It is **not a backup**: a backup is a point-in-time artifact you restore from, immutable and offline. Replication is live and therefore replicates corruption, bad `DELETEs`, and schema mistakes within seconds. It is **not sharding**: sharding splits the dataset to scale writes, replication copies the full dataset to scale reads and survive failure. It is **not caching**: a cache is best-effort and losable, a synchronous replica is part of your durability story. Interviewers dock you fast when you conflate these, because each one fails differently and each one fixes a different bottleneck."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: there is no magic, just log shipping"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every serious implementation converges on the same pipeline because anything else is incorrect or slow. On commit, the primary first makes the change durable in its own log, then streams log records to replicas, which replay them in order. The only real design variable is **when the primary acknowledges the client**. Acknowledge before replicas confirm and you are fast but exposed. Acknowledge after replicas confirm and you are durable but slow on every write. That single choice — the commit wait — determines your consistency model, your tail latency, and your data-loss window. Everything else (topology diagrams, vendor names) is commentary on that choice. The reason log shipping wins over statement shipping or trigger-based copying is determinism: `NOW()`, auto-increment, and non-deterministic functions break statement replay, while row-level log records describe exactly which bytes changed."
+    },
+    {
+      "type": "mermaid",
+      "title": "Log shipping and commit wait",
+      "caption": "Sync waits for replica ack before responding; async responds immediately and streams behind.",
+      "code": "flowchart LR\n  W[Client Writes] --> P[Primary<br/>append WAL + commit]\n  P -->|sync replicate - wait for ack| S1[Sync Standby<br/>replay then ack]\n  P -->|async stream - no wait| S2[Async Replica 1]\n  P -->|async stream - no wait| S3[Async Replica 2]\n  R[Client Reads] --> S2\n  R --> S3\n  R --> P\n  S1 -->|promote on failover| P2[New Primary]"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Synchronous vs asynchronous vs semi-synchronous"
+    },
+    {
+      "type": "paragraph",
+      "text": "Synchronous replication blocks the write until at least one replica has persisted the log record. You buy **zero data loss on single-node failure** and read-after-write consistency if you route that client's reads to a caught-up replica. You pay with write latency pegged to the slowest synchronous replica plus cross-network round trip, and with availability risk: if that replica stalls, writes stall. That is why production synchronous setups almost always mean *one* sync standby in the same region, not three across continents. Asynchronous is the opposite: the primary acks immediately and streams behind. Writes stay fast and primaries stay available during replica outages, but a crash can lose the last milliseconds of commits and readers can see stale data. Semi-synchronous is the pragmatic middle — wait for one replica ack with a timeout, then degrade to async — chosen because it bounds the common-case loss window without letting one sick replica halt the world. Name that degradation behavior explicitly or your design has a hidden availability hole."
+    },
+    {
+      "type": "table",
+      "caption": "Commit wait trade-offs: pick your pain.",
+      "headers": [
+        "Method",
+        "What you gain",
+        "What you pay",
+        "When it is correct"
+      ],
+      "rows": [
+        [
+          "Synchronous",
+          "No loss on one node failure; strong read-after-write if routed correctly",
+          "Write latency = network + slowest sync replica; writes block if replica dies",
+          "Financial ledger, inventory decrement, same-AZ HA pair where you control failover"
+        ],
+        [
+          "Asynchronous",
+          "Low write latency; primary survives replica loss; easy cross-region",
+          "Bounded staleness and real loss window; replica can lag seconds to minutes",
+          "Read scale-out, analytics offload, global read locality, disaster-recovery standby"
+        ],
+        [
+          "Semi-synchronous",
+          "Small loss window in common case; does not block forever",
+          "Still slower than async; timeout behavior is subtle and must be tested",
+          "Default for most OLTP primaries: one local sync standby, rest async"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Topologies: who is allowed to write"
+    },
+    {
+      "type": "paragraph",
+      "text": "Single-leader is the only sane default. One primary takes all writes, N replicas take reads. Ordering is trivial because there is one log, failover is painful but understandable, and conflict resolution does not exist because conflicts cannot happen. The trade-off is write throughput capped at one node and cross-region writes that must travel to the leader. Choose it unless you have proof you cannot live with that, because every other topology buys write locality by selling correctness. Most outages blamed on replication lag are really outages caused by abandoning single-leader without staffing the conflict work."
+    },
+    {
+      "type": "paragraph",
+      "text": "Multi-leader lets two or more nodes accept writes and reconcile afterward — active-active across regions. You buy local write latency everywhere and survival when a region partitions. You pay with **write conflicts**: two clients updating the same row in different regions, auto-increment collisions, causal ordering violations. Resolution is either last-writer-wins, which silently drops data, or application-merged logic, which is code you now own forever. Leaderless (quorum writes like Dynamo-style systems) pushes this further: any N of M nodes accept the write, read repair reconciles later. You buy extreme availability and tunable `R + W > N` consistency, but you pay with read complexity, hinted handoff, and anti-entropy you must operate. Do not propose multi-leader in an interview to sound advanced. Propose it only with a conflict story attached."
+    },
+    {
+      "type": "mermaid",
+      "title": "Write topologies compared",
+      "caption": "Single-leader has one log; multi-leader and leaderless trade simplicity for write availability.",
+      "code": "flowchart TD\n  C1[Clients] --> P[Primary - Single Leader]\n  P --> R1[Replica 1 - reads]\n  P --> R2[Replica 2 - reads]\n  C2[EU Clients] --> M1[Leader EU]\n  C3[US Clients] --> M2[Leader US]\n  M1 <-->|async + conflict resolve| M2\n  C4[Any Client] --> Q1[Node A]\n  C4 --> Q2[Node B]\n  C4 --> Q3[Node C]\n  Q1 <--> Q2\n  Q2 <--> Q3"
+    },
+    {
+      "type": "table",
+      "caption": "Topology trade-offs, honestly.",
+      "headers": [
+        "Topology",
+        "Benefit",
+        "Cost that kills you",
+        "Use when"
+      ],
+      "rows": [
+        [
+          "Single-leader",
+          "One total order, no conflicts, simple reasoning",
+          "Write bottleneck; cross-region write latency; failover needs promotion",
+          "95% of OLTP systems, Postgres / MySQL read replicas"
+        ],
+        [
+          "Multi-leader",
+          "Local writes in each region, survives partition",
+          "Conflicts, clock skew, lost updates under LWW",
+          "Rarely: collaborative editing, multi-region active-active with mergeable data"
+        ],
+        [
+          "Leaderless / quorum",
+          "Always writable, tunable consistency, no failover event",
+          "Stale reads, read repair cost, operational burden of anti-entropy",
+          "Shopping carts, session state, AP systems that tolerate eventual consistency"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Granularity: what exactly gets shipped"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Snapshot replication:** full copy at a point in time. Simple and correct for bootstrapping a new replica or seeding a warehouse, but wasteful as a steady state — you re-ship unchanged rows every cycle. Use it to initialise, not to keep up.",
+        "**Transactional / log-based replication:** stream committed row changes in order. The production workhorse. Low lag, preserves transaction boundaries, supports filtered or partial replication. Requires log retention discipline or replicas that fall too far behind need a fresh snapshot.",
+        "**Statement-based replication:** ship the SQL, re-execute on replica. Compact but fragile — nondeterminism, triggers, and version drift break it. Almost never choose this for new builds.",
+        "**Merge replication:** bidirectional sync with conflict detection, typically at table or row granularity. Built for occasionally-connected clients and edge nodes. Powerful, but conflict logic and schema rigidity make it expensive to operate."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this matters in design: granularity controls lag, bandwidth, and what you can filter. Row-based log shipping lets you replicate only `orders` to the analytics replica and mask PII columns before they leave the region — statement shipping cannot do that cleanly. Snapshot is bandwidth-heavy but has no ordering hazard. Merge gives you offline writes but forces you to version every row. When an interviewer asks about cross-region cost or GDPR filtering, they are really asking which granularity you picked and why."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Replication fails in boring, predictable ways, and each one has a distinct signature if you know where to look. The dominant failure is **lag**: a replica falls minutes behind because a long-running analytics query blocks replay, a large DDL locks the applier, or the network saturates. The symptom is stale reads — users see their own write missing, dashboards disagree with the primary, cache invalidation appears broken. The second is **failover gone wrong**: you promote a lagging async standby and silently lose the tail, or worse, the old primary comes back and both nodes accept writes. The symptom is split-brain — duplicate keys, diverging sequences, orders that exist in one region and not the other. The third is **log pressure**: the primary retains WAL/binlog for a dead replica until disk fills. The symptom is not replication at all — it is the primary going read-only or crashing because one forgotten standby held the log open."
+    },
+    {
+      "type": "table",
+      "caption": "Failure, symptom, and the fix you should have ready.",
+      "headers": [
+        "Failure",
+        "What the user sees",
+        "What the metric shows",
+        "Fix that actually works"
+      ],
+      "rows": [
+        [
+          "Replica lag",
+          "Read-after-write missing; stale dashboard",
+          "Replay lag seconds climbing; replica `now() - replay_timestamp` growing",
+          "Isolate OLAP replicas; kill blocking long queries; parallel apply; alert on lag, not just liveness"
+        ],
+        [
+          "Promoted stale standby",
+          "Missing recent orders after failover",
+          "Gap between primary commit LSN and standby replay LSN at promotion",
+          "Prefer sync standby for auto-failover; rehearse failover; fence old primary before promoting"
+        ],
+        [
+          "Split-brain dual primary",
+          "Conflicting writes, duplicate IDs",
+          "Two nodes both reporting `is_primary = true`",
+          "STONITH / fencing; consensus-based failover; never allow manual promote without fencing"
+        ],
+        [
+          "Log retention bloat",
+          "Primary disk full, writes rejected",
+          "WAL directory growth + dead replication slot",
+          "Monitor slots; set `max_slot_wal_keep_size`; expire dead standbys automatically"
+        ],
+        [
+          "Schema / DDL break",
+          "Replica applier stops, lag jumps to infinity",
+          "Replication error rate 1.0, applier thread halted",
+          "Gate DDL through migrations; test on staging replica; row-based over statement-based"
+        ]
+      ]
+    },
+    {
+      "type": "list",
+      "items": [
+        "Monitor **replay lag in seconds and in bytes**, not just `replica_up`. A replica that is up and 20 minutes behind is down for any read-your-write path.",
+        "Monitor **replication slot lag** on the primary. An unconsumed slot is a disk-full incident in slow motion.",
+        "Alert on **failed failover drills**, not just real failovers. If promotion takes 90 seconds in staging, it takes 90 seconds in the outage."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Config that makes it real"
+    },
+    {
+      "type": "paragraph",
+      "text": "Talk is cheap — this is the four lines that decide sync vs async in Postgres, and the reason half of async-by-default systems lose data on failover without anyone noticing. `synchronous_standby_names` is the commit wait. Empty means async: fast, losable. Set to one standby means every commit pays a network round trip but survives one node loss. `wal_keep_size` and slot limits decide whether a slow replica kills your primary disk. Show this in an interview instead of drawing more boxes. It proves you know where the trade-off lives: not in the diagram, in the acknowledgement path."
+    },
+    {
+      "type": "code",
+      "language": "ini",
+      "filename": "postgresql.conf (primary)",
+      "code": "# Primary: what durability costs\nwal_level = replica               # ship row-level WAL, not just checkpoints\nmax_wal_senders = 5               # cap replication streams\nmax_replication_slots = 5         # one slot per standby, monitored\n# Empty = async (fast, losable). Set = sync (durable, slower).\nsynchronous_standby_names = 'standby_eu1'  # wait for this standby before ack\nmax_slot_wal_keep_size = '10GB'   # fence runaway slot before disk fills\n\n# Replica recovery: who to follow\n# primary_conninfo = 'host=primary.db port=5432 user=replicator'\n# hot_standby = on  # allow reads on standby (async readers)"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Async is the default that burns you",
+      "text": "Most managed databases ship **async** out of the box for speed. That means your documented RPO of zero is fiction until you set a synchronous standby and test promotion under load. Say it in the interview: *my default is one sync standby in-region for durability, N async out-of-region for scale — and I fence before I promote.*"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the workload, not the diagram",
+          "text": "Ask read/write ratio, consistency need, and loss tolerance. 90% reads + tolerates staleness = single-leader async replicas. Money movement = sync standby + fencing. Do not draw topology before you have those numbers."
+        },
+        {
+          "title": "Draw one primary, separate sync and async paths",
+          "text": "Show the commit-wait arrow explicitly. Say: writes ack after sync standby persists, async replicas stream behind for reads. This one arrow answers the consistency question before it is asked."
+        },
+        {
+          "title": "Route reads deliberately",
+          "text": "State which reads can go to replicas (feed, search, analytics) and which must hit primary (own-write-then-read, balance check). Propose read-your-write routing via session pinning or version token — otherwise your lag becomes a correctness bug."
+        },
+        {
+          "title": "Design failover, not just replication",
+          "text": "Explain detection (health check + quorum), fencing (prevent old primary writes), promotion (new LSN), and client redirect (DNS vs proxy). Untested failover is not HA — rehearse it and quote promotion time."
+        },
+        {
+          "title": "Close with cost and limits",
+          "text": "Replicas cost write amplification, cross-region bandwidth, and operational load per node. Name when you would stop adding replicas and add a cache or split reads to a warehouse instead. That judgment is what passes Medium/Hard HLD."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**More replicas = more availability.** No — each async replica adds lag surface and each sync replica adds write latency. Past 2–3 replicas, you are usually scaling reads, not availability.",
+        "**Replication is backup.** Replication copies faults instantly. Ransomware, `DROP TABLE`, and bad migrations replicate perfectly. You still need isolated, versioned backups with tested restores.",
+        "**Async means eventually consistent and therefore fine.** Eventually can mean minutes under a heavy `VACUUM`, DDL lock, or large transaction. If the product needs read-your-write, async without routing is a bug.",
+        "**Synchronous means no data loss ever.** It means no loss if *one* configured node fails. Region loss, double failure, or a misconfigured `synchronous_standby_names` still loses data. Durability is a failure model, not a flag.",
+        "**Multi-leader solves latency for free.** It moves latency into conflict resolution, clock management, and application merges. Unless your data is mergeable by construction (CRDTs, append-only events), you bought a harder problem."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "When to use it, when to avoid it.",
+      "headers": [
+        "Scenario",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Read-heavy feed, product catalog, reporting offload",
+          "Use single-leader async replicas",
+          "Reads scale linearly; staleness of seconds is invisible; primary stays fast"
+        ],
+        [
+          "HA for OLTP needing RPO ~0 in one region",
+          "Use 1 sync standby + auto-failover + fencing",
+          "Survives single-node loss without losing commits; cost is one network hop"
+        ],
+        [
+          "Global read locality (EU/US reads)",
+          "Use async cross-region replicas or cache",
+          "Local reads without global write penalty; accept bounded staleness"
+        ],
+        [
+          "Write scaling bottleneck",
+          "Do not use replication — shard or partition",
+          "Replicas do not add write throughput; they add replay load to the primary"
+        ],
+        [
+          "Analytics over full history",
+          "Do not replicate OLTP — stream to warehouse/lake",
+          "OLAP queries block replay and bloat lag; CDC to columnar store is cheaper"
+        ],
+        [
+          "Occasionally-connected edge writes",
+          "Consider merge / multi-leader with versioning",
+          "Only place where conflict machinery pays off; budget for resolution code"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "Use **single-leader with one synchronous standby in-region for durability and async replicas for read scale, route only stale-tolerant reads to replicas, and fence before promoting** — because replication buys read scale and failover by spending write latency and conflict complexity."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:27:35.941Z",
+    "problems": []
+  }
+}

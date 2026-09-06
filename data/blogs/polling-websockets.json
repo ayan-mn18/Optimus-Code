@@ -1,0 +1,293 @@
+{
+  "slug": "polling-websockets",
+  "title": "Polling + WebSockets",
+  "summary": "Polling asks repeatedly, long-polling waits, WebSockets stay open. Pick by update frequency, direction, and how much stateful pain you will tolerate.",
+  "kind": "HLD",
+  "problemSlug": "polling-websockets-93-206",
+  "topic": "Application Programming Interface (API)",
+  "difficulty": "Medium",
+  "coverEmoji": "🔌",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "API",
+    "Realtime",
+    "WebSockets"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "HTTP Long Polling vs WebSockets - by David Mosyan - Medium",
+      "url": "https://medium.com/@dmosyan/http-long-polling-vs-websockets-dadab8f7f26f",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "WebSockets vs Long Polling vs Short Polling?",
+      "url": "https://community.intersystems.com/post/websockets-vs-long-polling-vs-short-polling",
+      "source": "community.intersystems.com",
+      "kind": "article"
+    },
+    {
+      "title": "WebSockets vs Server-Sent-Events vs Long-Polling vs WebRTC ... - RxDB",
+      "url": "https://rxdb.info/articles/websockets-sse-polling-webrtc-webtransport.html",
+      "source": "rxdb.info",
+      "kind": "article"
+    },
+    {
+      "title": "Polling vs WebSocket vs SSE (explained in 2 mins or less)",
+      "url": "https://www.linkedin.com/posts/nk-systemdesign-one_polling-vs-websocket-vs-sse-explained-in-activity-7438567665188630529-nw20",
+      "source": "linkedin.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Polling trades server work for architectural simplicity. WebSockets trades architectural simplicity for efficiency. **If updates are rare and mostly one-directional, stay stateless and poll. If updates are frequent and bidirectional, pay for stateful connections.** Every bad realtime design is someone refusing to pick a side."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Short polling is the client asking `GET /state?since=X` on a fixed timer, getting an immediate answer even if the answer is `nothing new`, then asking again. The server holds zero connection state between requests. The cost is all the empty answers. You choose this when you want load balancers, retries, auth, and caching to behave exactly like normal HTTP, because it *is* normal HTTP. The trade-off: latency is bounded below by your interval, and load scales with clients times poll rate, not with actual events."
+    },
+    {
+      "type": "paragraph",
+      "text": "Long polling is the same request shape, but the server holds the request open until an event arrives or a timeout fires — typically 20 to 30 seconds — then the client immediately re-issues. It cuts empty responses and drops delivery latency without a new protocol. The price is held threads or suspended async contexts on the server: you now have quasi-connections managed inside an HTTP stack that was designed to finish fast. The trade-off: near-push latency while keeping request-response semantics, in exchange for timeout tuning, thread exhaustion risk, and duplicate delivery on reconnect."
+    },
+    {
+      "type": "paragraph",
+      "text": "WebSockets are a different contract. After an HTTP upgrade handshake, client and server hold one full-duplex TCP connection with lightweight frames in both directions, no headers per message. Either side can send at any time. The server must now track *who is connected to which node*, route messages to the right socket, detect dead peers with heartbeats, and handle resume after disconnect. The trade-off: minimum bytes per message and true sub-100ms bidirectional push, in exchange for stateful servers, sticky routing or a pub/sub backplane, and a protocol that proxies and firewalls treat as suspicious."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How each mechanism actually works"
+    },
+    {
+      "type": "paragraph",
+      "text": "Short polling has no server magic. Client sleeps, wakes, sends version vector or timestamp, server does a cheap store lookup and returns. Correctness lives in two details: the client must send `last_seen_id` so reconnects do not miss or double-apply events, and the interval must include jitter and backoff or every client will stampede in lockstep after a deploy or an outage. Scale it by making the poll handler read-only, cacheable, and horizontally trivial — any node can answer. That is why it survives: failure of one poll means nothing, the next poll fixes it."
+    },
+    {
+      "type": "mermaid",
+      "title": "Short polling",
+      "caption": "Every tick is an independent request.",
+      "code": "flowchart TD\n  C[Client timer] -->|GET state since 42| LB[Load balancer]\n  LB --> S1[Any app server]\n  S1 -->|200 no new events| C\n  C -->|sleep + jitter| C"
+    },
+    {
+      "type": "paragraph",
+      "text": "Long polling moves the wait to the server. The handler subscribes to an internal event bus or keyspace notification, parks the request with a deadline, and wakes when data lands. You must enforce a server-side timeout shorter than any proxy idle timeout, and you must return a sequence token even on timeout so the client resumes without gaps. Done right, idle clients cost memory but not CPU or bandwidth. Done wrong, 200k idle clients hold 200k threads and your GC pauses become the outage. The modern fix is async suspension — coroutines, event loops, deferred results — never one OS thread per parked request."
+    },
+    {
+      "type": "mermaid",
+      "title": "Long polling",
+      "caption": "Server parks the request until data or deadline.",
+      "code": "flowchart TD\n  C[Client] -->|GET wait since 42| S[App server]\n  S -->|park with 25s deadline| Q[Event bus]\n  Q -->|event 43 arrives| S\n  S -->|200 event 43| C\n  C -->|immediate re-poll since 43| S"
+    },
+    {
+      "type": "paragraph",
+      "text": "WebSockets start as HTTP and then stop being HTTP. Client sends `Upgrade: websocket`, server answers `101`, and from there it is framed messages over the same socket. That persistence is the whole win and the whole problem. Your gateway now owns connection tables, per-connection buffers, idle timeouts, ping-pong, backpressure, and auth refresh without a new request to recheck tokens. To scale past one node you need a backplane: when an event is written on node A, a publish to a shared channel fans out to the gateway node holding the target socket. Without that, you are forced into sticky sessions, and sticky sessions turn one hot gateway into a single point of congestion."
+    },
+    {
+      "type": "mermaid",
+      "title": "WebSocket lifecycle",
+      "caption": "One handshake, then persistent frames plus heartbeat.",
+      "code": "flowchart LR\n  C[Client] -->|HTTP Upgrade| G[Gateway]\n  G -->|101 Switching| C\n  C <-->|frames both ways| G\n  G <-->|pub sub for routing| B[Backplane]\n  G -->|ping pong every 25s| C"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Same realtime need, three cost profiles.",
+      "headers": [
+        "Dimension",
+        "Short polling",
+        "Long polling",
+        "WebSockets"
+      ],
+      "rows": [
+        [
+          "Delivery latency",
+          "Average half the interval. 5s poll means ~2.5s stale.",
+          "Near-push, bounded by wake time. Typically ms to 1s.",
+          "Push. Bounded only by network and fanout."
+        ],
+        [
+          "Bytes per event",
+          "Worst. Full headers every tick, mostly empty.",
+          "Good when events are sparse. One header set per event batch.",
+          "Best. 2-14 byte frame after handshake."
+        ],
+        [
+          "Server state",
+          "None. Any node answers. Trivial autoscale.",
+          "Parked requests. Needs async handling and deadline discipline.",
+          "Full connection table. Needs registry plus backplane."
+        ],
+        [
+          "Infra traversal",
+          "Passes everywhere HTTP passes.",
+          "Breaks on aggressive proxy timeouts below your hold time.",
+          "Breaks on proxies that kill upgrades or idle TCP."
+        ],
+        [
+          "Failure mode",
+          "Graceful. Miss one tick, catch up next tick.",
+          "Duplicates and gaps on timeout race. Needs id tokens.",
+          "Split brain on partition. Needs heartbeat and resume."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The rule I use: multiply clients by poll rate to get your baseline request cost, then compare it to the engineering cost of state. Ten thousand clients polling every 5 seconds is 2,000 RPS of mostly empty cache hits — boring, cheap, operable by anyone on call. The same fleet on WebSockets is near-zero idle RPS but requires connection draining, heartbeat tuning, and a fanout path that does not collapse during a burst. Choose boring until the math or the latency budget forces you off it. Realtime is not free; you either pay per check or pay in state."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Short polling fails as a self-inflicted DDoS. Symptom: CPU and request logs spike in a perfect sawtooth aligned to your interval, with cache hit ratio collapsing every N seconds. Cause is synchronized timers plus a short interval chosen for freshness that the backend cannot sustain. You will see it right after a frontend deploy resets all timers at once, or after an outage when every client retries immediately. Fix is jittered intervals, exponential backoff on errors, conditional requests with `ETag` or `since` tokens, and a separate cheap poll endpoint that never touches the primary database."
+    },
+    {
+      "type": "paragraph",
+      "text": "Long polling fails as thread starvation and phantom duplicates. Symptom: latency climbs while CPU stays flat, accept queue grows, health checks time out, and users report the same notification twice. What happened: parked requests consumed the request pool, proxies cut idle connections at 60 seconds while your hold was 55 seconds plus jitter drift, and reconnects raced event delivery. The client got the event on the dying connection and again on the re-poll. Fix is async non-blocking park, server timeout strictly below proxy idle timeout, and idempotent delivery keyed by monotonic event ID so a retry is a no-op."
+    },
+    {
+      "type": "paragraph",
+      "text": "WebSockets fail as stale presence and hot gateways. Symptom: some users stop receiving updates but appear online, memory grows on one gateway, and deploys disconnect a city at once. Root causes stack: no application ping so NAT silently drops idle TCP and neither side notices, routing table lives only in memory so a restart forgets 100k connections, and sticky routing pins reconnecting clients to the same overloaded node. Fix is bidirectional heartbeat with a 20 to 30 second ping, server-side deadline to reap silent sockets, externalized connection registry, backplane fanout instead of stickiness where possible, and client resume with `last_event_id` plus server-side replay buffer."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "State is the bill",
+      "text": "Every hour a socket stays open is an hour you must route to it, heartbeat it, drain it on deploy, and resume it on failure. If your event rate is one per minute per client, polling is cheaper than that operational load. Do not adopt persistent connections for data that tolerates 5 seconds of staleness."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete shape"
+    },
+    {
+      "type": "code",
+      "language": "javascript",
+      "filename": "pollClient.js",
+      "code": "// Short / long poll client: since-token + jitter + backoff.\n// Why: prevents stampedes and gaps. Interval is correctness, not tuning.\nasync function pollLoop(state) {\n  let backoffMs = 1000;\n  while (true) {\n    try {\n      const res = await fetch(`/state?since=${state.lastId}`, { signal: AbortSignal.timeout(30000) });\n      if (res.status === 200) {\n        const batch = await res.json(); // [{id, payload}]\n        for (const e of batch.events) {\n          if (e.id > state.lastId) { apply(e); state.lastId = e.id; }\n        }\n        backoffMs = 1000; // reset on success\n      }\n      // 204 / timeout: no events, re-poll immediately for long-poll\n      await sleep(jitter(2000, 500));\n    } catch (err) {\n      await sleep(backoffMs + Math.random() * 500);\n      backoffMs = Math.min(backoffMs * 2, 30000);\n    }\n  }\n}\nfunction jitter(base, spread) { return base + (Math.random() * 2 - 1) * spread; }"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "ws_gateway.py",
+      "code": "# WebSocket gateway sketch: heartbeat, registry, resume.\n# Why each piece exists: dead TCP looks alive without ping;\n# restart loses routing without external registry; reconnect\n# duplicates without replay on last_event_id.\nimport asyncio\n\nHEARTBEAT_S = 25\nREPLAY_BUFFER = 500  # per-topic ring buffer of (id, payload)\n\nconnections = {}  # conn_id -> websocket\n# registry + event log live in Redis / NATS in production, not here.\n\nasync def handle(ws, conn_id, last_event_id):\n    connections[conn_id] = ws\n    try:\n        # 1. Replay gap on resume. Trade-off: memory for correctness.\n        await replay_missing(ws, last_event_id)\n        async for msg in heartbeat_wrap(ws):\n            if msg == \"__pong__\":\n                continue\n            await handle_client_frame(conn_id, msg)  # validate + publish to backplane\n    finally:\n        connections.pop(conn_id, None)\n\nasync def heartbeat_wrap(ws):\n    while True:\n        try:\n            yield await asyncio.wait_for(ws.recv(), timeout=HEARTBEAT_S)\n        except asyncio.TimeoutError:\n            try:\n                await asyncio.wait_for(ws.ping(), timeout=5)\n            except Exception:\n                break  # reap silent socket; client must resume with last_event_id"
+    },
+    {
+      "type": "paragraph",
+      "text": "Notice what both snippets protect: the resume token. Polling uses `since`, sockets use `last_event_id`. Realtime without a monotonic cursor is a demo, not a system — any timeout, deploy, or proxy kill becomes data loss or double-apply. Size the replay buffer from your worst expected disconnect window, not the average. Five minutes of per-topic history covers most rolling restarts; a phone in a tunnel needs client-side persistence, not a bigger server buffer."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from requirements, not protocols",
+          "text": "Ask: how many concurrent viewers, events per second per entity, allowed staleness, one-way or two-way, and must offline clients catch up. A scoreboard with 1 update per 10s and 5s tolerance is polling. A shared editor with keystroke contention is sockets. Say the mapping out loud."
+        },
+        {
+          "title": "Do the arithmetic on the whiteboard",
+          "text": "Compute poll load explicitly: 500k clients times 1 poll per 5s equals 100k RPS. Compare to event rate: if only 50 events per second exist globally, 99.9% of polls are waste. That single equation justifies moving to push and shows you think in costs."
+        },
+        {
+          "title": "Draw the stateful path",
+          "text": "Sketch client to load balancer to gateway to backplane to event source. Mark where the socket lives, how a write on gateway A reaches a socket on gateway B, and how deploys drain. Interviewers fail answers that draw a single box labeled websocket server."
+        },
+        {
+          "title": "Name the fallback and the resume story",
+          "text": "State your downgrade chain — sockets to long-poll to short-poll — and your gap protocol: sequence IDs, replay buffer, idempotent apply. This is where medium candidates separate from senior ones."
+        },
+        {
+          "title": "Close with operability",
+          "text": "Cover heartbeats, proxy idle timeouts, auth refresh mid-connection, backpressure when a slow client cannot keep up, and per-connection memory. Mention killing the slowest consumer rather than buffering unboundedly."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "WebSockets are faster than HTTP — false after connection setup for infrequent messages; the win is header amortization and server push, not raw throughput. A single `GET` is still simpler and often quicker.",
+        "Long polling is just slow polling — wrong. Slow polling returns immediately; long polling parks the request. Confusing them leads to wrong capacity math by an order of magnitude.",
+        "Polling always overloads the server — only if the poll handler is heavy or the interval is aggressive. A cache-backed `since` check at 100k RPS is routinely cheaper than 100k stateful sockets.",
+        "WebSockets solve ordering and delivery — they give you FIFO on one connection and nothing else. Across reconnects, across gateways, across topics, you still need sequence numbers and dedupe.",
+        "You must pick exactly one — production systems mix. Use sockets for active viewers, fall back to long-poll behind hostile proxies, and let background tabs degrade to short poll. Match cost to attention."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Choose by frequency, direction, and tolerance for state.",
+      "headers": [
+        "Pattern",
+        "Use when",
+        "Avoid when"
+      ],
+      "rows": [
+        [
+          "Short polling",
+          "Updates every 10s+ acceptable; read-heavy dashboards; hostile networks; tiny team on call",
+          "Sub-second freshness needed; millions of clients on short intervals; battery-constrained mobile"
+        ],
+        [
+          "Long polling",
+          "Sparse events but low latency wanted; must stay on plain HTTP; no bidirectional need",
+          "Very high fanout with bursty events; request-thread-limited stack; proxies with short idle kills"
+        ],
+        [
+          "WebSockets",
+          "Frequent bidirectional frames: chat, collaboration, live games, trading ticks to active viewers",
+          "Mostly one-way server-to-client broadcast; infrequent updates; no backplane or drain plan"
+        ],
+        [
+          "Hybrid with fallback",
+          "Public internet with mixed proxies; mobile with NAT timeouts; must work everywhere",
+          "Internal prototype where added client complexity buys nothing yet"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence",
+      "text": "If asked, say: **poll when staleness is acceptable and scale matters more than immediacy; hold with long-poll when events are sparse but latency matters; open a socket only when traffic is frequent and bidirectional enough to justify stateful routing, heartbeats, and resume.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:50:02.422Z",
+    "problems": []
+  }
+}

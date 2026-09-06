@@ -1,0 +1,287 @@
+{
+  "slug": "three-phase-commit",
+  "title": "Three Phase Commit",
+  "summary": "Three Phase Commit adds a PreCommit buffer state to kill 2PC's blocking window — but only by assuming a synchronous network with no partitions. Know the mechanism, the recovery rule, and why production systems chose consensus instead.",
+  "kind": "HLD",
+  "problemSlug": "three-phase-commit-96-216",
+  "topic": "Data consistency in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔗",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Distributed Systems",
+    "Consistency",
+    "Three Phase Commit"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Three-phase commit protocol - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Three-phase_commit_protocol",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding Two-Phase and Three-Phase Commit Protocols",
+      "url": "https://daminibansal.medium.com/understanding-two-phase-and-three-phase-commit-protocols-key-differences-use-cases-and-practical-975e7c663c67",
+      "source": "daminibansal.medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Three Phase Commit Protocol - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/dbms/three-phase-commit-protocol/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Distributed Algorithms - TiKV",
+      "url": "https://tikv.org/deep-dive/distributed-transaction/distributed-algorithms/",
+      "source": "tikv.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "2PC blocks because a survivor cannot tell **did the dead coordinator already commit someone?** 3PC inserts a **PreCommit** staging state so that question always has a safe answer — **but only if the network never partitions.** No partition tolerance, no 3PC. That assumption is the entire protocol."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What 3PC actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three Phase Commit is an **atomic commitment protocol** for one transaction spread over one coordinator and N cohorts. Every node must end in the same terminal state: all `COMMIT` or all `ABORT`. There is no partial commit, no quorum commit, no best-effort. Like 2PC it assumes crash-recovery nodes with durable logs and a **synchronous network**: messages eventually arrive, timeouts are reliable failure detectors, and partitions do not happen. Change any of those assumptions and the correctness argument collapses. The structural difference from 2PC is one extra round trip. 2PC is `VOTE -> DECISION`. 3PC is `VOTE -> STAGE DECISION -> DECISION`. That middle stage — `PreCommit` — is not an optimisation. It is a firewall between *deciding* to commit and *acting* on the commit, and the whole recovery logic lives in that gap."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why that gap matters: in 2PC a cohort that votes `Yes` enters an **uncertain** period where it has surrendered its right to unilaterally abort but has not yet learned the outcome. If the coordinator dies in that window, the cohort is stuck holding locks indefinitely. It cannot abort because someone else may have already committed, and it cannot commit because the coordinator may have decided abort. 3PC breaks that uncertainty into two smaller windows. After voting `Yes`, a cohort waits only for `PreCommit`. After acknowledging `PreCommit`, it knows every other live node will eventually commit or can be driven to commit. The trade-off is explicit: **you pay one extra network round trip and longer lock-hold time on the happy path to buy non-blocking recovery on the coordinator-failure path — and you only collect that payoff while the network stays connected.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why 2PC blocks — the scenario you must be able to draw"
+    },
+    {
+      "type": "paragraph",
+      "text": "Take one coordinator C and cohorts A and B. Both vote `Yes`. C decides `COMMIT`, sends `DoCommit` to A, then crashes before sending to B. A commits and then crashes. Now B is in the uncertain state and a new leader C' is elected. C' polls B: B says *I voted Yes, heard nothing after*. C' polls A: A is dead. At this point C' faces an unresolvable ambiguity: did the old C die *before* committing anyone, in which case abort is safe, or *after* committing A, in which case abort violates atomicity? There is no local information that distinguishes the two histories. So C' must block until A recovers. In production that means threads stuck, locks held, pages latched, and every conflicting transaction queueing behind a dead node. That is not a performance bug — it is inherent to 2PC whenever coordinator failure and cohort unavailability overlap during the decision. 3PC exists to make those two histories distinguishable by forcing C to broadcast its *intent* to commit and collect acknowledgements before any node is allowed to act on it."
+    },
+    {
+      "type": "mermaid",
+      "title": "3PC happy path and abort paths",
+      "caption": "The middle PreCommit round is the only structural change from 2PC.",
+      "code": "flowchart TD\n  C1[\"Coordinator: send CanCommit\"] --> V[\"Cohorts: vote Yes or No\"]\n  V -->|\"any No or timeout\"| AB[\"Coordinator: send Abort\"]\n  V -->|\"all Yes\"| PC[\"Coordinator: send PreCommit\"]\n  PC -->|\"timeout waiting ACK\"| AB\n  PC --> PA[\"Cohorts: enter PREPARED, send ACK\"]\n  PA -->|\"all ACKs received\"| DC[\"Coordinator: send DoCommit\"]\n  PA -->|\"ACK timeout\"| AB2[\"Abort - still safe, nobody committed\"]\n  DC --> CM[\"Cohorts: Commit, send ACK\"]\n  AB --> AD[\"Cohorts: Abort\"]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism, phase by phase"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Phase 1 — CanCommit / Vote.** Coordinator durably logs `START` and broadcasts `CanCommit`. Each cohort checks predicates, acquires locks, writes a `READY-YES` or `READY-NO` record to its write-ahead log, and replies. Any `No`, any `timeout`, any crash vote counts as `No`. This phase is identical to 2PC. Trade-off: you hold locks from this point on, so a slow voter inflates tail latency for everything behind those keys.",
+        "**Phase 2 — PreCommit / Stage.** If and only if all votes are `Yes`, the coordinator logs `PRE-COMMIT-INTENT` and broadcasts `PreCommit`. A cohort receiving it moves from `UNCERTAIN` to `PREPARED`, logs that transition, and sends `ACK`. Critically, nothing is committed yet and nothing is made visible. This is a promise: *I am ready to commit if you tell me to, and I will survive a coordinator change to honour it.* Trade-off: an extra full round trip on every write transaction, even when nobody fails.",
+        "**Phase 3 — DoCommit / Act.** Only after receiving `ACK` from *all* cohorts does the coordinator log `COMMIT` and broadcast `DoCommit`. Cohorts commit, release locks, and `ACK`. If any `ACK` for `PreCommit` was missing, the coordinator must broadcast `Abort` instead — and that abort is still safe precisely because no cohort could have entered Phase 3. Trade-off: commit latency is now three sequential network delays plus three log forces instead of two."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The ordering constraint is absolute: **no `DoCommit` is sent until every cohort has acknowledged `PreCommit`, and no cohort commits until it receives `DoCommit`.** That invariant is what lets a replacement coordinator reason safely. If the replacement finds *any* cohort in `PREPARED`, it knows the old coordinator collected all `Yes` votes and therefore no abort could have been delivered to a cohort that obeyed the protocol — so it must drive the transaction to commit. If it finds *no* cohort in `PREPARED` and at least one survivor never left the voted state, it knows no cohort could have seen `DoCommit` and can safely abort. The mechanism works because `PREPARED` acts as distributed evidence of the coordinator's decision, replicated to all participants before the decision becomes actionable."
+    },
+    {
+      "type": "table",
+      "caption": "3PC trade-offs with no sugar-coating.",
+      "headers": [
+        "Dimension",
+        "2PC reality",
+        "3PC cost / gain"
+      ],
+      "rows": [
+        [
+          "Blocking on coordinator failure",
+          "Blocks when coordinator plus one uncertain cohort fail together; needs operator intervention",
+          "Non-blocking while network is connected and recovery coordinator can reach all survivors; blocks again under partition"
+        ],
+        [
+          "Latency (failure-free)",
+          "2 rounds: Prepare + Commit",
+          "3 rounds: CanCommit + PreCommit + DoCommit — strictly slower, roughly 50% more commit latency"
+        ],
+        [
+          "Lock hold time",
+          "Locks held from Yes vote to decision",
+          "Locks held longer — through the extra PreCommit round — so contention and deadlock risk increase"
+        ],
+        [
+          "Message complexity",
+          "3N messages per commit",
+          "4N-5N messages per commit including ACKs; throughput drops proportionally"
+        ],
+        [
+          "Safety under partition",
+          "Unsafe to proceed; correctly blocks instead of diverging",
+          "Actively dangerous: two sides can reach opposite decisions — partition looks like multiple crashes"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Recovery: the termination protocol that does the real work"
+    },
+    {
+      "type": "paragraph",
+      "text": "Normal-case flow is trivial. Recovery is the protocol. When any participant times out waiting for the coordinator, it does not decide alone — it starts **election followed by state polling.** Survivors elect a new coordinator, usually lowest-ID-live or a view-number increment, then the new coordinator queries every live cohort for its logged state. The decision table is small and must be memorised: if any cohort reports `COMMITTED` or `ABORTED`, that terminal state is final and is replayed to everyone; else if any cohort reports `PREPARED`, the new coordinator replays `PreCommit` then drives `DoCommit` to commit; else if any cohort reports `UNCERTAIN` with no `PREPARED` anywhere, it broadcasts `Abort`. A cohort in `PREPARED` that times out waiting for `DoCommit` simply waits for the new coordinator — it must not unilaterally commit or abort, but it knows the wait will terminate because the election will complete on a connected network. Why election first: without a single driver, two survivors could poll, see different subsets, and reach opposite conclusions. The single-replacement-coordinator plus unanimous polling is what converts local ambiguity into a global decision. The trade-off is availability versus liveness: recovery terminates only if a quorum of the *full membership* — not a majority — responds, which is why one unreachable node still stalls you."
+    },
+    {
+      "type": "mermaid",
+      "title": "Cohort state machine",
+      "caption": "PREPARED is the buffer that makes recovery decidable.",
+      "code": "stateDiagram-v2\n  [*] --> INIT\n  INIT --> UNCERTAIN: vote Yes, log READY-YES\n  INIT --> ABORTED: vote No or local failure\n  UNCERTAIN --> PREPARED: receive PreCommit, log it\n  UNCERTAIN --> ABORTED: receive Abort\n  UNCERTAIN --> ELECTION: timeout waiting coordinator\n  PREPARED --> COMMITTED: receive DoCommit\n  PREPARED --> ELECTION: timeout waiting DoCommit\n  ELECTION --> COMMITTED: recovery says commit\n  ELECTION --> ABORTED: recovery says abort"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "3PC fails exactly where its assumption fails: **the network partitions.** A timeout cannot distinguish *crashed* from *unreachable*, and the protocol treats every timeout as a crash. Suppose the coordinator and half the cohorts sit on side A, the rest on side B. Side A's replacement sees no `PREPARED` cohort and aborts. Side B has a `PREPARED` cohort whose replacement sees `PREPARED` and commits. You now have committed on one side and aborted on the other — a permanent atomicity violation with no automatic repair. The symptom is the worst kind: both sides report success locally, downstream reads diverge, and reconciliation requires application-level compensation because the database itself no longer knows which outcome was correct. The second production failure is simpler: **latency amplification.** Three sequential rounds plus forced log writes on each transition push p99 commit latency up and keep row, page, or shard locks held longer. Under contention that shows up as lock-wait storms, cascading timeouts, and throughput collapse during even brief slowness. You traded rare blocking for constant slowness — and still kept a rarer but more corrosive divergence mode."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Split-brain commit/abort under partition:** symptom is divergent reads across replicas and irreconcilable write-ahead logs — one node logged `COMMIT`, another logged `ABORT` for the same transaction ID.",
+        "**Election stall when a cohort is unreachable:** symptom is identical to 2PC blocking — threads parked in `PREPARED`, locks never released, health checks green but write throughput zero.",
+        "**Coordinator flap:** repeated elections each trigger full state polls; symptom is commit latency spikes proportional to membership size and duplicate `PreCommit` replays in logs.",
+        "**Slow-cohort poisoning:** one straggler delays Phase 2 ACKs; symptom is head-of-line blocking where fast shards wait on the slowest shard for every transaction."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "There is also a quiet correctness trap most implementations get wrong: logging order. If a cohort sends `ACK` for `PreCommit` *before* forcing the `PREPARED` record to stable storage, a crash plus restart makes it forget it was prepared, and the new coordinator may abort a transaction the rest of the system committed. If the coordinator sends `DoCommit` before forcing its `COMMIT` record, a crash can leave cohorts committed with no durable decision to replay. Every state transition must be **log-first, send-second, act-third.** Skip that ordering once and you have reintroduced the exact ambiguity 3PC was built to remove. In an interview, saying *force the log before the message* signals you have actually reasoned about crash-recovery, not just memorised the diagram."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "3pc_skeleton.py",
+      "code": "class Cohort:\n    def on_can_commit(self, tx):\n        if not self.check(tx):\n            self.log(tx, \"READY-NO\")\n            return \"NO\"\n        self.acquire_locks(tx)\n        self.log_force(tx, \"READY-YES\")  # force BEFORE reply\n        return \"YES\"\n\n    def on_precommit(self, tx):\n        self.log_force(tx, \"PREPARED\")   # must hit disk first\n        return \"ACK\"\n\n    def on_docommit(self, tx):\n        self.commit(tx)                   # make visible\n        self.log_force(tx, \"COMMITTED\")\n        self.release_locks(tx)\n        return \"ACK\"\n\n    def on_timeout_waiting_coordinator(self, tx):\n        # NEVER decide alone. Elect + poll.\n        new_coord = self.elect()          # single driver required\n        state = new_coord.poll_all(tx)    # INIT | PREPARED | COMMITTED | ABORTED\n        if \"COMMITTED\" in state:\n            return self.on_docommit(tx)\n        if \"ABORTED\" in state:\n            return self.on_abort(tx)\n        if \"PREPARED\" in state:\n            return self.on_docommit(tx)   # intent was unanimous -> commit\n        return self.on_abort(tx)          # nobody prepared -> safe abort"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Cost in numbers, not adjectives"
+    },
+    {
+      "type": "paragraph",
+      "text": "Put a number on the trade every time you invoke 3PC. Failure-free commit costs three sequential message delays plus at least three synchronous log forces on the coordinator and two on each cohort, versus two delays and two forces in 2PC. On a 2 ms cross-AZ hop that is roughly 6–10 ms of pure coordination before storage work, and lock hold time grows by the same amount. Message count grows from ~3N to ~5N per transaction. Recovery costs an election plus N state queries before any decision can be replayed. That is why real write-heavy systems abandoned 3PC for leader-based consensus with quorum commit: consensus pays coordination once per log entry and survives partitions by majority, while 3PC pays more per transaction and survives neither partition nor a single unreachable member during recovery. If you propose 3PC, you must justify why you accept higher steady-state latency for a liveness gain that evaporates the moment the network misbehaves."
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from 2PC's blocking window",
+          "text": "Do not recite 3PC phases first. Draw coordinator + two cohorts, kill the coordinator after one DoCommit, kill the receiver, and show why the survivor cannot decide. Interviewers promote candidates who derive 3PC from the ambiguity, not those who memorise it."
+        },
+        {
+          "title": "Add PreCommit and state the invariant",
+          "text": "Say it verbatim: no DoCommit until all PreCommit ACKs are in, no commit until DoCommit arrives. Then explain why that invariant makes the replacement's decision table sound. This is the graded sentence."
+        },
+        {
+          "title": "Write the recovery table from memory",
+          "text": "Any COMMITTED/ABORTED seen -> replay it. Else any PREPARED seen -> commit. Else abort. Then add the caveat: this table is correct only with a single new coordinator polling all live members on a connected network."
+        },
+        {
+          "title": "Break your own design with a partition",
+          "text": "Before the interviewer does, draw a split where each side elects its own coordinator and reaches opposite outcomes. Name the trade-off: 3PC buys non-blocking under crash failures by sacrificing safety under partitions. Volunteering this is what separates Medium from Strong."
+        },
+        {
+          "title": "Close with what you would ship instead",
+          "text": "Say when you would reject 3PC: any cross-region, cloud, or partition-prone deployment. Name the alternative honestly — quorum-based consensus or saga-style compensation — and justify it by failure model, not by fashion."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail the round"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**3PC is partition-tolerant.** It is the opposite: a partition causes divergent decisions where 2PC would have safely blocked. Non-blocking and partition-safe are different properties.",
+        "**3PC is strictly better than 2PC.** It is strictly slower on every commit and holds locks longer. You pay the cost always and collect the benefit only during coordinator failure without partition.",
+        "**Timeouts reliably detect crashes.** They do not. Every 3PC correctness proof assumes timeouts imply crashes, which is false on real networks — that false equivalence is the source of split-brain.",
+        "**PREPARED means committed.** It means *everyone agreed to be able to commit*. Data is still invisible and locks are still held. Confusing staging with committing leads to dirty-read bugs in follow-up questions.",
+        "**Election can be skipped for speed.** Without a single replacement coordinator, two survivors polling different subsets can commit and abort the same transaction concurrently."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use 3PC only when its narrow assumptions actually hold.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Single datacenter cluster with synchronous, redundant networking and bounded delays",
+          "Consider",
+          "Partition probability is low enough that crash-failure liveness matters more than partition safety"
+        ],
+        [
+          "Any geo-distributed or cross-AZ deployment on commodity cloud networks",
+          "Do not use",
+          "Partitions are routine; 3PC can silently diverge where consensus or 2PC+operator would not"
+        ],
+        [
+          "High-contention OLTP with short transactions",
+          "Do not use",
+          "Extra round trip inflates lock hold time and collapses throughput under contention"
+        ],
+        [
+          "Low-contention, small membership needing automatic recovery from coordinator crash",
+          "Consider",
+          "The one niche where extra latency buys real availability without human pager duty"
+        ],
+        [
+          "Need for provable atomicity under arbitrary failures",
+          "Do not use",
+          "Use quorum consensus for commit or sagas with compensation; 3PC cannot provide that guarantee"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**3PC adds a PreCommit stage so a new coordinator can always finish what the old one started without blocking — at the cost of an extra round trip and correctness that collapses under network partition, which is why we ship consensus instead.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:35:06.266Z",
+    "problems": []
+  }
+}

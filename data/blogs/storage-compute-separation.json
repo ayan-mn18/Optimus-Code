@@ -1,0 +1,285 @@
+{
+  "slug": "storage-compute-separation",
+  "title": "Storage - Compute Separation",
+  "summary": "Storage-compute separation makes compute stateless and storage durable so they scale and fail independently — but only works if layered caching rebuilds the locality you just destroyed.",
+  "kind": "HLD",
+  "problemSlug": "storage---compute-separation-95-308",
+  "topic": "Caching Mechanisms",
+  "difficulty": "Medium",
+  "coverEmoji": "🧊",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Caching",
+    "Storage-Compute Separation"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Serverless Postgres at Scale: Hidden Trade-offs in Compute–Storage ...",
+      "url": "https://github.com/neondatabase/neon/discussions/12860",
+      "source": "github.com",
+      "kind": "article"
+    },
+    {
+      "title": "Compute-Storage Separation Explained",
+      "url": "https://www.thenile.dev/blog/storage-compute-separation",
+      "source": "thenile.dev",
+      "kind": "article"
+    },
+    {
+      "title": "Compute-compute separation in ClickHouse Cloud",
+      "url": "https://clickhouse.com/blog/introducing-warehouses-compute-compute-separation-in-clickhouse-cloud",
+      "source": "clickhouse.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is compute and storage separation? - Secoda",
+      "url": "https://www.secoda.co/glossary/what-is-compute-and-storage-separation",
+      "source": "secoda.co",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Separation buys you **independent scaling and instant recovery** by making compute disposable — any compute node can die and be replaced without moving data. The price is that **every page access is now a network fetch** unless you rebuild locality with caches. If you cannot point to exactly where the cache lives on a read miss, you do not understand this architecture."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "In a coupled database, the process that executes queries also owns the durable files on its local disk. Kill that machine and you lose both execution capacity and the data it was responsible for. Recovery means promoting a replica that already has a full copy, or copying terabytes before you can serve again. Storage-compute separation breaks that binding. Compute nodes hold **no durable state** — only in-memory structures like the buffer pool, hash tables, sort buffers, and plan cache that can be rebuilt from scratch. The storage layer holds **the ground truth**: versioned pages or log records on a replicated, highly durable substrate such as distributed object storage or a dedicated page service. A compute node can crash, be killed by an autoscaler, or be started cold in a new zone, and it becomes useful as soon as it warms its caches, not after it copies the dataset. That is the whole point. Trade-off: you trade **fate-sharing for network dependence** — compute and storage now fail independently, which is good for durability, but every cache miss now crosses a network boundary, which is bad for tail latency."
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not confuse this with just putting data files on network-attached disks. That is still a coupled design with a longer wire. True separation changes the contract in three ways. First, **compute is stateless by definition** — two compute nodes can attach to the same dataset concurrently without partitioning the data beforehand. Second, **storage understands database structure**, at least enough to serve pages, apply write-ahead log records, keep snapshots, and garbage-collect old versions. It is not a dumb block device; it does versioning, replication, and retention on its own CPU. Third, **scaling one side does not force scaling the other**. You can add storage for a 10x data growth without adding query capacity, and you can burst from two to twenty compute nodes for an analytical spike without rebalancing terabytes. If your design still requires copying data to add query capacity, you have not separated anything — you have just moved the disk further away. Trade-off: generality versus control — a dumb remote disk is simple but forces compute to do all durability work; a smart storage layer offloads that work but adds a second distributed system you must operate, version, and debug."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "mermaid",
+      "title": "Separated read and write paths",
+      "caption": "Compute caches hot pages locally; misses fall through to the page service and object store, while writes go as log appends.",
+      "code": "flowchart TD\n  Client[Client connection] --> Router[Connection router]\n  Router --> C1[Compute node A]\n  Router --> C2[Compute node B]\n  C1 --> L1[Local buffer pool]\n  C2 --> L2[Local buffer pool]\n  L1 -->|hit| C1\n  L2 -->|hit| C2\n  L1 -->|miss| PS[Page service]\n  L2 -->|miss| PS\n  PS --> SC[Page cache]\n  SC -->|miss| OS[Object storage]\n  C1 -->|WAL append| PS\n  C2 -->|WAL append| PS\n  PS -->|persist + replicate| OS"
+    },
+    {
+      "type": "paragraph",
+      "text": "The write path is log-first because you cannot afford to update pages in place across a network on every transaction. When a transaction commits on any compute node, that node does not write dirty pages back to object storage synchronously. It appends **write-ahead log records** to the storage layer and waits for a durability quorum. The storage layer sequences those records, replicates them, and acknowledges. Only later, asynchronously, does something — either the storage layer itself or a background compactor — apply the log to produce new page versions in object storage. This is why writes scale reasonably well under separation: the latency-critical step is a small sequential append, not a random page flush over high-latency storage. It is also why read-your-write semantics get tricky. A second compute node will not see the first node's unapplied log unless it reads through a component that has the tail of the log. Trade-off: **write latency versus read freshness** — batching and async page materialization keeps commit latency low but forces readers to reconcile base pages plus recent log, which adds CPU and cache-invalidation complexity."
+    },
+    {
+      "type": "paragraph",
+      "text": "The read path is a cache hierarchy pretending to be a local disk. A query first hits the compute node's **buffer pool**, typically gigabytes of recently used pages plus query-specific caches for plans, metadata, and transaction snapshots. On a miss, the compute requests the page from the storage service by page identifier and log sequence number, not by file offset. The storage service checks its own larger, often shared cache before falling through to object storage, which holds immutable page versions keyed by identifier. The fetched page is then inserted into the local buffer pool and used for execution. Predicate pushdown and column pruning, where supported, move filtering closer to storage so you do not ship full pages for highly selective scans — but that only works if the storage layer understands enough of the format to evaluate predicates safely. Without it, analytical scans become network-bound. Trade-off: **hit rate versus memory cost and staleness** — a bigger local cache cuts network fetches and p99 latency dramatically, but it consumes the expensive RAM you were trying to keep elastic, and it goes cold every time the autoscaler replaces the node."
+    },
+    {
+      "type": "paragraph",
+      "text": "Connection handling and transaction state are part of compute, which is why this design behaves so differently under churn. Because compute is stateless, a load balancer can route a new connection to any warm node, and a cold node can start in seconds rather than after a data copy. That looks like elasticity until you measure what a cold buffer pool actually does. The first few thousand queries on a fresh node miss on almost everything — system catalogs, indexes, hot rows — and serialize behind page fetches with millisecond-scale latency instead of microsecond-scale memory access. Connection pools, prepared-statement caches, and prewarming from a shared page cache exist specifically to hide this. Some systems keep one always-warm pool for latency-sensitive traffic and burst to cold nodes only for background or analytical work. That split is not an optimization; it is the admission that stateless does not mean stateless-fast. Trade-off: **time-to-capacity versus time-to-performance** — you can get a running process in seconds, but you cannot get a fast process until its caches are full, so autoscaling policy must be driven by cache warmth, not just CPU."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "separated_read_path.py",
+      "code": "class ComputeNode:\n    def __init__(self, buffer_pool, page_service):\n        self.buffer_pool = buffer_pool  # local LRU, e.g. 8 GiB\n        self.page_service = page_service\n        self.lsn = 0  # last log sequence number this node has applied\n\n    def read_page(self, page_id, min_lsn):\n        # Fast path: local hit, no network.\n        page = self.buffer_pool.get(page_id)\n        if page is not None and page.lsn >= min_lsn:\n            return page  # microseconds\n        # Slow path: fetch base page + tail of log, then reconstruct.\n        base, log_tail = self.page_service.fetch(page_id, min_lsn)\n        page = apply_log(base, log_tail)  # CPU cost lives on compute\n        self.buffer_pool.put(page_id, page)\n        return page  # milliseconds on cold miss\n\n    def commit(self, records):\n        # Latency-critical step is log append, not page flush.\n        new_lsn = self.page_service.append(records)\n        self.lsn = max(self.lsn, new_lsn)\n        return new_lsn"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What separation gives you and what it charges you.",
+      "headers": [
+        "Dimension",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Scaling",
+          "Scale storage and compute independently; burst compute without repartitioning data",
+          "Burst compute starts cold; throughput spikes before cache warms and amplifies backend load"
+        ],
+        [
+          "Availability",
+          "Compute failure is trivial — start a new node, attach to same storage, no data copy",
+          "Storage becomes the single critical path; its outage or throttling halts all compute nodes at once"
+        ],
+        [
+          "Latency",
+          "Steady-state p50 can match local disk once buffer pool is warm",
+          "Cold p99 regresses by 10-100x; every miss pays network RTT plus deserialization plus log replay"
+        ],
+        [
+          "Cost",
+          "Idle compute scales to zero; cold data sits on cheap durable storage",
+          "You pay for network I/O, log retention, and duplicated caching at every layer; chatty OLTP can cost more"
+        ],
+        [
+          "Consistency",
+          "Single durable log gives clean snapshot isolation across many compute nodes",
+          "Cross-node snapshot sync and invalidation add protocol chatter; stale reads appear if LSN tracking is sloppy"
+        ],
+        [
+          "Operability",
+          "No replica lag management, no shard rebalancing for growth",
+          "Two systems to tune, version, and debug; a slow page service looks identical to a slow query plan"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Be blunt about latency because that is where interviews and production reviews diverge. For low-latency OLTP with small point lookups and strict service objectives, a well-tuned coupled node with local NVMe will beat a separated design on p99 almost every time — the physics of a local memory access versus a network fetch do not negotiate. Separation wins on **elasticity, operability, and cost at rest**, not on raw single-query speed. It also changes which resource bottlenecks first. Coupled systems bottleneck on disk capacity or replica lag; separated systems bottleneck on network bandwidth to storage, page-service CPU during log replay, and the hit rate of the smallest cache in the chain. Size the network and the page cache before you size the compute. Trade-off: you are exchanging **predictable worst-case latency for better average cost and recovery time** — take that deal only if your workload tolerates occasional slow queries in exchange for not managing replicas."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Failures in this architecture rarely look like crashes. They look like sudden, correlated slowness across all compute nodes at once, because all of them share the same storage backend. Learn to distinguish a bad query from a starved cache or a throttled storage layer — the fix is completely different. If one node's latency spikes, suspect that node: bad plan, hot lock, garbage collection pause. If every node's p99 spikes together while CPU stays flat and backend fetch rate climbs, suspect the shared path: page-service saturation, object-storage throttling, or a mass invalidation that emptied local caches simultaneously."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Cold start storm after scale-out.** Symptom: new nodes show 50-500ms p99 while old nodes stay fast, plus a spike in page-service QPS. Cause: autoscaler added capacity for a traffic burst, but every new buffer pool is empty. Fix with prewarming, sticky routing for hot keys, and scaling on cache hit rate, not just CPU.",
+        "**Log-replay pileup on heavy writes.** Symptom: read latency climbs linearly with write throughput even though storage looks healthy. Cause: readers must replay a growing tail of uncompacted log to reconstruct pages. Fix with more aggressive compaction, smaller log segments, and isolating write-heavy tenants to dedicated compute.",
+        "**Noisy scan evicts OLTP working set.** Symptom: point-lookup latency collapses during an analytical burst. A large sequential scan floods the local LRU and evicts hot index pages. Fix with scan-resistant caching — separate pools or admission policies for scans — or route scans to isolated compute that shares storage but not buffer pools.",
+        "**Snapshot and retention bloat.** Symptom: steady growth in storage I/O and fetch latency over weeks, with no traffic change. Cause: old page versions and log retained for snapshots or point-in-time recovery are never garbage-collected fast enough. Reads now skip over more versions; compactions fall behind. Fix with explicit retention budgets and alerting on version count per page.",
+        "**Throttled backend masquerading as database slowness.** Symptom: all queries slow, compute CPU low, thread dumps show most workers blocked on page fetch. Cause: request-rate limits or bandwidth caps on the durable store. This is the hardest to diagnose because database dashboards blame the query layer. Fix with request hedging, batch fetches, and independent metrics on fetch queue depth and backend latency."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The most expensive failure is cache thrash under mixed workloads, because it defeats the one mechanism that makes separation viable. OLTP wants a small, hot set pinned in memory with high reuse. Analytics wants to stream terabytes once with zero reuse. Put both on the same buffer pool and the scan wins by volume, evicting exactly the pages that keep p99 low. The symptom is deceptive: overall hit rate looks acceptable, but the hit rate for latency-sensitive keys drops to zero. You will see it as bimodal latency — most queries fast, a long tail of very slow ones — correlated with scheduled jobs or dashboard refreshes. The durable fix is **compute-compute isolation**: separate pools of compute nodes over the same storage, one tuned for low-latency serving with a protected hot cache, one for throughput with large readahead and no cache admission. Trade-off: isolation costs extra idle memory and operational complexity, but sharing a cache between access patterns with opposite locality guarantees neither gets what it needs."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The caching that makes it survivable"
+    },
+    {
+      "type": "paragraph",
+      "text": "Treat caching as part of the correctness design, not as a performance add-on. A separated system typically has three tiers, and each exists for a different reason. The compute-local buffer pool exists to serve hot reads in microseconds and to absorb repeated access to indexes and catalogs; it should be LRU with scan resistance and explicit pinning for metadata. The shared page-service cache exists to make cold-start less catastrophic — a newly started compute node misses locally but hits here in single-digit milliseconds instead of going all the way to durable storage. The durable layer itself is not a cache; it is the authority, and its layout should favor immutable, large-granularity reads that benefit from readahead and prefetch. Invalidation flows downhill by log sequence number: when a page is updated, holders of older versions must either refresh or replay log to the required snapshot. Get the invalidation protocol wrong and you serve stale reads that pass every functional test but violate isolation under concurrency. Trade-off: **coherence traffic versus staleness window** — eager broadcast invalidation keeps reads fresh but adds chatter that grows with node count; lazy version checks scale better but push reconciliation cost onto every read."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cache_policy.py",
+      "code": "# Scan-resistant admission: protect OLTP hot set from analytical floods.\n# Trade-off: extra memory partitions vs predictable p99.\nHOT_POOL_BYTES = 6 * 1024**3   # pinned: indexes, catalogs, hot rows\nSCAN_POOL_BYTES = 2 * 1024**3   # streaming scans, no admission to hot pool\n\ndef admit(page_id, is_scan, hot_pool, scan_pool):\n    if is_scan:\n        # Scans get a small FIFO; they must not evict hot_pool.\n        scan_pool.put_fifo(page_id)\n        return\n    hot_pool.put_lru(page_id)\n\ndef fetch_batch(page_ids, page_service):\n    # Batch + hedge: cut tail latency on cold misses.\n    # Trade-off: duplicate backend load on hedge vs lower p99.\n    return page_service.fetch_many(page_ids, readahead=8, hedge_after_ms=25)"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the workload, not the diagram",
+          "text": "State your assumptions aloud: read-write ratio, item sizes, latency objectives, and burst factor. Say explicitly whether you are optimizing for elastic scale-to-zero, for strict p99 on point lookups, or for scan throughput. The interviewer wants to hear you refuse a one-size answer."
+        },
+        {
+          "title": "Draw the two paths separately",
+          "text": "Sketch write as log append plus async materialization, and read as buffer-pool lookup with fallthrough to page service then durable store. Label where the network is crossed and what LSN or version is requested. This forces the consistency discussion early."
+        },
+        {
+          "title": "Name the caches and the invalidation rule",
+          "text": "Specify sizes, eviction policy, and what happens on update: version check, broadcast invalidation, or log replay. Call out scan resistance and prewarming. Most candidates draw boxes; strong candidates state hit-rate expectations and cold-start behavior."
+        },
+        {
+          "title": "Argue the trade-off against coupled local-disk design",
+          "text": "Volunteer the honest comparison: coupled wins on predictable p99 and simplicity for stable, latency-sensitive OLTP; separated wins on elasticity, fast recovery, and cost at rest. Explain when you would reject separation — small stable dataset, single-digit-millisecond objectives, no burst need."
+        },
+        {
+          "title": "Walk a failure end to end",
+          "text": "Pick one: cold-start storm, replay pileup, or backend throttling. Describe the dashboard signature — which metrics move together — and the mitigation: sticky routing, compaction tuning, isolated scan compute, hedging. Interviewers promote candidates who debug the system they just designed."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Remote disk equals separation.** It does not. If adding query capacity still requires copying data, compute and storage are still coupled — you just added latency without gaining elasticity.",
+        "**Stateless means fast to scale.** Starting a process is fast; warming its cache is not. A cold node can be slower than no node at all because it adds backend load while serving misses.",
+        "**Object storage is a cache.** It is not. It is a durable authority with high first-byte latency and rate limits. Treating it like a cache leads to retry storms and throttling that take down all compute at once.",
+        "**More compute fixes slow reads.** It usually makes them worse. If the bottleneck is page-service CPU or backend bandwidth, extra cold nodes increase fetch pressure and lower overall hit rate.",
+        "**Strong consistency comes for free from shared storage.** It does not. Shared pages without a shared log sequence and snapshot protocol produce stale reads and write skew. You must design version tracking explicitly.",
+        "**One buffer pool serves all workloads.** A single LRU shared between point lookups and full scans guarantees thrash. Isolation — separate pools or separate compute — is a requirement, not a tuning knob."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use separation for elasticity and growth; keep coupling for strict latency and stable size.",
+      "headers": [
+        "Condition",
+        "Use separation",
+        "Keep coupled / local-disk"
+      ],
+      "rows": [
+        [
+          "Dataset size vs memory",
+          "Dataset far exceeds RAM; working set shifts over time; cheap durable growth matters",
+          "Dataset fits comfortably in memory on one large node; entire hot set pins easily"
+        ],
+        [
+          "Traffic shape",
+          "Spiky, multi-tenant, or bursty analytics; long idle periods where scale-to-zero saves real money",
+          "Flat, predictable OLTP with tight p99; connection churn is low and every millisecond counts"
+        ],
+        [
+          "Availability needs",
+          "Need fast recovery without standby copies; can tolerate brief cold-cache slowness after failover",
+          "Need deterministic failover latency; cannot tolerate post-restart miss storms"
+        ],
+        [
+          "Team and ops",
+          "Willing to operate and debug two systems plus cache coherence; have metrics on hit rate and fetch depth",
+          "Small team that needs one system to reason about; debugging a second storage service is unaffordable"
+        ],
+        [
+          "Access pattern",
+          "Many isolated tenants or workloads that can be split across compute pools sharing one store",
+          "Heavy single-row writes with read-your-write on the same node; cross-node invalidation would dominate"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pragmatic middle path is the one most production systems actually land on: separated durability with **workload-isolated compute**. Keep one warm pool for latency-sensitive serving with protected caches, connection pooling, and sticky routing. Burst to separate ephemeral compute for analytics, backfills, and batch jobs that share the same storage but never pollute the serving cache. You pay for some duplicated memory, but you contain blast radius and make autoscaling safe. Do not start with full separation because it sounds modern. Start from the latency objective and the burst factor. If bursts are rare and p99 is contractual, coupling is the honest answer — say so. Trade-off stated plainly: separation optimizes for **cost and recovery at the expense of tail latency predictability**, and no caching layer fully erases that exchange."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Separate storage and compute to scale and recover independently by keeping compute stateless — and make it fast by layering scan-resistant local caches over a shared page cache, because every miss now pays a network round trip.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:44:00.805Z",
+    "problems": []
+  }
+}

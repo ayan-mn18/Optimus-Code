@@ -1,0 +1,280 @@
+{
+  "slug": "realistic-design-no-un-necessary-boxes-user-empathy",
+  "title": "Realistic Design (No Un-necessary Boxes) & User Empathy",
+  "summary": "Realistic HLD means every box earns its operational cost and every decision traces back to a user pain you can name in milliseconds, errors, or money.",
+  "kind": "HLD",
+  "problemSlug": "realistic-design-no-un-necessary-boxes--user-empathy-148-322",
+  "topic": "User Empathy, User Experience, Future Proofing & Realistic Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🧭",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Realistic Design",
+    "User Empathy",
+    "Future Proofing"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is Empathy Mapping? — updated 2026 | IxDF",
+      "url": "https://ixdf.org/literature/topics/empathy-mapping",
+      "source": "ixdf.org",
+      "kind": "article"
+    },
+    {
+      "title": "Empathy Mapping: The First Step in Design Thinking - NN/G",
+      "url": "https://www.nngroup.com/articles/empathy-mapping/",
+      "source": "nngroup.com",
+      "kind": "article"
+    },
+    {
+      "title": "The Importance of Empathy in UX Design - YouTube",
+      "url": "https://www.youtube.com/watch?v=fqNAWyOOVfw",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Interviewers do not fail you for missing a queue. They fail you for drawing boxes no real team could run and no real user would tolerate. **If you cannot name the user pain, the SLO, and who gets paged, delete the box.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What realistic design actually means"
+    },
+    {
+      "type": "paragraph",
+      "text": "Realistic design means every box on your whiteboard maps to something you can deploy, scale, monitor, and pay for. A box is not an idea. It is a failure domain with an instance shape, a scaling trigger, a data store with a growth rate, and an on-call owner. An arrow is not a line. It is a network call with latency, timeout, retry behavior, payload size, and a failure mode. If you draw `API Gateway -> Auth Service -> User Service -> Notification Service -> Analytics Service -> ML Service` for a to-do app with 10k daily users, you have not designed a system. You have drawn an incident. The WHY is operational cost: each hop adds p50 and explodes p99, adds a partial-failure case your client must handle, and adds a deploy pipeline someone must maintain. Trade-off every time: separation buys independent deploys and scaling, but you pay in latency, consistency work, and debugging surface."
+    },
+    {
+      "type": "paragraph",
+      "text": "User empathy in HLD has nothing to do with wireframes. It means translating what a person **says, thinks, does, and feels** during a critical moment into hard system requirements. A rider who taps `Pay` twice because the spinner hung for 3 seconds does not care about your event-driven purity. They care that they were not charged twice and that the screen told the truth. That feeling — *did it work or do I retry?* — forces idempotency keys, exactly-once effects from at-least-once delivery, and a synchronous authorize path with asynchronous settlement. The WHY: users punish uncertainty more than slowness. A predictable 900ms with a clear state beats an average 200ms with a 5% tail that leaves the UI lying. Trade-off: you accept a slower, heavier write path to buy trust."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: user moment to system decision"
+    },
+    {
+      "type": "paragraph",
+      "text": "Stop starting from `clients -> load balancer -> services`. Start from one concrete moment, derive the pain, lock an SLO, then let the SLO pick the architecture. This is the only future-proofing that works: you version the contract around the user promise, not around the internal topology. If the promise is *search feels instant while typing*, you do not need a 12-service pipeline. You need edge caching, debounced requests, cancelable in-flight calls, and a read path that degrades to stale results instead of erroring. The topology follows the tolerance for staleness, not the other way around."
+    },
+    {
+      "type": "mermaid",
+      "title": "From empathy to architecture",
+      "caption": "Every architectural choice must trace back to a user moment and an SLO.",
+      "code": "flowchart TD\n  Moment[User moment: tap Pay or Search] --> Pain[Pain: double charge, spinner, stale list]\n  Pain --> SLO[SLO: p99 latency, error budget, correctness]\n  SLO --> ReadWrite[Read vs write pressure]\n  ReadWrite --> Choice[Choice: sync vs async, cache vs source of truth]\n  Choice --> Contract[Contract: idempotent API, versioned schema]\n  Contract --> Ops[Ops: scaling trigger, alert, runbook]\n  Ops --> Cost[Cost: infra plus on-call load]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the diagram backward in an interview. Pick `tap Pay`: the pain is duplicate charge and ambiguous state. So the SLO is not just *p99 under 1200ms*, it is *zero duplicate side effects under retry*. That SLO kills naive fire-and-forget queues on the authorize path. You keep the synchronous check for funds plus idempotency key stored in the database with a uniqueness constraint, then hand off to an async worker for settlement, receipts, and ledger updates. Walk the interviewer through that chain out loud. WHY sync here: money movement demands a definitive answer now. WHY async after: receipts can be seconds late without breaking trust. Trade-off stated explicitly: higher write latency and database contention on the hot path in exchange for correctness the user can feel."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Realistic vs resume-driven choices and what each costs.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "3 boxes: client, API + DB, background worker",
+          "One deploy, one failure domain to reason about, debuggable tail latency",
+          "Coupled scaling; heavy reads can starve writes unless you isolate pools"
+        ],
+        [
+          "Add cache + CDN for reads",
+          "p50 drops 10x, origin survives spikes, typing feels instant",
+          "Invalidation bugs, stale UI, thundering herd on expiry"
+        ],
+        [
+          "Sync write + async side effects",
+          "User gets truth now, retries are safe, notifications can lag",
+          "Need idempotency store, outbox, dead-letter handling"
+        ],
+        [
+          "Microservices per entity on day one",
+          "Team autonomy at 200 engineers, independent deploys",
+          "Distributed transactions, schema drift, 4 hops for one screen, needs platform team"
+        ],
+        [
+          "Event streaming for everything",
+          "Replay, audit, fan-out to future consumers",
+          "Ordering pain, consumer lag as hidden queue, exactly-once is a lie without idempotent sinks"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pattern: realism is about matching mechanism to pressure. Read-heavy with tolerance for seconds of staleness wants caching and denormalized read models. Write-heavy with money or inventory correctness wants constraints in the database, not wishes in the application layer. Do not add Kafka because you expect scale. Add it when you can state the buffer requirement in numbers: *we must absorb 10x checkout bursts for 5 minutes without dropping authorizations, and consumers lagging 30 seconds is still acceptable for receipts but not for fraud checks.* If you cannot fill in the numbers, you do not need the box. That sentence is the difference between senior and mid-level signal."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Unnecessary boxes fail in three predictable ways. First, tail latency stacking. Each service adds 20-80ms p50 and serializes JSON, does auth, logs, and calls the next one. Three extra hops turn a 300ms p99 into a 1.8s p99 under load, and your client timeout fires first. The user sees a spinner, taps retry, and creates duplicate orders because you forgot idempotency. Second, partial failure without a truth teller. Service A wrote to its DB, published an event, Service B was down. Now the UI says *success* but the receipt never arrives. Support tickets say *I paid but history is empty*. Third, cold-start and retry storms. A slow downstream triggers timeouts, every upstream retries at once, the downstream never recovers. WHY this happens: you optimized for diagram symmetry instead of failure isolation. Trade-off you ignored: every async boundary needs a backpressure story and a user-visible degraded state."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Symptom: p99 climbs while p50 looks flat — classic multi-hop serialization plus GC plus one slow dependency.",
+        "Symptom: duplicate charges or duplicate posts on retry — missing idempotency key end-to-end, from client generated UUID to DB unique constraint.",
+        "Symptom: `success` screen followed by missing data — write and publish were not atomic; you need transactional outbox, not dual-write hope.",
+        "Symptom: cache stampede after expiry — no request coalescing, no jittered TTL, no stale-while-revalidate.",
+        "Symptom: on-call cannot tell which box owns the error — no correlation ID, no SLO per edge, just a graph of red dashboards."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The realism test",
+      "text": "Point at any box and answer in 10 seconds: **what instance type, what scales it, what metric pages, and what does the user see when it is down?** If you hesitate, erase it and fold the logic into a neighboring box. Simplicity is a reliability feature."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Make it concrete: encode empathy as a budget"
+    },
+    {
+      "type": "paragraph",
+      "text": "Senior candidates turn feelings into numbers the system can enforce. Do not say *fast*. Say *typeahead must render in under 200ms at p95 on 4G, with cancelation of stale requests*. Do not say *reliable payments*. Say *at-most-once charge effect under at-least-once retries*. Write the budget down and let it veto architecture. The snippet below is the kind of artifact that makes empathy testable instead of sentimental."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "slo_budget.py",
+      "code": "BUDGET_MS = {\n    \"client_render\": 50,      # skeleton + cached shell, no network\n    \"edge_cache_hit\": 30,    # CDN / edge, stale-while-revalidate\n    \"api_p95\": 120,          # origin read, must support cancelation\n    \"total_p95_target\": 200,\n}\n# Rule: if api_p95 + edge exceeds target, you do NOT add a service.\n# You add cache, denormalize, or degrade to stale.\n# Write path has different budget:\n# authorize_sync_p99 < 1200ms AND idempotency_key UNIQUE constraint\n# settlement_async_lag < 30s acceptable -> queue is allowed HERE"
+    },
+    {
+      "type": "paragraph",
+      "text": "WHY this clarifies the design: the budget forces the trade-off into the open. For reads, you spend complexity on caching and request coalescing to protect the 200ms promise. For writes, you spend latency on a database constraint to protect the correctness promise. Future-proofing lives in the contract, not the box count: `POST /payments {idempotency_key, amount, currency, v:1}` with server-side deduplication for 24 hours lets you swap sync-plus-queue for a ledger service later without breaking clients. Version the promise, hide the topology."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Open with a user moment, not a diagram",
+          "text": "Say: For checkout I care about double-tap payers on flaky mobile. That gives me one SLO for latency and one for no duplicate effect. Everything I draw must serve those two. This frames you as user-driven in 30 seconds."
+        },
+        {
+          "title": "Draw the smallest thing that meets the SLO",
+          "text": "Start with client, API, primary DB, object store or cache, one background worker. Justify each addition only when the SLO breaks. Narrate the WHY each time."
+        },
+        {
+          "title": "Invite the scale follow-up",
+          "text": "Say: At 10k DAU this holds. At 10M DAU reads break first, so I would split reads, add edge cache, and isolate DB read replicas before I split services. You show scaling judgment without premature boxes."
+        },
+        {
+          "title": "Name failure and degraded UX explicitly",
+          "text": "For each arrow state timeout, retry with jitter plus idempotency, and what the UI shows: skeleton, stale data badge, or explicit failure with safe retry button. Interviewers score this higher than naming tools."
+        },
+        {
+          "title": "Close with cost and evolution",
+          "text": "End with: three deployables, two data stores, one queue only for non-critical side effects. Next to split is notifications when team size forces it, behind a versioned event with schema registry. Realistic plus future-proof."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the interviewer is scoring",
+      "text": "Can you kill your favorite box when the SLO does not need it? Say **I would not add streaming here because consumer lag becomes invisible queueing and we have no replay requirement yet** — that one sentence signals seniority more than five correct tool names."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail candidates"
+    },
+    {
+      "type": "list",
+      "items": [
+        "More services equals more scalable — no, it equals more network hops, more p99 variance, and distributed consistency work you now own.",
+        "Async always means faster for users — async means faster to acknowledge, slower to truth. Use it for side effects, not for answers the user is waiting on.",
+        "Empathy means adding features — in HLD it means removing uncertainty: idempotent retries, clear states, honest loading and error contracts.",
+        "Future-proof means pluggable everything — future-proof means stable API versioning and evolvable schemas; internal pluggability without a second consumer is just indirection.",
+        "Caching fixes a slow design — caching hides a slow design until invalidation, cold start, or a write-heavy workload exposes it. Fix the hot path first.",
+        "The diagram is the design — the SLOs, timeouts, retry budgets, and ownership are the design. The diagram is just the index."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to be minimal and when to invest"
+    },
+    {
+      "type": "table",
+      "caption": "Use realism to decide; use empathy to decide what not to break.",
+      "headers": [
+        "Situation",
+        "Do this",
+        "Why"
+      ],
+      "rows": [
+        [
+          "MVP, unclear traffic",
+          "Monolith + managed DB + cache, versioned REST",
+          "Optimize for iteration speed and debuggability; splitting early slows every schema change"
+        ],
+        [
+          "Read-heavy feed or search",
+          "Edge cache, denormalized read model, request cancelation",
+          "User pain is latency and jank; staleness of seconds is acceptable"
+        ],
+        [
+          "Money, inventory, seats",
+          "Sync authorize with DB constraint + idempotency, async settlement via outbox",
+          "User pain is duplicate or lost effect; correctness outweighs write p50"
+        ],
+        [
+          "Bursty traffic, slow consumers",
+          "Bounded queue with backpressure, DLQ, visible degraded state",
+          "Queue absorbs burst only if lag is acceptable to the user waiting"
+        ],
+        [
+          "Second team, second consumer",
+          "Split service behind stable event schema, add ownership and SLO per edge",
+          "Split on team or scaling pressure, not on entity nouns"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Future-proofing without bloat has a rule: harden the edges, keep the inside boring. Harden means idempotency keys on all mutating APIs, pagination and backward-compatible fields on all reads, and an outbox table if you ever publish events so DB write and event publish succeed or fail together. Boring inside means one primary store you understand deeply, timeouts and budgets written down, and load tests for the one path the user cannot forgive. WHY: edges outlive services. You will replace workers, caches, even databases. You will not get a second chance to fix duplicate charges or a v1 API that leaks internal IDs and requires lockstep mobile upgrades. Trade-off accepted: slightly more upfront contract design to buy years of independent evolution."
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **I design from one user moment to an SLO, then draw the fewest boxes that meet that SLO with explicit timeouts, idempotency, and degraded UX — and I future-proof the contract, not the diagram.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:18:49.165Z",
+    "problems": []
+  }
+}

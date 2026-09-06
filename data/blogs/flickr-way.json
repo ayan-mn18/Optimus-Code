@@ -1,0 +1,272 @@
+{
+  "slug": "flickr-way",
+  "title": "Flickr Way",
+  "summary": "Fault tolerance keeps Flickr serving photos when machines die. Consensus keeps metadata correct when they disagree. Know which data needs which.",
+  "kind": "HLD",
+  "problemSlug": "flickr-way-97-321",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Medium",
+  "coverEmoji": "🛡️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Fault Tolerance",
+    "Consensus",
+    "Flickr"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "About Flickr",
+      "url": "https://www.flickr.com/about",
+      "source": "flickr.com",
+      "kind": "article"
+    },
+    {
+      "title": "10 October 2024, The end of the trade-offs? Competing and … - Flickr",
+      "url": "https://www.flickr.com/photos/euregionsweek/54058736936/",
+      "source": "flickr.com",
+      "kind": "article"
+    },
+    {
+      "title": "Flickr vs Photo Blog - Pros and Cons - Planet Botch",
+      "url": "https://planetbotch.blogspot.com/2012/12/flickr-vs-photo-blog-pros-and-cons.html",
+      "source": "planetbotch.blogspot.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Flickr? THREE WAYS It Can Help Your Photography - YouTube",
+      "url": "https://www.youtube.com/watch?v=BvWi6U7P1-k",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Fault tolerance is not preventing failure — it is bounding blast radius. Consensus is not performance — it is agreement on one order of operations when nodes disagree.** Every design choice here trades **availability and latency against correctness**. If you cannot name what you gave up, you do not have a fault-tolerant design, you have hope."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "A **fault** is a component behaving wrong: a disk returns garbage, a process stalls for 8 seconds on GC, a network link drops 2% of packets. A **failure** is the system violating its contract: a photo upload acknowledged as durable is lost, or two users see different owners for the same photo ID. Fault tolerance means the second does not follow from the first. You achieve it with **redundancy + detection + recovery**, nothing else. No magic. Three copies do nothing if you cannot detect which copy is stale and route around it. For a photo system like Flickr, this distinction is load-bearing: losing one thumbnail replica is a fault; serving a deleted private photo because caches disagree is a failure."
+    },
+    {
+      "type": "paragraph",
+      "text": "Distributed **consensus** is a narrower problem: a set of crash-prone nodes must agree on a single total order of state transitions and never diverge, even across crashes and partitions. That is it. Leader election, atomic commit, linearizable photo-metadata updates — all reduce to this. Protocols like **Paxos and Raft** solve it by forcing every commit through a **quorum**: a majority that intersects. If write W1 commits on majority M1 and read R2 contacts majority M2, then M1 and M2 overlap on at least one node that saw W1. That overlap is why you can claim correctness. The trade-off is explicit: **you pay an extra network round-trip and lose availability during partitions to buy a single truth.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: replicate, agree, commit"
+    },
+    {
+      "type": "paragraph",
+      "text": "Production fault tolerance almost always looks the same: a **write-ahead log (WAL)** on the leader, streaming replication to followers, and a **commit rule** based on acknowledgements. The client writes to the leader. The leader appends to its local WAL and forwards in parallel — it does **not** apply to state machine yet. Followers append to their WAL, fsync according to durability policy, and ack. Once a **quorum** acks, the leader marks the entry committed, applies it, and tells followers to apply. Reads that need linearizability go to the leader or to a quorum. This is why the leader is a bottleneck by design: serialization is the price of agreement. You chose correctness over throughput the moment you picked this shape."
+    },
+    {
+      "type": "mermaid",
+      "title": "Quorum commit path",
+      "caption": "Every strong write pays for intersection. No quorum, no commit.",
+      "code": "flowchart TD\n  C[Client Write] --> L[Leader: append to WAL]\n  L --> F1[Follower 1: append]\n  L --> F2[Follower 2: append]\n  F1 --> Q{Quorum Ack 2 of 3?}\n  F2 --> Q\n  Q -->|Yes| CM[Commit + Apply + Respond OK]\n  Q -->|Timeout| RT[Do not commit: retry or step down]\n  RT --> E[Start Election if leader suspected]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Leader failure is handled by **terms and elections**, not by magic detection. Every node has a monotonically increasing term. If a follower hears no heartbeat within its randomized election timeout, it increments its term, votes for itself, and asks others. It becomes leader only if it collects a majority — which guarantees at most one leader per term. Crucially, a new leader must **not** delete committed entries: it forces its log on followers, and any entry committed on a prior quorum survives because that quorum intersects the election majority. Randomized timeouts exist for one reason: to avoid split votes and livelock. The trade-off here is **detection speed versus false positives**. A 150ms timeout fails over fast and also partitions your cluster every time GC pauses."
+    },
+    {
+      "type": "mermaid",
+      "title": "Node lifecycle under Raft",
+      "caption": "There is no stable leader, only a lease renewed by heartbeats.",
+      "code": "stateDiagram-v2\n  [*] --> Follower\n  Follower --> Candidate: election timeout\n  Candidate --> Leader: majority votes\n  Candidate --> Follower: discovers valid leader\n  Leader --> Follower: sees higher term\n  Follower --> Follower: heartbeat received\n  Leader --> Leader: heartbeat acked"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Every row is a latency vs availability vs correctness decision. Pick explicitly.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Sync quorum write (e.g. 2 of 3 ack before OK)",
+          "No acknowledged upload lost on single-node crash; simple reasoning",
+          "p99 write latency is slowest quorum member; throughput capped by leader; unavailable if no majority"
+        ],
+        [
+          "Async replication (ack then replicate)",
+          "Fast uploads, high throughput, survives replica lag",
+          "Silent data loss window; users see rollback after failover; need reconciliation jobs"
+        ],
+        [
+          "Strong leader reads",
+          "Linearizable metadata: no stale album membership, no resurrected deletes",
+          "Every read hits leader; leader hotspot; higher tail latency"
+        ],
+        [
+          "Quorum / stale reads",
+          "Scales photo feed and search reads horizontally",
+          "Stale or reordered views; unacceptable for auth, ownership, billing"
+        ],
+        [
+          "3 vs 5 replicas",
+          "3 is cheaper and faster to commit; 5 tolerates 2 failures",
+          "5 costs 66% more storage and needs 3 acks — slower commits, harder placement"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The decision that separates juniors from seniors is **where you apply consensus**. Do not run consensus on photo bytes. Bytes are immutable, content-addressed by hash, and replicated with simple quorum or erasure coding — they need durability, not ordering. Run consensus only on the small, hot, mutable state: photo ID allocation, ownership and visibility flags, album membership, delete markers. That split is why large photo systems stay fast: **95% of bytes take the cheap, highly available path; 5% of metadata takes the expensive, correct path**. Mix them and you either lose photos or you make every upload wait for a global agreement it never needed."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Consensus does not eliminate failure modes — it converts silent corruption into loud unavailability, which is the correct trade. But the new failure modes are operationally vicious. The most common is **gray failure**: a disk that is slow, not dead. The node keeps voting and heartbeating just often enough to avoid eviction, but its fsync takes 2 seconds. Your p99 upload latency explodes while health checks stay green. Second is **asymmetric partition**: A can talk to B, B can talk to C, but A cannot talk to C. Leader thinks it has quorum, one follower keeps triggering elections, logs diverge. Third is **clock and GC stalls**: a 10-second pause looks exactly like a crash to peers. You fail over, the old leader wakes up and tries to write with a stale term. If fencing is wrong, you get split-brain writes."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Upload succeeds then photo vanishes after failover** — symptom of async replication marketed as durable. The acked write never reached a quorum; new leader does not have it. Fix: sync quorum or explicit `durable=false` in API.",
+        "**Two users see different album contents for minutes** — stale replica reads or cache without invalidation on commit. Symptom: refresh flips membership back and forth. Fix: versioned reads + read-your-write for owner.",
+        "**Cluster goes read-only during a single AZ outage** — you placed 2 of 3 voters in one AZ to save cross-AZ cost. Lost AZ means lost majority. Symptom: all metadata writes time out despite compute being healthy. Fix: spread voters across 3 AZs, use witnesses.",
+        "**Flapping leader, 100+ elections per minute** — timeouts too tight for your p99 network jitter. Symptom: throughput collapses, logs full of `higher term` messages. Fix: raise election timeout to 10x p99 heartbeat RTT, randomize.",
+        "**Resurrected deletes: deleted private photo reappears** — delete applied as background GC without a consensus-committed tombstone. A lagging replica with the old version rejoins and wins. Fix: tombstones are first-class committed writes with TTL."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Fencing is not optional",
+      "text": "A deposed leader that keeps serving writes is how you get two owners for one photo. **Every resource access must be fenced by term or lease**: storage rejects writes with `term < current`, object store uses conditional writes on version, MySQL uses `WHERE term = ?`. If your failover plan says “old leader will notice quickly,” you do not have a plan."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code: what quorum actually looks like"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "quorum_store.py",
+      "code": "import time, random\nfrom concurrent.futures import ThreadPoolExecutor, as_completed\n\nclass QuorumStore:\n    def __init__(self, nodes, quorum=2, timeout_ms=300):\n        self.nodes = nodes  # each has append(entry)->bool with fsync\n        self.quorum = quorum\n        self.timeout = timeout_ms / 1000.0\n\n    def commit(self, entry) -> bool:\n        # entry carries (term, index, idempotency_key). Retries are safe.\n        acks = 1  # leader local append already done\n        with ThreadPoolExecutor(max_workers=len(self.nodes)) as pool:\n            futs = {pool.submit(n.append, entry): n for n in self.nodes}\n            deadline = time.time() + self.timeout\n            for f in as_completed(futs, timeout=self.timeout):\n                try:\n                    if f.result(timeout=max(0, deadline - time.time())):\n                        acks += 1\n                        if acks >= self.quorum:\n                            return True  # commit point\n                except Exception:\n                    continue  # timeout / crash = no vote, never retry blindly\n        return False  # do NOT apply, do NOT ack client as durable"
+    },
+    {
+      "type": "paragraph",
+      "text": "This 20-line sketch carries the whole interview: **timeout-bounded fan-out, count only explicit acks, commit point is explicit, retries need idempotency keys**. Note what it does not do: it never applies on minority, never treats a timeout as success, never blocks forever waiting for a straggler. In production you add the missing pieces for the same trade-off reasons: parallel RPCs to cut tail latency, hedged requests if p99 matters more than load, and a client-visible distinction between `committed` and `accepted`. If the function returns `False`, the client must retry with the same idempotency key — otherwise a retried upload creates duplicate photo IDs. Correctness lives in that retry contract, not in the happy path."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Scope the blast radius",
+          "text": "Say: uploads = immutable blobs + mutable metadata. Blobs need durability and availability; metadata needs ordering. Propose two paths now or you will be forced to put everything through consensus later."
+        },
+        {
+          "title": "State your failure model",
+          "text": "Say: crash-stop plus network partitions and slow nodes, not Byzantine. State RPO=0 for metadata (no loss of acked visibility change) and RPO>0 for derived data like feeds. Interviewers grade this sentence."
+        },
+        {
+          "title": "Pick numbers and placement",
+          "text": "Say: 3 voters across 3 AZs for metadata (tolerates 1 AZ loss), 3+ replicas or EC for blobs, quorum writes for metadata, leader reads for ownership, replica reads for feeds. Justify each number with quorum math."
+        },
+        {
+          "title": "Walk a write and a failover",
+          "text": "Draw client -> leader -> WAL -> quorum -> commit. Then kill the leader mid-commit. Show why the client retries safely and why no committed delete is lost. This is where split-brain questions come."
+        },
+        {
+          "title": "Name what breaks first",
+          "text": "Say: gray disks inflate p99, tight timeouts cause flapping, cross-AZ quorum adds ~50-100ms. Propose mitigations: randomized timeouts, fencing with terms, tombstones for deletes, backfill reconcilers for blobs."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "For a Flickr-shaped workload the winning move is to **narrow consensus to the smallest surface**. Photo upload flow: client gets an ID from a consensus-backed allocator or UUID with conditional insert, PUTs bytes directly to blob storage with content hash, then commits a metadata row (`photo_id, owner, visibility, blob_hash, version`) via quorum. Image variants, search index, and activity feeds are derived asynchronously — they can lag and rebuild. Deletes write a committed tombstone first, then GC blobs later. The trade-off you are selling: uploads stay fast because bytes never wait for agreement, while privacy-critical state (who can see what) never diverges because it always does."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**“Three replicas means I tolerate two failures.”** No. With 3 nodes and majority quorum you tolerate **one**. Tolerating two needs five voters. Replica count without quorum size is meaningless.",
+        "**“Leader election means high availability.”** Election gives safety, not liveness. During a partition with no majority, the system correctly refuses writes. That is consensus working, not broken.",
+        "**“Async replication with retry is durable enough.”** It is not RPO=0. Any ack before quorum is a lie under crash. Either call it best-effort or make it sync.",
+        "**“Clocks solve ordering.”** Wall clocks go backwards with NTP steps. Ordering comes from terms and log indexes, not timestamps. Timestamps are for TTLs and debugging.",
+        "**“Consensus fixes slow nodes.”** It amplifies them. One slow voter in the quorum path sets your p99. You need timeouts, hedged reads, and eviction — consensus alone just waits."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use consensus sparingly. It is a correctness tool, not a scaling tool.",
+      "headers": [
+        "Use consensus when",
+        "Do NOT use it when"
+      ],
+      "rows": [
+        [
+          "Linearizable ownership, visibility, delete tombstones — privacy depends on single truth",
+          "Photo bytes, thumbnails, previews — immutable, need durability and CDN, not order"
+        ],
+        [
+          "ID allocation that must never fork or collide under retry",
+          "Feed ranking, view counts, likes — lossy counters tolerate gossip or CRDTs"
+        ],
+        [
+          "Group membership, shard mapping, schema migrations — all nodes must agree",
+          "Per-user drafts or caches — single-writer primary with async backup is cheaper"
+        ],
+        [
+          "Electing one metadata leader per shard to serialize writes",
+          "Global leader for all traffic — creates a planetary bottleneck and failure domain"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The practical rule: **if two concurrent writes to the same key must have a defined winner that every replica respects, use consensus; if last-writer-wins or loss is acceptable, do not**. Flickr-style systems are 90% second category. Search indexes can be rebuilt from the metadata log. Counters can be sharded. Even album ordering can be a per-album log with single-writer semantics rather than global agreement. Reserve the 3-AZ, 3-voter, sync-quorum cluster for the narrow metadata shard where a disagreement becomes a privacy incident. Everything else should take the cheaper path and own its reconciliation story. That restraint is what interviewers mean by judgment."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**“I put only mutable privacy-critical metadata behind quorum consensus across 3 AZs for RPO=0, keep immutable photo bytes on highly available quorum blob storage without global ordering, and make every failover safe with terms, fencing, and idempotent retries.”**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:01:09.817Z",
+    "problems": []
+  }
+}

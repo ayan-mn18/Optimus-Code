@@ -1,0 +1,288 @@
+{
+  "slug": "decorator-design-pattern",
+  "title": "Decorator Design Pattern",
+  "summary": "Decorator wraps an object in the same interface to stack behavior at runtime — composition over inheritance, with ordering and identity costs.",
+  "kind": "LLD",
+  "problemSlug": "decorator-design-pattern-37-77",
+  "topic": "Structural Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "🎁",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Structural Patterns",
+    "Decorator"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Decorator - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/decorator",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Decorator Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/decorator-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Decorator pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Decorator_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Decorator Design Pattern - Nikhil Gupta - Medium",
+      "url": "https://nikhilgupta1.medium.com/decorator-design-pattern-d465f4897022",
+      "source": "nikhilgupta1.medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Decorator is **runtime inheritance without the hierarchy**. You keep the interface identical, hold a reference to the wrapped object, and add behavior before or after delegation. If your design needs combinations that multiply — channels, toppings, features, policies — **wrap, don't subclass**. The price is indirection and ordering complexity."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A Decorator is a class that **implements the same interface as the object it extends** and holds a reference to that object. Construction looks like `new SMSDecorator(new EmailNotifier(base))`. Every call goes through the outer wrapper, which does some extra work and then forwards to the inner object. From the caller's side nothing changes: the type is still `Notifier`, `Stream`, `Pizza`, `RequestHandler`. That transparency is the whole point. Inheritance bakes variation into the class at compile time. Decoration assembles variation at object-creation time by nesting wrappers. You get an open-ended stack of behaviors from a small set of classes, and you can reorder, add, or remove layers without touching the core class or its other instances."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape exists is combinatorial math. Suppose you have a base notification sender and three independent options: SMS, Slack, encryption. With subclassing you need a class for every useful subset: `SmsNotifier`, `SlackNotifier`, `EncryptedSmsNotifier`, `EncryptedSlackNotifier`, `SmsAndSlackNotifier`, and so on. Add a fourth option and the hierarchy doubles. Every new feature rewrites old classes. With Decorator you write four small wrappers, each handling exactly one concern, each ignorant of the others. The client composes what it needs: base + encryption + SMS + Slack, in whatever order the semantics demand. The trade-off is explicit: you trade **compile-time clarity for runtime flexibility**. The hierarchy stays flat and closed to modification, but the resulting object graph is only visible at runtime, which makes debugging and reasoning harder."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are four roles, and you should name them in the interview before writing code. `Component` defines the common interface. `ConcreteComponent` is the base behavior with no extras. `BaseDecorator` implements `Component`, stores a `Component` reference, and forwards every method by default. `ConcreteDecorator` extends the base decorator and overrides only the methods it cares about, adding work before or after the `super` call. The critical design decision is that `BaseDecorator` **is-a** `Component` and **has-a** `Component` simultaneously. That dual relationship is what permits arbitrary nesting. Without a shared forwarding base, every decorator duplicates delegation boilerplate and drifts. With it, adding a new decorator is one class, no changes to existing code."
+    },
+    {
+      "type": "mermaid",
+      "title": "Decorator structure",
+      "caption": "BaseDecorator implements and wraps the same interface, enabling recursive nesting.",
+      "code": "classDiagram\n  class Component {\n    <<interface>>\n    +send(msg)\n    +cost() int\n  }\n  class ConcreteComponent {\n    +send(msg)\n    +cost() int\n  }\n  class BaseDecorator {\n    +wrapped Component\n    +send(msg)\n    +cost() int\n  }\n  class SmsDecorator {\n    +send(msg)\n  }\n  class EncryptDecorator {\n    +send(msg)\n  }\n  Component <|.. ConcreteComponent\n  Component <|.. BaseDecorator\n  BaseDecorator o-- Component : wraps\n  BaseDecorator <|-- SmsDecorator\n  BaseDecorator <|-- EncryptDecorator"
+    },
+    {
+      "type": "paragraph",
+      "text": "At runtime the call unwinds from outside in, then results fold back from inside out. The client invokes `send()` on the outermost wrapper. That wrapper preprocesses — validates, encrypts, logs, augments cost — then calls `wrapped.send()`. The chain continues until it hits the concrete component, which does the real work. Return values and side effects then propagate back outward, with each layer post-processing in reverse order. This is why order is semantic, not cosmetic. Encryption outside compression behaves differently from compression outside encryption. Caching outside authorization leaks different data than authorization outside caching. A competent answer always states the intended nesting order and why, because the pattern itself enforces no order. The trade-off: you gain **per-instance, per-request composability** at the cost of **implicit control flow** spread across N classes."
+    },
+    {
+      "type": "mermaid",
+      "title": "Request flow through the stack",
+      "caption": "Each layer adds work before or after forwarding inward.",
+      "code": "flowchart LR\n  Client --> D1[EncryptDecorator]\n  D1 --> D2[SmsDecorator]\n  D2 --> D3[SlackDecorator]\n  D3 --> Base[ConcreteComponent]\n  Base --> D3\n  D3 --> D2\n  D2 --> D1\n  D1 --> Client"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Canonical structure in code"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NotifierDecorator.java",
+      "code": "interface Notifier {\n    void send(String message);\n}\n\nfinal class EmailNotifier implements Notifier {\n    public void send(String message) {\n        // base behavior: send email\n        System.out.println(\"EMAIL: \" + message);\n    }\n}\n\nabstract class NotifierDecorator implements Notifier {\n    protected final Notifier wrapped;\n\n    protected NotifierDecorator(Notifier wrapped) {\n        if (wrapped == null) throw new IllegalArgumentException(\"wrapped is required\");\n        this.wrapped = wrapped;\n    }\n\n    @Override\n    public void send(String message) {\n        wrapped.send(message); // default: pure forwarding\n    }\n}\n\nfinal class SmsDecorator extends NotifierDecorator {\n    SmsDecorator(Notifier wrapped) { super(wrapped); }\n\n    @Override\n    public void send(String message) {\n        wrapped.send(message);          // inner channels first\n        System.out.println(\"SMS: \" + message); // then this layer\n    }\n}\n\nfinal class EncryptDecorator extends NotifierDecorator {\n    EncryptDecorator(Notifier wrapped) { super(wrapped); }\n\n    @Override\n    public void send(String message) {\n        String cipher = \"enc(\" + message + \")\"; // pre-process\n        wrapped.send(cipher);                      // forward transformed input\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read this implementation line by line because interviewers probe exactly these choices. The interface `Notifier` is the contract every layer honors, which is what lets the client treat a ten-deep stack as a single object. `NotifierDecorator` exists so concrete decorators do not reimplement forwarding for every method; skip it and a three-method interface becomes copy-paste across ten classes. The constructor rejects null because a decorator without a wrapped object is a null-pointer waiting to happen. `SmsDecorator` appends behavior after delegation — it fans out to another channel — while `EncryptDecorator` transforms input before delegation. That before-versus-after distinction is the design language of the pattern. Construction is explicit: `new SmsDecorator(new EncryptDecorator(new EmailNotifier()))` means encrypt then email plus SMS. Swap the nesting and you change observable behavior. The trade-off made visible here: **boilerplate per method versus safety of the abstraction** — narrow interfaces decorate cleanly, wide interfaces become tedious."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What Decorator buys and what it charges.",
+      "headers": [
+        "Benefit",
+        "Cost you pay",
+        "When the cost bites"
+      ],
+      "rows": [
+        [
+          "Adds behavior per object at runtime, no hierarchy change",
+          "Indirection on every call; deeper stacks cost latency and allocations",
+          "Hot paths with 5+ layers or per-byte stream wrapping"
+        ],
+        [
+          "One class per feature instead of one per combination",
+          "Many small classes; object graph only visible at runtime",
+          "Onboarding and debugging without a builder or diagram"
+        ],
+        [
+          "Base class stays closed to modification",
+          "Order-dependent semantics with no compiler enforcement",
+          "Encryption, compression, caching, auth stacked in wrong order"
+        ],
+        [
+          "Features compose in any order the client chooses",
+          "Identity confusion: wrapper != wrapped; `instanceof` and equality break",
+          "Code that relies on concrete type, reference equality, or serialization"
+        ],
+        [
+          "Single Responsibility per decorator",
+          "Interface bloat multiplies: every new Component method touches BaseDecorator + all overrides",
+          "Wide interfaces with 10+ methods"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pattern is often sold as free flexibility. It is not. The honest framing is this: Decorator converts a **compile-time complexity problem** (too many subclasses) into a **runtime reasoning problem** (too many invisible layers). That is usually the right trade when the set of combinations is large, user-driven, or decided per request — pizza toppings, notification channels, middleware policies. It is the wrong trade when the variation is small and static — two or three fixed configurations are clearer as explicit subclasses or parameters. Senior engineers name the mitigation alongside the choice: cap depth, provide a builder or factory that assembles validated stacks in a documented order, and keep the decorated interface narrow. If you cannot state the maximum depth and the canonical ordering, you do not have a design yet, you have a pile of wrappers."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Order is behavior",
+      "text": "Two decorators in different orders are **two different programs**. Caching outside authorization can serve one user's data to another. Logging outside retry logs once; inside retry logs every attempt. Always draw the stack top-to-bottom in the interview and justify the sequence."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Decorator failures are quiet because each layer looks correct in isolation. The first classic failure is **ordering inversion**: compression applied after encryption produces incompressible output and balloons storage, or validation placed outside sanitization validates input the inner layer then rewrites. Symptom is correct-looking code with wrong end-to-end output, and unit tests pass because each decorator was tested alone. The second is **stack explosion**: a request-scoped builder adds logging, tracing, retry, timeout, and auth wrappers per call without reuse, adding measurable latency and garbage-collection pressure. Symptom is p99 creep that profiles as delegation overhead, not business logic. The third is **identity and lifecycle mismatch**: the wrapper holds a stale or shared mutable inner object, or serialization captures the outer shell without the inner chain. Symptom is `ClassCastException`, failed equality checks, missing fields after deserialization, or one tenant's configuration leaking into another. The fourth is **partial forwarding**: someone adds a method to the interface and one decorator forgets to delegate, silently dropping behavior for every stack containing it. Symptom is a feature that works until a specific decorator is present. The fix in every case is structural: funnel construction through one factory, log the assembled chain at debug level, and add a contract test that asserts every decorator forwards every method."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Symptom: output correct but bloated or garbled — suspect transform order (compress vs encrypt, encode vs sign).",
+        "Symptom: latency grows with feature flags enabled — count wrapper depth per request and measure delegation cost.",
+        "Symptom: `instanceof` fails or downcast throws despite correct interface — you unwrapped the wrong layer or compared wrapper identity.",
+        "Symptom: feature disappears only when decorator X is active — X overrides without calling `wrapped`, or swallows exceptions.",
+        "Symptom: state leaks across requests — a decorator holds mutable shared state instead of per-chain state."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Stacking and unwrapping"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "decorator_stack.py",
+      "code": "from abc import ABC, abstractmethod\n\nclass Pizza(ABC):\n    @abstractmethod\n    def cost(self) -> int: ...\n    @abstractmethod\n    def desc(self) -> str: ...\n\nclass Plain(Pizza):\n    def cost(self): return 100\n    def desc(self): return \"plain\"\n\nclass Topping(Pizza):\n    def __init__(self, inner: Pizza):\n        self._inner = inner\n    def cost(self):\n        return self._inner.cost()\n    def desc(self):\n        return self._inner.desc()\n\nclass Cheese(Topping):\n    def cost(self): return self._inner.cost() + 30\n    def desc(self): return self._inner.desc() + \"+cheese\"\n\nclass Capsicum(Topping):\n    def cost(self): return self._inner.cost() + 20\n    def desc(self): return self._inner.desc() + \"+capsicum\"\n\n# order does not matter for pure addition, but does for transforms\norder = Capsicum(Cheese(Plain()))\nprint(order.desc(), order.cost())  # plain+cheese+capsicum 150"
+    },
+    {
+      "type": "paragraph",
+      "text": "This second example exists to make a窄 point: when decorators are purely additive and commutative, order is irrelevant and the pattern feels trivial. Cost summation commutes. Most real uses are not commutative. Encryption, authentication, caching, rate limiting, and validation interact. So in the interview, start with the additive example to establish the shape, then immediately volunteer the non-commutative case. Say: topping cost commutes, but `Cache(Auth(Handler))` versus `Auth(Cache(Handler))` are different security postures. That single sentence separates candidates who memorized the diagram from those who have operated it. The trade-off to state: additive decorators are safe to let callers stack freely; transformative decorators demand a **centralized assembly policy** so callers cannot invent unsafe orders."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the subclass explosion",
+          "text": "Do not recite the definition first. Draw base + 3 options, count the subclasses needed for all combinations, and say why that hierarchy rots. Then introduce the wrapper with the same interface. Interviewers grade the motivation, not the memorization."
+        },
+        {
+          "title": "Draw the four roles and the delegation arrow",
+          "text": "Sketch Component, ConcreteComponent, BaseDecorator with a wrapped reference, and two concrete decorators. Show the call going inward and the result coming outward. Label before-work versus after-work on each layer."
+        },
+        {
+          "title": "Code one base decorator and two layers live",
+          "text": "Write the forwarding base, then one appending decorator and one transforming decorator. Show construction as nesting. Narrate the order: which layer runs first and what input it sees. Keep the interface to one or two methods."
+        },
+        {
+          "title": "Answer the ordering question before it is asked",
+          "text": "State your canonical stack and defend it. Example logic: validate, then authenticate, then cache, then execute — with reasons for each position. This preempts the hardest follow-up."
+        },
+        {
+          "title": "Handle the follow-ups: identity, depth, interface growth",
+          "text": "Expect: how do you remove a layer, how do you inspect the chain, what if the interface has twenty methods, what about thread safety. Have answers: rebuild the chain without the layer, expose explicit unwrapping or visitor, prefer narrow interfaces, keep decorators stateless or copy-on-write."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "It is not inheritance. It mimics the type via the interface but reuses behavior via composition and forwarding.",
+        "It is not the same as Python `@decorator` syntax. That language feature wraps functions; the GoF pattern wraps objects behind a shared interface, though the spirit overlaps.",
+        "It does not eliminate classes. It replaces M×N subclasses with M small wrappers plus runtime assembly logic you must own.",
+        "Wrapping is not free. Each layer adds a call hop, an allocation, and a place where exceptions or context can be dropped.",
+        "Any order is not fine. Order defines semantics for transforms, caching, and security checks — document and enforce it.",
+        "It does not fix a fat interface. A wide `Component` makes every decorator expensive to write and easy to break on extension.",
+        "You cannot transparently peel layers unless you design for it. Without an unwrap or introspection hook, the stack is opaque."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "When Decorator fits and when a simpler tool wins.",
+      "headers": [
+        "Use Decorator when",
+        "Avoid it when",
+        "Use instead"
+      ],
+      "rows": [
+        [
+          "Behaviors combine per object or per request in many orders",
+          "Only 2-3 fixed combinations exist",
+          "Subclass or enum flag"
+        ],
+        [
+          "You must extend a class you cannot modify",
+          "You control the class and variation is internal",
+          "Add a parameter, strategy field, or template method"
+        ],
+        [
+          "Each addition is an independent cross-cutting concern",
+          "Additions share heavy state or need intimate access",
+          "Strategy or direct composition inside the class"
+        ],
+        [
+          "Streams, middleware, UI widgets, notification fan-out",
+          "Performance-critical tight loop where hop cost dominates",
+          "Inlined logic or static composition"
+        ],
+        [
+          "Need to add and remove responsibilities dynamically",
+          "Stack must be introspected by type frequently",
+          "Chain of Responsibility with explicit handlers, or Visitor"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "If asked, say: **Decorator preserves the interface, wraps the original, and layers one behavior per class so clients compose combinations at runtime — at the cost of ordering discipline and indirection.** Then draw the stack and justify the order."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:02:06.898Z",
+    "problems": []
+  }
+}

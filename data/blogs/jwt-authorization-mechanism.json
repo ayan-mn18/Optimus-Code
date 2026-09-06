@@ -1,0 +1,288 @@
+{
+  "slug": "jwt-authorization-mechanism",
+  "title": "JWT Authorization Mechanism",
+  "summary": "JWT authorization moves permission checks into a signed token so APIs verify without session lookups — fast and scalable, but revocation, size, and key handling become your real design problems.",
+  "kind": "HLD",
+  "problemSlug": "jwt-authorization-mechanism-93-207",
+  "topic": "Application Programming Interface (API)",
+  "difficulty": "Medium",
+  "coverEmoji": "🎫",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "API",
+    "Auth",
+    "JWT"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What Is a JWT & How It Works - Descope",
+      "url": "https://www.descope.com/learn/post/jwt",
+      "source": "descope.com",
+      "kind": "article"
+    },
+    {
+      "title": "JSON Web Token Introduction - jwt.io",
+      "url": "https://jwt.io/introduction",
+      "source": "jwt.io",
+      "kind": "article"
+    },
+    {
+      "title": "JSON Web Token (JWT) - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/web-tech/json-web-token-jwt/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "​JWT Authorization: How It Works & Implementation Guide - Frontegg",
+      "url": "https://frontegg.com/guides/jwt-authorization",
+      "source": "frontegg.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "JWT authorization is **trust by signature, not by lookup**. The API does not ask “who is this session?” — it checks “was this permission slip signed by someone I trust, and is it still valid?” You buy stateless verification. You pay with **delayed revocation, bigger requests, and unforgiving key management**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "A JWT is three Base64URL segments joined by dots: `header.payload.signature`. The header names the algorithm (`alg`) and key identifier (`kid`). The payload is a JSON claim set: identity (`sub`), issuer (`iss`), audience (`aud`), lifetime (`exp`, `iat`, `nbf`), plus authorization claims like `scope`, `roles`, or `permissions`. The signature is computed over `base64(header) + \".\" + base64(payload)` with HMAC or RSA/ECDSA. Authorization happens when a resource server **verifies that signature with a trusted key, validates time and audience bounds, then enforces the claims** against the requested route or object. Authentication answers *who presented this token*. Authorization answers *what this token is allowed to touch*. Conflating the two is why most designs break: a valid signature proves the token was not forged, it says nothing about whether `read:orders` should grant `DELETE /orders/123`."
+    },
+    {
+      "type": "code",
+      "language": "json",
+      "filename": "example-jwt.json",
+      "code": "// header\n{\n  \"alg\": \"RS256\",\n  \"typ\": \"JWT\",\n  \"kid\": \"auth-key-2026-03\"\n}\n// payload (authorization claims are scope + tenant + role)\n{\n  \"iss\": \"https://auth.internal\",\n  \"aud\": \"orders-api\",\n  \"sub\": \"user_9f31\",\n  \"tenant\": \"acme\",\n  \"scope\": \"orders:read orders:write\",\n  \"role\": \"support-agent\",\n  \"iat\": 1757145600,\n  \"exp\": 1757145900\n}\n// wire form: base64url(header).base64url(payload).signature"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: issue once, verify everywhere"
+    },
+    {
+      "type": "mermaid",
+      "title": "JWT authorization flow",
+      "caption": "Issue at login, verify per request with no session read on the hot path.",
+      "code": "flowchart TD\n  A[Client: POST /login with credentials] --> B[Auth Service: check password + MFA]\n  B -->|valid| C[Issue access JWT 5min + refresh token 7d]\n  C --> D[Client stores: memory + httpOnly refresh cookie]\n  D --> E[Client: GET /orders + Authorization: Bearer JWT]\n  E --> F[API Gateway: fetch public key by kid]\n  F --> G{Verify signature + exp + iss + aud?}\n  G -->|fail| H[Reject 401]\n  G -->|pass| I{Check scope and tenant?}\n  I -->|insufficient| J[Reject 403]\n  I -->|sufficient| K[Route to orders service]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Verification is four checks in strict order, and order matters. **First, signature**: reject unknown `alg` or `kid` before parsing anything else. Pin the algorithm server-side — never honor the `alg` header blindly. **Trade-off:** RS256/ES256 lets every API verify with a public key while only the auth service holds the private key, which is why you pick asymmetric signing for multi-service APIs despite slower verification. HMAC is faster and simpler but forces every verifier to hold the same secret, so one leaked service leaks forgery power everywhere. **Second, time bounds**: `exp`, `nbf`, with 30-60s clock skew allowance. **Third, scope binding**: `iss` must equal your auth service, `aud` must equal this API. Skip `aud` and a token minted for analytics can be replayed against billing. **Fourth, authorization**: match `scope` or `permissions` against the route matrix, then match `tenant` and `sub` against the object owner. That last step is where stateless ends — coarse roles come from the token, fine-grained ownership still needs a data check."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Every JWT benefit bills you somewhere else.",
+      "headers": [
+        "Property",
+        "What you gain",
+        "What you pay",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Stateless verification",
+          "No session DB read per request; any replica can authorize",
+          "Cannot revoke instantly; must wait for expiry or add a denylist",
+          "Throughput scales horizontally, but logout and ban become eventual"
+        ],
+        [
+          "Self-contained claims",
+          "Gateway can enforce scope/tenant without calling auth service",
+          "Token grows with every claim; sent on every request",
+          "A 2KB token on 10k RPS is 20MB/s of header overhead"
+        ],
+        [
+          "Asymmetric signatures",
+          "Verifiers hold public keys only; compromise is contained",
+          "RS/EC verify costs ~10x HMAC; JWKS fetch and rotation complexity",
+          "Choose RS256 for many services, HS256 only for single-service internals"
+        ],
+        [
+          "Short expiry",
+          "Shrinks theft window; reduces need for revocation",
+          "Forces refresh flow, extra round trips and client complexity",
+          "5-15 min access token is the standard compromise"
+        ],
+        [
+          "Client-held state",
+          "Auth service stays stateless; no session replication",
+          "Token theft equals access until expiry; XSS or log leaks hurt more",
+          "Storage choice (memory vs cookie) is a security decision, not a preference"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The central tension is **freshness versus independence**. A session ID is tiny and instantly revocable but requires a lookup that couples every API to session storage. A JWT is independently verifiable but carries stale truth — roles, plan tier, and ban status freeze at mint time. That is why production systems pair a 5-minute access JWT with an opaque refresh token: the JWT handles the hot path without I/O, the refresh path re-checks the user record and re-mints claims. **Trade-off:** you reintroduce state at refresh frequency, deliberately. Shorter access lifetime means fresher permissions and smaller blast radius, at the cost of more refresh traffic and more failure modes when the auth service is down."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "JWT outages rarely look like cryptography failures. They look like mysterious `401` spikes, bloated headers, or a fired employee who still has access. The signature math almost never breaks; the surrounding assumptions do — clock drift, key rotation without overlap, claim bloat, and the belief that expiry equals revocation. Design for these explicitly, because each one has a distinct signal in your dashboards and a different fix."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Stale permissions after role change or ban — symptom:** user downgraded in DB still calls admin APIs successfully for minutes. Cause: gateway trusts token claims until `exp`. Fix: short access lifetime (5 min) plus explicit revocation path: token version (`tok_ver`) claim bumped on privilege change, or denylist checked only on sensitive routes.",
+        "**Key rotation outage — symptom:** sudden 100% `401 invalid signature` across all services after deploy. Cause: auth service signed with new `kid` before gateways refreshed JWKS cache. Fix: publish new public key first, sign with old key during overlap window, cache JWKS with 5-min TTL and background refresh.",
+        "**Algorithm confusion — symptom:** forged admin tokens in audit logs with valid structure. Cause: server accepted `alg: none` or swapped RS256 to HS256 using the public key as HMAC secret. Fix: allowlist one algorithm per issuer, reject `none`, bind `kid` to algorithm.",
+        "**Header bloat and 431s — symptom:** `431 Request Header Fields Too Large` on mobile clients, elevated p99 at edge. Cause: stuffing groups, entitlements, and feature flags into the JWT until it exceeds 4-8KB cookie/header limits. Fix: keep JWT to `sub`, `tenant`, `scope`, `exp`; fetch heavy entitlements server-side for rare calls.",
+        "**Refresh token theft — symptom:** duplicate refresh usage from two IPs, session riding. Cause: long-lived bearer refresh stored in `localStorage` and stolen via XSS. Fix: `httpOnly + Secure + SameSite` cookie, rotation on every use, reuse detection that kills the whole token family.",
+        "**Clock skew rejects — symptom:** intermittent 401s from one availability zone only. Cause: strict `exp`/`nbf` check against drifted servers. Fix: allow 60s leeway, run NTP, include `iat` to detect wildly future tokens."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Never put this in the payload",
+      "text": "The payload is **signed, not encrypted**. Anyone holding the token can Base64-decode it. Passwords, PII, internal pricing tiers, and secrets do not belong there. If you need confidentiality, you need JWE encryption or you keep that field server-side — there is no middle ground."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Minimal verification code that doesn't lie"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "verify.py",
+      "code": "import jwt  # PyJWT\n\n# Pin everything. No dynamic alg, no optional aud.\nPUBLIC_KEY = open(\"auth-key-2026-03.pem\").read()\n\ndef authorize(request_headers, required_scope: str):\n    token = request_headers[\"Authorization\"].removeprefix(\"Bearer \")\n    try:\n        claims = jwt.decode(\n            token,\n            PUBLIC_KEY,\n            algorithms=[\"RS256\"],  # allowlist, never trust header alg\n            issuer=\"https://auth.internal\",\n            audience=\"orders-api\",\n            leeway=60,  # clock skew tolerance\n            options={\"require\": [\"exp\", \"iss\", \"aud\", \"sub\"]},\n        )\n    except jwt.ExpiredSignatureError:\n        return (401, \"expired\")\n    except jwt.InvalidTokenError:\n        return (401, \"invalid\")\n\n    scopes = set(claims.get(\"scope\", \"\").split())\n    if required_scope not in scopes:\n        return (403, \"insufficient scope\")\n    # Trade-off: tenant/object check still needs app data.\n    # Token gives you tenant id; ownership join happens here.\n    if claims.get(\"tenant\") != request_headers.get(\"X-Tenant\"):\n        return (403, \"tenant mismatch\")\n    return (200, claims)"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet is the whole design philosophy in ten lines: the verifier knows the issuer, audience, and algorithm **before** the request arrives. Nothing security-critical is negotiated from the token itself except `kid` for key selection, and even that is looked up in a trusted JWKS set. Note the split at the end — scope and tenant come from the token, but whether `order_123` belongs to `tenant acme` is still a query. Teams that try to encode every ownership rule into claims end up with megabyte tokens and stale access. Keep the JWT coarse (`can write orders for this tenant`), keep the object check local to the service that owns the data."
+    },
+    {
+      "type": "mermaid",
+      "title": "Token lifetime states",
+      "caption": "Short-lived access, rotating refresh, explicit revocation path.",
+      "code": "stateDiagram-v2\n  [*] --> Minted: login success\n  Minted --> Active: access JWT valid\n  Active --> Expired: exp passes\n  Expired --> Refreshed: valid refresh + reuse check\n  Refreshed --> Active: new access JWT\n  Active --> Revoked: ban or logout or reuse detected\n  Expired --> Revoked: refresh denied\n  Revoked --> [*]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Draw issue-verify, not just login",
+          "text": "Start with two planes: auth service mints, gateway verifies with JWKS. Say where the private key lives, where public keys are cached, and what happens when auth is down (existing access tokens still verify — that is the point)."
+        },
+        {
+          "title": "Defend access versus refresh split",
+          "text": "Propose 5-15 min RS256 access JWT plus opaque rotating refresh in httpOnly cookie. Explain the trade-off: more refresh calls buys faster permission convergence and smaller theft window. Stating the numbers is what separates Medium from Junior."
+        },
+        {
+          "title": "Write the gateway check",
+          "text": "Code the four validations in order: signature/kid, exp/nbf, iss/aud, scope + tenant. Interviewers watch for missing `aud` and trusted-`alg` bugs. Mention leeway and JWKS caching without being asked."
+        },
+        {
+          "title": "Answer revocation head-on",
+          "text": "Admit JWTs cannot be individually revoked for free. Offer the ladder: short TTL first, `tok_ver` or `role_ver` claim for privilege changes, denylist cache only for sensitive routes or banned users. Never claim stateless and instant-revocation together."
+        },
+        {
+          "title": "Size the token and the key plan",
+          "text": "Cap claims to identity + tenant + scope. Show rotation: publish key N+1, dual-serve, then switch signing. Mention where tokens are stored (memory for SPA access token, httpOnly cookie for refresh) and why `localStorage` invites XSS theft."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**“Signature means encrypted.”** No. Default JWTs (JWS) are readable by anyone. Signing proves integrity and origin, not secrecy.",
+        "**“JWTs replace sessions entirely.”** They replace per-request session reads. Refresh, logout, ban, and concurrent-session limits still need server state somewhere.",
+        "**“Putting roles in the token makes authz instant.”** It makes authz stale. Role snapshot at mint time lags the database by up to the token lifetime — acceptable for coarse scopes, dangerous for bans and billing tiers.",
+        "**“Longer expiry is simpler.”** It is simpler until theft. A 24-hour access token turns one XSS or log leak into a day of impersonation with no kill switch except a global key roll.",
+        "**“The gateway check is enough for object access.”** Scope `orders:write` does not prove this caller owns `order_123`. Token authorizes the capability; the service still authorizes the object.",
+        "**“HS256 and RS256 are interchangeable.”** HS256 shares one secret with every verifier — one leak forges everywhere. RS256 costs more CPU but isolates signing power to the auth service. Pick by blast radius, not convenience."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use JWTs where independent verification pays; avoid them where instant control matters.",
+      "headers": [
+        "Situation",
+        "Use JWT?",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Multi-service API behind a gateway",
+          "Yes",
+          "Public-key verification removes auth-service call from hot path"
+        ],
+        [
+          "Mobile / SPA calling several domains",
+          "Yes",
+          "Bearer token crosses origins cleanly; cookies do not"
+        ],
+        [
+          "Short-lived, scope-limited service-to-service calls",
+          "Yes",
+          "Audience-bound tokens limit replay better than shared secrets"
+        ],
+        [
+          "Instant ban / logout must take effect in seconds",
+          "No — or hybrid",
+          "Stale claims survive until expiry; use opaque tokens or denylist"
+        ],
+        [
+          "Monolith with server-rendered pages",
+          "Usually no",
+          "HttpOnly session cookie is simpler, smaller, instantly revocable"
+        ],
+        [
+          "Heavy entitlements (hundreds of groups)",
+          "No",
+          "Token bloat blows header limits; keep ID token thin, fetch details server-side"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "“JWT authorization lets every API verify scope and tenant by signature alone, so I pair a 5-minute RS256 access token with a rotating opaque refresh token — stateless on the hot path, stateful where revocation actually matters.”"
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:51:11.972Z",
+    "problems": []
+  }
+}

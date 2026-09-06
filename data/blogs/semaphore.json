@@ -1,0 +1,280 @@
+{
+  "slug": "semaphore",
+  "title": "Semaphore",
+  "summary": "Semaphore as a permit counter for bounding concurrency in Java: mechanism, fairness, trade-offs, failure modes, and how to defend it in an interview.",
+  "kind": "LLD",
+  "problemSlug": "semaphore-43-83",
+  "topic": "Concurrency in Java",
+  "difficulty": "Medium",
+  "coverEmoji": "🚦",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Java"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Semaphore (programming) - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Semaphore_(programming)",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Semaphores in Process Synchronization - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/operating-systems/semaphores-in-process-synchronization/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "What is a semaphore? How do they work? (Example in C) - YouTube",
+      "url": "https://www.youtube.com/watch?v=ukM_zzrIeXs",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A **Semaphore is not a lock on data, it is a counter on admission**. It answers one question: *how many threads may proceed right now?* If you remember that permits are unrelated to any thread identity or critical section, every API choice, every bug, and every interview follow-up becomes obvious. Locks prove exclusion. Semaphores enforce a bound."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A semaphore maintains an integer count of permits and two atomic operations: acquire, which decrements if a permit is available or blocks until one is, and release, which increments and wakes a waiter if any exist. A counting semaphore starts at N and allows up to N concurrent holders. A binary semaphore starts at 1 and behaves superficially like a lock, but without ownership. That missing ownership is the entire distinction. Any thread can release a permit it never acquired, permits can be released more times than acquired, and no thread has to be inside a specific code region to hold one. In Java, `java.util.concurrent.Semaphore` wraps this counter in AbstractQueuedSynchronizer, supports `acquire`, `tryAcquire`, timed `tryAcquire`, `release`, `drainPermits`, and optional fairness. You choose the initial permits to model the physical constraint: 10 database connections, 3 downstream calls, 1 file writer. The number is the design."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape exists is more important than the API. Threads are cheap to create and catastrophically expensive to let run unbounded against a finite resource. You need a throttle that works before the resource is touched, not after it fails. A semaphore puts that throttle in user space with cheap CAS plus parking, instead of pushing overload into the database, the socket pool, or the OS scheduler. The trade-off is explicit: you add blocking and queuing delay in the caller in exchange for survival of the callee. Set N too high and the semaphore is decoration. Set it too low and you serialize work that could have overlapped. Getting N right is capacity planning, not coding."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Counting semaphore, N > 1:** models pooled or rate-bounded resources. Example is limiting concurrent image resizes to the number of CPU cores, or concurrent HTTP calls to a quota. Holders do not exclude each other, they share a budget.",
+        "**Binary semaphore, N = 1:** models mutual exclusion without ownership. It can be used as a lock, but prefer `ReentrantLock` when you need ownership, reentrancy, or condition variables, because a binary semaphore will happily let thread B release thread A's exclusion.",
+        "**Java permits are ints, not tokens:** `acquire(3)` takes three units at once. This is why semaphores can express weighted work, such as reserving memory chunks or batch slots, which a lock cannot. The cost is accounting complexity and partial-acquire deadlock if you are careless.",
+        "**Blocking vs attempting:** `acquire()` is interruptible and queues. `tryAcquire()` never blocks and is for shedding load. `tryAcquire(timeout)` is for bounding tail latency. Choose based on what the caller should do when full: wait, drop, or degrade."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it works: counter plus waiting queue"
+    },
+    {
+      "type": "paragraph",
+      "text": "Conceptually every operation is compare-and-set on the count, with a park queue as the fallback. On `acquire`, the thread reads the current permits, and if positive, atomically decrements and proceeds without ever blocking. That fast path is why an uncontended semaphore costs nanoseconds. If permits are zero, the thread enqueues a node in FIFO order when fair, or barges with a CAS retry when non-fair, then parks via `LockSupport`. On `release`, the thread atomically increments and, if waiters exist, unparks the head. No busy spin, no missed wakeup, provided acquire and release are correctly paired. The invariant is simple: `permits + holders = initialPermits + extraReleases - drains`. Any drift in that equation is a leak or an over-release, not a scheduling glitch. That is why code review of semaphores is audit of every return path, not of the concurrency primitive itself."
+    },
+    {
+      "type": "mermaid",
+      "title": "Semaphore acquire-release flow",
+      "caption": "Fast path is CAS. Slow path is park and unpark.",
+      "code": "flowchart TD\n  A[\"Thread calls acquire\"] --> B{\"permits > 0?\"}\n  B -->|Yes| C[\"CAS decrement and proceed\"]\n  B -->|No| D[\"Enqueue node and park\"]\n  D --> E[\"Wait for unpark or interrupt\"]\n  E --> B\n  F[\"Holder calls release\"] --> G[\"CAS increment\"]\n  G --> H{\"waiters present?\"}\n  H -->|Yes| I[\"Unpark head waiter\"]\n  H -->|No| J[\"Done\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java adds one policy knob that changes behavior under contention: fairness. Non-fair is the default for a reason. It allows barging, which keeps throughput high because a newly arriving thread can grab a just-released permit without the context-switch cost of waking a parked thread. The trade-off is starvation. Under sustained saturation a waiter can sit parked while a stream of fresh arrivals steals permits indefinitely. Fair mode enforces FIFO admission by checking the queue before attempting CAS, which bounds waiting time and makes latency predictable. The trade-off reverses: you pay extra wakeups and lower total throughput to buy absence of starvation. Choose non-fair for resource pooling where every task is equivalent and tail delay is acceptable. Choose fair when queued requests have user-visible ordering or deadlines, such as admission to a throttled API where overtaking reads as unfairness. Never leave the choice unexplained in an interview."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Semaphore vs the alternatives you should have considered.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Semaphore vs mutex / ReentrantLock",
+          "N-way admission, weighted permits, cross-thread release for handoffs",
+          "No ownership, no reentrancy safety, easy to over-release and corrupt the count"
+        ],
+        [
+          "Semaphore vs bounded queue + pool",
+          "Lighter weight, no object lifecycle, works for non-object quotas like rate or memory",
+          "No resource tracking, cannot detect which holder leaked, cannot return a specific item"
+        ],
+        [
+          "Non-fair vs fair semaphore",
+          "Non-fair gives 2x or more throughput under bursty load due to barging",
+          "Non-fair risks starvation; fair costs throughput and still does not guarantee deadline"
+        ],
+        [
+          "Blocking acquire vs tryAcquire + drop",
+          "Blocking preserves work and smooths bursts into a queue",
+          "Blocking propagates backpressure upstream and can exhaust request threads; dropping needs a fallback path"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Say the trade-off out loud. A semaphore is the cheapest way to bound concurrency, and that cheapness is why it is dangerous. It knows nothing about *what* is protected, *who* holds it, or *how long* they have held it. A lock ties protection to a code region and an owner thread, so misuse throws or deadlocks loudly. A semaphore ties protection to arithmetic, so misuse silently shifts the bound. Over-release by one in a 50-permit pool raises effective concurrency by 2 percent forever, and nothing in the JVM will tell you. That is the price of flexibility. Use a semaphore when the constraint is a number, not a place in code. Move to a pool, a bulkhead, or a rate limiter when you need accounting, health checking, or per-holder timeouts."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every production semaphore incident I have seen reduces to three arithmetic errors: leak, over-release, and wrong N. A leak happens when `acquire` succeeds and the `release` on that path is skipped by an exception, an early return, or a forgotten `finally`. Effective permits decay toward zero over hours, and the service looks healthy on CPU while latency climbs and threads pile in `acquire` park. An over-release happens when `release` is called without a matching `acquire`, often in a `finally` that runs even when `tryAcquire` failed, or when two layers both release. Effective permits grow beyond N, the downstream saturates, and you see timeouts and connection refusals despite the throttle appearing intact. Wrong N happens at deploy time: permits tuned for one instance get multiplied by autoscaling, or tuned for SSD get kept after a move to a throttled dependency. Symptom is either idle capacity or coordinated overload with no code change in between."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Permit leak: symptom is wedged throughput.** Thread dumps show hundreds parked in `Semaphore.acquire`, permits stuck at zero, CPU low, queue depth growing. Fix is `try-finally` discipline plus metrics on available permits. If available permits trends down monotonically, you are leaking.",
+        "**Over-release: symptom is downstream collapse despite the limiter.** Available permits exceeds initial N, downstream error rate spikes under load. Guard by releasing only after successful acquire, never releasing in the `tryAcquire-false` branch, and encapsulating the pair in one method.",
+        "**Interrupted acquire without handling: symptom is lost work or phantom permits.** `acquire` throws `InterruptedException` without taking a permit, but callers treat it as acquired or swallow it. Always propagate or restore the interrupt, and never `release` in that path.",
+        "**Fairness surprise: symptom is bimodal latency.** p50 looks fine, p99 explodes under non-fair mode with continuous barging. Flip to fair or add timed `tryAcquire` with shedding, trading a small drop rate for bounded wait.",
+        "**Deadlock by multi-permit acquire: symptom is circular stall.** Thread A holds 2 of 5 and waits for 4 more while thread B holds 3 and waits for 3 more. Neither can proceed. Acquire all permits at once or impose a global ordering, never incrementally accumulate weighted permits."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The bug that pages you at 3am",
+      "text": "Releasing in `finally` unconditionally after `tryAcquire` is wrong. If `tryAcquire` returned `false`, you just minted a phantom permit. The correct pattern is `if (acquired) try { use(); } finally { release(); }`. Every audit starts here. No exceptions."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Java in practice"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "BoundedService.java",
+      "code": "import java.util.concurrent.Semaphore;\nimport java.util.concurrent.TimeUnit;\n\npublic class BoundedService {\n    private final Semaphore permits;\n\n    public BoundedService(int maxConcurrent) {\n        // Non-fair by default: higher throughput, possible barging.\n        // Use true for FIFO when ordering matters more than raw throughput.\n        this.permits = new Semaphore(maxConcurrent);\n    }\n\n    public String callDownstream(String req) throws Exception {\n        // Bounded wait: shed load instead of queuing forever.\n        // Trade-off: caller gets fast failure, needs a fallback.\n        boolean acquired = permits.tryAcquire(200, TimeUnit.MILLISECONDS);\n        if (!acquired) {\n            throw new OverloadedException(\"shed: no permit within 200ms\");\n        }\n        try {\n            return downstream(req); // only N threads can be here\n        } finally {\n            permits.release(); // exactly once, only because acquired == true\n        }\n    }\n\n    private String downstream(String req) { return \"ok:\" + req; }\n    static class OverloadedException extends Exception {\n        OverloadedException(String m) { super(m); }\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This is the shape to write in an interview before any discussion. Bound the wait, handle the reject path, and pair acquire with release under a guard. `acquire` forever is almost never correct in a server because it converts downstream slowness into unbounded thread retention upstream. `tryAcquire` with timeout converts it into a visible, countable shed event you can alert on and degrade gracefully. Expose `availablePermits` as a gauge. Alert when it sits at zero for minutes or when it exceeds the initial count, which can only mean over-release. The operational point matters more than the syntax: a semaphore without a metric is an invisible queue, and invisible queues are what take down systems."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "SimpleSemaphore.java",
+      "code": "public class SimpleSemaphore {\n    private int permits;\n\n    public SimpleSemaphore(int initial) {\n        if (initial < 0) throw new IllegalArgumentException(\"permits < 0\");\n        this.permits = initial;\n    }\n\n    public synchronized void acquire() throws InterruptedException {\n        while (permits == 0) {\n            wait(); // loop: guards against spurious wakeup\n        }\n        permits--;\n    }\n\n    public synchronized void release() {\n        permits++;\n        notifyAll(); // notify wakes one; notifyAll is simpler, costlier\n    }\n\n    public synchronized boolean tryAcquire() {\n        if (permits == 0) return false;\n        permits--;\n        return true;\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Write this hand-rolled version only to prove you understand the mechanism, then throw it away for real code. It shows the three non-negotiables: `while` not `if` around `wait`, `synchronized` for atomic check-and-act, and `notifyAll` to avoid lost wakeups when multiple waiters need different permit counts. Its trade-off versus `java.util.concurrent.Semaphore` is stark. This version is 20 lines and obviously correct, but it wakes all waiters on every release, holds a monitor across the check, and has no fairness, no timed wait precision, and no interrupt-safe queue. The JDK version uses AbstractQueuedSynchronizer with CAS fast paths and per-thread nodes, so uncontended acquire is lock-free and contended wakeups are targeted. Lesson for the interview: build the toy to show understanding, ship the standard library to get performance and correctness."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Implement a semaphore from scratch",
+          "text": "Expect `acquire`, `release`, and `tryAcquire` with `synchronized` plus `wait` and `notify`. They are testing the `while` loop for spurious wakeups, visibility of the counter, and that `release` cannot go negative in your invariants. Say why you loop and why you notify. Then state you would use the JDK class in production."
+        },
+        {
+          "title": "Bound a resource pool or downstream",
+          "text": "Typical prompt is limit concurrent DB connections, file uploads, or third-party calls to N. Answer with `tryAcquire` plus timeout and a shed path, not infinite `acquire`. Discuss how you picked N: core count for CPU work, downstream quota divided by instance count for IO work, load-tested not guessed."
+        },
+        {
+          "title": "Binary semaphore vs mutex",
+          "text": "They want the ownership sentence. A mutex has an owner and usually reentrancy and deadlock detection. A binary semaphore has neither, so a stray `release` silently breaks exclusion. Conclude that you would not use a semaphore as a lock when a lock exists, and explain the one case where you would: cross-thread handoff where the releaser differs from the acquirer."
+        },
+        {
+          "title": "Diagnose a stuck service",
+          "text": "You are given thread dumps parked in `acquire` and asked what happened. Walk through leak versus downstream slowness: check `availablePermits` history, count acquire-release pairs per request path, look for exception paths skipping `finally`. Propose the metric and the code fix in the same breath."
+        },
+        {
+          "title": "Extend to rate limiting or read-write",
+          "text": "Follow-up is often allow N per second or allow many readers with one writer. Explain that a semaphore bounds concurrency, not rate, so for rate you need token refill on a timer, and for read-write you need separate read and write admission. Do not bend a semaphore into a design it cannot express cleanly."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**A semaphore is a lock.** No. A lock protects a region. A semaphore rations entry. A lock knows its owner. A semaphore knows only a number. Saying they are interchangeable signals you have never debugged an over-release.",
+        "**`release` must be called by the acquirer.** No. Any thread may release, which is both the feature for signaling handoffs and the footgun for phantom permits. If you need ownership enforcement, you need a lock, not discipline.",
+        "**Permits equal threads.** No. Permits equal concurrent admissions, which may be fewer than threads when queued, or effectively more than intended after over-release. Threads park; permits are arithmetic.",
+        "**Fair means fast.** No. Fair means ordered. Fair mode adds queue checks and wakeup hops that lower throughput. You pay performance to buy predictability. Name that trade every time.",
+        "**`tryAcquire` failure means retry immediately.** No. Blind retry turns a throttle into a spin loop that burns CPU and starves waiters. Back off, shed with a fallback, or queue with a deadline. The semaphore tells you it is full; your policy decides what full means.",
+        "**More permits always means more throughput.** No. Beyond the bottleneck capacity, extra permits only add queueing inside the protected resource. Throughput plateaus, then latency and errors climb. The optimal N sits at the knee, found by measurement."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use a semaphore for numbers. Use something else for identity, rate, or lifecycle.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Limit concurrent calls to a pool, DB, GPU, downstream quota",
+          "Use it",
+          "Constraint is a count. Semaphore is the lightest correct throttle."
+        ],
+        [
+          "Signal between threads, producer-consumer handoff",
+          "Use it with care",
+          "Works, but a blocking queue carries both signal and data with less bookkeeping."
+        ],
+        [
+          "Mutual exclusion around shared mutable state",
+          "Avoid",
+          "Use a lock. You want ownership, reentrancy, and debuggability, not raw arithmetic."
+        ],
+        [
+          "Rate limit N per second across distributed instances",
+          "Avoid",
+          "Semaphore bounds concurrency on one JVM, not rate over time or across hosts. Use token bucket plus distributed quota."
+        ],
+        [
+          "Pool of stateful objects needing validation and eviction",
+          "Avoid",
+          "Use a pool. You need per-object health, checkout tracking, and timeouts, none of which a counter provides."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The heuristic is blunt and reliable. If you can phrase the requirement as *at most N threads may be inside this call at once on this process*, reach for a semaphore and add a timeout plus a metric. If the sentence contains *per second*, *per key*, *across machines*, or *this specific connection*, you have outgrown it. A semaphore composes well as the local bulkhead inside a larger design: one semaphore per downstream, sized from that downstream quota, wrapped with timeout shedding and a circuit breaker outside. That layered answer is what a senior candidate sounds like. One primitive, one job, explicit handoff to the next layer."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "A semaphore is a **permit counter that bounds how many threads may proceed at once**, where acquire blocks when empty and release wakes a waiter — use it to throttle concurrency to N, with timeouts and strict acquire-release pairing, and never as a substitute for an owned lock."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:06:06.724Z",
+    "problems": []
+  }
+}

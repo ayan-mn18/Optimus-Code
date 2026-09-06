@@ -1,0 +1,295 @@
+{
+  "slug": "databases-hld",
+  "title": "Databases HLD",
+  "summary": "Databases are the stateful bottleneck in HLD: app servers scale by adding copies, databases scale only by deciding how reads, writes, and data size split across replicas, shards, and storage types.",
+  "kind": "HLD",
+  "problemSlug": "databases-hld-90-301",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Easy",
+  "coverEmoji": " F5c4 ",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "Scalability"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Introduction to High level Design - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/what-is-high-level-design-learn-system-design/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "HLD vs LLD: System Design Explained | PDF | Mobile App - Scribd",
+      "url": "https://www.scribd.com/document/870087190/Lec-1-1519",
+      "source": "scribd.com",
+      "kind": "article"
+    },
+    {
+      "title": "System Design Basics: HLD vs LLD Explained with Real Examples We ...",
+      "url": "https://www.instagram.com/reel/DYZrVqAx-Xo/",
+      "source": "instagram.com",
+      "kind": "article"
+    },
+    {
+      "title": "System Design in a nutshell. System Design: HLD vs LLD Explained",
+      "url": "https://medium.com/@muskanlama78439/system-design-in-a-nutshell-349827ecde22",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**App servers are disposable. Data is not.** You can double stateless web servers in minutes. You cannot double a 5 TB relational database without paying in consistency, operational pain, or redesign. Every database choice in HLD is therefore a bet on **which bottleneck you will hit first: read volume, write volume, or data size** — and which pain you accept to move it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What 'databases' means in an HLD interview"
+    },
+    {
+      "type": "paragraph",
+      "text": "In high-level design, 'databases' does not mean one product. It means **durable state plus its access pattern**. The interviewer wants to hear you separate four jobs: **transactional records** that need correctness, **high-volume key lookups** that need speed and horizontal growth, **large immutable blobs** that need cheap storage and fast delivery, and **hot temporary reads** that should never reach durable storage at all. SQL handles the first. Partitioned key-value, document, wide-column, or time-series stores handle the second. Object storage plus a delivery network handles the third. An in-memory cache handles the fourth. If you say `Postgres` or `MongoDB` before you state read-to-write ratio, data size, consistency needs, and query shape, you have already failed. The product name is the last decision, not the first. Choose the shape from the workload, then name a representative technology only to make the trade-off concrete."
+    },
+    {
+      "type": "paragraph",
+      "text": "Four numbers drive the entire choice. **QPS for reads versus writes** tells you whether you need read copies or write splitting. **Total dataset size and growth rate** tells you whether one machine can ever hold it. **Consistency requirement per query** tells you whether replicas, caches, and queues are safe or dangerous. **Access pattern** — point lookup by ID, range scan, full-text search, relational join — tells you which engine can even answer the query without a full scan. A user profile looked up by `user_id` at 100k reads per second with tolerance for one second of staleness is a completely different system from a payments ledger with 500 writes per second where losing one write is unacceptable, even if both are 'just data'. Say the numbers out loud, estimate them if missing, and let them force the architecture."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: how reads and writes actually flow"
+    },
+    {
+      "type": "paragraph",
+      "text": "A scalable data path never lets every request hit the primary database. Writes go to one authoritative place per partition so ordering stays sane. Reads fan out to the cheapest place that is fresh enough: edge cache, application cache, read replica, search index, or object storage. Heavy or slow work is removed from the request path entirely and completed asynchronously, with the database updated later. Observability and auth sit beside this path, not after it — every data call must be authenticated, timed, and traced, or you will not find the hot key or slow query when the system tips over. The point of the diagram is separation: **stateless compute scales horizontally, state scales only through copies, splits, or tiering**."
+    },
+    {
+      "type": "mermaid",
+      "title": "Standard scalable data path",
+      "caption": "Writes go to primary per shard; reads fall through cache to replicas or object storage.",
+      "code": "flowchart LR\n    U[Users] --> E[Edge and LB]\n    E --> G[Gateway and Auth]\n    G --> A[App Services]\n    A --> C[Cache]\n    A --> P[Primary for Writes]\n    P --> R1[Replica 1]\n    P --> R2[Replica 2]\n    A --> S[Sharded Store]\n    A --> O[Object Storage]\n    A --> Q[Queue and Workers]\n    Q --> S"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two mechanisms do almost all scaling work, and they solve different problems. **Replication creates copies of the same data.** The primary accepts writes and streams changes to replicas. You gain read throughput and survival if one node dies. You pay in lag: replicas are behind by milliseconds to seconds, and synchronous replication that removes lag adds latency to every write and reduces availability when a replica is slow. Use replication when reads dominate and slight staleness is acceptable — feeds, profiles, catalogs, leaderboards. Do not expect it to help writes or storage size at all. The primary still does every write and still holds everything. The trade-off is explicit: **more read capacity and fault tolerance in exchange for stale reads and more complex failover**."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Replication: copies for reads and survival"
+    },
+    {
+      "type": "paragraph",
+      "text": "Implement replication as **one writer, many readers**, with a load-balancing rule in the application or proxy: writes to primary, reads to replicas unless the read must see its own prior write. That last exception — read-your-write — is where junior designs break. After a user updates their name, routing their next read to a lagging replica shows the old name and looks like data loss. The fix is session pinning, a short cache entry for the fresh write, or an explicit fresh-read flag for that one query. Failover is the second trap. Promoting a replica is easy; preventing two primaries after a network split is hard. You need fenced promotion and a consensus layer or managed control plane, otherwise you accept split-brain writes. Say this in the interview: replication buys you reads, not safety for free."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Sharding: splits for writes and size"
+    },
+    {
+      "type": "paragraph",
+      "text": "**Sharding splits different data onto different machines** by a partition key, typically a hash of `user_id`, `order_id`, or geographic prefix. Each shard owns a subset of keys and its own primary plus replicas. You gain write throughput and unbounded size — add shards, add capacity. You pay in query rigidity and operational cost. Any query that does not include the shard key becomes a scatter-gather across all shards, which is slow and kills the benefit. Cross-shard transactions, joins, and ordered global listings become expensive or impossible. Rebalancing when one shard grows hot requires moving live data without downtime. That is why the shard key choice is the most consequential database decision in HLD. Pick a key with high cardinality, even distribution, and alignment with your most frequent queries. `user_id` works for per-user data. Timestamp does not — it creates a hot shard for all current writes. Name the trade-off directly: **unbounded writes and size in exchange for no cheap global queries and painful resharding**."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs for the five database moves you will actually use.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Single relational DB",
+          "Strong consistency, joins, simple ops",
+          "Hard ceiling on writes and size, vertical scaling only",
+          "Fine below ~10k QPS and ~1 TB; beyond that it becomes the single point of congestion"
+        ],
+        [
+          "Primary + read replicas",
+          "3-10x read throughput, fast failover target",
+          "Replica lag, no write help, failover complexity",
+          "Best when reads dominate 10:1 or more and staleness is tolerable"
+        ],
+        [
+          "Sharded SQL or NoSQL",
+          "Linear write and capacity growth",
+          "No cross-shard joins, hot keys, resharding pain",
+          "Only way to grow past one machine for writes; locks you into key-based access"
+        ],
+        [
+          "Cache in front of DB",
+          "10-100x read reduction on hot keys",
+          "Invalidation bugs, stampedes, cold-start misses",
+          "Protects DB from popularity skew, but is not durable and hides consistency problems"
+        ],
+        [
+          "Object storage + CDN for blobs",
+          "Near-infinite cheap bytes, edge delivery",
+          "No transactions, no queries, eventual listing",
+          "Never store video, images, backups in a transactional DB; you pay in cost and buffer bloat"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not treat these as competing products. A mature design stacks them: sharded transactional store for orders, replicas for product reads, cache for hot profiles, object storage for images, search index for text queries, queue for async updates. The skill being tested is knowing **which workload goes to which tier**, and what breaks if that tier is skipped. If all reads hit the primary, connection pools exhaust. If blobs sit in rows, backups take days and buffer cache fills with junk. If you need range scans and pick pure key-value, you will scan everything. The correct answer is almost always hybrid, with each tier justified by numbers."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Database failures do not look like clean errors. They look like latency that climbs, then a cliff. Connection exhaustion shows as growing queue time in the app while DB CPU looks fine — the pool is waiting, not the disk. Replica lag shows as users seeing stale data after writes, or cache hit rate dropping because the app bypasses stale replicas. A hot shard shows as one node at 95% CPU while others idle, with p99 latency tied to one key prefix. A cache stampede after expiry shows as a sudden 10x spike to the DB when a popular key expires and thousands of threads refill it at once. A missing index or full table scan after growth shows as queries that were 5 ms at 1M rows becoming 2 seconds at 100M rows. Disk-full or WAL-growth on the primary shows as writes suddenly rejected while reads continue. Learn to map symptom to cause: **uniform slowness is capacity, skewed slowness is partitioning, staleness is replication, cliff after expiry is cache**."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Replica lag complaints:** user updates profile, refresh shows old value. Cause: async replication + read-from-replica. Fix: read-your-write pinning or short write-through cache.",
+        "**One hot shard:** p99 spikes, only one DB node hot. Cause: bad partition key like `day` or celebrity key. Fix: hash key with high cardinality, split hot key, add cache for hot prefix.",
+        "**DB connection timeouts under load:** app threads block, DB idle. Cause: pool too small or long transactions holding connections. Fix: smaller transactions, read-write split, pool sizing by Little's Law, backpressure.",
+        "**Cache stampede:** DB QPS jumps 20x at same second. Cause: popular TTL expiring at once. Fix: jittered TTL, request coalescing, stale-while-revalidate.",
+        "**Cross-shard query meltdown:** new admin search scans all shards and times out. Cause: query without shard key. Fix: secondary index service, search engine, or pre-aggregated view — do not allow scatter-gather on hot path."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "A concrete shape: routing and guarding the DB"
+    },
+    {
+      "type": "paragraph",
+      "text": "You do not need product syntax in HLD. You need to show you know where the routing decision lives. The application or proxy must know: is this a write or a freshness-critical read, which shard owns this key, and can this be served from cache. That logic is three functions and it prevents the entire class of 'we scaled but still hit one node' failures."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "db_routing.py",
+      "code": "SHARD_COUNT = 16\nCACHE_TTL_S = 60\n\ndef shard_for(key: str) -> int:\n    # WHY hash: even spread. Trade-off: no range locality.\n    return hash(key) % SHARD_COUNT\n\ndef get_profile(user_id: str, need_fresh: bool = False):\n    if not need_fresh:\n        hit = cache.get(f\"profile:{user_id}\")\n        if hit:\n            return hit  # WHY cache first: protects replicas from hot keys\n    # WHY read from replica by default, primary only when fresh:\n    # trades slight staleness for read scale.\n    db = primary(shard_for(user_id)) if need_fresh else replica(shard_for(user_id))\n    row = db.query(\"SELECT * FROM profiles WHERE user_id = %s\", user_id)\n    cache.set(f\"profile:{user_id}\", row, ttl=CACHE_TTL_S + jitter())\n    return row\n\ndef update_profile(user_id: str, data: dict):\n    # WHY write always to shard primary: single order per key.\n    primary(shard_for(user_id)).execute(\"UPDATE profiles SET ... WHERE user_id = %s\", user_id, data)\n    # WHY invalidate, not update: avoids cache/DB divergence on concurrent writes.\n    cache.delete(f\"profile:{user_id}\")"
+    },
+    {
+      "type": "paragraph",
+      "text": "The code makes the trade-offs visible. Cache-first reduces replica load but introduces invalidation responsibility — delete on write, jitter TTLs to avoid stampedes. Replica-by-default scales reads but forces an explicit `need_fresh` escape hatch for read-after-write. Hash sharding spreads load but sacrifices range queries; if you need sorted feeds, you need a separate index or timeline service. In the interview, walk through this file in words: where writes go, where reads fall through, what happens when cache is cold, and what happens when a shard is added. That is more convincing than naming three database products."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "State workload numbers first",
+          "text": "Estimate reads vs writes, size, growth, and consistency per entity. Example: 90% reads on profiles, 50/50 on orders, blobs 10x bytes of rows. This forces the rest of the design."
+        },
+        {
+          "title": "Separate entities by query shape",
+          "text": "Put transactional rows in SQL, key lookups in partitioned store, blobs in object storage, text search in index. Justify each split by access pattern, not preference."
+        },
+        {
+          "title": "Add replicas for reads, shards for writes",
+          "text": "Say explicitly: replicas do not fix writes, shards do not fix ad-hoc queries. Pick a shard key and defend its cardinality and hot-key risk."
+        },
+        {
+          "title": "Place cache and queue deliberately",
+          "text": "Cache hot reads with TTL and invalidation rule. Move emails, thumbnails, denormalisation, analytics off the request path into a queue."
+        },
+        {
+          "title": "Name failure and guardrail",
+          "text": "Close with lag handling, hot shard detection, pool limits, backpressure, and what degrades first. Interviewers promote on this, not on product names."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**NoSQL means scalable:** No. Scalability comes from partitioning and removing coordination, not the label. A single-node document store hits the same ceiling as SQL.",
+        "**Replicas fix a slow database:** Only if slow is read load. Replicas add lag and do nothing for write throughput or data size.",
+        "**Shard early just in case:** Sharding on day one trades simple joins and transactions for complexity you do not need. Start single-node with a shard key in schema so you can split later.",
+        "**Cache fixes the DB:** Cache hides a hot-read problem and creates an invalidation problem. Without TTL jitter and coalescing, it creates stampedes.",
+        "**One database for everything:** Storing blobs, search, counters, and ledger in one engine guarantees one of them performs badly. Use the right tier per workload.",
+        "**Strong consistency everywhere is free:** Synchronous replication and distributed transactions cost latency and availability. Apply strict consistency only where money or correctness demands it."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use what"
+    },
+    {
+      "type": "table",
+      "caption": "Pick by workload, not by familiarity.",
+      "headers": [
+        "Workload",
+        "Use",
+        "Do not use",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Ledger, inventory, bookings needing joins and no loss",
+          "Single or sharded relational DB with sync commit",
+          "Cache-as-truth, async replicas for critical reads",
+          "Correctness outweighs latency; lag looks like lost money"
+        ],
+        [
+          "User profiles, sessions, feed items by ID at high QPS",
+          "Partitioned KV/document + cache + replicas",
+          "Single SQL for all reads",
+          "Key lookups scale linearly; cache absorbs skew"
+        ],
+        [
+          "Images, video, backups, logs",
+          "Object storage + CDN, metadata only in DB",
+          "BLOB columns in transactional rows",
+          "Blobs bloat buffers, backups, and replication streams"
+        ],
+        [
+          "Text search, faceted browse, analytics scans",
+          "Search index or columnar store fed by queue",
+          "Scatter-gather across shards on request path",
+          "Indexes precompute what shards cannot answer quickly"
+        ],
+        [
+          "Counters, leaderboards, rate limits",
+          "In-memory store with persistence + async flush",
+          "Transactional row per increment",
+          "Row locks collapse under contention; accept approximate with periodic reconcile"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The default for an Easy-scale interview: start with one relational primary plus one or two async replicas, add a cache for hot keys, push blobs to object storage, and push slow side-effects to a queue. Introduce sharding only when you can cite write QPS or size that exceeds one node, and name the key. That progression shows judgment. Jumping straight to sixteen shards and five systems shows memorisation. The examiner wants to see you add complexity only when numbers force it, and to hear the cost of each addition stated without prompting."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Scale reads with copies and cache, scale writes and size with splits by a hot-key-safe shard key, and put each workload — transactions, key lookups, blobs, search — on the tier built for it.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:20:04.708Z",
+    "problems": []
+  }
+}

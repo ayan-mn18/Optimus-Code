@@ -1,0 +1,289 @@
+{
+  "slug": "hilbert-curve-z-curve",
+  "title": "Hilbert Curve & Z Curve",
+  "summary": "Z-order and Hilbert curves collapse multi-dimensional filters into one sortable key to skip data. Z is cheap with jump artifacts; Hilbert clusters tighter but costs more CPU and complexity.",
+  "kind": "HLD",
+  "problemSlug": "hilbert-curve--z-curve-149-327",
+  "topic": "Resources Efficient & Extensible System Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🗺️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Space-Filling-Curve",
+    "Z-Order",
+    "Hilbert-Curve",
+    "Data-Clustering"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "The Beauty of Space-Filling Curves: Understanding the Hilbert Curve",
+      "url": "https://towardsdatascience.com/the-beauty-of-space-filling-curves-understanding-the-hilbert-curve/",
+      "source": "towardsdatascience.com",
+      "kind": "article"
+    },
+    {
+      "title": "Hilbert curve - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Hilbert_curve",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Data Locality and Multi-Dimensional Clustering in Data Lakehouse",
+      "url": "https://medium.com/@udayaw/data-locality-and-clustering-ecaa53c5024d",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Z-order or Hilbert Curve, which is better - Databricks Community",
+      "url": "https://community.databricks.com/t5/data-engineering/z-order-or-hilbert-curve-which-is-better/td-p/18200",
+      "source": "community.databricks.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "You cannot sort by two columns at once. A space-filling curve is a hack around that: **quantize N dimensions into fixed-bit integers, fold them into one 1D key that preserves spatial adjacency, then sort files by that key**. Queries that filter on those dimensions can then skip whole files using only min-max statistics. The trade-off is always the same: you buy multi-dimensional pruning without a secondary index, and you pay with rewrite cost, imperfect locality, and CPU on write."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Z-order and Hilbert actually are"
+    },
+    {
+      "type": "paragraph",
+      "text": "Both are functions from a discrete grid to a line: `F(x, y, ...) -> s` where `s` is a single integer you can sort on. You first normalize each clustering column into an unsigned N-bit value. Timestamps become buckets, latitude and longitude become cell coordinates on a power-of-two grid, categorical IDs become dictionary ranks. Then you combine the bits. Z-order, also called Morton order, interleaves bits: take bit 2 of y, bit 2 of x, bit 1 of y, bit 1 of x, and so on. Hilbert does the same mapping but rotates and mirrors each quadrant recursively so the 1D walk never makes a long teleport jump. In both cases the table is then physically clustered by `s`: rows with nearby `s` values land in the same file or block, and each file records its `min(s)`, `max(s)` plus per-column min-max for pruning."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why bother instead of sorting by timestamp and partitioning by region? Because real analytic and geospatial workloads filter on correlated dimensions at once: time plus location, device plus firmware, tenant plus event type. A single-column sort clusters well for one predicate and scatters for the other. Separate partition directories explode into small files and partition pruning fails when selectivity crosses dimensions. A curve key gives you a compromise order that is mediocre for each dimension alone but good for conjunctions. That is the entire value proposition. It is not an index structure, it is a layout policy that makes coarse file-level statistics selective again. If your queries are point lookups, build an index. If they are large rectangular scans over cold files in object storage, cluster by curve."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How the mapping actually works"
+    },
+    {
+      "type": "paragraph",
+      "text": "Z-order wins on simplicity, and simplicity is a resource decision. Bit interleaving is branchless, vectorizable, and reversible with a few masks and shifts. You can compute it inline during ingestion at millions of rows per second per core, decode it back to per-dimension bounds without a lookup table, and explain the code to a reviewer in two minutes. The reason it works is that shared prefixes in `s` imply shared prefixes in space: if two points share the top 6 interleaved bits, they are in the same coarse quadrant. The reason it disappoints is the discontinuity at quadrant boundaries. Points that are adjacent in space but sit on opposite sides of a major power-of-two split get wildly distant `s` values. That Z-shaped jump means one logical rectangle decomposes into many disjoint `s` intervals, and any file that straddles the boundary cannot be skipped even though most of its rows are irrelevant."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "morton.py",
+      "code": "def interleave2(x: int, y: int, bits: int = 16) -> int:\n    # Z-value / Morton code: y_{n-1} x_{n-1} ... y_0 x_0\n    # Trade-off: O(bits) shifts, no tables, decodable. Jumps remain.\n    s = 0\n    for i in reversed(range(bits)):\n        s = (s << 2) | (((y >> i) & 1) << 1) | ((x >> i) & 1)\n    return s\n\ndef z_interval_covers(qx_lo, qx_hi, qy_lo, qy_hi, bits=16):\n    # Naive bound: full rectangle maps to [min_s, max_s] but that\n    # range includes dead space. Production pruning splits it into\n    # several tight intervals instead of one loose interval.\n    corners = [interleave2(x, y, bits)\n               for x in (qx_lo, qx_hi) for y in (qy_lo, qy_hi)]\n    return min(corners), max(corners)\n\n# Example: (1,2) with 3 bits: x=001, y=010 -> interleave 00 01 10 = 0b000110 = 6\nprint(interleave2(1, 2, bits=3))"
+    },
+    {
+      "type": "paragraph",
+      "text": "Hilbert fixes the jump problem by construction. At each subdivision the traversal enters one sub-quadrant and exits into a neighbor, rotating the pattern so the exit of one cell is adjacent to the entry of the next. The result is a Hamiltonian walk with optimal locality in the strict sense: consecutive `s` values are always spatial neighbors, and the average ratio of 1D distance to 2D distance is lower than Z for the same grid. The price is computation and opacity. Encoding requires tracking rotation and reflection state per bit level, which is a loop with data-dependent branches or table lookups. Decoding a Hilbert value back to a bounding box is harder, and decomposing a query rectangle into Hilbert intervals is a recursive search, not bit masking. Expect roughly an order of magnitude more CPU per encode than Z, plus code nobody wants to debug at 2 AM. Choose Hilbert only when your scan cost dominates ingest CPU and your rectangles are small and selective, which is exactly the geospatial tile-fetch and map-render case."
+    },
+    {
+      "type": "mermaid",
+      "title": "Curve clustering pipeline",
+      "caption": "Write path clusters by curve value; read path prunes by intervals.",
+      "code": "flowchart TD\n  A[\"Ingest rows with dims\"] --> B[\"Quantize to N-bit grid\"]\n  B --> C[\"Compute SFC value\"]\n  C --> D[\"Global sort by SFC\"]\n  D --> E[\"Pack into sized files\"]\n  E --> F[\"Record min max stats\"]\n  F --> G[\"Query rectangle\"]\n  G --> H[\"Decompose to intervals\"]\n  H --> I[\"Skip non-overlapping files\"]"
+    },
+    {
+      "type": "table",
+      "caption": "Z-order versus Hilbert: pick by bottleneck, not by fashion.",
+      "headers": [
+        "Dimension",
+        "Z-order / Morton",
+        "Hilbert",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Locality quality",
+          "Good on average, bad at quadrant seams",
+          "Best among practical curves, no long jumps",
+          "Hilbert scans fewer files for small selective rectangles"
+        ],
+        [
+          "Encode cost",
+          "Few shifts and masks, SIMD friendly",
+          "Stateful rotation per level, branches or tables",
+          "Z is nearly free on ingest; Hilbert can bottleneck streaming writers"
+        ],
+        [
+          "Decode and interval split",
+          "Trivial with bit ops",
+          "Recursive search, more intervals logic",
+          "Query planner complexity lives longer than write code"
+        ],
+        [
+          "Implementation risk",
+          "20 lines, testable by hand",
+          "Easy to get rotation wrong, hard to eyeball",
+          "Correctness bugs in Hilbert silently destroy clustering"
+        ],
+        [
+          "Dimensionality scaling",
+          "Interleave extends to 3-4 dims cleanly",
+          "State explodes, gains shrink past 3 dims",
+          "Above 3 dims neither is magic; consider projection"
+        ],
+        [
+          "Skew handling",
+          "Neither handles skew; both need salting",
+          "Same, plus rebalancing cost is higher",
+          "Curve does not replace cardinality analysis"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The Z jump will ambush your demo",
+      "text": "Draw the Z path across a 4x4 grid and you will see it teleport from the end of one quadrant to the start of the next. A query rectangle straddling that seam maps to two far-apart `s` ranges with dead space between them. If your pruner uses a single `[min_s, max_s]` bound it will read everything. You must decompose into multiple intervals or you kept all of Z-order cost with none of the benefit. Hilbert reduces this effect but does not eliminate multi-interval decomposition."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The dominant failure is staleness, not math. Curve clustering is a physical property that every append, update, and late-arriving partition erodes. New files arrive unsorted, compactions pack by arrival time instead of `s`, and within weeks your perfectly clustered table is a random scatter. The symptom is unmistakable in storage metrics: files-skipped per query drops from 90 percent to 20 percent while total bytes scanned climbs, even though the query mix did not change. P99 latency creeps up first on the selective dashboards, then everywhere. The fix is not a better curve, it is a rewrite policy: sort-compact on write, periodic recluster of hot ranges, and ingestion that buffers and sorts before flushing. Budget that I/O explicitly. Teams that treat clustering as a one-time table property always end up rescanning the lake."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Clustering decays after writes: skipped-files ratio falls, bytes-scanned per query rises, while row counts stay flat. Fix with scheduled recluster and sorted flush, not a larger cluster.",
+        "Quantization is too coarse: whole city blocks collapse to one cell, every query reads every file. Symptom is min-max statistics with zero selectivity. Increase bits per dimension or normalize skewed columns before encoding.",
+        "Quantization is too fine: distinct `s` values exceed rows per file, so adjacent files overlap in `s` range and nothing is skippable. Symptom is thousands of tiny intervals and a slower planner. Reduce bits or increase target file size.",
+        "Uncorrelated high-cardinality columns: adding a fourth near-unique dimension dilutes the first two. Symptom is clustering helps single维度 tests but production conjunctions still scan everything. Drop that column from the curve and sort or bucket it separately.",
+        "Hilbert CPU on the hot path: encoder saturates ingest workers, backpressure grows, late data spikes. Symptom is write lag correlated with CPU, not I/O. Move encoding off the critical path, precompute at edge, or fall back to Z."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The second class of failure is dimensionality abuse. Curves preserve adjacency in two or three dimensions; by five or six independent dimensions the notion of nearness itself thins out and every rectangle touches a large fraction of intervals. Engineers keep adding columns to the curve because the API accepts a list, then wonder why pruning stalls. The honest trade-off: each added dimension halves the selectivity contributed by the existing ones unless the columns are strongly correlated. Profile column cardinality and pairwise filter co-occurrence before choosing the curve inputs. Two well-chosen columns beat five hopeful ones. The same logic applies to extreme skew: if ninety percent of rows share one geocell or one hour, the curve packs them into a handful of hot files that no query can skip. Salt the hot key, split the cell hierarchy, or isolate the heavy tenant. A curve spreads uniform data beautifully and concentrates skewed data painfully."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "prune.py",
+      "code": "def file_may_match(f_min, f_max, intervals) -> bool:\n    # File stores [f_min, f_max] of curve values.\n    # Query rectangle was decomposed into disjoint [lo, hi] intervals.\n    # Trade-off: more intervals = tighter pruning but slower planning.\n    for lo, hi in intervals:\n        if f_max >= lo and f_min <= hi:\n            return True\n    return False\n\ndef decompose_z(q_lo_s, q_hi_s, max_intervals=8):\n    # Placeholder for real recursive split: start with one loose\n    # interval, then carve out the big dead gaps caused by Z jumps.\n    # Cap intervals: beyond ~8-16 the planner cost exceeds scan savings.\n    mid = (q_lo_s + q_hi_s) // 2\n    if max_intervals <= 1 or q_hi_s - q_lo_s < 1024:\n        return [(q_lo_s, q_hi_s)]\n    return [(q_lo_s, mid), (mid + 1, q_hi_s)]"
+    },
+    {
+      "type": "mermaid",
+      "title": "Query rectangle to curve intervals",
+      "caption": "One rectangle becomes several 1D ranges; dead gaps are skipped.",
+      "code": "flowchart LR\n  Q[\"Query rectangle\"] --> S[\"Split by curve grid\"]\n  S --> I1[\"Interval A\"]\n  S --> I2[\"Interval B\"]\n  S --> I3[\"Interval C\"]\n  I1 --> P[\"Prune files by overlap\"]\n  I2 --> P\n  I3 --> P"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the access pattern before naming the curve",
+          "text": "Say: reads are large scans with conjunctive range filters on two to three low-to-medium cardinality dimensions, writes are bulk appends, storage is immutable files. If the interviewer instead describes point lookups or single-dimension time-range scans, say you would not use a curve at all. Grading starts here."
+        },
+        {
+          "title": "Quantize on the whiteboard",
+          "text": "Pick bits explicitly: 16 bits for normalized longitude, 16 for latitude, bucketed hour for time. Show interleaving for Z with a 3-bit example. State the trade-off of bit depth: too few bits merges distinct neighborhoods, too many fragments files. This proves you understand it is a discrete grid mapping, not continuous magic."
+        },
+        {
+          "title": "Justify Z versus Hilbert with numbers",
+          "text": "Default to Z for analytic lakes because encode is cheap and planner logic is simple. Upgrade to Hilbert only if queries are small selective tiles where extra pruning outweighs encode CPU and code risk. Mention that Hilbert interval decomposition is recursive and that operational debuggability favors Z. Interviewers reward the cost argument more than the locality proof."
+        },
+        {
+          "title": "Design the maintenance loop",
+          "text": "Draw sorted flush, file sizing, statistics collection, and periodic recluster. Define the health metric: files skipped divided by files considered, plus bytes scanned per query template. State the rewrite budget as a percentage of ingest. Without this loop your design is a demo that rots in a month."
+        },
+        {
+          "title": "Bound the design explicitly",
+          "text": "Close with limits: cap at two to three curve columns, cap intervals per query, isolate skewed tenants, fall back to partition plus sort when one dimension dominates. Say when you would remove the curve entirely. Extensibility here means knowing what not to fold into the key."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose you points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Hilbert is always better than Z: false as a system choice. Hilbert clusters tighter per byte scanned but costs more CPU, more planner work, and more risk. If ingest is the bottleneck or rectangles are large, Z delivers most of the skipping at a fraction of the operating cost.",
+        "The curve preserves distance both ways: false. Nearby in 1D implies nearby in space with high probability, but nearby in space does not imply nearby in 1D, especially across Z seams. That asymmetry is why multi-interval decomposition exists.",
+        "A curve is an index: false. It produces no lookup structure, only a favorable row order that makes existing file-level min-max statistics selective. Point lookups still need a hash, tree, or search index.",
+        "It replaces partitioning: false. Use coarse partitioning for the dominant, low-cardinality dimension such as date, then curve-cluster within partitions for the correlated remainder. Curving across a partition key you always filter on wastes the cheapest pruning you have.",
+        "More columns in the curve means more pruning: false past two or three. Each independent high-cardinality column dilutes locality. Measure filter co-occurrence and stop adding inputs when marginal files-skipped flattens.",
+        "Once clustered, always clustered: false. Every unsorted append degrades locality. Treat the curve value as a layout invariant enforced by the writer and compactor, with dashboards proving it is still holding."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Resource-efficient use means matching the tool to scan-heavy, multi-filter workloads.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Reason and trade-off"
+      ],
+      "rows": [
+        [
+          "Large immutable files with conjunctive range filters on 2-3 columns",
+          "Use Z-order first",
+          "Maximum bytes-skipped per engineering hour; trivial encode keeps ingest cheap"
+        ],
+        [
+          "Small selective tile or map fetches where scan dominates",
+          "Consider Hilbert",
+          "Tighter clustering repays extra CPU only when queries read few files"
+        ],
+        [
+          "Single-dimension time-series scans",
+          "Do not use a curve",
+          "Plain sort by time plus partition pruning is cheaper and more selective"
+        ],
+        [
+          "Point lookups by key",
+          "Do not use a curve",
+          "Build a hash or tree index; layout ordering cannot find one row fast"
+        ],
+        [
+          "High-cardinality independent dimensions above 4D",
+          "Do not use a curve",
+          "Locality collapses; use projections, embeddings, or separate access paths"
+        ],
+        [
+          "Tiny tables that fit in memory or cache",
+          "Do not use a curve",
+          "Recluster I/O and planner overhead exceed any scan saving"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "For the resource-efficiency track, frame the decision as bytes not read. Object storage charges for API calls and egress, and compute charges for decompression and filtering. Every file skipped is CPU, memory bandwidth, and network you never spend. Z-order is the economical default because its write-time tax is negligible and its file format requirements are just min-max statistics you already keep. Hilbert is the specialist tool: accept its encode tax and maintenance complexity only when profiles show that Z still scans too much dead space on your hottest selective templates. In both cases extensibility comes from keeping the curve inputs narrow, versioned, and measurable, so a new query pattern means re-tuning bits and columns with data, not redesigning storage."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Fold two or three co-filtered dimensions into one sortable Z or Hilbert key so multi-predicate scans skip files by statistics, defaulting to Z for cheap ingest and reserving Hilbert for small selective tiles where tighter locality repays the CPU."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:25:30.581Z",
+    "problems": []
+  }
+}

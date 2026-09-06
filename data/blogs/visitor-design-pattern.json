@@ -1,0 +1,263 @@
+{
+  "slug": "visitor-design-pattern",
+  "title": "Visitor Design Pattern",
+  "summary": "Visitor lets you add new operations to a frozen element hierarchy without editing it, via double dispatch — powerful when operations change often and types rarely do, punishing otherwise.",
+  "kind": "LLD",
+  "problemSlug": "visitor-design-pattern-36-76",
+  "topic": "Behavioral Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "🧭",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Behavioral Patterns",
+    "Visitor"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Visitor - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/visitor",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Visitor pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Visitor_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Visitor Design Pattern in Java - Medium",
+      "url": "https://medium.com/@contactkumaramit9139/visitor-design-pattern-in-java-3e99f3d69727",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Visitor **freezes your element types so your operations can stay open**. You never touch `City`, `Paragraph`, or `LineItem` again; you write a new `Visitor` instead. The trade-off is brutal and explicit: **cheap to add operations, expensive to add element types**. If your hierarchy churns, do not use it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Visitor separates an algorithm from the object structure it runs over. You have a small, stable set of element classes that all implement `accept(Visitor v)`. You have a `Visitor` interface with one method per concrete element type: `visitParagraph(Paragraph p)`, `visitImage(Image i)`, `visitTable(Table t)`. Each element implements `accept` as exactly one line: `v.visitX(this)`. That one line is the whole pattern. It bounces control back into the visitor with the static type recovered, so the visitor can execute type-specific logic without `instanceof` chains and without putting export, pricing, validation, or compilation code inside your domain objects."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why the bounce is necessary: mainstream OO languages like Java, C#, and Python pick methods on **single dispatch** — the runtime type of the receiver only. If you call `visitor.visit(node)` where `node` is typed as `Element`, you get the generic overload, not the `Paragraph` overload. You have lost the concrete type. `accept` fixes this with a second dispatch. The first dispatch selects `Paragraph.accept`, which knows `this` is a `Paragraph`. The second call `visitor.visitParagraph(this)` selects the right visitor method at compile time. Two hops recover the concrete type. That is why it is called **double dispatch**, and why languages with pattern matching or sum types need this pattern far less."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: double dispatch"
+    },
+    {
+      "type": "mermaid",
+      "title": "Visitor structure",
+      "caption": "Elements know only the Visitor interface; visitors know every concrete element.",
+      "code": "classDiagram\n  class Element {\n    +accept(v Visitor)\n  }\n  class Paragraph {\n    +accept(v Visitor)\n  }\n  class Image {\n    +accept(v Visitor)\n  }\n  class TableNode {\n    +accept(v Visitor)\n  }\n  class Visitor {\n    +visitParagraph(p Paragraph)\n    +visitImage(i Image)\n    +visitTable(t TableNode)\n  }\n  class XmlExportVisitor {\n    +visitParagraph(p Paragraph)\n    +visitImage(i Image)\n    +visitTable(t TableNode)\n  }\n  class RenderCostVisitor {\n    +visitParagraph(p Paragraph)\n    +visitImage(i Image)\n    +visitTable(t TableNode)\n  }\n  Element <|.. Paragraph\n  Element <|.. Image\n  Element <|.. TableNode\n  Visitor <|.. XmlExportVisitor\n  Visitor <|.. RenderCostVisitor\n  Paragraph ..> Visitor\n  Image ..> Visitor\n  TableNode ..> Visitor"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk the call. The client holds a `List<Element>` — a document, an AST, a graph of geo nodes — and a single visitor instance, say `XmlExportVisitor`. For each element it calls `element.accept(exporter)`. Suppose the element is a `Paragraph`. Dynamic dispatch routes to `Paragraph.accept`. That method executes `exporter.visitParagraph(this)`. Note `this` is statically a `Paragraph` inside that class, so the compiler binds the narrow overload. The visitor now has full access to `Paragraph` internals via getters or package access and appends `<p>...</p>` to its buffer. Same loop, next element is an `Image`: `Image.accept` routes to `visitImage`. No conditionals in the client, no type checks, no modification to `Paragraph` or `Image` when you later add `RenderCostVisitor` or `AccessibilityCheckVisitor`."
+    },
+    {
+      "type": "mermaid",
+      "title": "Double dispatch at runtime",
+      "caption": "Two hops recover the concrete type without instanceof.",
+      "code": "flowchart TD\n  Client[Client iterates List of Element] --> Accept[element.accept visitor]\n  Accept --> D1{First dispatch on element}\n  D1 --> PBack[Paragraph.accept calls visitor.visitParagraph]\n  D1 --> IBack[Image.accept calls visitor.visitImage]\n  D1 --> TBack[TableNode.accept calls visitor.visitTable]\n  PBack --> D2{Second dispatch on visitor}\n  IBack --> D2\n  TBack --> D2\n  D2 --> Exec[Visitor runs type-specific algorithm]"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Element and Visitor roles"
+    },
+    {
+      "type": "paragraph",
+      "text": "The `Element` hierarchy owns structure and traversal, nothing else. It exposes just enough state for visitors to do their job and one `accept` method each. The `Visitor` interface owns operations. Each concrete visitor — export, cost, validation, codegen — implements every `visit*` method. The client owns the iteration order and the visitor lifetime. This division is deliberate: elements stay cohesive and closed for modification, visitors become the single place where cross-cutting logic lives. The cost is a **cyclic compile-time dependency** — elements depend on `Visitor`, visitors depend on every concrete element. That cycle is the trade-off made visible. It is tolerable when elements are stable and intolerable when they are not, because every new element forces a change to the `Visitor` interface and to every existing visitor."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "DocumentElements.java",
+      "code": "interface Element {\n  void accept(Visitor v);\n}\n\nfinal class Paragraph implements Element {\n  final String text;\n  Paragraph(String text) { this.text = text; }\n  @Override public void accept(Visitor v) { v.visitParagraph(this); }\n}\n\nfinal class Image implements Element {\n  final String url; final int width; final int height;\n  Image(String url, int w, int h) { this.url = url; this.width = w; this.height = h; }\n  @Override public void accept(Visitor v) { v.visitImage(this); }\n}\n\nfinal class TableNode implements Element {\n  final int rows; final int cols;\n  TableNode(int rows, int cols) { this.rows = rows; this.cols = cols; }\n  @Override public void accept(Visitor v) { v.visitTable(this); }\n}\n\ninterface Visitor {\n  void visitParagraph(Paragraph p);\n  void visitImage(Image i);\n  void visitTable(TableNode t);\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Visitors.java",
+      "code": "final class XmlExportVisitor implements Visitor {\n  final StringBuilder out = new StringBuilder();\n  @Override public void visitParagraph(Paragraph p) {\n    out.append(\"<p>\").append(escape(p.text)).append(\"</p>\");\n  }\n  @Override public void visitImage(Image i) {\n    out.append(\"<img src=\\\"\").append(i.url).append(\"\\\"/>\");\n  }\n  @Override public void visitTable(TableNode t) {\n    out.append(\"<table rows=\\\"\").append(t.rows).append(\"\\\"/>\");\n  }\n  private static String escape(String s) { return s.replace(\"&\", \"&amp;\"); }\n}\n\nfinal class RenderCostVisitor implements Visitor {\n  long costCents = 0;\n  @Override public void visitParagraph(Paragraph p) { costCents += p.text.length() / 10; }\n  @Override public void visitImage(Image i) { costCents += (long) i.width * i.height / 1000; }\n  @Override public void visitTable(TableNode t) { costCents += (long) t.rows * t.cols * 5; }\n}\n\n// Client: traversal stays outside elements and visitors.\n// for (Element e : document) e.accept(exporter);"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Visitor inverts the normal cost of change. Choose based on which axis moves.",
+      "headers": [
+        "Aspect",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Adding operations",
+          "Add a class, touch zero element files. Satisfies open/closed on the operation axis.",
+          "Each visitor must implement every element method, even no-ops. Visitors bloat as types grow."
+        ],
+        [
+          "Adding element types",
+          "Nothing — this is the losing axis.",
+          "Breaks `Visitor` interface and *every* concrete visitor. Compile errors everywhere until all are updated."
+        ],
+        [
+          "Type safety vs conditionals",
+          "No `instanceof` chain. Missing overload is a compile error, not a silent runtime skip.",
+          "Cyclic dependency between elements and visitors. Harder to split into modules or version independently."
+        ],
+        [
+          "Encapsulation",
+          "Domain classes stay clean of export, pricing, check logic.",
+          "Visitors need wide getters or friend access. You widen the public surface to feed them."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Say the trade-off out loud in a review: Visitor is **single-dispatch compensation**. You pay interface churn and encapsulation leakage to buy operation extensibility and exhaustive compile-time checking. If someone proposes Visitor for a hierarchy with ten types and two operations that never change, reject it — a virtual method or a `switch` is smaller, clearer, and cheaper. If someone resists Visitor for three stable AST node types with eight planned analyses (type-check, optimise, pretty-print, lint, compile, serialise), insist on it — scattering eight `if-else` ladders across call sites is how codebases rot. The deciding question is never elegance, it is **which axis will change next**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is **element explosion**. A team models invoices with `LineItem` and `Discount`, writes five visitors (PDF, CSV, tax, audit, search-index), then adds `BundleItem`, `GiftCard`, `Surcharge`. Every addition edits the `Visitor` interface and all five visitors, plus every test double that implements `Visitor`. The symptom you see is a pull request that touches forty files to add one domain concept, merge conflicts on the `Visitor` interface on every branch, and developers quietly adding `instanceof` fallbacks or a default `visitUnknown` to dodge the compiler. Once the default exists, exhaustiveness is gone and the pattern has decayed into a slower Strategy with extra steps."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure is **stateful, order-dependent visitors**. Export visitors accumulate a `StringBuilder`, cost visitors accumulate totals, validation visitors accumulate errors. That state makes visitors non-reusable and non-thread-safe, and traversal order suddenly matters. The symptom is flaky output when the same visitor instance is reused across requests, `StringBuilder` residue from a prior document, or corrupted XML when two threads share one visitor. Worse, teams smuggle traversal into `accept` — composite nodes that call `child.accept(v)` internally — so half the ordering lives in elements and half in the client. The symptom is duplicated or skipped children after someone changes iteration in only one place. Fix both by treating visitors as **single-use, single-threaded accumulators** with an explicit `result()` method, and by deciding once where traversal lives: either dumb elements plus a smart iterator, or composite `accept` that recurses — never both."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Compile cascade: adding one element class breaks every visitor and every mock — the signal your hierarchy is too volatile for Visitor.",
+        "`visit(Object)` or `visitUnknown` appearing in review — the signal someone gave up on exhaustiveness.",
+        "Shared visitor instance in a pool or singleton — the signal for cross-request contamination and race bugs.",
+        "Null or empty output for a new element type with no error — the signal a default no-op swallowed it.",
+        "Traversal logic in both client loop *and* composite `accept` — the signal for double-visited subtrees."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The instanceof collapse",
+      "text": "If your `visit*` methods start with `if (x instanceof Y)`, you have lost. Either the `accept` wiring is wrong (someone passed the static type `Element` through) or you are using Visitor where a single polymorphic method belonged. **Visitor must never test types — recovering the type *is* its job.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Model the elements first",
+          "text": "Start with 2–3 element types and an `Element.accept` contract. Say why elements expose getters instead of behaviour here: the operations vary independently and do not belong in the domain class. Name the closed axis explicitly."
+        },
+        {
+          "title": "Write the Visitor interface with one method per concrete type",
+          "text": "Do not write a generic `visit(Element e)`. That collapses back to single dispatch and forces `instanceof`. Write `visitParagraph`, `visitImage`, `visitTable` so the compiler enforces coverage."
+        },
+        {
+          "title": "Implement two visitors, not one",
+          "text": "One visitor proves nothing. Two — for example `XmlExportVisitor` and `RenderCostVisitor` — prove operations were separated from structure. Keep visitors stateful but single-use; expose `result()` instead of leaking a mutable buffer."
+        },
+        {
+          "title": "Answer the follow-up: add an operation, then add a type",
+          "text": "Adding an operation should touch one new file. Adding a type should break the interface and all visitors. Walk through both diffs. This is the graded moment — it shows you understand the inverted cost."
+        },
+        {
+          "title": "Discuss traversal and alternatives",
+          "text": "State who iterates: client loop for flat structures, recursive `accept` in composites for trees. Then contrast with Strategy (one operation family on one type), Interpreter (grammar evaluation where operations rarely change), and modern pattern matching / sealed types, which subsume Visitor when the language supports exhaustiveness natively."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Visitor is about visiting collections.** No — iteration is incidental. It is about adding type-specific operations without editing types. You can use it on a single element.",
+        "**Visitor removes all conditionals.** It removes *type* conditionals by moving them into dispatch. Business-rule conditionals still live inside each `visit*` method where they belong.",
+        "**A generic `visit(Element e)` is simpler and equivalent.** It is neither. You lose the second dispatch and reintroduce the `instanceof` chain the pattern exists to kill.",
+        "**Visitors should be stateless singletons.** Only if they compute pure functions of one element. Real visitors accumulate — export buffers, costs, errors — so they must be short-lived and confined to one thread.",
+        "**Visitor fixes a bad hierarchy.** It amplifies hierarchy mistakes. If element types churn weekly, Visitor turns each addition into a codebase-wide edit. Fix the modelling first.",
+        "**Accept can contain business logic.** `accept` should be one line: `v.visitX(this)`. Anything more couples traversal to operation and makes ordering bugs invisible."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to avoid it"
+    },
+    {
+      "type": "table",
+      "caption": "Apply only when operations outnumber and outpace element types.",
+      "headers": [
+        "Use Visitor when",
+        "Avoid Visitor when"
+      ],
+      "rows": [
+        [
+          "Element set is small and stable (AST nodes, document blocks, geo node kinds) and operations keep coming (export, lint, cost, check).",
+          "Element types churn often — every new type rewrites the interface and all visitors."
+        ],
+        [
+          "Operations do not belong in domain classes (serialisation, tax rules, compilation) and would pollute them.",
+          "Behaviour is intrinsic to the element (`area()`, `collides()`) — a virtual method is simpler and better encapsulated."
+        ],
+        [
+          "You want compile-time exhaustiveness: a new type must force every operation to be considered.",
+          "Your language has sealed types plus exhaustive `switch`/match — use that instead of hand-rolled double dispatch."
+        ],
+        [
+          "Multiple unrelated operations share one traversal over a structure.",
+          "Only one or two operations exist and no more are planned — `instanceof`-free purity is not worth the interface weight."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "When in doubt, count the axes. Three stable types with six operations is a Visitor-shaped problem. Six volatile types with two operations is a polymorphism-shaped problem. Middle cases — a file system with `File` and `Directory` plus `size`, `search`, and `permission-check` visitors — are legitimate Visitor territory *only* if you seal the hierarchy and accept that a future `Symlink` type will be a breaking change. Alternatives to name: **Strategy** when the variation is one algorithm family on one type, **Interpreter** or Composite with polymorphic `eval` when evaluation is intrinsic to the grammar, and **pattern matching over a sealed hierarchy** as the modern replacement that gives exhaustiveness without the visitor/element cycle."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "\"Visitor recovers the concrete element type through double dispatch — `accept` routes on the element, then `visitX(this)` routes on the operation — so I can add operations without editing elements, at the cost that adding an element type breaks every visitor.\""
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:00:04.098Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,316 @@
+{
+  "slug": "consistent-hashing",
+  "title": "Consistent Hashing",
+  "summary": "Consistent hashing stops membership changes from reshuffling all data by mapping nodes and keys onto the same ring and moving only neighbor ranges.",
+  "kind": "HLD",
+  "problemSlug": "consistent-hashing-90-182",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🍩",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "scalability",
+    "distributed-systems",
+    "partitioning"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "LeetCode 10012 — Design Consistent Hashing",
+      "url": "https://leetcode.com/problems/design-consistent-hashing/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "Medium. Resolved through the LeetCode API, not guessed from the slug."
+    },
+    {
+      "title": "Consistent hashing algorithm - High Scalability -",
+      "url": "https://highscalability.com/consistent-hashing-algorithm/",
+      "source": "highscalability.com",
+      "kind": "article"
+    },
+    {
+      "title": "Consistent Hashing for System Design Interviews",
+      "url": "https://www.hellointerview.com/learn/system-design/core-concepts/consistent-hashing",
+      "source": "hellointerview.com",
+      "kind": "article"
+    },
+    {
+      "title": "Consistent Hashing - System Design - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/consistent-hashing/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Consistent Hashing: Easy Explanation for System Design Interviews",
+      "url": "https://www.youtube.com/watch?v=vccwdhfqIrI",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Consistent hashing decouples key placement from node count.** With `hash(key) % N`, changing `N` moves almost everything. With a ring, adding or removing a node moves only the keys that belonged to its immediate neighbor range — roughly `K/N` keys, not `K`. If you remember nothing else, remember that."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Consistent hashing is a placement rule for a dynamic set of owners. You hash both nodes and keys into the same fixed-size space — typically a 32-bit or 64-bit integer circle — and assign each key to the first node encountered walking clockwise from the key position. The node set can grow or shrink without renegotiating the whole mapping. That is the entire contract: deterministic lookup given a membership view, minimal remapping on membership change, and no central coordinator for placement. It does not solve replication, consistency, failure detection, or balance by itself. It only answers *who owns this key right now* in a way that survives churn."
+    },
+    {
+      "type": "paragraph",
+      "text": "Compare it to the naive scheme it replaces. With modulo sharding you compute `owner = hash(key) % N`. When `N` goes from 3 to 4, the divisor changes, so the owner of almost every key changes even though only one node was added. For uniform hashes, roughly `(N-1)/N` of keys move — near 100% at small `N`. That means a scale-out event triggers a migration storm, cache miss avalanche, and backend overload at exactly the moment you are already under load. Consistent hashing exists to break that coupling. The hash space size never changes, so the only keys that move are those whose clockwise successor changed. The trade-off: you accept slightly uneven distribution and an extra lookup structure in exchange for bounded disruption during churn."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Build a ring of size `M = 2^32` or `2^64`. Hash each physical node ID — `node-ip:port` or `node-uuid` — with the same function you use for keys, and drop a marker at that point on the ring. Hash each key the same way. Starting at the key position, walk clockwise until you hit a node marker; that node owns the key. When a node joins, it inserts markers that carve intervals out of its successors — only keys in those carved intervals move, and they move from exactly one predecessor each. When a node leaves, its intervals collapse into its successor. No global reshuffle, no rehashing of unaffected keys. The cost is that ownership is now range-based, so you need a sorted structure of ring positions to find successors in `O(log V)` where `V` is total markers."
+    },
+    {
+      "type": "mermaid",
+      "title": "Ring lookup and membership change",
+      "caption": "Only the neighbor range moves when membership changes.",
+      "code": "flowchart TD\n  H[\"hash key to ring position\"] --> W[\"walk clockwise\"]\n  W --> O[\"first node marker owns key\"]\n  O --> J[\"node joins: splits successor interval\"]\n  J --> L[\"node leaves: interval merges into successor\"]\n  L --> M[\"unaffected ranges never move\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "A bare ring with one marker per physical node distributes badly. Random placement on a large circle produces wildly unequal interval sizes — one node can easily own 3x the average range by luck, and every join or leave hammers a single successor. The fix is virtual nodes, also called replicas or tokens. Each physical node claims `V` evenly spread markers, e.g. `hash(node-id + \"#\" + i)` for `i` in `0..V-1`, commonly 100 to 300 per node. A key still maps to the first marker clockwise, then resolves to the owning physical node. Statistically this smooths interval sizes by the law of large numbers, spreads the load of a joining node across many predecessors instead of one, and lets heterogeneous machines claim capacity proportional to weight by giving them more virtual nodes. The trade-off is explicit: `V` times more ring state and `O(log N*V)` lookup, plus more replication bookkeeping, in exchange for standard deviation of load dropping roughly as `1/sqrt(V)`."
+    },
+    {
+      "type": "mermaid",
+      "title": "Virtual nodes smooth the ring",
+      "caption": "Many small intervals per physical node instead of one large interval.",
+      "code": "graph LR\n  PA[\"Physical A\"] --> A1[\"A-1\"]\n  PA --> A2[\"A-2\"]\n  PA --> A3[\"A-3\"]\n  PB[\"Physical B\"] --> B1[\"B-1\"]\n  PB --> B2[\"B-2\"]\n  PB --> B3[\"B-3\"]\n  A1 --> R[\"interleaved on ring\"]\n  B1 --> R\n  A2 --> R\n  B2 --> R"
+    },
+    {
+      "type": "paragraph",
+      "text": "Replication rides on top of the same walk. For replication factor `R`, the key lives on the first `R` distinct physical nodes clockwise from the key position, skipping additional virtual markers that resolve to an already-chosen owner. This is why virtual nodes matter twice: without them, replicas of every key in a range land on the same successor set, coupling failure domains. With them, replica sets diversify. The trade-off you must name: larger `R` shortens unavailability during churn and spreads read load, but multiplies write cost, storage, and the amount of data that must stream when membership changes. Most designs pair the ring with a membership protocol and hinted handoff or anti-entropy, because the ring tells you where data *should* be, not how it gets there."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of consistent hashing.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why it is worth it or not"
+      ],
+      "rows": [
+        [
+          "Only `K/N` keys move on membership change",
+          "Uneven load without tuning",
+          "Worth it if churn is frequent; pointless for a static 3-node cluster"
+        ],
+        [
+          "No central directory for placement",
+          "Every client needs same ring view",
+          "Worth it at scale; version skew causes transient misrouting"
+        ],
+        [
+          "Heterogeneous capacity via weighted virtual nodes",
+          "`V` markers per node in memory + sorted lookup",
+          "Worth it when machines differ; wasteful when they are identical and stable"
+        ],
+        [
+          "Natural replica set: next `R` distinct nodes",
+          "Hot ranges still hot; ring does not fix skew",
+          "Worth it for uniform keys; fails for celebrity keys without a second layer"
+        ],
+        [
+          "Incremental scale-out with no downtime",
+          "Range scans and joins become range walks",
+          "Worth it for key-value access; painful for ordered queries"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Consistent hashing fails in ways that look like capacity problems but are actually distribution problems. The ring guarantees minimal movement, not equal movement. Skewed keys, stale membership views, bad hash choice, or too few virtual nodes all produce the same outward sign — one node saturates while the rest idle — but each needs a different fix. Learn to distinguish them by what moves and what does not. If adding nodes does not relieve the hot node, placement is not the bottleneck; popularity is."
+    },
+    {
+      "type": "table",
+      "caption": "Failure mode to symptom to check.",
+      "headers": [
+        "Failure",
+        "Symptom you observe",
+        "What to check first"
+      ],
+      "rows": [
+        [
+          "Too few virtual nodes",
+          "20-40% load spread even with uniform keys, one node always hottest",
+          "Histogram of tokens per node and owned key count; raise `V` to 150-300"
+        ],
+        [
+          "Non-uniform or ordered key hash",
+          "Adjacent keys pile on same node, range hotspots",
+          "Key distribution sample; switch to a uniform hash like Murmur, xxHash, SHA then truncate"
+        ],
+        [
+          "Hot key / celebrity key",
+          "Single key QPS melts one node, scale-out changes nothing",
+          "Top-K access counters; add front cache, request coalescing, or split the hot value"
+        ],
+        [
+          "Stale ring view across clients",
+          "Writes land on old owner, reads miss, duplicate ownership",
+          "Ring version propagation delay; add versioning and redirect-on-miss"
+        ],
+        [
+          "Cascading removal without bounded load",
+          "Successor of failed node OOMs, then next fails in turn",
+          "Remaining capacity vs reassigned range; shed, throttle backfill, limit concurrent bootstrap"
+        ],
+        [
+          "Physical heterogeneity ignored",
+          "New large machine idle, old small machine saturated",
+          "Tokens proportional to weight; assign virtual nodes by capacity, not equally"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The ugliest failure is a cold join under load. A new empty node joins, the ring hands it `K/N` keys worth of range, and every client simultaneously misses and backfills from the database or from successors. The new node saturates on ingress, request latency spikes, health checks flap, and the orchestrator removes it — which reassigns the same range back and repeats the storm. The fix is not in the hash, it is in the bootstrap: warm the node with throttled streaming, cap the fraction of traffic it accepts, or join it with a small token count and ramp up. Same logic applies on removal: stream the departing range before declaring the node gone, or you convert one failure into `R`-fold read amplification on successors."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Hash function choice is load-bearing",
+      "text": "Do not use a cryptographic hash because it sounds safer, and do not use your language default `hash()` because it is seeded per process. You need **stable, uniform, and identical across every client and language**. Anything else silently forks the ring: two clients disagree on ownership and you debug it as packet loss for a week."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The code that matters"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "consistent_hash.py",
+      "code": "import bisect\nimport hashlib\n\ndef _pos(token: str) -> int:\n    # stable across processes and languages; 128-bit then truncate is fine\n    return int(hashlib.md5(token.encode()).hexdigest(), 16)\n\nclass ConsistentHash:\n    def __init__(self, nodes=(), replicas: int = 200):\n        self.replicas = replicas\n        self.ring: list[int] = []          # sorted positions\n        self.owner: dict[int, str] = {}     # position -> physical node\n        for n in nodes:\n            self.add(n)\n\n    def add(self, node: str) -> None:\n        for i in range(self.replicas):\n            p = _pos(f'{node}#{i}')\n            if p in self.owner:\n                continue  # collision: skip, keeps ring sorted invariant\n            self.owner[p] = node\n            bisect.insort(self.ring, p)\n\n    def remove(self, node: str) -> None:\n        doomed = [p for p, o in self.owner.items() if o == node]\n        for p in doomed:\n            del self.owner[p]\n            idx = bisect.bisect_left(self.ring, p)\n            del self.ring[idx]\n\n    def get(self, key: str) -> str:\n        if not self.ring:\n            raise KeyError('empty ring')\n        p = _pos(key)\n        idx = bisect.bisect(self.ring, p) % len(self.ring)  # wrap = clockwise\n        return self.owner[self.ring[idx]]\n\n    def get_n(self, key: str, n: int) -> list[str]:\n        # replica set: first n *distinct* physical nodes clockwise\n        if not self.ring:\n            raise KeyError('empty ring')\n        out, seen = [], set()\n        p = _pos(key)\n        idx = bisect.bisect(self.ring, p) % len(self.ring)\n        for j in range(len(self.ring)):\n            node = self.owner[self.ring[(idx + j) % len(self.ring)]]\n            if node not in seen:\n                seen.add(node)\n                out.append(node)\n                if len(out) == n:\n                    break\n        return out"
+    },
+    {
+      "type": "paragraph",
+      "text": "This implementation carries the three decisions that matter. First, the ring is a sorted list plus a position-to-owner map, so lookup is binary search with wraparound — that wraparound *is* the clockwise rule. Second, `add` and `remove` only touch that node virtual markers, which is why only neighbor ranges move; nothing rehashes existing keys. Third, `get_n` skips duplicate physical owners so replicas never collapse onto two virtual markers of the same machine. The trade-off on display: `bisect.insort` is `O(V)` per insert, acceptable at bootstrap with hundreds of markers but wrong for a control plane churning thousands of nodes per second — there you want a balanced tree or sorted array built once. And `replicas=200` is a starting point, not a constant: raise it until owned-key standard deviation stops improving, then stop, because each extra marker is memory and gossip you pay forever."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from modulo and quantify the pain",
+          "text": "Write `hash(key) % N`, then show what happens adding node 4: almost every key remaps. Say the number: ~`K*(N-1)/N` moves. This proves you understand the problem is disruption cost, not just distribution."
+        },
+        {
+          "title": "Draw the ring and define the rule in one sentence",
+          "text": "Hash nodes and keys to one circle; each key belongs to the first node clockwise. Draw 3 nodes, place 2 keys, then add a 4th node and shade only the stolen interval. Interviewers grade this picture."
+        },
+        {
+          "title": "Introduce virtual nodes before they ask about skew",
+          "text": "Say plainly: one marker per node gives lopsided ranges by chance. Give each physical node 150-300 markers, interleave them, and map marker to owner. Mention weighted tokens for heterogeneous hardware — that one line signals production experience."
+        },
+        {
+          "title": "Extend to replication and lookup path",
+          "text": "Replica set is the next `R-1` distinct physical nodes clockwise. Show `get_n` skipping same-owner markers. Then state who holds the ring: client-side library vs routing tier, and how version skew is handled with redirects."
+        },
+        {
+          "title": "Close with limits and the follow-up answer",
+          "text": "Name what the ring does not fix: hot keys, range queries, membership itself. Offer the paired fixes: front cache or key splitting for hot keys, bounded-load variant or rendezvous hashing if asked, throttled bootstrap for cold joins. That is a Medium turning into a Strong Hire."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "*Consistent hashing balances load.* No — it bounds remapping. Balance comes from virtual nodes plus uniform keys, and even then a skewed workload defeats it.",
+        "*More virtual nodes is always better.* Beyond ~200-300 the variance gain flattens while ring size, memory, and propagation cost keep growing.",
+        "*It handles node failure.* It only reassigns ownership on paper. Durability needs replication, failure detection, and repair — the ring is silent on all three.",
+        "*Removing a node spreads its load evenly.* It dumps the whole range on the successor unless you use bounded-load or virtual-node spread. Expect a single-node spike.",
+        "*Any hash function works.* Only stable, uniform, cross-language hashes work. A per-process seed or a poorly distributed hash quietly partitions your fleet.",
+        "*It is the only answer.* Rendezvous / highest-random-weight hashing gives better balance at higher lookup cost; range partitioning wins for ordered scans. Name the alternative."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use it for churn; skip it for static or ordered data.",
+      "headers": [
+        "Use consistent hashing when",
+        "Avoid it when",
+        "What to use instead"
+      ],
+      "rows": [
+        [
+          "Nodes join and leave often: elastic caches, session stores",
+          "Membership is fixed at 3-5 nodes",
+          "Modulo or static config — simpler, perfectly even"
+        ],
+        [
+          "Stateless request routing to a changing pool",
+          "You need range scans or ordered iteration",
+          "Range partitioning with a directory service"
+        ],
+        [
+          "Large keyspace, uniform access, key-value lookup",
+          "Small keyspace with a few celebrity keys",
+          "Front cache + explicit hot-key splitting or replication of hot values"
+        ],
+        [
+          "Heterogeneous capacity you must weight",
+          "Strong consistency with transactions across keys",
+          "Consensus-backed partition map, not pure hashing"
+        ],
+        [
+          "Client-side routing without a central directory",
+          "Lookup cost must be strictly `O(1)` with tiny metadata",
+          "Rendezvous costs `O(N)`; prefer sticky directory or modulo"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "If the interviewer pushes, show you know the neighborhood. Rendezvous hashing — compute `score = hash(key, node)` for every node and pick the max — gives excellent balance and minimal disruption with zero ring state, at the cost of `O(N)` scoring per lookup, which hurts past hundreds of nodes. Partition-map systems keep an explicit range-to-owner table behind a coordinator, which handles splits, merges, and bounded load far better but reintroduces a control plane you must run. Bounded-load consistent hashing caps how much a successor absorbs and spills excess to the next candidate, trading perfect locality for overload protection. Pick by churn rate, fleet size, and whether placement must survive without a coordinator — that three-way answer is what separates a memorized diagram from a design judgment."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Map nodes and keys to one hash ring, assign each key to the first node clockwise, and give each physical node hundreds of virtual markers so only a `K/N` neighbor range moves on churn.** Then add: the ring bounds movement, it does not fix hot keys."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:09:39.808Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,275 @@
+{
+  "slug": "graph-databases",
+  "title": "Graph Databases",
+  "summary": "Graph databases trade join cost for pointer cost: when your queries are traversals, not lookups, store relationships as physical edges and pay neighborhood size instead of table size.",
+  "kind": "HLD",
+  "problemSlug": "graph-databases-92-303",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": " 789b 0f",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "Graphs"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Graph Databases Explained: Better Way to Represent Connections",
+      "url": "https://www.cognee.ai/blog/fundamentals/graph-databases-explained",
+      "source": "cognee.ai",
+      "kind": "article"
+    },
+    {
+      "title": "What is a graph database - Getting Started - Neo4j",
+      "url": "https://neo4j.com/docs/getting-started/graph-database/",
+      "source": "neo4j.com",
+      "kind": "article"
+    },
+    {
+      "title": "Graph Database Overview - Microsoft Fabric",
+      "url": "https://learn.microsoft.com/en-us/fabric/graph/graph-database",
+      "source": "learn.microsoft.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is a Graph Database? - Graph DB Explained - AWS",
+      "url": "https://aws.amazon.com/nosql/graph/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Use a graph database when the **cost of the question must scale with the neighborhood you touch, not the tables you join**. If your query is \"starting from this user, walk 3 hops and rank,\" a relational engine does work proportional to table size. A graph engine does work proportional to edges traversed. That is the entire decision. Everything else is tooling."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a graph database actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A graph database stores data as **nodes, edges, and properties** — the labeled property graph model. A node is an entity like a person, account, or device. An edge is a directed, typed connection like `FRIENDS_WITH`, `TRANSFERRED_TO`, or `DEPENDS_ON`. Both nodes and edges carry key-value properties: `since`, `weight`, `amount`, `status`. Labels like `Person` or `FraudRing` act as coarse types for indexing and filtering. The critical distinction is not the shape. It is that **edges are stored as first-class physical structures**, not derived at query time from matching foreign-key values. Traversal means following pointers from a start node, not hashing and merging massive intermediate tables. That choice buys constant-time hop cost per edge and sells away cheap global scans, easy sharding, and bulk aggregation."
+    },
+    {
+      "type": "paragraph",
+      "text": "Compare that to a relational model for the same domain. People in one table, friendships in a join table, purchases in another. To answer \"friends of friends who liked this comment,\" you join three to five times. Each join builds an intermediate result that grows with the total number of friendships and likes in the system, even if this one user has 40 friends. The optimizer can use indexes, but it still probes, sorts, and deduplicates across global structures. The graph version starts at one node ID, loads its adjacency list, loads the neighbors' adjacency lists, and stops. The trade-off is explicit: **relational optimizes for set operations over all rows; graph optimizes for localized walks from known anchors**. Pick the engine whose happy path matches your dominant query shape, because you will pay for the other shape every day."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: index-free adjacency"
+    },
+    {
+      "type": "paragraph",
+      "text": "Most native graph stores implement **index-free adjacency**: each node record holds direct references to its incident edge records, and each edge record holds references to its head and tail nodes plus its property block. Once you resolve the start node — usually via a single label-plus-property index lookup — the rest of the query is pointer chasing through memory or SSD pages. No secondary index probe per hop, no join build phase. That is why depth hurts less than breadth: a 5-hop path through degree-10 nodes touches ~100k edges, trivial for a graph engine and painful as five joins. The price is that the storage layer is now a giant pointer mesh. Random writes fragment it. Deletes leave tombstoned edges that traversals must skip. Caching is neighborhood caching, not page-range caching, so hit rate depends entirely on locality of your hot subgraphs."
+    },
+    {
+      "type": "mermaid",
+      "title": "Traversal vs join",
+      "caption": "Traversal follows stored edges from an anchor; cost tracks neighborhood size.",
+      "code": "graph TD\n  A[Person: Annemarie] -->|knows| B[Person: Bob]\n  A -->|knows| D[Person: Carol]\n  B -->|likes| C[Comment: 42]\n  D -->|likes| C\n  D -->|knows| E[Person: Dave]\n  E -->|flagged| F[Account: suspect]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Queries are expressed as **patterns, not joins**. You describe a shape — `(p:Person)-[:knows]->(friend)-[:likes]->(c:Comment)` — and the engine binds it by expanding from the most selective anchor. Good engines pick the anchor with the highest selectivity first, then expand outward and prune with predicates and limits as early as possible. This is why you must give the optimizer something selective: a node ID, a unique label plus indexed property, a narrow time window on the edge. An unanchored pattern like \"find all 4-hop cycles\" is a full-graph scan and will melt any graph database. The interview signal is whether you anchor first and bound depth and fanout explicitly. If you cannot name the start set and the maximum expansion factor, you have not designed the query."
+    },
+    {
+      "type": "code",
+      "language": "cypher",
+      "filename": "friends-likes.cypher",
+      "code": "MATCH (p:Person {userId: $annemarieId})-[:knows]->(friend:Person)\n      -[l:likes]->(c:Comment)\nWHERE l.createdAt > $since\nWITH c, count(*) AS likesFromCircle\nORDER BY c.createdAt DESC\nLIMIT 100\nRETURN c.id, c.createdAt, likesFromCircle"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that query as an execution contract. One indexed lookup for `p`. Expand `knows` edges — bounded by that user's degree, maybe 200. For each friend, expand `likes` edges filtered by recency — bounded again. Aggregate a few thousand rows, sort, return 100. The trade-off you accepted: this is blazing fast for one user and useless for \"compute this for all 50M users nightly.\" Analytical rollups, full-table counts, and bulk scans belong on a warehouse or a columnar replica. Do not force the graph to be an OLAP engine; you bought it for selective, deep, latency-sensitive walks."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of the graph model",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Hop cost proportional to degree, not table size",
+          "Global scans and aggregations are slow",
+          "Design for anchored traversals; offload analytics elsewhere"
+        ],
+        [
+          "Pattern queries stay readable at depth 3-6",
+          "Query planner is anchor-sensitive and brittle",
+          "One missing index on the anchor turns ms into minutes"
+        ],
+        [
+          "Schema-optional evolution, new edge types anytime",
+          "No cheap enforcement of integrity at scale",
+          "You move validation to writers; expect dirty edges"
+        ],
+        [
+          "Natural modeling of paths, cycles, hierarchies",
+          "Deletes and updates fragment pointer chains",
+          "Budget for compaction and tombstone skipping"
+        ],
+        [
+          "Per-neighborhood caching and locality",
+          "Hot subgraphs become hot partitions",
+          "Supernodes destroy balance and tail latency"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The dominant failure is the **supernode**: a node with millions of edges. A celebrity account, a central payment gateway, a root dependency package. Logically it is one node; physically it is a multi-megabyte adjacency list that every traversal through it must page in. Symptom: p99 latency spikes on exactly the queries that touch the famous entity, lock contention on its edge list during writes, and one storage partition growing 100x faster than the rest. The fix is never \"bigger machine.\" It is modeling surgery: split edges by time bucket or type, demote the supernode to a label plus index instead of a traversal hub, cap expansion with `LIMIT` per hop, or precompute the hot 1-hop neighborhood into a cache. If you cannot name your top three highest-degree nodes in design review, you have not done the capacity math."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure is **unbounded expansion and distributed traversals**. A 6-hop query with average fanout 50 touches 15B edges in theory; in practice it times out, OOMs the coordinator, or saturates cross-partition RPC because each hop fans out to another shard. Symptom: queries that pass in staging with 10k nodes die at 100M nodes with coordinator memory pressure and retry storms. Graph partitioning is fundamentally hard — any edge-cut or vertex-cut leaves a huge fraction of traversals crossing the network. That is why scaled graph systems either keep the graph on one large vertical host with replicas, partition by tenant or region and forbid cross-partition walks, or go asynchronous with message-passing traversals and accept seconds, not milliseconds. The trade-off: **low-latency multi-hop reads fight horizontal scale**. Choose one as primary."
+    },
+    {
+      "type": "list",
+      "items": [
+        "p99 reads spike only for popular entities while median stays flat — supernode adjacency fetch.",
+        "Coordinator OOM or timeout on depth 4+ queries — fanout explosion, missing per-hop limit.",
+        "Write latency climbs as graph grows even at constant QPS — pointer fragmentation and index-backed edge inserts.",
+        "One partition hot while others idle — degree skew, bad sharding key on node ID.",
+        "Stale paths and phantom edges after deletes — tombstones and eventual secondary-index lag."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Bound every traversal",
+      "text": "Every production graph query needs three guards: a **selective anchor**, a **max depth**, and a **per-hop fanout cap**. If depth or fanout is user-controlled, clamp it server-side and paginate. An unbounded `MATCH (a)-[*]-(b)` is not a query, it is an incident."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Scaling, consistency, and indexing reality"
+    },
+    {
+      "type": "paragraph",
+      "text": "Indexing in a graph store is narrow and deliberate. You index node labels plus a few highly selective properties — user ID, account number, device fingerprint — to resolve anchors. You do not index everything, because every edge write then pays for multiple synchronous index updates and your ingest collapses. Edge properties are usually filtered during expansion, not via global indexes, which is fast when fanout is small and brutal when it is large. Consistency follows the same pragmatism: single-node deployments give you ACID transactions across nodes and edges, which you want for fraud and inventory. Distributed deployments weaken this to causal or eventual and push atomicity to a single partition. Do not promise cross-shard serializable path見つけ updates unless you have measured the coordination cost — two-phase commit across a traversal is how you turn a 20ms write into a 2s write."
+    },
+    {
+      "type": "mermaid",
+      "title": "Partitioning dilemma",
+      "caption": "Any cut leaves traversals crossing shards; design around it.",
+      "code": "flowchart LR\n  A[Shard 1: Users EU] -->|cross-shard edge| B[Shard 2: Merchants US]\n  B -->|cross-shard edge| C[Shard 3: Devices APAC]\n  A -->|local walk fast| A2[Friends]\n  B -->|network hop slow| C"
+    },
+    {
+      "type": "paragraph",
+      "text": "Operationally, plan for two systems, not one. The graph serves live traversals with tight SLOs; a change-data-capture stream feeds a warehouse or search index for rollups, full-text, vectors, and reporting. Backups must capture a consistent cut of nodes plus edges — a naive node-only snapshot yields dangling references on restore. Compaction and re-layout matter more than in relational stores because pointer locality is performance. If your access pattern is time-ordered, partition edge lists by time so recent traversals hit hot pages. The trade-off you are managing is **write amplification versus read locality**: every auxiliary index and precomputed adjacency you add speeds one traversal shape and taxes every write."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "traversal_guard.py",
+      "code": "def friends_likes(db, user_id: str, since: str, limit: int = 100):\n    # Anchor must be indexed. Depth fixed. Fanout capped per hop.\n    query = \"\"\"\n    MATCH (p:Person {userId: $uid})-[:knows]->(f:Person)\n    WITH p, f LIMIT 1000  // per-hop fanout cap: trade recall for latency\n    MATCH (f)-[l:likes]->(c:Comment)\n    WHERE l.createdAt > $since\n    RETURN c.id, c.createdAt ORDER BY c.createdAt DESC LIMIT $limit\n    \"\"\"\n    return db.run(query, uid=user_id, since=since, limit=limit)"
+    },
+    {
+      "type": "table",
+      "caption": "When to use a graph database and when to walk away",
+      "headers": [
+        "Use it when",
+        "Avoid it when",
+        "What to use instead"
+      ],
+      "rows": [
+        [
+          "Dominant queries are anchored path, reachability, shortest-path, or pattern-match",
+          "Dominant workload is bulk aggregation, reporting, or full scans",
+          "Warehouse / columnar store with replicated edges"
+        ],
+        [
+          "Depth 2-6 with moderate fanout and selective start",
+          "Unbounded depth or fanout 10k+ per hop",
+          "Precomputed materialized views, stream processor"
+        ],
+        [
+          "Relationships evolve: new edge types weekly",
+          "Schema is stable and joins are shallow (1-2)",
+          "Relational with indexed FKs — simpler and faster"
+        ],
+        [
+          "Fraud rings, dependencies, hierarchies, recommendations by proximity",
+          "High-throughput blind writes with no reads by neighborhood",
+          "Key-value or document store plus async graph projection"
+        ],
+        [
+          "You can name supernodes and bound them",
+          "Every query crosses tenants or regions",
+          "Partition by tenant and forbid cross-partition walks"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the query shape first",
+          "text": "Say: reads are anchored traversals of depth N with fanout F; writes are edge inserts at rate W. Estimate touched edges per query as F^N before talking about vendor or schema. This kills generic answers."
+        },
+        {
+          "title": "Draw nodes, edges, and degrees",
+          "text": "Sketch 3-5 node types and edge types with direction and expected degree. Call out the highest-degree node explicitly and how you will defuse it. Interviewers score supernode awareness heavily."
+        },
+        {
+          "title": "Commit to anchor and index",
+          "text": "State which property resolves the start node, which index backs it, and why other filters run during expansion. Unanchored patterns are the most common fail."
+        },
+        {
+          "title": "Bound depth and fanout on the whiteboard",
+          "text": "Write LIMITs into the query. Explain the recall-versus-latency trade-off of per-hop caps and time-windowed edges. Show pagination for next hops."
+        },
+        {
+          "title": "Argue scale honestly",
+          "text": "Explain partitioning: single-writer scale-up plus read replicas for latency, or sharding by tenant for isolation. Admit cross-shard traversals cost network RTTs per hop and forbid them or make them async."
+        }
+      ]
+    },
+    {
+      "type": "list",
+      "items": [
+        "Misconception: graphs are faster for all connected queries — false for shallow, bulk joins where a relational optimizer and columnar scan win.",
+        "Misconception: schema-free means design-free — without anchor indexes and degree budgets, schema-free means slow.",
+        "Misconception: more hops always means more insight — beyond depth 4, fanout usually drowns signal and explodes cost; constrain by time, weight, or edge type.",
+        "Misconception: supernodes are edge cases — in social, payment, and dependency graphs they are the core entities; design for them first.",
+        "Misconception: one store does traversals and analytics — production pairs a graph for live walks with a warehouse or vector index for rollups and similarity."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "Choose a graph database when **selective multi-hop traversals dominate**, anchor every query on an indexed node, bound depth and fanout, and isolate supernodes — otherwise you are buying pointer-chasing overhead without the payoff."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:30:16.662Z",
+    "problems": []
+  }
+}

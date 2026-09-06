@@ -1,0 +1,288 @@
+{
+  "slug": "attempting-to-better-bitcask",
+  "title": "Attempting to Better Bitcask",
+  "summary": "Bitcask buys write throughput and predictable reads by appending everything and indexing it in RAM — and that RAM bound is the design flaw every follow-up attacks.",
+  "kind": "HLD",
+  "problemSlug": "attempting-to-better-bitcask-145-310",
+  "topic": "High Throughput Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "💾",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "High Throughput",
+    "Storage Engines"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Bitcask Explained - A Log-Structured fast KV Store Used By Uber",
+      "url": "https://www.youtube.com/watch?v=0WI_tJRUMqM",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Bitcask - Riak Documentation",
+      "url": "https://docs.riak.com/riak/kv/2.2.3/setup/planning/backend/bitcask/index.html",
+      "source": "docs.riak.com",
+      "kind": "article"
+    },
+    {
+      "title": "Bitcask: A Paper Summary - LinkedIn",
+      "url": "https://www.linkedin.com/pulse/bitcask-paper-summary-caleb-adewole-fgyuf",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "Bitcask Explained - A Log-Structured fast KV Store Used By Uber",
+      "url": "https://daily.dev/posts/bitcask-explained---a-log-structured-fast-kv-store-used-by-uber-zc6jwra1y",
+      "source": "daily.dev",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Bitcask turns every write into a sequential append and pays for it with RAM.** There is one in-memory entry per key, forever. That is why writes never seek, reads need at most one disk access, and the total key count is hard-capped by memory. If you remember nothing else, remember this: *disk is unbounded, the index is not.* Every improvement to Bitcask is an attempt to break that coupling without losing the append-only write path."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Bitcask actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bitcask is an embedded, log-structured key-value engine. There is no B-tree, no SSTable levels, no background sorting. The dataset is a directory of append-only data files. Exactly one file is active and writable at a time. When it crosses a size threshold, it is sealed, made immutable, and a new active file takes over. Deletes and overwrites never modify old bytes in place; they append a newer record that supersedes the older one. The trade-off is deliberate: you accept storage amplification and periodic garbage collection in exchange for writes that are always sequential and never stall on compaction of a sorted structure."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second half is the `keydir`: a dense, in-memory hash table with one entry for **every** live key in the store. Each entry is fixed-width and tiny — file identifier, byte offset inside that file, value length, and timestamp or version. It does not hold values, only pointers to where the latest value lives on disk. On startup the engine rebuilds it by scanning all data files from oldest to newest, so the newest record for each key wins. The reason for density is lookup determinism: a miss is answered without touching disk at all, and a hit needs exactly one seek to the known offset. The price is that the key cardinality, not the data size, dictates your memory footprint."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The write path is brutally simple, and that is the point. Append the full record — checksum, timestamp, key and value lengths, key bytes, value bytes — to the tail of the active file, `fsync` according to your durability policy, then atomically swap the `keydir` entry to point at the new offset. Readers never take a lock on the data file; they snapshot the pointer from the index and then read that byte range. Because only one writer appends, there is no concurrent-write interleaving to resolve, and crash recovery is just replay: scan forward, validate checksums, stop at the first torn record. You trade multi-writer concurrency and in-place efficiency for a write path with almost no branches and no seek."
+    },
+    {
+      "type": "mermaid",
+      "title": "Bitcask write and read path",
+      "caption": "Writes always append to the active file then swing the in-memory pointer. Reads never search; they jump.",
+      "code": "flowchart LR\n  W[Client PUT] --> A[Append to active file]\n  A --> F[fsync per policy]\n  F --> K[Update keydir pointer]\n  K --> OK[Ack]\n  R[Client GET] --> L[Lookup keydir]\n  L -->|miss| M[Return not-found]\n  L -->|hit: file, offset, len| D[Seek and read one record]\n  D --> C[Verify CRC]\n  C --> V[Return value]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Each on-disk record is self-describing because it has to be. It carries a CRC over everything that follows, a timestamp for last-write-wins resolution, explicit key and value lengths, then the raw key and value bytes. Explicit lengths matter: they let a reader jump over records without parsing values, and they avoid any delimiter-scanning scheme that would break when the delimiter appears inside a value. The CRC matters for a different reason — power loss. The tail of a log is where torn writes live. A reader that validates the checksum can distinguish a clean prefix from a half-written suffix and safely truncate the file there on open. Tombstones use the same layout with a deleted marker and zero-length value; they exist only to tell the merge pass and the startup scan that older versions must be dropped."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "bitcask_core.py",
+      "code": "class KeydirEntry:\n    __slots__ = (\"file_id\", \"offset\", \"value_len\", \"tstamp\")\n    def __init__(self, file_id, offset, value_len, tstamp):\n        self.file_id = file_id\n        self.offset = offset\n        self.value_len = value_len\n        self.tstamp = tstamp\n\ndef put(active_file, keydir, key: bytes, value: bytes | None, tstamp: int):\n    # None value == tombstone\n    rec = encode_record(crc(key, value), tstamp, len(key),\n                        len(value) if value else 0, key, value)\n    offset = active_file.append(rec)  # sequential, no seek\n    # fsync policy decided here: every write vs every N ms\n    keydir[key] = KeydirEntry(active_file.id, offset,\n                              len(value) if value else 0, tstamp)\n\ndef get(files, keydir, key: bytes) -> bytes | None:\n    e = keydir.get(key)\n    if e is None:\n        return None  # miss costs zero disk IO\n    files[e.file_id].seek(e.offset)\n    hdr = files[e.file_id].read_header()  # crc, tstamp, ksizes\n    assert hdr.crc_valid()  # else file is corrupt before this offset\n    return files[e.file_id].read_value(e.value_len)"
+    },
+    {
+      "type": "paragraph",
+      "text": "The read path is where the operating system does half the work. In theory every hit is one random read: seek to `offset`, fetch header plus value. In practice hot values sit in the filesystem page cache, so the common case is a memory copy with no disk wait at all. This is why Bitcask can claim near-optimal read IO despite having no block cache, no Bloom filter, no compression dictionary in the hot path. The trade-off is that cold reads are strictly random and unbatchable — there is no locality between logically adjacent keys because log order is arrival order. Range scans are therefore full-index sorts followed by scattered reads, which is miserable. You chose point-lookup latency and write speed, and you sacrificed scan performance entirely."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade, stated honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every Bitcask property is a bought advantage with a named cost.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Append-only log, one active file",
+          "Writes are always sequential; no write stalls, no sorting on write",
+          "Dead bytes accumulate; you need merge and 2x headroom during GC"
+        ],
+        [
+          "Dense in-memory index of all keys",
+          "O(1) lookup, zero-IO misses, single-seek hits",
+          "RAM scales with key count even if values are tiny; restarts need full scan"
+        ],
+        [
+          "Immutable sealed files",
+          "Lock-free reads, trivial replication by file copy, easy crash reasoning",
+          "No in-place update; hot keys rewrite full values repeatedly"
+        ],
+        [
+          "Single writer per directory",
+          "No write-write conflicts, trivial atomic pointer swing",
+          "Write throughput capped at one disk stream; no sharding inside one instance"
+        ],
+        [
+          "Timestamped records + tombstones",
+          "Simple last-write-wins and crash-safe delete without backpointers",
+          "Deletes cost a write and retain space until merge; clock skew can resurrect data"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers want to hear you price each row. The append-only file is not free performance — it converts random-write IO into sequential-write IO plus later garbage-collection IO, so sustained throughput is `write_rate + merge_rewrite_rate` against disk bandwidth. The `keydir` is not free speed — a hundred million keys at roughly 30-50 bytes of overhead each is gigabytes of heap that must be allocated before serving traffic. That is why seasoned engineers call Bitcask write-optimal but capacity-limited: it dominates when keys fit comfortably in memory and the workload is point-heavy, and it degrades sharply the moment either assumption breaks."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bitcask does not fail with a clean error. It fails by getting slower, fatter, or unable to restart, and each mode has a signature you can recognise from metrics before the page fires. The dominant failure is memory pressure from key growth, but merge behaviour and startup replay are close seconds. If you propose Bitcask in a design review without naming these, you lose credibility."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**OOM or ugly GC pauses while traffic looks flat:** key count grew, value size did not. Symptom is heap climbing monotonically, old-gen full, p99 read latency spiking even though disk IO is idle. Fix is sharding the keyspace or moving to a sparse index.",
+        "**Disk fills despite steady logical size:** hot keys are being overwritten faster than merge reclaims. Symptom is live-bytes flat but total-bytes ballooning, merge backlog growing. You sized the active-file threshold too large or throttled merge too hard.",
+        "**Restart takes tens of minutes:** `keydir` rebuild scans every file and replays every record. Symptom is process stuck in recovery with 100% sequential read bandwidth and zero servable traffic. The mitigation is a per-file index hint file checkpointed at seal time.",
+        "**Deletes do not free space:** tombstones are just records until merge visits their file. Symptom is `delete()` returns success but `du` does not move. Operators expect synchronous reclamation and get eventual reclamation.",
+        "**Single-writer saturation:** one active file means one append stream. Symptom is write queue depth growing on a machine with idle CPU and idle disk array — the bottleneck is serialisation, not hardware. The answer is partitioning into multiple Bitcask instances.",
+        "**Silent resurrection or truncated tail:** clock skew makes an old timestamp win, or a crash leaves a torn tail that is discarded. Symptom is a recently written key reverting after restart. You see it as a flapping value no client wrote."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Crash semantics most people get wrong",
+      "text": "Bitcask is durable only up to the last `fsync`, not the last `ack` — unless you `fsync` every write and accept the latency hit. Anything buffered in the OS after a power loss is gone, and the recovery scan will cut the log at the first CRC failure. Design your acknowledgement contract explicitly: per-write sync for ledgers, group commit or interval sync for high-throughput ingest where losing one second is acceptable."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Merge: the tax you cannot skip"
+    },
+    {
+      "type": "paragraph",
+      "text": "Merge is garbage collection for the log. It iterates over a set of sealed, immutable files, keeps only the newest live version of each key, and rewrites those survivors into fresh compacted files. Old files are then deleted. Because inputs are immutable, merge never blocks reads — readers keep using old file identifiers until their `keydir` entries are atomically swung to the merged outputs. The reason merge hurts is write amplification: every live byte is rewritten at least once, and hot keys may be copied repeatedly before they stabilise. Schedule it badly and it contends with foreground appends for the same disk bandwidth; throttle it too much and space amplification runs away. Production systems trigger merge on dead-byte ratio or file count, not on a timer, and they cap merge bandwidth separately from foreground IO. That isolation is the difference between smooth operation and nightly latency cliffs."
+    },
+    {
+      "type": "mermaid",
+      "title": "Merge and compaction flow",
+      "caption": "Merge rewrites only live versions and atomically repoints the index.",
+      "code": "flowchart TD\n  S[Sealed files with live and dead records] --> SCAN[Scan inputs oldest to newest]\n  SCAN --> KEEP{Is this the newest live version per keydir?}\n  KEEP -->|yes| RW[Rewrite to merged file]\n  KEEP -->|no, superseded or tombstone| DROP[Discard]\n  RW --> SWING[Atomically swing keydir to new file offsets]\n  SWING --> DEL[Delete old input files]"
+    },
+    {
+      "type": "code",
+      "language": "yaml",
+      "filename": "bitcask.yaml",
+      "code": "# Rotation and merge policy is the real tuning surface.\nactive_file_max_bytes: 2147483648  # 2 GiB: larger = fewer files, slower recovery\nsync_strategy: interval             # every_write | interval | disabled\nsync_interval_ms: 100               # durability vs throughput knob\nmerge_policy:\n  trigger_dead_ratio: 0.5           # merge when >50% of bytes are superseded\n  trigger_file_count: 20            # or when file sprawl hurts open fds\n  bandwidth_limit_mbps: 100         # isolate merge IO from foreground writes\n  exclude_active_file: true         # never compact the write tail\n  keep_hint_files: true             # checkpoint keydir per sealed file"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design a fast write-heavy KV for session or feature state",
+          "text": "Start with Bitcask as the baseline: sequential writes, one-seek reads, trivial code. Then name the bound immediately — full keyset in RAM. Interviewers promote candidates who state the limit before being asked."
+        },
+        {
+          "title": "Attempt to better Bitcask — fix the RAM bound",
+          "text": "This is the explicit follow-up. Propose the standard escapes and price each: partition into N instances so each holds 1/N keys, sparse index plus Bloom filter per file like an LSM-tree, or paged keydir with SSD-backed hash. Each preserves append-only writes and sacrifices something: operational complexity, read amplification, or miss cost."
+        },
+        {
+          "title": "Handle restart and crash recovery",
+          "text": "Explain replay from oldest to newest with CRC truncation, then improve it with hint files that persist per-file key offsets at seal time so restart loads hints instead of scanning values. Trade-off: extra writes at seal versus minutes of recovery."
+        },
+        {
+          "title": "Add TTL, range scan, or secondary index",
+          "text": "TTL is a timestamped tombstone written by a reaper; range scan is sorting the keydir and doing scattered reads — admit it will be slow. Do not pretend Bitcask is good at scans. Offer a complementary sorted structure if scans are core."
+        },
+        {
+          "title": "Scale writes beyond one box",
+          "text": "Single active file means one writer per instance. Scale by hashing keys across instances or partitions, each with its own log and keydir. You gain aggregate throughput but now own cross-partition atomicity and rebalancing — say so explicitly."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "What separates a pass from a strong hire is whether you quantify. Do not say large files are better. Say a 2 GiB active file with 1 KB values holds roughly two million records, so a hundred files means a hundred million keydir entries to replay, which at 100 MB/s of scan is minutes of unavailability. Interviewers reward that arithmetic because it proves you understand that every tuning knob — file size, sync interval, merge threshold — moves pain between write latency, space amplification, and recovery time rather than removing it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**It is an LSM-tree.** No. There are no sorted runs, no levels, no Bloom filters in the base design. Reads never merge across levels; they jump directly via the dense index. Calling it an LSM-tree signals you memorised the term log-structured without understanding the index.",
+        "**Reads never touch disk.** Only misses avoid disk entirely. Hits touch disk unless the page cache happens to hold the value. The guarantee is *at most one* random read, not zero.",
+        "**Deletes are free.** Deletes append a tombstone and consume RAM and disk until merge. A delete-heavy workload without aggressive merge leaks space.",
+        "**Bigger active files are always better.** Bigger files mean fewer file handles and less merge bookkeeping, but slower crash recovery, coarser merge granularity, and larger blast radius when a file corrupts.",
+        "**fsync equals slow, so disable it.** Disabling sync buys throughput by selling durability. Say which sync policy matches the workload instead of treating durability as optional.",
+        "**Merge is background so it is free.** Merge consumes the same disk bandwidth as foreground writes. Without a bandwidth cap and dead-ratio trigger, it either starves or stampedes."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use Bitcask where point access and write speed dominate; avoid it where key count or scans dominate.",
+      "headers": [
+        "Use it when",
+        "Avoid it when",
+        "What to use instead"
+      ],
+      "rows": [
+        [
+          "Write-heavy point PUT/GET with bounded key count that fits RAM",
+          "Key count unbounded or larger than memory allows",
+          "LSM-tree with sparse index and Bloom filters"
+        ],
+        [
+          "You need predictable low write latency with simple code",
+          "You need multi-writer transactions or strong cross-key consistency",
+          "B-tree store or a transactional engine"
+        ],
+        [
+          "Workload is cache-friendly and values are small-to-medium",
+          "Values are huge and overwrites are frequent",
+          "Segmented blob log with separate index, or object store"
+        ],
+        [
+          "Single-node embedded store per partition is acceptable",
+          "Range scans and ordered iteration are core access patterns",
+          "Sorted store: B-tree or LSM-tree"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Attempting to better Bitcask almost always means attacking one of two axes without breaking the append-only write path. To escape the RAM bound, shard the keydir across partitions or demote it to a sparse index with per-file filters — you keep sequential writes and pay extra reads on misses. To escape single-writer limits, run many independent Bitcask instances behind a hash ring — you keep per-instance simplicity and pay coordination cost at the routing layer. Name which axis you are fixing and which cost you accept. That sentence is the entire interview answer."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Bitcask is a single-writer append-only log with a dense in-memory pointer per key, so writes are always sequential and reads cost at most one seek — which is why it is excellent for high-throughput point workloads and unusable once the key count outgrows RAM or scans matter."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:45:36.401Z",
+    "problems": []
+  }
+}

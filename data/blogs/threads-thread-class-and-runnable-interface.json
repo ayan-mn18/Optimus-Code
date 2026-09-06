@@ -1,0 +1,310 @@
+{
+  "slug": "threads-thread-class-and-runnable-interface",
+  "title": "Threads - Thread class and Runnable Interface",
+  "summary": "Thread vs Runnable is a separation-of-concerns decision: Thread is the execution vehicle, Runnable is the task. Why composition wins, how start() really works, and where raw threads fail.",
+  "kind": "LLD",
+  "problemSlug": "threads-thread-class-and-runnable-interface-43-83",
+  "topic": "Concurrency in Java",
+  "difficulty": "Medium",
+  "coverEmoji": "🧵",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Java",
+    "Threads"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "#88 Runnable vs Thread in Java - YouTube",
+      "url": "https://www.youtube.com/watch?v=Z4KSgLpY0d8",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Java Threads - W3Schools",
+      "url": "https://www.w3schools.com/java/java_threads.asp",
+      "source": "w3schools.com",
+      "kind": "article"
+    },
+    {
+      "title": "Java Runnable Interface - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/java/runnable-interface-in-java/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding Concurrency: Threads, Runnable - Medium",
+      "url": "https://medium.com/@radhikaramoliya/understanding-concurrency-threads-runnable-b95623346719",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**`Thread` is a worker *plus* a task fused together. `Runnable` is just the task.** That separation is the whole design. If you extend `Thread`, you burn your one inheritance slot to hard-wire *what to do* to *how it runs*. If you implement `Runnable`, you keep the work portable — same task can run on a raw thread, a pool, or a virtual thread without rewriting it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Thread and Runnable actually are"
+    },
+    {
+      "type": "paragraph",
+      "text": "`Runnable` is brutally simple: a functional interface in `java.lang` with one method, `void run()`. It knows nothing about scheduling, priorities, stacks, or operating system threads. It is a contract that says **here is a block of code that can run elsewhere**. `Thread`, by contrast, is a heavyweight concrete class that *implements* `Runnable` and adds the entire execution machinery: a native thread handle, a stack, thread-local state, priority, daemon flag, name, ID, interrupt status, and lifecycle state (`NEW`, `RUNNABLE`, `BLOCKED`, `WAITING`, `TIMED_WAITING`, `TERMINATED`). The trade-off is explicit: `Runnable` buys you portability and composition at the cost of needing a carrier, while `Thread` buys you direct control at the cost of coupling your business logic to a concurrency primitive."
+    },
+    {
+      "type": "paragraph",
+      "text": "The method most candidates misunderstand is `start()` versus `run()`. Calling `run()` directly executes the method on the *current* call stack like any ordinary method — no new thread, no concurrency, no magic. Calling `start()` does something fundamentally different: it performs a one-way state transition from `NEW` to `RUNNABLE`, asks the JVM to allocate a native OS thread, and then has that new thread invoke `run()` asynchronously. That is why `start()` can only be called once per `Thread` instance — a second call throws `IllegalThreadStateException` because the native resource is gone. The design reason is safety: the JVM refuses to resurrect a dead stack rather than silently reuse corrupted state. If you remember nothing else, remember this: **`run()` is the work, `start()` is the fork**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from `new Thread()` to running code"
+    },
+    {
+      "type": "mermaid",
+      "title": "Runnable to OS thread handoff",
+      "caption": "How a Runnable task gets bound to an OS thread via Thread.start()",
+      "code": "flowchart TD\n    R[Runnable task defines run] --> T[Thread object wraps target]\n    T --> S[start called once]\n    S --> J[JVM creates native thread]\n    J --> O[OS schedules new thread]\n    O --> C[New thread invokes run]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Construction only builds Java objects; no concurrency exists yet. When you write `new Thread(myRunnable)`, the `Thread` stores your `Runnable` as its `target`. If you extended `Thread` and overrode `run()` without passing a target, the `Thread` *is* its own target — that fusion is exactly the problem. When `start()` fires, the JVM performs security and state checks, allocates a native thread and call stack, registers the thread with the thread group, and returns immediately on the caller. Sometime later the OS schedules the new thread, which enters `Thread.run()`. The default `Thread.run()` implementation is a one-line delegation: if `target != null`, call `target.run()`. If you overrode `run()` in a subclass, your override replaces that delegation entirely. The trade-off here is visibility versus cost: this indirection is what lets executors, pools, and virtual threads substitute their own carriers without touching your task, but it means a raw `Thread` costs roughly a megabyte of stack plus kernel bookkeeping every time you create one."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Two ways to spawn, one real difference"
+    },
+    {
+      "type": "paragraph",
+      "text": "You have two syntactic options and they compile to very different designs. Extending `Thread` looks shorter for a toy example but locks your class hierarchy forever — Java has no multiple inheritance, so a `DownloadTask extends Thread` can never also extend anything useful. Implementing `Runnable` keeps your domain hierarchy free and lets many threads share one task instance, or one executor run many task types. The cost of `Runnable` is one extra object allocation and the need to explicitly wrap it, which is trivial. There is no performance reason to prefer inheritance; there is only a flexibility reason to prefer composition, and it dominates every production decision."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ThreadVsRunnable.java",
+      "code": "// Option A: fused — avoid this outside demos.\nclass FusedTask extends Thread {\n    @Override public void run() {\n        System.out.println(\"running on \" + Thread.currentThread().getName());\n    }\n}\n\n// Option B: separated — prefer this always.\nclass SeparatedTask implements Runnable {\n    private final String id;\n    SeparatedTask(String id) { this.id = id; }\n    @Override public void run() {\n        System.out.println(id + \" on \" + Thread.currentThread().getName());\n    }\n}\n\n// Wiring:\n// FusedTask t = new FusedTask(); t.start(); // task IS the thread\n// Runnable r = new SeparatedTask(\"job-1\");\n// Thread t = new Thread(r, \"worker-1\"); t.start(); // task HAS-A carrier\n// Same Runnable, modern form:\n// Thread t2 = new Thread(() -> System.out.println(\"lambda task\")); t2.start();"
+    },
+    {
+      "type": "table",
+      "caption": "Thread inheritance vs Runnable composition, judged honestly.",
+      "headers": [
+        "Dimension",
+        "extends Thread",
+        "implements Runnable"
+      ],
+      "rows": [
+        [
+          "Inheritance cost",
+          "Consumes your single extends slot; cannot extend anything else",
+          "Free; your class hierarchy stays clean"
+        ],
+        [
+          "Reuse",
+          "One thread instance = one task; cannot share or pool",
+          "One Runnable can be run by many threads or submitted to a pool"
+        ],
+        [
+          "Executor compatibility",
+          "Awkward; executors want Runnables, not Threads",
+          "Native fit for ExecutorService, ScheduledExecutor, virtual threads"
+        ],
+        [
+          "Testability",
+          "Hard; construction implies thread machinery",
+          "Easy; call run() directly in a unit test on the caller thread"
+        ],
+        [
+          "Control surface",
+          "Direct access to interrupt, join, priority via this",
+          "Needs a Thread handle; slightly more wiring"
+        ],
+        [
+          "Verdict",
+          "Only for quick demos",
+          "Default for all real code"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "My opinion is blunt: **never extend `Thread` in reviewed code**. The only thing inheritance gives you is saving one line of wrapping, and it charges you a permanent architectural tax. `Runnable` exists precisely because the designers of Java understood that *what to run* changes far more often than *how threads work*. When you separate them, you can unit-test the logic synchronously, reuse it across carriers, and migrate from `new Thread()` to a fixed pool without touching the task. The trade-off — writing `new Thread(runnable)` instead of `new MyThread()` — is not a trade-off at all at scale. Composition wins on every axis that survives contact with a codebase older than a week."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Raw threads fail in three predictable ways, and each has a signature you can spot in logs or metrics. First, developers call `run()` instead of `start()` and then report that the system is mysteriously sequential — latency adds up linearly, thread names in logs all read `main` or `http-nio-8080-exec-1`, and CPU stays single-core while work queues. Second, teams create unbounded threads per request — `new Thread(task).start()` inside a controller — and the service dies under load with `OutOfMemoryError: unable to create native thread` or wild context-switching where p99 explodes while CPU looks idle. Each thread reserves stack memory and a kernel entry; a few thousand is enough to cripple most containers. Third, a shared `Runnable` instance mutates fields without synchronization, producing Heisenbugs: counters that lose increments, occasionally duplicated processing, or `NullPointerException` in code that looks impossible. The root cause is shared mutable state across threads with no happens-before edge, and the symptom is non-determinism that vanishes when you add logging or run with one thread."
+    },
+    {
+      "type": "table",
+      "caption": "Production failures with raw Thread and Runnable.",
+      "headers": [
+        "Failure",
+        "Symptom you observe",
+        "Root cause"
+      ],
+      "rows": [
+        [
+          "Called run() not start()",
+          "No parallelism; all logs show same thread name; latency sums",
+          "Executed on caller stack; no OS thread was ever created"
+        ],
+        [
+          "Thread-per-request leak",
+          "OOM unable to create native thread; p99 spikes; FD exhaustion",
+          "Unbounded Thread creation; each holds ~1MB stack plus kernel state"
+        ],
+        [
+          "Double start()",
+          "IllegalThreadStateException on second start",
+          "Thread is single-use; native stack cannot be resurrected"
+        ],
+        [
+          "Racy Runnable fields",
+          "Lost updates, flaky tests, rare NPEs under load",
+          "Shared mutable state without synchronized, volatile, or atomics"
+        ],
+        [
+          "Non-daemon threads block exit",
+          "JVM never shuts down after main() returns",
+          "User threads keep JVM alive; forgot setDaemon or shutdown"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Lifecycle and interruption deserve special attention because they are where interviews and on-calls converge. A `Thread` moves `NEW -> RUNNABLE -> BLOCKED/WAITING/TIMED_WAITING -> TERMINATED`, and there is no path back. `sleep()`, `join()`, and `Object.wait()` all relinquish the CPU but differ critically: `sleep()` holds any monitors it owns while `wait()` releases them — mixing these up is a classic deadlock factory. Interruption is cooperative, not preemptive: `thread.interrupt()` merely sets a flag and wakes sleepers with `InterruptedException`; if your `run()` swallows that exception or never checks `Thread.currentThread().isInterrupted()`, the thread becomes unkillable by policy. The trade-off of cooperative cancellation is responsiveness versus safety — the platform refuses to kill a thread mid-monitor because that would corrupt shared state, so you pay by writing loops that poll the flag and clean up properly."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "RunnableOnPool.java",
+      "code": "import java.util.concurrent.*;\n\npublic class RunnableOnPool {\n    public static void main(String[] args) throws InterruptedException {\n        // Same Runnable works on raw threads AND pools — that is the point.\n        Runnable task = () -> {\n            String name = Thread.currentThread().getName();\n            System.out.println(\"task on \" + name);\n        };\n\n        // Raw: one OS thread per task. Fine for 5, fatal for 5000.\n        Thread raw = new Thread(task, \"raw-1\");\n        raw.start();\n        raw.join(); // caller waits; establishes happens-before\n\n        // Pooled: bounded reuse. Prefer this in production.\n        ExecutorService pool = Executors.newFixedThreadPool(4);\n        try {\n            for (int i = 0; i < 10; i++) pool.submit(task);\n        } finally {\n            pool.shutdown(); // user threads would otherwise pin the JVM open\n            pool.awaitTermination(5, TimeUnit.SECONDS);\n        }\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The start() vs run() trap",
+      "text": "If an interviewer asks you to debug sequential behavior, check the call site first. `task.run()` is a plain synchronous call — it proves your logic works but proves nothing about concurrency. `thread.start()` is the only path that forks. In code review, flag any direct `run()` invocation on a `Thread` instance as a defect unless it is an explicit synchronous unit test."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How interviewers test this"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Write both forms from memory",
+          "text": "Expect: extend Thread with overridden run() versus implement Runnable plus new Thread(r).start(). They grade whether you call start() not run(), handle the one-shot start rule, and name the thread. Finish this in under five minutes."
+        },
+        {
+          "title": "Explain why Runnable is preferred",
+          "text": "Say: single inheritance, task reuse across threads and pools, clean unit testing by invoking run() directly. Name the trade-off: one extra wrapper object in exchange for decoupling work from carrier."
+        },
+        {
+          "title": "Predict output of shared Runnable",
+          "text": "Two threads sharing one Runnable with an int counter. Correct answer: race, lost updates, fix with synchronized block, AtomicInteger, or local variables. Mention visibility — without volatile or locking, writes may never be seen."
+        },
+        {
+          "title": "Design the follow-up: 10k tasks",
+          "text": "Pivot from new Thread() to ExecutorService with a bounded pool, a work queue, and shutdown(). Explain why: bounded memory, amortised thread creation, backpressure. Mention Callable and Future if a result is needed, since Runnable cannot return or throw checked exceptions."
+        },
+        {
+          "title": "Handle interruption and join",
+          "text": "Show a loop that checks isInterrupted(), restores the flag after catching InterruptedException, and a main thread that calls join() or awaitTermination(). This separates candidates who memorised syntax from those who can shut a system down cleanly."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail interviews"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`Runnable` creates a thread — it does not. It is inert task code until a `Thread`, pool, or virtual thread executes it.",
+        "Calling `run()` achieves concurrency — it runs synchronously on the caller; only `start()` forks a new call stack.",
+        "Extending `Thread` is faster — identical execution cost, worse design; the extra Runnable allocation is negligible.",
+        "`Runnable` can return a value or throw a checked exception — it cannot; that is what `Callable<T>` plus `Future` is for.",
+        "Threads share nothing by default — they share the entire heap; only local variables and stack state are private.",
+        "Stopping a thread with `stop()` or a boolean flag is equivalent to interruption — `stop()` is deprecated and unsafe, a plain flag lacks wake-up semantics; use `interrupt()` and handle it."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Choosing raw Thread and Runnable versus higher abstractions.",
+      "headers": [
+        "Situation",
+        "Use",
+        "Why"
+      ],
+      "rows": [
+        [
+          "One-off background worker, learning exercise",
+          "Runnable + new Thread()",
+          "Simplest correct fork; no pool config needed"
+        ],
+        [
+          "Task reused across carriers or tested alone",
+          "Runnable as separate class or lambda",
+          "Decouples logic from threading; directly unit-testable"
+        ],
+        [
+          "Many short-lived tasks, request handling",
+          "Runnable + ExecutorService",
+          "Bounds threads, reuses stacks, adds queue and rejection policy"
+        ],
+        [
+          "Need result or checked exception",
+          "Callable + Executor, not Runnable",
+          "Runnable.run() returns void and swallows checked throws"
+        ],
+        [
+          "10k+ concurrent blocking tasks",
+          "Runnable on virtual threads",
+          "Cheap stacks change the cost model; raw platform threads collapse"
+        ],
+        [
+          "Chained async stages, timeouts, composition",
+          "CompletableFuture or structured concurrency",
+          "Raw threads give you no composition, cancellation propagation, or pipelines"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "For modern Java, add one sentence that signals seniority: raw `Thread` is now a low-level carrier, not a scaling strategy. Since virtual threads, the idiom `Thread.ofVirtual().start(runnable)` or an `Executors.newVirtualThreadPerTaskExecutor()` lets the same unchanged `Runnable` scale to hundreds of thousands of blocking tasks because the stack is heap-allocated and mountable. The trade-off flips — platform threads are precious kernel resources to be pooled, virtual threads are cheap enough to create per task — but the `Runnable` abstraction survives both worlds untouched. That durability is the strongest argument for writing tasks as `Runnable` from day one: carriers come and go, the work endures."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Use a `Runnable` to define the work and hand it to a `Thread` or pool to run it — never fuse them by extending `Thread` — because composition keeps the task reusable, testable, and pool-compatible while `start()`, not `run()`, is what actually forks a new thread."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:03:44.634Z",
+    "problems": []
+  }
+}

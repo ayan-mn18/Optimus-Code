@@ -1,0 +1,298 @@
+{
+  "slug": "why-not-to-use-graph-dbs",
+  "title": "Why not to use Graph DBs",
+  "summary": "Graph databases sell you pointer-chasing traversals. Most systems don't need it — and pay for it in operations, query language, and scaling pain. Here's when to refuse it, what to use instead, and the narrow case where it wins.",
+  "kind": "HLD",
+  "problemSlug": "why-not-to-use-graph-dbs-149-328",
+  "topic": "Resources Efficient & Extensible System Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🕸️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "GraphDB",
+    "System Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Graph Databases: When to Use Them (And When to Run Away) - YouTube",
+      "url": "https://www.youtube.com/watch?v=7kXY-2fYdHI",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Graph Databases are not worth it - Reddit",
+      "url": "https://www.reddit.com/r/Database/comments/1hj71u0/graph_databases_are_not_worth_it/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is a Graph Database? - Graph DB Explained - AWS",
+      "url": "https://aws.amazon.com/nosql/graph/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    },
+    {
+      "title": "Graph database vs. relational database: What's the difference?",
+      "url": "https://neo4j.com/blog/graph-database/graph-database-vs-relational-database/",
+      "source": "neo4j.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A graph database is **not a more powerful database**. It is a database that **pre-pays join cost at write time to make multi-hop traversals cheap at read time**. If you do not have unpredictable, deep, write-heavy traversals, you just bought operational pain for a query pattern you do not have."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a graph database actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Strip the branding. A graph store holds **nodes** with properties and **edges** with labels and properties, plus adjacency indexes so that from any node you can find its neighbors without a global index lookup. That property has a name: **index-free adjacency**. Each node physically stores pointers to its incident edges. A traversal is pointer chasing: start at node 42, follow 200 edge pointers, land on neighbors, repeat. There is no `JOIN` in the relational sense because the join was materialized when you wrote the edge. That is the entire trick. Everything else — declarative traversal languages, path-finding syntax, built-in centrality algorithms — is tooling around that one physical choice. If your access pattern is *fetch entity by key*, *filter by property*, or *one-hop lookup*, you are paying for a storage engine optimized for something you never do."
+    },
+    {
+      "type": "paragraph",
+      "text": "Contrast that with a relational engine. Relations store rows in tables and answer connections at query time by matching values through indexes. Edges are not pointers; they are rows in a join table like `friendship(user_a, user_b)` with B-tree indexes on both columns. The cost is paid at read time by the optimizer. This is why relational systems dominate: the read-time join is general, the optimizer is 40 years of engineering, the language is standard, and the operational story is understood by every on-call engineer you will ever hire. Choose index-free adjacency only when you can prove read-time joins cannot keep up — not when the whiteboard looks like a graph. Every whiteboard looks like a graph."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism you are paying for"
+    },
+    {
+      "type": "paragraph",
+      "text": "For a 1-hop query — *give me Alice's friends* — both engines are O(degree). Nobody cares. The divergence starts at 3+ hops with **unbounded fan-out**. In a relational engine, *friends-of-friends-of-friends who bought item X* becomes recursive joins or a recursive CTE. Each hop re-probes an index over a table whose size grows with your whole dataset. The optimizer can mis-estimate cardinality badly after two hops, pick a nested loop when it needed a hash join, and latency explodes from 20ms to 4 seconds on one unlucky supernode. In a graph engine, the same query never touches the global table. It touches only the subgraph reachable from Alice. Cost is proportional to **edges visited**, not rows in the database. That locality is the win. The trade-off: you bought locality by scattering pointers everywhere, which makes global scans, bulk property filters, sharding, and consistent writes strictly harder. You optimized the traversal and pessimized everything else."
+    },
+    {
+      "type": "mermaid",
+      "title": "Traversal vs join cost model",
+      "caption": "Graph cost scales with subgraph visited; relational cost scales with tables scanned.",
+      "code": "flowchart TD\n  A[Query from Alice 3 hops out] --> B{Engine}\n  B --> C[Relational join path]\n  B --> D[Graph traversal path]\n  C --> E[Probe global index per hop]\n  D --> F[Chase local edge pointers]\n  E --> G[Cost tied to table size plus optimizer error]\n  F --> H[Cost tied to edges touched from start node]"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Storage reality most demos hide"
+    },
+    {
+      "type": "paragraph",
+      "text": "Demos show a pretty circle diagram. Production stores billions of tiny adjacency records with terrible cache locality. Each edge is small, randomly accessed, and hard to compress. Writes are worse: creating one logical relationship means updating two adjacency lists plus reverse indexes plus any secondary property indexes, often across partitions. That is why graph stores struggle with high write throughput and why sharding a graph is famously painful — a cut edge is a network hop in the middle of your pointer chase. Relational sharding by entity ID is boring and works. Graph partitioning by minimizing edge cuts is NP-hard and breaks the moment your access pattern shifts. **Trade-off named:** you trade predictable horizontal scaling and fast bulk writes for fast localized deep reads."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of dedicated graph stores.",
+      "headers": [
+        "Dimension",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Deep traversal latency",
+          "2-6 hop queries stay local and fast, no join explosion",
+          "Global property filters and aggregations are slower than columnar or relational indexes"
+        ],
+        [
+          "Query expressiveness",
+          "Concise path patterns and built-in graph algorithms",
+          "Niche traversal language, weaker optimizer, smaller hiring pool, immature tooling"
+        ],
+        [
+          "Write path",
+          "Edge insert is conceptually one operation",
+          "Physically multiple pointer updates, distributed transactions harder, lower write throughput"
+        ],
+        [
+          "Scaling",
+          "Scales with subgraph size for reads",
+          "Sharding is hard, supernodes create hotspots, cache efficiency is poor"
+        ],
+        [
+          "Operations",
+          "Purpose-built metrics for traversals",
+          "New backup, auth, monitoring, driver, and ORM surface to own and on-call"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why teams reach for it anyway"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three forces push teams toward graph databases, none of them technical. First, **the diagram fallacy**: requirements arrive as entities and lines, so engineers assume storage must be entities and lines. That is a modeling confusion. Every relational schema is also entities and lines — the lines are just join tables. Second, **hype suction around Graph RAG**: retrieval for language models made knowledge graphs fashionable, so teams add a graph store before measuring whether hybrid search plus re-ranking already solves the task. Most evaluations show it does not help until corpus structure is genuinely relational and queries are genuinely multi-hop. Third, **nerd-sniping**: traversals are fun to write. Path syntax feels elegant for two days, then you own a second distributed system for a feature that serves 2% of traffic. My rule: if you cannot name the exact traversal depth, fan-out, and QPS that breaks Postgres, you do not have a graph problem. You have a boredom problem."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**It looks like a graph, so store it like a graph.** Wrong. Social feeds, catalogs, IAM hierarchies, and org charts all draw as graphs and run fine on relational stores because traversals are shallow and bounded.",
+        "**Joins are slow, graphs are fast.** Wrong without qualification. Indexed equi-joins for 1-2 hops are extremely fast. Graphs win only when hop count is deep *and* unpredictable *and* selective from a start node.",
+        "**We need recommendations or fraud detection, so we need a graph DB.** Wrong. You need graph *methods* — embeddings, community features, path signals — which you can compute offline in a library and serve from a key-value or relational store.",
+        "**Graph RAG requires a graph database.** Wrong. It requires graph-structured retrieval. That can be adjacency tables in Postgres plus vector search, evaluated against a baseline before you adopt new infrastructure."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Graph failures do not look like clean error codes. They look like **tail latency that correlates with specific entities**. Everything is fast until the traversal hits a supernode — the celebrity account with 40 million followers, the shared `ADMIN` role node, the popular product — and one query fans out to millions of edges, blows heap, times out, and takes the connection pool with it. The symptom you see in dashboards: p50 flat, p99 spiking, CPU saturated on one replica, and timeouts clustered around a handful of start IDs. The second classic failure is **write amplification under contention**. Two writers updating overlapping neighborhoods deadlock or retry endlessly because adjacency lists are hot read-modify-write targets. You see it as rising write latency, growing replication lag, and painful failovers. The third is **operational loneliness**: the one engineer who knew the traversal language leaves, the upgrade path lags behind Postgres by years, backups restore but indexes do not, and every incident becomes a research project. Trade-off named: you traded a mature ecosystem for traversal speed, and incidents now cost senior hours instead of milliseconds. That is rarely a good exchange for a medium-difficulty system."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Symptom: one entity kills the cluster.** Query for `shortestPath(A, B)` scans half the graph because B is a supernode. Fix requires degree caps, edge direction limits, and traversal timeouts — all application logic the database promised to remove.",
+        "**Symptom: analytics queries never finish.** `COUNT` all nodes with property X or aggregate across edges forces full-graph scans with no columnar acceleration. Teams bolt on a warehouse copy, now owning two pipelines.",
+        "**Symptom: sharding stalls growth.** Single-machine graph is fine to low billions of edges. Past that, distributed traversals become network-bound and you either replicate the whole graph to every node or replatform.",
+        "**Symptom: migrations freeze.** Adding a new edge type or backfilling properties means rewriting adjacency structures, not just `ALTER TABLE ADD COLUMN`. Expect long, bespoke backfills."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The deepest cost is evaluation debt. Teams adopt a graph store, wire it into retrieval, and never A/B the graph path against a relational plus search baseline. When quality regressions arrive, nobody can tell whether the traversal helped, the embeddings helped, or the re-ranker did all the work. I have seen this pattern repeatedly in search and recommendation stacks: the graph component adds 30% of infrastructure complexity for 2% of relevance gain that could have been a better ranker feature. Measure before you commit. Build the boring version first, load-test the actual traversal with supernodes included, and only then justify the exotic store."
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "boring_version.sql",
+      "code": "-- Most graph workloads are this, and Postgres handles it.\n-- Trade-off: you pay read-time join cost, you keep standard ops.\nCREATE TABLE person (id BIGINT PRIMARY KEY, name TEXT);\nCREATE TABLE friendship (user_a BIGINT REFERENCES person(id), user_b BIGINT REFERENCES person(id), PRIMARY KEY (user_a, user_b));\nCREATE INDEX ON friendship (user_b, user_a);\n\n-- Friends of friends, bounded to 2 hops, paginated, timeout-safe:\nSELECT DISTINCT f2.user_b AS fof\nFROM friendship f1\nJOIN friendship f2 ON f2.user_a = f1.user_b\nWHERE f1.user_a = $1\n  AND f2.user_b <> $1\nLIMIT 100;\n\n-- Arbitrary depth without a graph DB:\nWITH RECURSIVE reach(depth, node) AS (\n  SELECT 1, user_b FROM friendship WHERE user_a = $1\n  UNION\n  SELECT r.depth + 1, f.user_b\n  FROM reach r JOIN friendship f ON f.user_a = r.node\n  WHERE r.depth < 4\n) SELECT DISTINCT node FROM reach LIMIT 500;"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What to do instead until you prove otherwise"
+    },
+    {
+      "type": "paragraph",
+      "text": "Default to **Postgres plus adjacency tables plus search**. Model edges as rows, index both directions, enforce depth limits and result limits in application code, and cap supernode expansion explicitly. If you need text plus structure — the typical Graph RAG shape — pair Postgres with a vector index or a search engine, retrieve a candidate subgraph by keyword and vector similarity, then traverse in SQL or in memory. If you need offline graph analytics like PageRank, community detection, or fraud rings, run a batch graph library over warehouse exports and write the scores back as columns. You get 90% of the signal with zero new stateful systems. Only when online traversals are deep, latency-sensitive, and proven too slow on joins should a dedicated store enter the design doc — and then isolate it as a serving replica fed by the system of record, never as the system of record itself. **Trade-off named:** you accept slightly more application code for traversal guards in exchange for one fewer distributed database to operate. That is almost always the cheaper complexity."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "traversal_guard.py",
+      "code": "def friends_of_friends(db, start_id, max_fanout=1000, limit=100):\n    # Why this exists: supernodes turn unbounded traversals into outages.\n    # Trade-off: we drop completeness to guarantee latency.\n    frontier = [start_id]\n    seen = {start_id}\n    out = []\n    for _ in range(2):  # hard depth cap, no unbounded recursion\n        nxt = []\n        for node in frontier:\n            # Degree cap: sample or paginate instead of scanning 40M edges\n            neighbors = db.query(\n                \"SELECT user_b FROM friendship WHERE user_a=%s LIMIT %s\",\n                (node, max_fanout))\n            for (nb,) in neighbors:\n                if nb not in seen:\n                    seen.add(nb)\n                    nxt.append(nb)\n                    out.append(nb)\n                    if len(out) >= limit:\n                        return out\n        frontier = nxt\n    return out"
+    },
+    {
+      "type": "mermaid",
+      "title": "Should this be a graph DB",
+      "caption": "Default path is relational; graph store is the last resort.",
+      "code": "flowchart TD\n  Q1[Traversals deeper than 3 hops] -->|No| R1[Stay on Postgres]\n  Q1 -->|Yes| Q2[Unpredictable start nodes plus low latency]\n  Q2 -->|No| R2[Batch library plus score column]\n  Q2 -->|Yes| Q3[Proven join failure with supernodes]\n  Q3 -->|No| R1\n  Q3 -->|Yes| R3[Isolated graph replica for serving]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in interviews"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "The prompt baits you.",
+          "text": "Design a social network, fraud detector, recommendation engine, or knowledge base. The diagram has circles and arrows. The interviewer waits to see if you blurt out a graph database in the first three minutes. Do not. Start with functional scope, read-write ratio, and traversal depth."
+        },
+        {
+          "title": "Name the access pattern precisely.",
+          "text": "Say: reads are point lookups plus 1-hop lists at high QPS, deep traversals are rare and offline. That sentence justifies Postgres. If instead traversals are online, 4-plus hops, starting from arbitrary users at 1000 QPS with 50ms SLO, then and only then discuss a specialized store — and name the scaling cost out loud."
+        },
+        {
+          "title": "Show the boring schema first.",
+          "text": "Draw `users`, `edges(user_a, user_b, type, created_at)` with composite indexes both ways. Show the recursive CTE. Show the supernode guard: degree caps, pagination, timeouts. Interviewers grade this higher than naming a vendor because it proves you understand the failure mode."
+        },
+        {
+          "title": "Address sharding and supernodes unprompted.",
+          "text": "Say where the hot partition lives, how you sample or truncate high-degree nodes, and how traversal limits protect tail latency. This is where medium candidates separate from senior candidates. Anyone can draw boxes; few can explain why one celebrity node ruins the p99."
+        },
+        {
+          "title": "Close with an evaluation plan.",
+          "text": "For anything involving retrieval quality, propose the baseline: relational plus search, then add graph signals, then A-B test. Stating no single store solves retrieval signals maturity. It tells the interviewer you optimize for measured outcomes, not fashionable infrastructure."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Relationships mean graph database.** Relationships mean *data model*. Storage choice follows depth, fan-out, QPS, and latency SLO — not the shape on the whiteboard.",
+        "**Graph queries cannot be done in SQL.** Recursive CTEs, transitive closure tables, and materialized path columns handle most bounded traversals. They are less pretty than path syntax but far more operable.",
+        "**A graph DB simplifies the system.** It simplifies one query and complicates backup, auth, monitoring, driver support, hiring, and sharding. Count total system complexity, not query brevity.",
+        "**Graph algorithms need a graph DB.** Algorithms need an in-memory projection of a subgraph. Compute PageRank or embeddings in a batch job, serve scores from Postgres or a cache. Do not put your serving path behind a second transactional store for an offline computation.",
+        "**Starting with a graph DB is extensible.** The opposite. It is easy to add edges on day one and brutal to reshard, migrate, or remove the system on day 400. Extensible means boring core plus swappable serving replicas."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use the specialized tool only for the narrow shape it was built for.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Friend lists, followers, org charts, IAM hierarchies",
+          "Do not use",
+          "Hops are shallow and bounded; indexed joins plus caching win on cost and ops"
+        ],
+        [
+          "Recommendations and fraud signals computed offline",
+          "Do not use",
+          "Batch library over warehouse export gives the signal without a new serving database"
+        ],
+        [
+          "Keyword plus vector retrieval for assistants",
+          "Do not use",
+          "Hybrid search plus re-ranker beats unevaluated graph traversal; measure first"
+        ],
+        [
+          "Real-time deep traversals, arbitrary starts, strict latency SLO",
+          "Consider",
+          "Only after load test with supernodes proves joins miss SLO; isolate as serving replica"
+        ],
+        [
+          "Global path algorithms over highly connected data at serving time",
+          "Use",
+          "Shortest path, reachability, and community queries across many hops are the native workload — accept the ops cost deliberately"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "I would **start on Postgres with adjacency tables and explicit traversal guards, and only move deep online traversals to a graph store if load tests with supernodes prove joins miss the SLO** — because I refuse to trade a mature operational story for traversal syntax I have not proven I need."
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "paragraph",
+      "text": "That stance is not anti-graph. It is pro-evidence. Graphs are a superb mental model and a legitimate storage engine for one narrow workload: online, deep, unpredictable traversals where cost must follow the subgraph, not the tables. Everything else — and that is nearly everything in resource-efficient design — is cheaper, faster to ship, and easier to extend on infrastructure your team already knows how to run at 3 AM. Be opinionated in the interview: boring until proven otherwise is not lack of ambition. It is the design judgment that keeps systems alive."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:27:04.483Z",
+    "problems": []
+  }
+}

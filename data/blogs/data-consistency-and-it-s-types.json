@@ -1,0 +1,295 @@
+{
+  "slug": "data-consistency-and-it-s-types",
+  "title": "Data Consistency and It's types",
+  "summary": "Data consistency is the read-after-write contract you offer across replicas. This guide defines it precisely, maps strong to eventual with trade-offs, and shows what to pick in an HLD interview.",
+  "kind": "HLD",
+  "problemSlug": "data-consistency-and-its-types-96-188",
+  "topic": "Data consistency in Distributed Systems",
+  "difficulty": "Easy",
+  "coverEmoji": "🔄",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "distributed-systems",
+    "data-consistency"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Data Consistency: Definition, Best Practices & Examples - ClicData",
+      "url": "https://www.clicdata.com/blog/data-consistency/",
+      "source": "clicdata.com",
+      "kind": "article"
+    },
+    {
+      "title": "Consistency in System Design - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/consistency-in-system-design/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Data Consistency vs Data Integrity: Similarities and Differences | IBM",
+      "url": "https://www.ibm.com/think/topics/data-consistency-vs-data-integrity",
+      "source": "ibm.com",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding Data Consistency: Types, Examples, and Use Cases",
+      "url": "https://medium.com/@ali75mnf/understanding-data-consistency-types-examples-and-use-cases-36ffdf14344a",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Consistency is not \"are my databases the same\" — it is a contract about what a read returns after a write finishes.** Every model from strong to eventual answers one question: *how much staleness and reordering is a reader allowed to observe?* Pick the weakest contract your product can tolerate, because every step stronger costs you latency, throughput, or availability under partitions."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "In a single-node database, consistency is trivial: a write completes, the next read sees it. In a distributed store with three, five, or fifty copies of the same key, that guarantee breaks. Network delay means replica A has version 7 while replica B still serves version 6. A consistency model defines which of those versions a client is allowed to see, and when. Strong consistency says: after a write is acknowledged, *every* subsequent read from *any* replica returns that write or a later one. Eventual consistency says: if writes stop, *eventually* all replicas converge, but right now a read may return old data with no bound on how old. Everything else — sequential, causal, bounded staleness, monotonic reads — is a point between those two poles that constrains ordering, causality, or time lag without paying the full price of global agreement."
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not confuse this with other uses of the word *consistent*. It is not data **integrity** — integrity means the data was not corrupted or tampered with, enforced by checksums, constraints, and access control. It is not a transaction being **correct** — that is the C in ACID, meaning invariants like *balance never negative* hold across tables. Distributed consistency is narrower and harder: given concurrent writes and replication lag, what lies are readers permitted to see, and for how long? If you cannot state the read-visibility promise in one sentence, you do not understand the model well enough to choose it. That precision is what interviewers are listening for."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: how replicas agree"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every consistency level is implemented by the write path and the read path. On write, the coordinator either waits for replicas or it does not. **Synchronous replication** waits for all or a quorum to acknowledge before returning success to the client. That is why the write is slow but the next read is safe — the new value is already on enough nodes that any reader will find it. **Asynchronous replication** acknowledges as soon as one replica has the write and propagates in the background. That is why the write is fast but readers race propagation delay. On read, the coordinator either contacts one replica or a quorum, and either returns the first answer or compares versions and returns the newest. Change those two knobs — how many nodes must confirm a write, how many nodes must agree on a read — and you have changed the consistency model. There is no magic; there is only waiting."
+    },
+    {
+      "type": "mermaid",
+      "title": "Write path decides consistency",
+      "caption": "Synchronous confirmation buys fresh reads. Background propagation buys speed.",
+      "code": "flowchart TD\n  C[Client write] --> P[Coordinator]\n  P --> SYNC[Wait for quorum ack]\n  P --> ASYNC[Ack fast, replicate later]\n  SYNC --> R1[Majority holds new value]\n  ASYNC --> R2[One replica holds new value]\n  R1 --> FR[Fresh read from any quorum]\n  R2 --> SR[Read may hit stale replica]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The trade-off is mechanical, not philosophical. Synchronous paths put replication delay on the critical path of every write. You pay extra round trips, you hold locks longer, and if one required replica is down or partitioned, the write **fails** instead of succeeding. That is why strong systems feel slower and less available — they chose to fail a write rather than risk a stale read. Asynchronous paths remove that wait, so writes stay fast even when a replica is sick, but you have created a window where two clients asking the same question get different answers. Neither choice is wrong. The error is pretending you can have the fast write *and* the global fresh read without paying for coordination with something like consensus or a quorum intersection."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The five models you must be able to draw"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers do not want a textbook list. They want you to place each model on two axes: **what anomaly does it forbid**, and **what does it cost**. Strong forbids staleness entirely. Sequential forbids reordering but allows brief lag to propagate in global order. Causal forbids seeing an effect before its cause but permits unrelated writes to arrive in any order. Bounded staleness forbids data older than N seconds or K versions. Eventual forbids nothing except permanent divergence. Learn them in that order — from most expensive to cheapest — and you can reason about any product requirement in seconds instead of reciting definitions."
+    },
+    {
+      "type": "table",
+      "caption": "The consistency spectrum: guarantee against price. There is no free row.",
+      "headers": [
+        "Model",
+        "What a reader is guaranteed",
+        "What you pay for it"
+      ],
+      "rows": [
+        [
+          "Strong / Linearizable",
+          "Every read sees the latest completed write, in real-time order. No stale reads, no reordering.",
+          "Synchronous quorum or consensus on every write. Highest latency, lowest availability during partitions."
+        ],
+        [
+          "Sequential",
+          "All clients see writes in the same global order, but that order may lag real time by milliseconds.",
+          "Total ordering service or single sequencer. Throughput bottleneck, still needs coordination."
+        ],
+        [
+          "Causal",
+          "If write B causally depends on write A, everyone sees A before B. Concurrent writes may appear in different orders.",
+          "Vector clocks or dependency tracking per client session. Metadata overhead, partial coordination."
+        ],
+        [
+          "Bounded staleness / Timeline",
+          "Reads are at most K versions or T seconds behind the leader. Staleness has a cap.",
+          "Reads routed to in-sync replicas or delayed until lag recovers. Tail latency spikes when replicas fall behind."
+        ],
+        [
+          "Eventual",
+          "If writes stop, replicas converge. Until then any stale or reordered read is legal.",
+          "Cheapest and most available. Application must tolerate conflicts, duplicates, and user-visible rollbacks."
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Default is a design decision",
+      "text": "Do not default to strong consistency because it *sounds safer*. Strong is the most expensive row in the table. Start from eventual and strengthen only the operations that lose money or trust when stale — balances, inventory decrement, unique usernames. Everything else — counters, feeds, recommendations, analytics — should stay cheap."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Strong consistency: when stale is a bug"
+    },
+    {
+      "type": "paragraph",
+      "text": "Strong consistency, usually meaning **linearizability**, behaves as if there were only one copy of the data even though there are many. Once `write(x=7)` returns success, any read that starts after that moment returns `7` or newer, no matter which replica or region it hits. Implementation requires that a read quorum and a write quorum overlap — classically `W + R > N` — or that a consensus protocol orders every operation through a leader. The reason to choose it is correctness you can reason about: no double-spend, no oversell, no two users claiming the same seat. The reason to avoid it is that every write waits for the slowest required replica, cross-region writes add 100+ ms of unavoidable round trips, and during a network partition the system must reject writes on the minority side to avoid divergence. That is the CAP trade-off stated concretely: you kept C and sacrificed A for that key."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Eventual consistency: when available and fast beats fresh"
+    },
+    {
+      "type": "paragraph",
+      "text": "Eventual consistency admits the window. A write succeeds on one replica and returns immediately; background anti-entropy — read-repair, gossip, log shipping — carries it to the rest. For seconds or minutes, different readers see different values and that is *by design*. Convergence is guaranteed only if writes quiesce, which in a busy system they never fully do, so in practice you live with permanent low-grade divergence held together by conflict resolution such as last-write-wins with timestamps or application-level merge. The reason to choose it is brutal efficiency: writes never block on a sick replica, the system stays writable during partitions, and you can serve reads from the nearest replica at single-digit milliseconds. The reason to fear it is that the application inherits the complexity the database refused to handle — retries can resurrect deleted items, two concurrent decrements can both succeed, a user can see their own post disappear on refresh because the next read hit a replica that has not caught up."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The useful middle: causal, sequential, bounded"
+    },
+    {
+      "type": "paragraph",
+      "text": "Most production systems live in the middle because the extremes are both painful. **Causal consistency** is the sweet spot for collaboration: it guarantees you never see a reply before the comment it answers, using session context or vector clocks to order dependent writes while letting independent writes converge lazily. That is why it fits comment threads, chat, and document editing — ordering matters only along the causal chain. **Sequential consistency** goes further and forces one global order for all writes, which simplifies reasoning but requires a sequencer or leader and becomes a throughput ceiling. **Bounded staleness** is the operations-friendly compromise: promise reads are at most *five seconds* or *ten versions* behind, route reads to replicas inside that bound, and stall or reroute when lag exceeds it. You get a measurable SLA instead of *eventually*, and the trade-off is explicit tail-latency pain when a replica lags. Add the three session guarantees — **read-your-writes**, **monotonic reads**, **write-follows-reads** — pinned with sticky routing or version tokens, and you fix 80% of user-visible weirdness without paying for full strength."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Ledger balance, seat reservation, unique username → strong.** A stale read directly creates money loss or a broken invariant. Pay for quorum writes.",
+        "**Comment reply, chat message, profile edit → causal + read-your-writes.** Users forgive a one-second delay but never forgive seeing an answer before its question, or losing their own edit on refresh.",
+        "**Product catalog, DNS record, feature flag → bounded staleness.** A few seconds old is harmless, an hour old is an incident. Cap the lag and alert on it.",
+        "**Like count, view count, recommendation feed → eventual.** Off by a few is invisible. Never spend consensus on a counter.",
+        "**Shopping cart across devices → eventual with merge, not last-write-wins.** Blind timestamp resolution silently drops items. You need a union merge or CRDT, which is application logic, not database magic."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Consistency failures never page you with the label *consistency*. They page as business anomalies. The classic is **oversell**: two buyers both read `stock=1` from different replicas, both pass the check, both decrement locally, and reconciliation reveals `stock=-1` after you already charged both. Another is **lost update**: two writers increment a counter concurrently on different replicas, both base their write on version 5, and last-write-wins discards one increment forever — revenue or votes vanish without an error log. A third is **read-your-write violation**: a user changes a password or posts a photo, the write lands in region A, the next read is routed to region B, and support gets a *my change disappeared* ticket that resolves itself on retry and is therefore never reproduced. The deepest failure is **causal reversal**: moderation deletes an abusive post on one replica while another replica still serves a reply quoting it, so users screenshot the system contradicting its own enforcement. Each of these is working-as-configured under eventual semantics. That is what makes them expensive — the database did exactly what you told it to."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Symptom: two clients see opposite orders for the same two writes.** Cause: no global sequence. Fix: causal or sequential ordering, or make the operation commutative so order stops mattering.",
+        "**Symptom: stale reads spike after a deploy or region failover.** Cause: new readers pinned to lagging replicas or cold caches. Fix: version fencing, bounded-staleness routing, sticky sessions with read-your-writes tokens.",
+        "**Symptom: deleted data resurrects days later.** Cause: a down replica missed the tombstone and re-gossips the old value on return. Fix: durable tombstones with GC grace periods, never delete without a marker.",
+        "**Symptom: p99 write latency tracks the slowest replica.** Cause: you asked for strong quorum but deployed replicas across continents. Fix: shrink write quorum, keep leader and quorum in one region, replicate cross-region asynchronously.",
+        "**Symptom: conflict rate climbs with traffic.** Cause: concurrent writes to the same hot key under eventual semantics. Fix: partition the key, serialize through a queue, or strengthen only that hot path."
+      ]
+    },
+    {
+      "type": "mermaid",
+      "title": "Divergence and repair lifecycle",
+      "caption": "Under eventual semantics divergence is normal. Repair is what you must design.",
+      "code": "stateDiagram-v2\n  [*] --> Converged: all replicas agree\n  Converged --> Diverged: write accepted on one replica\n  Diverged --> Diverged: more concurrent writes\n  Diverged --> Conflict: same key written on two sides\n  Conflict --> Converged: merge or last-write-wins\n  Diverged --> Converged: anti-entropy and read repair"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes the trade-off visible"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "quorum.py",
+      "code": "N = 3  # replication factor\n# Strong: quorums overlap so every read sees the last write.\nW_STRONG = 2  # write must reach 2 of 3\nR_STRONG = 2  # read must consult 2 of 3, pick newest version\nassert W_STRONG + R_STRONG > N\n\n# Eventual: fast write, single-replica read. May be stale.\nW_FAST = 1\nR_FAST = 1\n\ndef write(store_nodes, key, value, version, w):\n    acks = 0\n    for node in store_nodes:\n        if node.try_put(key, value, version):\n            acks += 1\n    # Strong waits; fast returns after first ack and replicates lazily.\n    if acks < w:\n        raise NotWritable(f\"only {acks}/{w} acks\")\n    return True\n\ndef read(store_nodes, key, r):\n    results = []\n    for node in quorum(store_nodes, r):\n        results.append(node.get(key))  # (value, version)\n    # With r=1 you return whatever one replica has, stale or not.\n    # With r=2+ you compare versions and heal stale replicas.\n    return max(results, key=lambda kv: kv[1])"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet is the whole interview in ten lines. `W + R > N` is why strong reads are fresh: any read quorum intersects any write quorum, so at least one node in the read set saw the latest write and version comparison surfaces it. The price is in `write()`: with `W=2` you wait for two network round trips and you fail if two nodes are down, whereas `W=1` succeeds with one. Reads mirror it: `R=1` is one hop and fast but returns whatever that replica happens to hold; `R=2` doubles read fan-out and tail latency to buy recency. When an interviewer asks you to *tune* consistency, they mean slide `W` and `R`, or pin `R=1` to the leader, and state which anomaly you just reintroduced. Say the anomaly out loud — that is the trade-off they are grading."
+    },
+    {
+      "type": "table",
+      "caption": "When to strengthen, when to stay loose. Decide per operation, not per database.",
+      "headers": [
+        "Use stronger consistency when",
+        "Stay eventual / bounded when"
+      ],
+      "rows": [
+        [
+          "A stale read causes irreversible harm: money moved, inventory promised, seat sold twice.",
+          "Staleness is invisible or self-healing: like counts, view counts, ranked feeds."
+        ],
+        [
+          "Uniqueness must hold globally: usernames, order IDs, idempotency keys.",
+          "Keys are naturally partitioned by user or device and rarely contend."
+        ],
+        [
+          "Operations must appear in one order to all observers: auction bids, game moves.",
+          "Only causal order matters: replies after posts, edits after creates."
+        ],
+        [
+          "You can afford the latency and can keep quorum in one region.",
+          "You need multi-region active-active writes and survival during partitions."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How interviewers test this"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They give you a feature, you name the anomaly you forbid",
+          "text": "Design a URL shortener, a cart, a timeline. Start with: the read that must never be stale is X, the write that must never be reordered is Y. That framing earns more points than naming five models."
+        },
+        {
+          "title": "They force a partition",
+          "text": "What happens if the link between regions drops for 60 seconds? State explicitly: do writes fail or diverge? If you say strongly consistent, you must say minority-side writes block. If you say available, you must say how you merge on healing."
+        },
+        {
+          "title": "They ask for the read and write path",
+          "text": "Draw coordinator, replicas, quorum sizes, and where version comparison happens. Say how many round trips a write costs and which replica a read hits. Vague boxes with no numbers fail."
+        },
+        {
+          "title": "They push on conflicts",
+          "text": "Two users edit the same cart offline — who wins? Last-write-wins loses data; union merge keeps both items; CRDT counters commute. Pick one and defend why data loss is acceptable or not."
+        },
+        {
+          "title": "They ask what you monitor",
+          "text": "Replication lag in seconds and versions, quorum failure rate, conflict rate, stale-read rate via version sampling. A consistency choice without a metric for its violation is just a wish."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**\"Eventual means data may be lost.\"** No — it means data may be *late or reordered*. Durability is separate. A system can be eventual yet never lose an acknowledged write; it just shows it late.",
+        "**\"Strong consistency equals ACID transactions.\"** No — linearizability is about visibility order of single-key reads and writes. Transactions add atomicity across keys. You can have one without the other.",
+        "**\"Quorum reads and writes are always strongly consistent.\"** Only if quorums overlap (`W + R > N`) *and* you do version comparison plus repair. Tunable stores let you set `W=1, R=1` on the same cluster and silently drop to eventual.",
+        "**\"Causal is just weaker eventual.\"** Causal forbids a specific user-visible horror — seeing effects before causes — which fixes most UX complaints at a fraction of strong-consistency cost. It is often the correct answer, not a halfway cop-out.",
+        "**\"The database handles conflicts, so the app is safe.\"** Last-write-wins *handles* conflicts by discarding someone's write. Unless the operation commutes or you wrote a merge function, the database resolved the conflict by deleting user data."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "**Consistency is the staleness and ordering contract on reads after writes — I pay for strength with write latency and availability, so I use strong only where stale reads cause real harm and causal or bounded everywhere else.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:31:51.358Z",
+    "problems": []
+  }
+}

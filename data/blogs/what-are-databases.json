@@ -1,0 +1,270 @@
+{
+  "slug": "what-are-databases",
+  "title": "What are databases ?",
+  "summary": "Databases are shared, queried, durable state with controlled concurrency  20 why you pay the overhead and when SQL vs NoSQL wins.",
+  "kind": "HLD",
+  "problemSlug": "what-are-databases-92-184",
+  "topic": "Databases",
+  "difficulty": "Easy",
+  "coverEmoji": " f5c4 ",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "Fundamentals"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What Is a Database? | Oracle",
+      "url": "https://www.oracle.com/database/what-is-database/",
+      "source": "oracle.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is a Database? - Cloud Databases Explained - AWS",
+      "url": "https://aws.amazon.com/what-is/database/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    },
+    {
+      "title": "Which Database Should You Use? (5-Min Guide) - YouTube",
+      "url": "https://www.youtube.com/watch?v=JZfeeyP-tCM",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is a Database? | Microsoft Azure",
+      "url": "https://azure.microsoft.com/en-us/resources/cloud-computing-dictionary/what-are-databases",
+      "source": "azure.microsoft.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A database is **not storage. It is a set of promises about shared state**: your writes survive crashes, concurrent writers do not corrupt each other, and later reads can find data by *value*, not by file offset. You pay latency, complexity, and scaling pain for those promises. If you do not need them, you do not need a database."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a database actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A database is durable, structured state plus an engine that guards it. The files on disk are the least interesting part. What matters is the **database management system (DBMS)** sitting in front of them: it parses your queries, enforces a schema or data model, schedules concurrent transactions, decides what lives in memory versus disk, and guarantees that an acknowledged write is not lost when the machine dies a second later. Without that engine you have a file. With it you have a system dozens of processes can read and write safely at the same time. That is why interviewers treat *pick a database* as shorthand for *pick a consistency, query, and failure model*. The brand name is trivia; the guarantees are the design."
+    },
+    {
+      "type": "paragraph",
+      "text": "Concretely, a DBMS does four jobs you do not want to rebuild. First, **persistence with intent**: it makes writes durable through logging and recovery, not just `write()` to a file and hope. Second, **concurrency control**: it isolates overlapping transactions so two increments do not silently lose one update. Third, **indexed access**: it maintains auxiliary structures so you can ask *all orders for user 42 from last week* without scanning everything. Fourth, **access control and integrity**: types, constraints, and permissions reject bad data at the boundary instead of letting every application defensively re-check. A spreadsheet gives you none of this under concurrency. A flat file gives you durability only if you are careful and lucky. The trade-off is direct: every guarantee costs CPU, I/O, and coordination, which is why databases are slower than raw memory or raw disks and harder to scale than stateless services."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: write path and read path"
+    },
+    {
+      "type": "paragraph",
+      "text": "Think of every operation as going through two paths that exist for opposite reasons. The **write path is optimized for survival**, the **read path is optimized for finding**. On write the engine cannot trust memory, so it logs first and applies later. On read it cannot afford a full scan, so it consults indexes and caches first and touches disk only on miss. Once you see this split, most database internals stop being magic: logs, memtables, B-trees, buffer pools are just different ways to make one side cheaper without breaking the other side."
+    },
+    {
+      "type": "mermaid",
+      "title": "Core database request flow",
+      "caption": "Writes go to log first for durability, then to data structures. Reads prefer cache and indexes over disk.",
+      "code": "flowchart TD\n  App[Application] --> DBMS[Parser and Planner]\n  DBMS --> Txn[Transaction Manager]\n  Txn --> Engine[Storage Engine]\n  Engine --> WAL[Write Ahead Log]\n  Engine --> Data[Indexes and Data Files]\n  DBMS --> Cache[Buffer Pool Cache]\n  Cache --> App"
+    },
+    {
+      "type": "paragraph",
+      "text": "A write typically follows this order for a reason: validate against schema and constraints, append to a **write-ahead log** on durable storage, acknowledge only after that log is safe, then apply the change to in-memory structures and eventually to data files in the background. The log-first order is the whole durability trick. If power fails after the acknowledgement, replay of the log restores the write. If it fails before, nothing was acknowledged and nothing needs restoring. The trade-off is write latency: every durable write pays at least one sequential disk or replicated network write. Engines hide this with group commit and buffering, but they cannot remove it. Anyone promising zero-cost durability is promising to lose your data."
+    },
+    {
+      "type": "paragraph",
+      "text": "A read follows the inverse logic. The planner parses the query, picks an access path, checks the buffer pool for cached pages, then uses an index to jump directly to the rows it needs instead of scanning. A **B-tree index** keeps keys sorted so point lookups and range scans cost logarithmic hops rather than full table scans. That speed costs write amplification and space: every insert must update each index, and every index must be kept consistent through crashes. This is the central read-write trade-off to name in an interview: **more indexes makereads selective and writes slower and larger**. Five secondary indexes on a write-heavy table is not a detail; it is a 5x write tax you chose on purpose."
+    },
+    {
+      "type": "table",
+      "caption": "What a DBMS buys you and what it charges you. Name both sides.",
+      "headers": [
+        "Guarantee",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Durability via logging and recovery",
+          "Acknowledged writes survive process and machine crashes",
+          "Every write pays log I/O and replication delay; fsync stalls become your tail latency"
+        ],
+        [
+          "Atomicity and isolation for transactions",
+          "Multi-step updates never leave half-applied state visible to others",
+          "Locking or version tracking, aborts and retries, lower concurrency under contention"
+        ],
+        [
+          "Declarative queries plus indexes",
+          "Ask by value and pattern without writing scan code; planner picks the fast path",
+          "Index maintenance on every write, planner mistakes, memory spent on buffer pool"
+        ],
+        [
+          "Centralized constraints and permissions",
+          "One place rejects bad types, duplicate keys, unauthorized access",
+          "Schema changes become migrations; central server becomes throughput and availability bottleneck"
+        ],
+        [
+          "Shared mutable state for many clients",
+          "Dozens of services see the same truth without custom sync",
+          "You inherit contention, hot keys, and scaling limits that stateless files do not have"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Databases rarely fail by saying *error*. They fail by getting slow, rejecting writes, or quietly serving stale or partial answers. In a design interview, describing the observable symptom matters more than naming an internal error code. The interviewer wants to hear that you connect a mechanism to an operational signal: disk-full logs, lock pileups, cache evictions, replica lag. Each failure below is a direct consequence of a trade-off above, which is exactly why you chose the engine deliberately instead of by default."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Disk or log exhaustion -> writes stall, then refuse.** When the write-ahead log or data volume fills, the engine cannot accept new writes even though reads still work. You see rising write latency, then timeouts and `no space` rejections. The fix is capacity and log archival, not more application retries.",
+        "**Lock contention or long transactions -> latency cliff and deadlocks.** One slow transaction holds locks or old versions, everyone behind it queues. You see p99 explode while CPU looks idle, plus abort storms from deadlock detectors. Symptom is queueing, not slowness in the query itself.",
+        "**Missing or wrong index -> full scan that worked in testing.** A query that returned in 20 ms on 10k rows scans millions of rows in production. You see CPU and I/O saturation on one node, buffer pool evictions, and every other query slowing down with it. `EXPLAIN` shows sequential scan where you expected index seek.",
+        "**Replica lag -> users read their own write as missing.** Asynchronous replicas apply changes seconds behind the primary under load or network partitions. You see *I just created it but GET returns 404* or stale dashboards. It looks like a bug in your code until you check replication delay metrics.",
+        "**Hot key or hot partition -> one node burns while others idle.** A celebrity key, a single tenant, or a monotonic primary key hammers one partition. You see throttling, uneven CPU, and retry amplification. The data model scaled, but the access pattern did not, which is a modeling failure, not a hardware failure."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete shape: schema is the contract"
+    },
+    {
+      "type": "paragraph",
+      "text": "The schema is where business rules become enforceable structure. In a relational model you declare tables, column types, primary keys, and relationships between tables; the engine then rejects inserts that violate them and maintains indexes that make joins fast. Good schema design is mostly about choosing where the pain goes: normalized tables avoid duplication and update anomalies but force joins, denormalized tables make reads single-lookup but force you to keep copies consistent on write. There is no neutral choice. Pick normalization when correctness of updates dominates, denormalize when a specific read path must stay fast at known write cost."
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "schema.sql",
+      "code": "CREATE TABLE users (\n  id BIGINT PRIMARY KEY,\n  email TEXT UNIQUE NOT NULL,\n  created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\n\nCREATE TABLE orders (\n  id BIGINT PRIMARY KEY,\n  user_id BIGINT NOT NULL REFERENCES users(id),\n  total_cents INT NOT NULL CHECK (total_cents >= 0),\n  created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\n\nCREATE INDEX idx_orders_user_time\n  ON orders (user_id, created_at DESC);\n\n-- The read path this schema is built for:\nSELECT o.id, o.total_cents\nFROM orders o\nWHERE o.user_id = 42\nORDER BY o.created_at DESC\nLIMIT 20;"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "models.py",
+      "code": "# Same facts, different model: document + key-value thinking\n# Key is user id, value is a self-contained profile document.\n# Fast to read whole profile, expensive to query across profiles.\nuser_profile = {\n    \"_id\": \"user:42\",\n    \"email\": \"a@example.com\",\n    \"recent_orders\": [\n        {\"id\": 101, \"total_cents\": 2999},\n        {\"id\": 98, \"total_cents\": 499}\n    ]\n}\n# KV lookup: O(1) by key, no join. Trade-off: no efficient\n# query for \"all orders over $50 last week\" without a second index."
+    },
+    {
+      "type": "paragraph",
+      "text": "The SQL example declares the trade explicitly. The foreign key and `UNIQUE` constraints push validation into the engine so applications cannot insert orphaned orders or duplicate emails. The composite index on `(user_id, created_at DESC)` makes *recent orders for one user* an index range scan instead of a sort over the whole table, but every order insert now maintains that index. The document example inverts the choice: embedding recent orders inside the user record makes fetching a profile one key lookup with zero joins, at the cost of making cross-user analytics painful and updates to shared order data duplicated. If you can articulate that inversion, you understand data modeling well enough for an Easy HLD round."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from access patterns, not from engine names",
+          "text": "List the reads and writes with shape and rate: point lookup by ID, range scan by time, aggregate over all rows. Then map each to a structure. Interviewers score this mapping, not whether you said the fashionable engine first."
+        },
+        {
+          "title": "State the guarantees you actually need",
+          "text": "Do you need multi-row atomicity, or is single-key atomicity enough? Do reads need the latest write or is seconds-old acceptable? Saying *we need linearizable transactions here because money moves* versus *stale reads are fine for feeds* is what separates a design from a shopping list."
+        },
+        {
+          "title": "Justify relational versus non-relational in one trade",
+          "text": "Choose relational when relationships, ad-hoc joins, and strong integrity dominate. Choose key-value or document when access is by known key and latency at scale dominates. Choose columnar or search engines for analytics and text, not for transactions. One sentence of why beats five minutes of feature listing."
+        },
+        {
+          "title": "Name the scaling limit of your choice",
+          "text": "Single-node relational hits write throughput and data size limits; sharding fixes size but breaks joins and cross-shard transactions. Key-value scales writes horizontally but punts query flexibility back to you. Say the limit before the interviewer asks."
+        },
+        {
+          "title": "Close with failure and observability",
+          "text": "Mention the symptom you would alert on: replication lag, cache hit rate, slow-query share, disk growth. Easy topics are graded on whether you remember the database is operated, not just drawn."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**A database is just persistent storage.** No. Persistence is 20% of the job. Concurrency control, indexing, and crash recovery are why it exists. If you only need bytes to survive, object storage or a file is cheaper.",
+        "**Relational means slow, NoSQL means fast.** Speed comes from data model fit and index design, not category. A well-indexed relational query beats a poorly modeled NoSQL scan by orders of magnitude, and vice versa.",
+        "**Schema-less means structure-less.** Document stores still have an implicit schema in application code. You moved enforcement from the engine to every writer, which trades migration pain for silent inconsistency risk.",
+        "**Replicas give you more write throughput.** Replicas normally scale reads. Writes still funnel through the primary or a quorum. Adding replicas to fix write pressure makes lag worse, not better.",
+        "**Transactions are always worth it.** Each transaction buys correctness with locking, version retention, and abort handling. Using serializable isolation for counters, feeds, or analytics is paying a coordination tax where eventual consistency would do."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Pick by access pattern and guarantee, not by popularity.",
+      "headers": [
+        "Type",
+        "Use when",
+        "Avoid when"
+      ],
+      "rows": [
+        [
+          "Relational with SQL",
+          "Linked entities, joins, constraints, multi-row atomic updates matter",
+          "Write rate exceeds single-node limits and you cannot shard the join key cleanly"
+        ],
+        [
+          "Key-value",
+          "Lookups by known key, extreme read rate, simple values, session and cache state",
+          "You need range scans, ad-hoc filters, or cross-key transactions"
+        ],
+        [
+          "Document",
+          "Self-contained aggregates read together, evolving fields per record",
+          "Heavy cross-document joins, global secondary-query analytics, strict cross-record integrity"
+        ],
+        [
+          "Columnar / warehouse",
+          "Scans and aggregates over billions of rows, append-mostly history",
+          "Low-latency single-row writes and reads; transactional updates"
+        ],
+        [
+          "Graph / search specialized",
+          "Traversal or full-text relevance is the core query, not a bolt-on",
+          "You only need one such query occasionally; operational cost outweighs benefit"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The practical heuristic is blunt: default to relational until the workload proves otherwise, because integrity and flexible querying cover the most requirements with the least custom code. Move to key-value or document only when you can name the exact hot read path that must avoid joins and you accept weaker cross-record guarantees. Move to columnar or search only when the query shape is fundamentally analytic or relevance-ranked. Every move away from the default should cite the trade you are buying: *we give up ad-hoc joins to gain predictable single-key latency at 10x write scale*. If you cannot state the sacrifice, you are not ready to switch."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "A database is **durable shared state with indexed queries and controlled concurrency — pick the engine by the guarantees and access patterns you need, and accept the latency and scaling cost that choice imposes.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:22:32.673Z",
+    "problems": []
+  }
+}

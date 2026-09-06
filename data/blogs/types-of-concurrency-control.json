@@ -1,0 +1,293 @@
+{
+  "slug": "types-of-concurrency-control",
+  "title": "Types of Concurrency Control",
+  "summary": "Pessimistic locking, optimistic validation, timestamp ordering, and MVCC compared by coordination cost, failure mode, and when each scales.",
+  "kind": "HLD",
+  "problemSlug": "types-of-concurrency-control-90-197",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔒",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Concurrency-Control"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Concurrency Control in DBMS - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/dbms/concurrency-control-in-dbms/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Concurrency control - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Concurrency_control",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Concurrency control in database management systems - Aerospike",
+      "url": "https://aerospike.com/blog/concurrency-control-in-dbms/",
+      "source": "aerospike.com",
+      "kind": "article"
+    },
+    {
+      "title": "Concurrency Control in DBMS: Locking, MVCC & More - Databricks",
+      "url": "https://www.databricks.com/blog/concurrency-control",
+      "source": "databricks.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Concurrency control is **when you pay for coordination**. Pessimistic pays upfront in waiting. Optimistic pays at commit in aborts. MVCC pays in storage and garbage collection. Timestamp ordering pays in clock discipline. There is no free isolation — pick who suffers and say why."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Concurrency control decides what happens when two transactions touch the same data at overlapping times. Without it you get three classic corruptions: a **dirty read** where you act on data that later rolls back, a **lost update** where one write silently erases another, and a **non-repeatable read** where the same query returns different answers inside one transaction. The control layer forces interleaved executions to remain *correct* — usually **conflict-serializable**, meaning the outcome equals some serial order — while letting unrelated work run in parallel. That last clause is the whole scalability problem: correctness is easy if you serialize everything, throughput collapses if you do."
+    },
+    {
+      "type": "paragraph",
+      "text": "In a distributed system the cost model changes. On one node, coordination is a latch or a mutex — nanoseconds to microseconds. Across nodes it is network round trips, lock leases, clock uncertainty, and partial failure. So the *type* of concurrency control determines your scaling ceiling. A design that holds a cross-partition exclusive lock for 200ms does not scale past a few hundred transactions per second on that key, no matter how many stateless app servers you add. A design that serves reads from snapshots scales reads almost linearly, but shifts the pain to write conflicts, version storage, and cleanup. Interviewers want that translation: mechanism → bottleneck → scaling limit."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: four families, one decision"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every practical scheme is a variant of four ideas. Learn the invariant each one protects, because that tells you where it blocks, aborts, or stores extra state. The right answer in design is almost always *partition first, then pick the cheapest control per partition*."
+    },
+    {
+      "type": "mermaid",
+      "title": "Choosing a concurrency control family",
+      "caption": "Start from contention and read-write ratio, not from fashion.",
+      "code": "flowchart TD\n  A[Transaction arrives] --> B{Mostly reads?}\n  B -->|Yes| C[MVCC snapshot read]\n  B -->|No| D{High conflict on same keys?}\n  D -->|Yes| E[Pessimistic locking]\n  D -->|No| F[Optimistic validate at commit]\n  F --> G{Need global order without a lock manager?}\n  G -->|Yes| H[Timestamp ordering]"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1. Pessimistic locking and two-phase locking"
+    },
+    {
+      "type": "paragraph",
+      "text": "Assume conflict will happen and block early. A transaction takes **shared (S)** locks for reads and **exclusive (X)** locks for writes. Under **two-phase locking (2PL)** it only acquires locks in a growing phase, then only releases them in a shrinking phase. **Strict 2PL** holds all X-locks until commit, which is what gives you recoverability and makes rollback safe. Why this shape? If you released a write lock before commit, another transaction could read uncommitted data and you could no longer abort cleanly. The trade-off is explicit: you buy simple reasoning and no wasted work at the price of **blocking**. Threads wait, throughput on a hot key equals 1 divided by lock hold time, and waits can cycle into **deadlock**. Production systems add a lock manager, wait-die or wound-wait policies, deadlock detection via a waits-for graph, and lock timeouts. Granularity matters too: row locks give concurrency but cost memory and manager CPU; table or partition locks are cheap to manage but serialize too much. Choose coarse when contention is rare, fine when hot keys dominate."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2. Optimistic concurrency control"
+    },
+    {
+      "type": "paragraph",
+      "text": "Assume conflict is rare and never lock during execution. The transaction works on private copies through read and execute phases, then at commit runs **validation**: did any other committed transaction change data I read or wrote? If yes, abort and retry; if no, make writes visible atomically. Validation is usually a read-set versus write-set intersection check plus a version or sequence comparison. Why it scales: no lock manager on the read path, no blocking, no deadlock. Why it hurts: under contention the **abort rate explodes** and you pay in retries, tail latency, and wasted CPU. It is excellent for low-conflict workloads like user profile edits or reservation creation across many distinct keys, and terrible for counters, seat maps, or inventory decrement on one row. The trade-off to state aloud: *latency is low until conflict appears, then throughput collapses faster than locking would have.* Always pair it with bounded retries, backoff with jitter, and idempotent apply so a retry does not double-charge."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3. Timestamp ordering"
+    },
+    {
+      "type": "paragraph",
+      "text": "Give every transaction a timestamp and force the execution to behave as if transactions ran in timestamp order. The classic rule: if transaction `Ti` tries to write `x` after `Tj` already read `x` with a larger timestamp, reject `Ti`. Reads and writes carry `read_ts` and `write_ts` per item. Why bother? You get a global order without a central lock table, which looks attractive for distribution. The price is **rigidity and aborts from ordering violations**, plus dependence on timestamp assignment. With wall-clock timestamps, clock skew across nodes causes false aborts or, worse, incorrect ordering unless you use bounded uncertainty windows and wait them out. With logical counters you need an allocator that becomes a bottleneck. Strict timestamp ordering alone also rejects many serializable-but-out-of-order schedules that locking would allow, so throughput under conflict is worse than it looks on paper. Use it when you already need globally ordered commits — for example a log-backed store — not as a general replacement for locks."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "4. Multi-version concurrency control"
+    },
+    {
+      "type": "paragraph",
+      "text": "Stop overwriting in place. Keep multiple versions of each row tagged with creator and deleter timestamps or transaction IDs. A read picks the newest version visible to its snapshot; writes create a new version and check for write-write conflicts at commit, typically via **snapshot isolation** or serializable extensions like SSI. Why this wins at scale: **readers never block writers and writers never block readers**. Read-heavy services, analytical queries over live tables, and geo-replicated stores survive because long scans get a stable snapshot. The trade-off moves elsewhere: storage bloat, vacuum and garbage-collection load, index amplification because every version needs indexing, and subtler anomalies. Plain snapshot isolation permits **write skew** — two transactions each read a constraint, each writes a disjoint part, and the combined result violates the constraint with no write-write conflict to catch it. If you need true serializability you must add predicate tracking or SSI checks, which reintroduces aborts. Name that cost: *MVCC scales reads linearly, but long-lived snapshots stall cleanup and inflate tail latency on writes.*"
+    },
+    {
+      "type": "mermaid",
+      "title": "Locks versus versions over time",
+      "caption": "2PL blocks to protect one value; MVCC keeps old values so readers proceed.",
+      "code": "flowchart LR\n  A[Tx starts] --> B{Scheme}\n  B -->|2PL| C[Acquire S or X lock]\n  C --> D[Block if conflict]\n  D --> E[Commit and release]\n  B -->|MVCC| F[Pin snapshot]\n  F --> G[Read visible version]\n  G --> H[Write new version on commit]"
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs: what each scheme buys and what it charges.",
+      "headers": [
+        "Mechanism",
+        "What you gain",
+        "Price you pay"
+      ],
+      "rows": [
+        [
+          "Pessimistic / 2PL",
+          "Simple correctness, no wasted execution, good under high conflict",
+          "Blocking, deadlocks, lock-manager overhead; hot key throughput capped"
+        ],
+        [
+          "Optimistic (OCC)",
+          "No locks, no deadlocks, very fast when conflicts rare",
+          "Abort storms and retry amplification when contention rises"
+        ],
+        [
+          "Timestamp ordering",
+          "Decentralized order without lock table",
+          "Spurious aborts, sensitive to clock skew, rejects usable schedules"
+        ],
+        [
+          "MVCC / Snapshot Isolation",
+          "Non-blocking reads, read scalability, stable scans",
+          "Version storage, vacuum load, write skew unless SSI added"
+        ],
+        [
+          "Granularity choice",
+          "Fine locks raise concurrency; coarse locks cut manager cost",
+          "Fine costs RAM and CPU; coarse serializes unrelated work"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Locking fails by **waiting**. You will see lock wait time climb, thread pools saturate while CPU stays idle, and `SHOW ENGINE` style output full of waits-for cycles. The signature of deadlock is not high CPU — it is flat throughput with growing queue depth and periodic deadlock-detector aborts. Cross-partition transactions make it worse: one slow participant holds locks everywhere, so a single straggler replica throttles the whole workload. Mitigation is not just timeouts. Shorten lock hold time by moving validation, external calls, and network I/O outside the transaction, split hot rows, and escalate granularity deliberately rather than letting the manager thrash."
+    },
+    {
+      "type": "paragraph",
+      "text": "Optimistic and timestamp schemes fail by **aborting**. Dashboards show healthy lock waits but climbing commit-failure rate, rising p99 from retries, and duplicate side effects if apply is not idempotent. Clock-based ordering adds a nastier symptom: intermittent aborts correlated with NTP corrections or cross-region skew, which looks like random flakiness until you plot aborts against clock offset. MVCC fails by **accumulation**. Symptoms are growing table size despite stable logical rows, vacuum or compaction falling behind, slower index scans, and a sudden write stall when cleanup finally blocks allocation. Long analytics snapshots pin old versions; one forgotten open transaction can bloat storage for hours. And write skew shows up as a business invariant violation with no error in logs — two concurrent approvals each see quota available and both commit."
+    },
+    {
+      "type": "paragraph",
+      "text": "At distributed scale the common killer is the **hot key plus coordination** combination. A global inventory row guarded by an exclusive lease caps you at lease round-trip throughput. Moving to optimistic validation does not fix it either — you just convert waits into aborts at the same key. The only real fix is to change the data shape: partition counters, use escrow or reservation buckets, enforce limits asynchronously with reconciliation, or accept bounded oversell with compensation. If you cannot partition the contention away, admit that the hot key is serial and provision accordingly instead of pretending replicas add write throughput."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "What to monitor",
+      "text": "Track **lock wait time, deadlock rate, validation abort rate, snapshot age, version count per row, and vacuum lag** — not just throughput. If abort rate exceeds ~5-10% on hot keys, optimistic is the wrong scheme. If oldest active snapshot exceeds minutes while versions grow, MVCC cleanup is your bottleneck."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code where it clarifies"
+    },
+    {
+      "type": "paragraph",
+      "text": "The difference between optimistic validation and snapshot reads is ten lines. The version check is the commit gate; the snapshot rule is the read rule. Either one missing, and isolation is fiction."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "concurrency.py",
+      "code": "class Row:\n    def __init__(self, value):\n        self.versions = [(0, value)]  # (commit_ts, value) sorted by ts\n        self.lock = False\n\nclass Store:\n    def __init__(self):\n        self.rows = {}\n        self.clock = 0\n\n    def snapshot_read(self, key, read_ts):\n        # MVCC read: newest version with commit_ts <= read_ts.\n        # Readers never take a lock; they just ignore newer versions.\n        versions = self.rows[key].versions\n        visible = [v for ts, v in versions if ts <= read_ts]\n        return max(visible, default=None) if visible else None\n\n    def occ_commit(self, read_set, write_set, read_ts):\n        # Optimistic validation: abort if anyone committed a\n        # write to our read set after we snapshotted.\n        # Trade-off: no blocking, but wasted work on abort.\n        for key, read_version_ts in read_set.items():\n            latest_ts = self.rows[key].versions[-1][0]\n            if latest_ts > read_ts:\n                return False  # abort, caller retries with backoff\n        self.clock += 1\n        for key, val in write_set.items():\n            self.rows[key].versions.append((self.clock, val))\n        return True"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the anomaly you refuse to allow",
+          "text": "Start with dirty read, lost update, write skew. Say which isolation you guarantee — serializable, snapshot isolation, or read committed — and why that level is enough for the use case. Vague isolation is a fail."
+        },
+        {
+          "title": "Quantify contention before picking",
+          "text": "Ask read-write ratio, conflict probability on the same key, transaction duration, and cross-partition rate. Low conflict points to OCC or MVCC; sustained writes to the same key force locking or repartitioning."
+        },
+        {
+          "title": "Place coordination on the diagram",
+          "text": "Draw where locks, versions, or timestamps live: per partition, central manager, or database engine. Cross-shard locks are the scaling red flag — call it out and propose single-partition transactions plus saga or escrow."
+        },
+        {
+          "title": "State the failure and the metric",
+          "text": "For your choice, name the overload symptom — waits, aborts, bloat, skew — and the dashboard that catches it. Then give the escape hatch: retry budget, deadlock handling, SSI, or vacuum tuning."
+        },
+        {
+          "title": "Close with the partition argument",
+          "text": "Finish by reducing coordination scope: key hashing, bucketed counters, reservations. Concurrency control scales when its scope shrinks; say that explicitly."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "MVCC means serializable — it does not. Plain snapshot isolation still allows write skew; you need SSI or explicit predicates for true serializability.",
+        "Optimistic is always faster — only when aborts are rare. Past moderate contention, blocking once beats retrying five times.",
+        "More replicas increase write throughput — they increase read and availability. Writes on one logical key still serialize through locks or validation.",
+        "Isolation levels are free performance knobs — lowering to read-committed trades anomalies for speed. Name the anomaly you just accepted.",
+        "Deadlock is solved by timeouts — timeouts hide it and turn waits into arbitrary failures. Order lock acquisition, shorten transactions, or use deadlock detection."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "When to use each type, and when to walk away.",
+      "headers": [
+        "Scenario",
+        "Use",
+        "Avoid"
+      ],
+      "rows": [
+        [
+          "Read-heavy catalog, feed, analytics on live data",
+          "MVCC snapshot reads; scale readers without blocking",
+          "Long strict-2PL read locks; scans stall all writes"
+        ],
+        [
+          "Low-conflict writes over many keys",
+          "OCC with bounded retries and idempotent apply",
+          "Pessimistic locks; manager overhead with no benefit"
+        ],
+        [
+          "Hot counter / single-row inventory decrement",
+          "Pessimistic short transaction, or partitioned escrow buckets",
+          "Pure OCC; abort storm. Pure cross-shard X-locks; latency collapse"
+        ],
+        [
+          "Global order or log-backed commit needed",
+          "Timestamp / sequencer ordering with uncertainty waits",
+          "Wall-clock ordering without skew bounds; silent misordering"
+        ],
+        [
+          "Strict invariant across rows (e.g. no over-booking)",
+          "Serializable 2PL or MVCC + SSI with predicate checks",
+          "Plain snapshot isolation; write skew passes validation"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "For scalability, treat concurrency control as a per-partition decision, not a global brand. Keep transactions single-partition where possible so locks, versions, and validation stay local and fast. Push cross-partition work to asynchronous compensation: reserve locally, reconcile globally, expose the reconciliation lag as a product constraint. That is why MVCC plus partitioning dominates large serving systems — reads scale horizontally, writes serialize only inside a small scope, and the remaining cross-scope invariants are handled by workflow rather than by holding a distributed lock open across the internet."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Use **MVCC snapshot reads for read scale, optimistic validation when conflicts are rare, pessimistic locking when conflicts are certain, and partitioning to shrink whichever scope you coordinate** — and name the price: waits, aborts, or version storage."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:12:53.712Z",
+    "problems": []
+  }
+}

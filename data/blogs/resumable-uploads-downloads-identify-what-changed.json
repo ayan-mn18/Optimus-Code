@@ -1,0 +1,311 @@
+{
+  "slug": "resumable-uploads-downloads-identify-what-changed",
+  "title": "Resumable Uploads & Downloads (Identify what changed)",
+  "summary": "Resumable transfers are durable offsets plus idempotent chunk writes. Uploads need a session; downloads need Range and version validation.",
+  "kind": "HLD",
+  "problemSlug": "resumable-uploads--downloads-identify-what-changed-149-326",
+  "topic": "Resources Efficient & Extensible System Design",
+  "difficulty": "Medium",
+  "coverEmoji": "⏯️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Storage",
+    "Resumable Uploads",
+    "CDN"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Supabase resumable uploads - Ask us anything - WeWeb Community",
+      "url": "https://community.weweb.io/t/supabase-resumable-uploads/9500",
+      "source": "community.weweb.io",
+      "kind": "article"
+    },
+    {
+      "title": "Open Protocol for Resumable File Uploads - Hacker News",
+      "url": "https://news.ycombinator.com/item?id=18512455",
+      "source": "news.ycombinator.com",
+      "kind": "article"
+    },
+    {
+      "title": "Resumable uploads | Cloud Storage",
+      "url": "https://docs.cloud.google.com/storage/docs/resumable-uploads",
+      "source": "docs.cloud.google.com",
+      "kind": "article"
+    },
+    {
+      "title": "How Resumable Uploads and Downloads Actually Work",
+      "url": "https://dev.to/mandy8055/how-resumable-uploads-and-downloads-actually-work-4b9i",
+      "source": "dev.to",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Do not keep the connection alive. Keep the **offset**. A resumable transfer is a session ID plus a durable pointer to the next unwritten byte, with every chunk write made idempotent. If you can crash anywhere and restart by asking *where do I resume from*, you have it. If resume depends on memory, sockets, or sticky servers, you do not."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "A resumable upload lets a client send a large object as independent chunks over multiple HTTP requests, disconnect at any point, then continue from the last committed byte without resending what is already stored. A resumable download lets a client fetch a large object in byte ranges, keep a partial file on disk, then request only the missing tail after a failure. In both cases the invariant is the same: **the receiver commits progress to durable storage on every chunk, and the sender can query that progress cheaply**. The network is allowed to fail. The bookmark is not allowed to be lost."
+    },
+    {
+      "type": "paragraph",
+      "text": "The phrase *identify what changed* is the core operation. On reconnect the client does not blindly restart. It asks: what offset do you have for `uploadId X`, or what version and length does object Y have now. The server answers with a number and a version token. That answer determines the next request: `PUT bytes [offset..offset+N]` or `GET Range: bytes=offset-`. Everything else — chunk size, parallelism, checksums, assembly — exists to make that question fast, correct, and cheap to answer under concurrency."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: uploads"
+    },
+    {
+      "type": "paragraph",
+      "text": "Upload resume is server-stateful by necessity. HTTP has no memory of your previous `POST`, so you manufacture memory in three phases: **initiate, append, complete**. Initiate creates a session row with `uploadId`, total size, checksum, and `committedOffset = 0`. Append writes one chunk at an explicit offset and advances the pointer only after fsync to object storage. Complete validates length and hash, then promotes the staged chunks to a final immutable object. The trade-off is explicit: you buy crash safety with an extra round trip and a metadata write per chunk. Skip the metadata write and you get speed that evaporates on the first timeout."
+    },
+    {
+      "type": "mermaid",
+      "title": "Resumable upload session",
+      "caption": "Initiate once, append idempotently, complete atomically.",
+      "code": "flowchart TD\n  C1[Client picks file and checksum] --> I1[POST uploads creates session]\n  I1 --> S1[Server stores uploadId size checksum]\n  S1 --> C2[Client asks for offset]\n  C2 --> S2[Server returns next offset]\n  S2 --> C3[Client PUTs chunk at offset]\n  C3 --> S3[Server persists chunk and advances offset]\n  S3 --> C2\n  S3 --> F1[Client sends complete]\n  F1 --> S4[Server validates and assembles]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The offset query is what makes resume correct. The client sends `GET /uploads/:id/offset` after any error, process restart, or browser reload. The server reads the session row, not the socket buffer, and returns the next expected byte. Chunk uploads then carry their own offset: `Content-Range: bytes 4194304-8388607/52428800`. If two retries race, the server accepts the write only if the range starts at or before the committed offset and truncates overlap. That is why chunk PUTs must be idempotent — replaying chunk 42 ten times has the same effect as writing it once. Without that property, retries corrupt the file and you will spend weeks debugging off-by-N trailer bytes."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "uploader.py",
+      "code": "CHUNK = 4 * 1024 * 1024\n\nsession = POST(\"/uploads\", json={\"name\": \"video.mp4\", \"size\": size, \"sha256\": file_hash})\nupload_id = session[\"uploadId\"]\n\nwhile True:\n    offset = GET(f\"/uploads/{upload_id}/offset\")[\"committedOffset\"]\n    if offset >= size:\n        break\n    chunk = read_local_bytes(path, offset, CHUNK)  # pread, never mmap whole file\n    PUT(f\"/uploads/{upload_id}/chunks\",\n        headers={\"Content-Range\": f\"bytes {offset}-{offset+len(chunk)-1}/{size}\"},\n        body=chunk, timeout=30)\n\nPOST(f\"/uploads/{upload_id}/complete\")  # server verifies size + sha256"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Downloads are a different problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Downloads do not need a session table because the object already exists and is immutable. Resume is built from two HTTP primitives: **conditional requests and range requests**. The client keeps the partial file plus the validator it saw on first contact — `ETag` and `Last-Modified`. On restart it revalidates with `HEAD` or `If-Range`, then asks for only the suffix with `Range: bytes=8388608-`. A correct server answers `206 Partial Content` with `Content-Range` and the identical `ETag`. The trade-off here is reversed from uploads: you avoid all server state, but you pay in client discipline. If the client ignores the validator and appends to a file whose source object was replaced, it silently builds a franken-file that passes length checks and fails hash checks in production."
+    },
+    {
+      "type": "mermaid",
+      "title": "Resumable download with Range",
+      "caption": "No session. Validate version, then fetch the missing suffix.",
+      "code": "flowchart TD\n  D1[Client has partial file and ETag] --> D2[HEAD object to check ETag and size]\n  D2 --> D3[GET with Range bytes offset to end]\n  D3 --> D4[Server returns 206 Partial Content]\n  D4 --> D5[Client appends and verifies hash]\n  D5 --> D3"
+    },
+    {
+      "type": "code",
+      "language": "http",
+      "filename": "resume.http",
+      "code": "HEAD /objects/video.mp4 HTTP/1.1\nHost: cdn.example\n# -> 200 OK, ETag: \"abc123\", Content-Length: 52428800\n\nGET /objects/video.mp4 HTTP/1.1\nHost: cdn.example\nRange: bytes=8388608-\nIf-Range: \"abc123\"\n# -> 206 Partial Content, Content-Range: bytes 8388608-52428799/52428800\n# If ETag changed -> 200 OK with full new object, client must discard partial"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Every knob buys reliability with latency, cost, or complexity.",
+      "headers": [
+        "Decision",
+        "Benefit",
+        "Cost"
+      ],
+      "rows": [
+        [
+          "Small chunks (256KB-1MB)",
+          "Survives flaky mobile networks, fine-grained progress bars",
+          "More requests, more metadata writes, higher tail latency and load-balancer cost"
+        ],
+        [
+          "Large chunks (8-32MB)",
+          "Fewer round trips, higher sustained throughput",
+          "A single failure discards megabytes; bad on lossy links"
+        ],
+        [
+          "Server-tracked offsets in DB",
+          "Authoritative resume across processes and machines",
+          "Write amplification; offset store becomes a hot row under parallel chunks"
+        ],
+        [
+          "Direct-to-object-store multipart",
+          "No proxy bottleneck, scales to gigabytes",
+          "Minimum part sizes and vendor semantics leak into client; signing flow gets complex"
+        ],
+        [
+          "Parallel chunk upload",
+          "Saturates bandwidth, cuts wall-clock time",
+          "Out-of-order arrival forces range-aware commit logic; naive last-write-wins corrupts offsets"
+        ],
+        [
+          "Client-kept progress only",
+          "Zero server state, trivial to build",
+          "Resume dies with the tab; cannot switch devices or workers"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Choose chunk size by failure domain, not by throughput benchmark. A datacenter-to-datacenter migration wants 16-64MB parts because failures are rare and request overhead dominates. A browser uploading over a train tunnel wants 1-4MB because the expected time between failures is seconds, and discarding 32MB per blip means the upload never converges. The same logic applies to parallelism: two to four parallel chunks hides latency without forcing you to build a real commit log. Beyond that you are building a distributed transaction for marginal gain — name that cost in the interview before proposing it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Resumable systems fail at the commit boundary, not in the middle of a chunk. The network drops packets constantly and the protocol handles it. What kills you is lying about what is committed: acknowledging bytes still in page cache, advancing the offset before object storage confirms, or validating the hash only on the last chunk. Each produces a distinct, diagnosable symptom if you know where to look."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Offset advances before durable write:** upload shows 100% then `complete` fails hash. Logs show offset jumps ahead of confirmed part IDs. Fix: advance offset only on storage ACK, never on receipt.",
+        "**Stale resume after object replaced:** download resumes with `Range` but no validator, appends new version onto old prefix. Symptom: correct length, wrong hash, unplayable tail. Fix: require `If-Range` with `ETag`; on `200` discard partial.",
+        "**Leaked multipart sessions:** clients abandon uploads, parts linger for weeks. Symptom: storage bill climbs while object count stays flat. Fix: TTL on sessions plus abort lifecycle rule, e.g. expire incomplete multiparts after 7 days.",
+        "**Hot offset row under parallel upload:** 16 workers hammer `UPDATE sessions SET offset`. Symptom: lock contention, offset flapping, duplicate chunk writes. Fix: commit per-chunk bitmap or part-number set, compute offset as max contiguous prefix.",
+        "**Checksum checked too late:** per-chunk CRC skipped for speed, full-file hash only at assembly. Symptom: 5GB upload fails at 99% after 40 minutes. Fix: per-chunk hash on append, fail fast on chunk 3, not chunk 1200."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "Map the user-visible symptom back to the broken invariant.",
+      "headers": [
+        "Symptom",
+        "Root cause",
+        "What to check first"
+      ],
+      "rows": [
+        [
+          "Progress bar jumps backward on reload",
+          "Client cached offset, server truth differs",
+          "Compare client offset vs GET offset endpoint; trust server"
+        ],
+        [
+          "Resume restarts from zero every time",
+          "Session pinned to one box or memory",
+          "Check session store: local map vs shared DB"
+        ],
+        [
+          "206 returns full 200 instead",
+          "CDN strips Range or validator mismatch",
+          "Inspect cache rules and If-Range forwarding"
+        ],
+        [
+          "Complete succeeds but file corrupt",
+          "Non-idempotent overlapping writes",
+          "Audit overlap handling and part ordering"
+        ],
+        [
+          "Uploads stall at exactly 5MB / 100 parts",
+          "Hit vendor part limits or min-size rule",
+          "Count parts, check minimum part-size enforcement"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "complete.py",
+      "code": "def complete(upload_id):\n    sess = db.get_session(upload_id)  # uploadId, size, expected_sha\n    parts = store.list_parts(upload_id)  # [(part_no, etag, size)]\n    # Contiguity check: no holes allowed before assembly.\n    assert contiguous(parts), \"missing chunk in middle\"\n    assert sum(p.size for p in parts) == sess.size, \"length mismatch\"\n    obj = store.assemble(upload_id, parts)\n    # Hash the assembled object, not the concatenated hashes.\n    if sha256_of(obj) != sess.expected_sha:\n        raise CorruptUpload(\"hash mismatch, keep parts for inspection\")\n    db.mark_complete(upload_id)\n    return obj"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the failure, not the happy path",
+          "text": "Say: assume the client dies at 70% and the server restarts. Where is the offset stored and who is allowed to advance it. That forces session design before API sketching."
+        },
+        {
+          "title": "Draw the state machine",
+          "text": "States are `initiated -> uploading -> complete | aborted | expired`. Show the offset query edge from any state back to `uploading`. Interviewers promote you when recovery is a first-class transition, not an exception handler."
+        },
+        {
+          "title": "Separate control plane from data plane",
+          "text": "Metadata service owns sessions and offsets. Object storage owns bytes. Client gets signed URLs for chunks directly. Explain why: proxying gigabytes through app servers caps throughput and doubles egress cost."
+        },
+        {
+          "title": "Answer the identify-what-changed question explicitly",
+          "text": "For uploads: `GET offset` or `LIST parts`. For downloads: `HEAD` plus `ETag` then `Range`. Say what happens when the answer is stale — overlapping write, replaced object, truncated file — and what the client does next."
+        },
+        {
+          "title": "Close with limits and cleanup",
+          "text": "Name TTLs, max object size, max parts, minimum part size, and hash algorithm. Then say how abandoned sessions are reaped. Designs without expiry are rejected at senior levels because they convert every dropped phone call into permanent storage cost."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get flagged"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**TCP ACK means the server has it.** No. It means the kernel saw it. Resume must be gated on application-level commit to object storage, not socket success.",
+        "**Ranges make writes parallel-safe by default.** No. Parallel PUTs to overlapping ranges need explicit commit rules. Without a contiguous-prefix check you assemble gaps.",
+        "**ETag equals MD5 of the file.** Only sometimes. Multipart ETags are hashes of part hashes with a suffix. Never parse them; treat them as opaque validators.",
+        "**Smaller chunks are always slower.** On lossy networks smaller chunks finish faster end-to-end because less work is discarded per failure. Throughput benchmarks on localhost lie about this.",
+        "**Progress bar equals committed bytes.** Most UIs show sent bytes, which rewinds on reload. Show committed offset from the server or expect bug reports that resume is broken when it is actually the UI."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Resume is overhead. Pay it where failures are expensive.",
+      "headers": [
+        "Use resumable when",
+        "Stay simple when"
+      ],
+      "rows": [
+        [
+          "Files above ~10MB or uploads over mobile / cross-region links",
+          "Avatars and thumbnails under 1MB — plain PUT is faster and simpler"
+        ],
+        [
+          "Large media, backups, dataset ingestion where retry-from-zero never converges",
+          "Internal datacenter copies with reliable networks and fast retries"
+        ],
+        [
+          "Downloads consumed by installers, video players, or CLI tools that must survive pauses",
+          "Small JSON APIs where Range support adds cache-busting complexity"
+        ],
+        [
+          "You need progress, pause, and cross-device continuation as product features",
+          "One-shot server-to-server copies better served by async replication or queue + workers"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Give every upload a session ID with a durably stored next-offset and make chunk writes idempotent; give every download immutable versioning with `ETag` plus `Range` — then resume is just asking what changed and sending only that."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:24:02.422Z",
+    "problems": []
+  }
+}

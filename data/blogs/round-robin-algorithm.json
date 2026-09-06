@@ -1,0 +1,269 @@
+{
+  "slug": "round-robin-algorithm",
+  "title": "Round Robin Algorithm",
+  "summary": "Round robin is equal-share cycling with zero state: brutally simple, provably fair, and blind to reality. Use it when backends are identical and requests cost the same; replace it the moment they aren't.",
+  "kind": "HLD",
+  "problemSlug": "round-robin-algorithm-90-198",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔁",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Load-Balancing"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Round Robin Scheduling in Operating System - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/operating-systems/round-robin-scheduling-in-operating-system/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Round-robin scheduling - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Round-robin_scheduling",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Time Slice Tactics: Understanding the Round Robin Scheduling Algorithm",
+      "url": "https://medium.com/@abhikshirsagar1999/time-slice-tactics-understanding-the-round-robin-scheduling-algorithm-6319a68598e6",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Round Robin Scheduling in OS? - Scaler Topics",
+      "url": "https://www.scaler.com/topics/round-robin-scheduling-in-os/",
+      "source": "scaler.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Round robin buys fairness by refusing to look at the system.** It cycles `0 -> 1 -> 2 -> 0` regardless of who is slow, full, warm, or dying. That blindness is the feature *and* the failure mode. If your servers and requests are truly uniform, blindness is cheap and correct. If they are not, blindness becomes uneven latency, retries, and cascade."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "In distributed systems, round robin is a **stateless distribution policy**: request `k` goes to backend `k mod N`, where `N` is the current healthy set size and `k` is a monotonically increasing counter. No cost estimation, no feedback loop, no priority. Every backend gets exactly `1/N` of the traffic over any window of `N` consecutive decisions. That is the entire contract. It is borrowed from CPU time-slicing, where each process got a fixed quantum in circular order to guarantee no starvation. The distributed version keeps the circular order but drops the quantum: instead of slicing *time*, it slices *count*. One request per turn, next backend, repeat. The reason this survives in load balancers, round-robin DNS, partition assignment, and replica reads is not that it is smart. It is that it needs **O(1) decision cost, O(1) state, and zero coordination** between deciders if you shard the counter or accept slight skew."
+    },
+    {
+      "type": "paragraph",
+      "text": "Formally: maintain an atomic `cursor`. On arrival, compute `idx = fetch_and_add(cursor, 1) % healthy_endpoints.length`, then forward to `healthy_endpoints[idx]`. If membership changes, recompute modulo against the new list. Two properties fall out immediately, and interviewers expect you to state both without prompting. First, **perfect spread under stable membership**: any `N` consecutive requests hit `N` distinct backends. Second, **zero memory of load**: the algorithm cannot distinguish a 5 ms cache hit from a 2 second image transcode, a warm JVM from a cold one, or a `32-core` machine from a `2-core` sidecar. That is why correctness of round robin is never about the algorithm itself — it is about whether your fleet and workload are homogeneous enough that ignoring load does not hurt you. Homogeneity is the precondition, not a nice-to-have."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "mermaid",
+      "title": "Round-robin request path",
+      "caption": "Each decision is counter modulo healthy set size, with unhealthy nodes skipped.",
+      "code": "flowchart TD\n    R[Incoming request] --> L[Read atomic counter]\n    L --> M[Compute index equals counter mod N]\n    M --> H{Is backend healthy?}\n    H -->|yes| F[Forward request and increment counter]\n    H -->|no| S[Advance to next healthy backend]\n    S --> F\n    F --> R"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk it end to end. A request hits the edge — hardware balancer, Envoy, NGINX, DNS resolver, or client-side stub. The balancer holds an ordered list of currently healthy endpoints from active health checks or passive outlier detection. It atomically grabs and increments a cursor, takes modulo against the list length, and proxies the connection. No per-request bookkeeping is persisted. The next request gets `cursor + 1`, so traffic walks the ring. The **trade-off is explicit**: you pay almost nothing per decision and you need no shared load state, but you also learn nothing. Contrast this with least-connections or least-latency routing, which must track inflight counts or exponentially weighted moving averages per backend and therefore pay synchronization and staleness costs on every decision. Round robin chooses coordination-freedom over accuracy, which is why it scales trivially to millions of requests per second and to fully decentralized clients that each hold their own cursor."
+    },
+    {
+      "type": "paragraph",
+      "text": "Two extensions matter and both compromise the purity. **Weighted round robin** replaces `1/N` with `weight_i / sum(weights)` by expanding the ring — a `4-core` box appears four times while a `1-core` box appears once, or weights track observed capacity. This fixes static heterogeneity at the cost of manual tuning and stale weights when capacity shifts. **Smooth weighted round robin**, as used in several proxies, interleaves the expanded sequence so a weight-5 backend does not absorb five consecutive expensive requests. The second extension is health-aware skipping: unhealthy nodes are removed from `N` so modulo operates only over survivors. That sounds trivial until membership flaps — every time `N` changes, the mapping of cursor to backend reshuffles, which breaks connection affinity and can herd traffic onto the survivors. The design lesson: plain round robin assumes a **stable, uniform pool**. The moment you add weights and health filtering, you are admitting the pool is neither, and you should justify why you are patching round robin instead of switching policies."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What round robin gives you and what it charges you.",
+      "headers": [
+        "Property",
+        "What you get",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Decision cost",
+          "O(1), no lookup, no scoring",
+          "No ability to avoid a hot or slow node"
+        ],
+        [
+          "State",
+          "One integer cursor",
+          "No memory of cost, locality, or affinity"
+        ],
+        [
+          "Fairness",
+          "Equal count per backend, starvation-free",
+          "Equal count is not equal load when requests differ"
+        ],
+        [
+          "Coordination",
+          "Works with independent client cursors",
+          "Decentralized cursors drift; global balance is approximate"
+        ],
+        [
+          "Heterogeneity",
+          "Simple mental model and debugging",
+          "Fast nodes idle while slow nodes queue unless weighted"
+        ],
+        [
+          "Membership churn",
+          "Instant adaptation by changing N",
+          "Every change remaps traffic and breaks stickiness"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Choose round robin when the cost of a smarter decision exceeds its benefit. Scoring every backend by latency or inflight requests adds locks, gossip, or a centralized stateful balancer — all of which become the bottleneck past a certain throughput. Round robin avoids that bottleneck entirely, which is why it is the default for stateless frontends serving small, uniform reads. Reject it when request cost variance dominates, because then equal-count fairness actively creates unfair latency: the slow request occupies its assigned backend while the balancer keeps dealing more work onto the same queue. You traded decision simplicity for backend queueing, and queueing is always more expensive than deciding."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Round robin does not fail by crashing. It fails by **distributing work evenly to places that cannot handle it evenly**, and every symptom looks like a backend problem until you graph per-node queue depth. The classic case is mixed request cost: 95% of requests are 20 ms GETs, 5% are 3 second exports. The balancer deals exports uniformly, so every node eventually holds one long request — except variance means one node holds two while another holds zero. Tail latency jumps from milliseconds to seconds while average CPU looks flat and healthy. The second classic case is heterogeneous capacity after a rolling deploy or autoscale event: new nodes are cold, old nodes are warm, or instance types differ. Round robin keeps dealing 1/N to the cold node, its latency spikes, timeouts trigger retries, and retries add load precisely where capacity is lowest. The third case is partial failure: one node starts failing slow — not dead, so health checks still pass — and round robin keeps sending it every Nth request. You see a sawtooth error rate of exactly `1/N` of traffic, which is the fingerprint of a blind policy hitting a gray failure."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Flat CPU, spiky p99:** averages look fine but p99 oscillates because slow requests pile on random nodes. Symptom of cost variance, not capacity shortage.",
+        "**Exactly 1/N errors:** one gray backend poisons every Nth request. Health checks that only test liveness will not catch it; you need latency-aware outlier ejection.",
+        "**Cold-node thunder:** after scale-out, new nodes show high latency and connection churn while old nodes sit idle. The balancer ignored warmness.",
+        "**Retry amplification:** timeouts on the slow node cause client retries, which round robin spreads — including back onto the same slow node — doubling its queue.",
+        "**Reshuffle on flapping:** health-check flapping changes N rapidly, remapping cursors and breaking keepalive reuse. You see connection churn and TLS handshake spikes, not just request imbalance."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The fix is never to tune round robin harder; it is to bound what blindness can do. Enforce hedged requests or tight deadlines with circuit breaking so a slow node stops receiving its full share via outlier ejection. Separate request classes into distinct pools — interactive versus batch, small versus large — so each pool is internally uniform enough for counting to approximate load. And cap queue per backend with load shedding: returning `429` fast is cheaper than letting a blind policy build an unbounded queue on the unlucky node. Each mitigation trades a little of round robin's simplicity for survival, which proves the point: at scale, fairness of *count* without fairness of *cost* is a liability."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "round_robin.py",
+      "code": "import itertools\nimport threading\n\nclass RoundRobin:\n    def __init__(self, endpoints):\n        self._lock = threading.Lock()\n        self._endpoints = list(endpoints)\n        self._cursor = 0\n\n    def set_healthy(self, healthy):\n        # Membership is the only mutable state. Changing N remaps traffic.\n        with self._lock:\n            self._endpoints = list(healthy)\n\n    def pick(self):\n        with self._lock:\n            if not self._endpoints:\n                raise RuntimeError(\"no healthy backends\")\n            idx = self._cursor % len(self._endpoints)\n            self._cursor = (self._cursor + 1) % (1 << 62)  # avoid unbounded growth\n            return self._endpoints[idx]\n\n# Weighted variant: expand the ring by static capacity.\n# Trade-off: fixes static heterogeneity, goes stale when capacity shifts.\nclass WeightedRoundRobin:\n    def __init__(self, weighted):\n        ring = []\n        for ep, w in weighted:\n            ring.extend([ep] * max(1, w))\n        self._ring = itertools.cycle(ring)\n        self._lock = threading.Lock()\n\n    def pick(self):\n        with self._lock:\n            return next(self._ring)"
+    },
+    {
+      "type": "paragraph",
+      "text": "The code shows why the algorithm is loved and where it lies. The lock protects a single integer, so contention is minimal and the hot path is two arithmetic ops — that is the scalability argument in miniature. But notice what is missing: no inflight tracking, no latency feedback, no notion that `endpoints[0]` might be twice as slow as `endpoints[1]`. The weighted variant papers over static size differences by duplicating entries in the ring, yet weights are configured by a human and do not react when a disk stalls or a deploy warms one pool. If you need reactivity, you need a different data structure — active connection counts or latency scores — and you must accept the synchronization cost you were trying to avoid."
+    },
+    {
+      "type": "mermaid",
+      "title": "Why equal count is not equal load",
+      "caption": "Identical request counts produce different queue depths when per-request cost differs.",
+      "code": "graph LR\n    LB[Round robin balancer] --> S1[Server A fast]\n    LB --> S2[Server B slow]\n    LB --> S3[Server C medium]\n    S2 --> Q[Queue builds on slow node]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with the contract",
+          "text": "State the rule in one line: request k goes to healthy[k mod N]. Then name the precondition: uniform backends, uniform cost, stable membership. Interviewers promote candidates who state preconditions before praising simplicity."
+        },
+        {
+          "title": "Draw the balancer, not the CPU scheduler",
+          "text": "Sketch clients, a balancer tier with a cursor, and N app servers with health checks feeding membership. Show what happens when N shrinks: modulo remaps, affinity breaks. That diagram separates system design from textbook recitation."
+        },
+        {
+          "title": "Break it on purpose",
+          "text": "Introduce one slow request class and one slow server. Show queue buildup on the unlucky node and 1/N error pattern on gray failure. Quantify: if one node is 10x slower, p99 is gated by that node every Nth request."
+        },
+        {
+          "title": "Evolve the policy with reasons",
+          "text": "Propose weighted round robin for static size differences, then least-connections or power-of-two-choices for dynamic load, then load shedding plus outlier ejection for survival. Each step must name what you gain and what coordination cost you now pay."
+        },
+        {
+          "title": "Close with operations",
+          "text": "Mention health-check design, connection reuse, retry budgets, and request splitting by cost class. Senior signal is not the algorithm — it is knowing that blind distribution only works behind homogeneity enforced elsewhere."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**\"Round robin balances load.\"** No — it balances *count*. Load equals count times cost, and cost is invisible to the policy.",
+        "**\"It handles failures.\"** It only handles failures that health checking removes from N. Slow-but-alive nodes still get full share.",
+        "**\"Weights fix heterogeneity.\"** Only static, known heterogeneity. Weights do nothing for runtime variance like GC pauses, cold caches, or noisy neighbors.",
+        "**\"More backends always help.\"** Under blindness, adding a slow backend hurts tail latency because every Nth request still lands on it. Admission control matters more than N.",
+        "**\"Client-side round robin is globally fair.\"** Independent cursors with different start offsets only approximate fairness, and skew grows under retries and caching. Global fairness needs coordination you deliberately skipped."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Decision guide for design reviews.",
+      "headers": [
+        "Use round robin when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Stateless, roughly equal-cost requests over identical instances",
+          "Requests vary 10x+ in CPU, memory, or latency"
+        ],
+        [
+          "You need O(1) decisions at very high throughput with no shared state",
+          "Backends differ in size, generation, or warmness"
+        ],
+        [
+          "DNS or client-side spreading where coordination is impossible",
+          "You need affinity, session stickiness, or cache locality"
+        ],
+        [
+          "Short-lived tasks where queueing cannot accumulate",
+          "Long-lived or sticky connections where early assignment persists"
+        ],
+        [
+          "As a baseline before measurements justify smarter routing",
+          "Gray failures are common — use outlier ejection or latency-aware routing"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pragmatic stance: start with round robin because its failure modes are legible and its cost is near zero, then graduate only on evidence. If per-node latency histograms diverge while CPU stays flat, your workload was never uniform — split request classes or move to least-connections or power-of-two-choices. If deploys and autoscaling keep mixing capacities, add weights temporarily but treat them as debt. And if every Nth request fails, fix health checking before blaming the balancer. Round robin did exactly what you asked: it dealt fairly and blindly. The design error was asking for blindness where sight was required."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**\"Round robin deals every Nth request to each healthy backend with O(1) stateless decisions — perfectly fair by count, blind to cost and capacity, so use it only for uniform pools and replace it with weighted, least-connections, or latency-aware routing the moment requests or servers differ.\"**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:13:26.777Z",
+    "problems": []
+  }
+}

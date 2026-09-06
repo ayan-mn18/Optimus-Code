@@ -1,0 +1,308 @@
+{
+  "slug": "distributed-rate-limiting",
+  "title": "Distributed Rate Limiting",
+  "summary": "Distributed rate limiting is shared counting under concurrency: why local counters over-admit, which algorithm to pick, and how to make the check atomic, sharded, and survivable.",
+  "kind": "HLD",
+  "problemSlug": "distributed-rate-limiting-90-182",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🚦",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Rate Limiting"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Rate Limiter - System Design - Hello Interview",
+      "url": "https://www.hellointerview.com/learn/system-design/problem-breakdowns/distributed-rate-limiter",
+      "source": "hellointerview.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design A Rate Limiter - ByteByteGo | Technical Interview Prep",
+      "url": "https://bytebytego.com/courses/system-design-interview/design-a-rate-limiter",
+      "source": "bytebytego.com",
+      "kind": "article"
+    },
+    {
+      "title": "Distributed rate limiting: Why it's needed? | by Tushar Kamra - Medium",
+      "url": "https://medium.com/internshala-tech/distributed-rate-limiting-why-657be4b0162a",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Designing Scalable Rate Limiting Systems: Algorithms, Architecture ...",
+      "url": "https://arxiv.org/html/2602.11741v1",
+      "source": "arxiv.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**N independent limiters each allowing `L` requests means `N * L` globally.** If you check locally, you do not have a rate limiter — you have a suggestion. Distributed rate limiting is the discipline of making thousands of gateways agree on one count without putting that agreement on the hot path latency budget."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A distributed rate limiter is a request gate that enforces **at most `N` actions per `T` seconds per key** — where the key is typically `user-id`, `api-key`, `IP`, or `endpoint + key` — while the traffic arrives on many machines at once. It returns allow or deny in single-digit milliseconds, emits `429` with `Retry-After`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` on deny, and never relies on the client to behave. The distributed part is not the rule. A single process can do fixed windows with an integer. The distributed part is **shared mutable state with concurrent increments, reads, expirations, and failures**, under 10k to 1M+ decisions per second. Choose local state and you buy speed but lose correctness during bursts. Choose remote shared state and you buy correctness but pay a network round trip on every request. There is no design that avoids that trade-off, only designs that place it where it hurts least."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why does distribution break the naive answer? Suppose your rule is 100 requests per minute per user and you run 10 API gateways behind a load balancer with no coordination. Each gateway keeps its own counter. An attacker or a retry storm spreads 1,000 requests evenly — 100 per gateway — and every gateway says yes. You admitted 10x the limit. Worse, load balancers do not spread evenly. Consistent hashing, retries, and connection reuse create skew: one gateway sees the burst while others idle, so a local limiter either false-rejects legitimate users or false-accepts abuse depending on routing. That is why production designs centralize counting in a fast store every gateway can reach, or partition the limit explicitly and accept bounded over-admission. The interview signal is whether you state that `N * limit` math unprompted and then quantify how much error you will tolerate."
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Mechanism: the request path"
+    },
+    {
+      "type": "paragraph",
+      "text": "Put the check where all traffic already flows and where failure cannot bypass it: the API gateway or a sidecar limiter service directly behind it. The service extracts the limit key, fetches the rule (`100/min` for reads, `5/min` for writes, per-plan overrides), then does a single atomic check-and-increment against shared state. Allow goes to the backend. Deny short-circuits with `429` and never touches business logic. Rules themselves live in config, not in code, versioned and pushed to gateways with a short TTL cache so a rule change propagates in seconds without redeploying the fleet. The counter store holds only ephemeral buckets with TTLs — seconds to hours — not durable business data. That separation is deliberate: you want to lose counters on failure without losing orders, and you want to expire keys automatically so memory stays bounded even with millions of distinct IPs."
+    },
+    {
+      "type": "mermaid",
+      "title": "Distributed check on the hot path",
+      "caption": "One atomic check per request; deny never reaches the backend.",
+      "code": "flowchart TD\n  C[Client] --> LB[Load Balancer]\n  LB --> G[API Gateway]\n  G --> R{Extract key + rule}\n  R --> S[(Shared Counter Store)]\n  S -->|allow, remaining| B[Backend Service]\n  S -->|deny, retry-after| D[Return 429]"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Core algorithms — pick by what you will pay for"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are five shapes, and the choice is precision versus memory versus write cost. **Fixed window** keeps one counter per key per minute: cheap, one integer, one TTL, but it double-admits at boundaries — 100 at 12:00:59 plus 100 at 12:01:01 is 200 in two seconds. **Sliding window log** stores every request timestamp in a sorted set and counts entries in `[now-window, now]`: exact, but memory grows with request rate and each check does a range delete plus a count. **Sliding window counter** blends two fixed windows with weights: near-exact, O(1) memory, the pragmatic default for most APIs. **Token bucket** refills tokens at a fixed rate and allows bursts up to bucket size: ideal when you want to permit short bursts but cap sustained rate, at the cost of per-key refill math and trickier distributed atomicity. **Leaky bucket** processes at a constant drain rate and smooths output: excellent for protecting a downstream queue, terrible when you want to inform the user how many requests remain. In an interview, do not recite all five flatly. State the workload first — abuse protection wants precision, backend protection wants smoothing — then pick and defend the price."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Fixed window is acceptable only when boundary doubling cannot hurt you — low limits, non-critical endpoints, or paired with a small blocklist.",
+        "Sliding window log is exact but you pay `O(requests-in-window)` memory and a `ZREMRANGEBYSCORE + ZCARD + ZADD` on every request.",
+        "Sliding window counter is the default compromise: two integers, weighted math, bounded error, no per-request list growth.",
+        "Token bucket is the right answer when bursts are legitimate — mobile sync, file upload chunks — and you can explain refill and atomic consume.",
+        "Leaky bucket belongs in front of a worker or queue you must not overwhelm, not as a user-facing API limiter where burst feedback matters."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "Algorithm trade-offs: there is no free precision.",
+      "headers": [
+        "Algorithm",
+        "How it counts",
+        "Strength",
+        "Price you pay"
+      ],
+      "rows": [
+        [
+          "Fixed window",
+          "One counter per window, reset on tick",
+          "O(1) memory, one increment",
+          "2x burst at window edge; unfair to users arriving late"
+        ],
+        [
+          "Sliding window log",
+          "Timestamp per request, count in window",
+          "Exact; correct burst handling",
+          "Memory scales with rate; sorted-set ops per request"
+        ],
+        [
+          "Sliding window counter",
+          "Weighted sum of prev + current window",
+          "O(1) memory, smooth, good enough",
+          "Approximate; ~5-10% error near edges"
+        ],
+        [
+          "Token bucket",
+          "Tokens refill at rate, consume per request",
+          "Allows safe bursts, caps average",
+          "Refill math must be atomic; harder to shard"
+        ],
+        [
+          "Leaky bucket",
+          "Queue drains at constant rate",
+          "Perfect smoothing for downstream",
+          "Queues build latency; poor UX for interactive APIs"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Shared state is where interviews are won. The standard answer is a centralized in-memory store sharded by limit key, with the check-and-increment done atomically inside the store via a script, not as read-then-write from the gateway. Why? Because two gateways racing on the same key will both read `99/100`, both increment, and both allow — classic lost-update over-admission. A server-side script bundles expiry, cleanup, count, and insert into one atomic step so concurrency collapses to serialization per key. The trade-off is explicit: you add ~1-3ms per request and a new critical dependency. To survive that dependency you shard by hashing the limit key so all decisions for one user land on one shard, replicate each shard for failover, and decide upfront what happens when the store is unreachable — fail-open for availability, fail-closed for protection. Most systems fail-open on reads and fail-closed on writes, and you should say which you chose and why."
+    },
+    {
+      "type": "mermaid",
+      "title": "Sharding the counter store",
+      "caption": "Same key always hits the same shard; no cross-shard coordination.",
+      "code": "graph LR\n  G1[Gateway 1] --> H{Hash limit key}\n  G2[Gateway 2] --> H\n  G3[Gateway 3] --> H\n  H -->|shard A| S1[(Shard A: users 0-33%)]\n  H -->|shard B| S2[(Shard B: users 34-66%)]\n  H -->|shard C| S3[(Shard C: users 67-100%)]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "It fails in four predictable ways. First, **race-induced over-admission**: without atomic scripts you see 5-15% more traffic than the limit during load tests with many gateways, exactly when protection matters. Second, **boundary and thundering bursts**: fixed windows show a sawtooth in your `429` dashboard — near zero denies, then a wall of denies at the minute tick — and downstream latency spikes because 2x traffic slipped through. Third, **hot keys**: one abusive IP or a single popular API key hammers one shard while others idle. You see uneven CPU, growing tail latency on that shard, and eventually timeouts that look like a full outage but move when the key moves. The fix is not bigger shards; it is splitting hot keys into sub-buckets, caching allows locally for 50-100ms, or isolating abusive keys to a dedicated shard. Fourth, **clock and expiry skew**: gateways with drifting clocks compute different windows, so the same user is allowed and denied randomly. You see flapping `remaining` headers and support tickets about inconsistent limits. Use store time, not gateway time, as the source of truth."
+    },
+    {
+      "type": "paragraph",
+      "text": "The ugliest failure is the limiter becoming the outage. If every request blocks on the counter store and the store slows, you have converted a protection layer into a single point of failure with amplified blast radius. Symptoms: `p99` jumps from 5ms to 500ms, gateway thread pools saturate, health checks fail, autoscaling fires uselessly. Production defenses are layered: local in-memory cache of recent decisions with a 100ms TTL to absorb repeat hammering,hedged timeouts of 5-10ms on the counter call with a defined fail-open or fail-closed fallback, bulkheads so limiter timeouts cannot exhaust backend threads, and TTLs on every counter key so a deploy bug cannot leak memory until the store OOMs. Monitor four signals relentlessly: admission rate, `429` rate per rule, counter-store latency and error rate, and estimated over-admission measured by a shadow counter. If you cannot graph those, you do not have a limiter — you have hope."
+    },
+    {
+      "type": "table",
+      "caption": "Failure to symptom to fix — what to watch in review.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Root cause",
+        "Fix that actually works"
+      ],
+      "rows": [
+        [
+          "Non-atomic increment",
+          "Admitted > limit under concurrency",
+          "Read-then-write race across gateways",
+          "Server-side atomic script; single round trip"
+        ],
+        [
+          "Fixed-window edge",
+          "2x burst every minute tick",
+          "Counter resets discretely",
+          "Sliding counter or sliding log"
+        ],
+        [
+          "Hot key shard",
+          "One shard hot, tail latency spikes",
+          "All decisions for key on one node",
+          "Local short-TTL cache, key splitting, isolation"
+        ],
+        [
+          "Store outage",
+          "p99 explodes, cascading timeouts",
+          "Blocking check with no fallback",
+          "5ms timeout + fail-open/closed policy + bulkhead"
+        ],
+        [
+          "Unbounded keys",
+          "Memory grows, evictions, wrong allows",
+          "No TTL or cardinality explosion on IPs",
+          "TTL on every key; separate rules for unauthenticated traffic"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "language": "lua",
+      "filename": "sliding_window.lua",
+      "code": "-- KEYS[1] = limit key, ARGV[1] = now_ms, ARGV[2] = window_ms, ARGV[3] = limit\nlocal key = KEYS[1]\nlocal now = tonumber(ARGV[1])\nlocal window = tonumber(ARGV[2])\nlocal limit = tonumber(ARGV[3])\n-- 1. Drop timestamps outside the window. 2. Count. 3. Admit only if under limit.\nredis.call('ZREMRANGEBYSCORE', key, 0, now - window)\nlocal count = redis.call('ZCARD', key)\nif count < limit then\n  redis.call('ZADD', key, now, tostring(now) .. ':' .. tostring(count))\n  redis.call('PEXPIRE', key, window)\n  return {1, limit - count - 1}\nelse\n  redis.call('PEXPIRE', key, window)\n  return {0, 0}\nend"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this script shape matters: cleanup, count, and insert happen as one atomic unit on the shard that owns the key, so 50 gateways racing cannot both see `99` and both admit. `ZREMRANGEBYSCORE` bounds memory to one window, `ZCARD` gives exact sliding-log precision, and `PEXPIRE` guarantees self-cleanup even if the key goes cold — the difference between bounded memory and a midnight page for OOM. The trade-off is cost: every request pays a sorted-set write and the value grows with per-user rate, which is why high-scale systems downgrade busy keys to sliding-window counters or token buckets with O(1) state. Note the timestamp source: pass `now` from the store or a tight time service, not from each gateway clock, or skew reintroduces the flapping you just eliminated. Return remaining and reset alongside the decision so the gateway can set headers without a second lookup."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Scope the key and the rule",
+          "text": "Ask what is limited — per user, per IP, per endpoint, per plan — and whether rules differ by read versus write. State your assumption: authenticated keys use user-id, anonymous uses IP with stricter limits and shorter windows. Interviewers grade this first minute heavily."
+        },
+        {
+          "title": "Do the math out loud",
+          "text": "Translate limits to throughput: 10M users at 100 req/min average 5% active means ~800k decisions per second peak. Each decision is one store round trip plus ~100 bytes of key. That justifies sharding and rules out a relational database immediately."
+        },
+        {
+          "title": "Pick one algorithm and price it",
+          "text": "Recommend sliding window counter as default, sliding log when exactness is worth memory, token bucket when bursts are legitimate. Name the boundary error or memory cost explicitly — vagueness here reads as memorization."
+        },
+        {
+          "title": "Draw the distributed check",
+          "text": "Gateway → hash(key) → atomic script on owning shard → allow/429. Explain why local-only fails by N×, why read-then-write races, and how sharding avoids cross-shard transactions. Add local 100ms cache and 5ms timeout with fail-open versus fail-closed as your resilience story."
+        },
+        {
+          "title": "Close with production reality",
+          "text": "Discuss hot keys, TTL hygiene, header contract, and four dashboards: admission rate, 429 rate, store latency, over-admission estimate. Offer the follow-up unprompted: multi-region replication is eventually consistent, so global limits are approximate — enforce strict limits per region or accept bounded drift."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail the round"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`Sticky sessions fix rate limiting.` No — they hide the `N × limit` math until a rebalance or retry storm redistributes traffic and the burst walks through.",
+        "`Fixed window is fine at small scale.` The boundary burst is proportional, not absolute — 10 req/min still admits 20 in two seconds, enough to tip a fragile downstream.",
+        "`Token bucket and leaky bucket are interchangeable.` One permits bursts and caps average rate; the other smooths to constant output and adds queueing delay. Choose by whether bursts are legal.",
+        "`Adding more shards fixes hot keys.` Sharding spreads distinct keys, not repeated hits on one key. Hot keys need caching, splitting, or isolation, not uniform capacity.",
+        "`Fail-open is always right for availability.` Fail-open during an active abuse incident turns your protection off exactly when attacked. Decide per endpoint: fail-open for reads, fail-closed for expensive writes.",
+        "`Rate limiting replaces backpressure and autoscaling.` It buys time by shedding excess at the edge; it does not create capacity. Without queue bounds and load shedding behind it, denied users just retry harder."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use distributed counting only where coordination pays.",
+      "headers": [
+        "Use it when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Many gateways share one global rule per key and over-admission has cost — abuse, spend on paid APIs, downstream overload",
+          "Single process or sticky low-traffic service where a local token bucket is exact and adds zero latency"
+        ],
+        [
+          "You need per-plan, per-endpoint rules that change without deploys and must apply consistently within seconds",
+          "Rules are static and coarse — a gateway concurrency cap or queue bound already sheds overload more cheaply"
+        ],
+        [
+          "Burst protection matters more than perfect precision — sliding counter with bounded error is acceptable",
+          "You need exact billing counts — use durable metering and invoicing, not an ephemeral TTL counter that can be lost"
+        ],
+        [
+          "Downstream cannot absorb retries — expensive writes, third-party calls, auth endpoints under credential stuffing",
+          "Traffic is trusted internal batch work — use backpressure, scheduling, and quotas instead of per-request 429s"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Enforce one atomic sliding-window check per request on a store sharded by limit key, with local short-TTL caching and explicit fail-open versus fail-closed — because local counters over-admit by `N × limit` and non-atomic increments race exactly when you are under attack.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:11:22.563Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,406 @@
+{
+  "slug": "ftp-file-transfer-protocol",
+  "title": "FTP (File Transfer Protocol)",
+  "summary": "FTP is a stateful, dual-connection file transfer protocol — and its design flaws explain modern replacements.",
+  "kind": "HLD",
+  "problemSlug": "ftp-file-transfer-protocol-94-210",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "📁",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "FTP",
+    "System Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is File Transfer Protocol (FTP) meaning - Fortinet",
+      "url": "https://www.fortinet.com/resources/cyberglossary/file-transfer-protocol-ftp-meaning",
+      "source": "fortinet.com",
+      "kind": "article"
+    },
+    {
+      "title": "File Transfer Protocol (FTP) - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/computer-science-fundamentals/file-transfer-protocol-ftp/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "What is FTP (\"file transfer protocol\"), and how can internet people use it?",
+      "url": "https://www.reddit.com/r/NoStupidQuestions/comments/36afyn/what_is_ftp_file_transfer_protocol_and_how_can/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "File Transfer Protocol - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/File_Transfer_Protocol",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "FTP is **two TCP connections pretending to be one protocol**: a persistent text-based control connection on port `21` and a throwaway data connection per transfer. Everything good and everything terrible about FTP follows from that split. If you understand *why* the split exists and *why* it breaks behind NAT, firewalls, and TLS, you understand FTP."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What FTP is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "FTP is an application-layer, client-server, stateful protocol for copying files and listing directories between hosts, typically over TCP. The client opens a long-lived **control connection** to port `21` and issues human-readable commands — `USER`, `PASS`, `PASV`, `RETR`, `STOR`, `LIST`, `QUIT` — and the server answers with three-digit reply codes like `230`, `227`, `150`, `226`, `550`. Actual bytes move on a separate **data connection**, opened fresh for each directory listing or file transfer and then torn down. That out-of-band signaling model is the entire protocol. Control says *what to do*; data does it. The trade-off is explicit: you get simple, inspectable session control and separate tuning of commands versus bulk bytes, at the cost of double the connection state, double the firewall rules, and a protocol that assumes the network of the 1970s — globally addressable hosts with no NAT and no eavesdroppers."
+    },
+    {
+      "type": "paragraph",
+      "text": "FTP is not a filesystem mount, not a sync engine, and not secure by default. It has no atomic rename-and-commit semantic, no checksumming, no resume contract in the base spec, no encryption, and login credentials traverse the control channel in cleartext unless you wrap it. Authentication is session-scoped: you log in once on the control connection and every subsequent data connection inherits that context. The server keeps per-client state — current directory, transfer type, mode, structure — which is why one control connection can drive many transfers without re-authenticating. That statefulness is the reason FTP is easy to script interactively and painful to load-balance: any middlebox that routes the next TCP connection to a different backend breaks the session. Stateful control buys conversational convenience; it sells away horizontal scalability."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Two channels:** control on TCP `21` persists for the session; data is ephemeral, one TCP connection per `LIST`, `RETR`, or `STOR`.",
+        "**Text protocol:** commands are ASCII lines, replies are `code + human text`. You can drive it with `telnet`. That debuggability costs parsing ambiguity and overhead.",
+        "**Stateful session:** login, working directory, `TYPE`, `MODE`, `STRU` persist on the server. No token to pass around — the socket *is* the session.",
+        "**Client-server, active roles both ways:** uniquely, the server sometimes connects *back* to the client. That inversion is the source of half its operational pain.",
+        "**Built on TCP, nothing else:** reliability, ordering, and congestion control are delegated to TCP. FTP adds no delivery guarantees of its own.",
+        "**Anonymous mode:** many public servers allow `anonymous` login with an email as password — a convention for public reads, not a security boundary."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: control negotiates, data delivers"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every FTP session follows the same rhythm. Open control, authenticate, set transfer parameters, negotiate *where* the data connection will go, then pump bytes and report completion on control. The negotiation step is where active and passive diverge, and it is the only part interviewers actually care about. In **active mode**, the client says `PORT a,b,c,d,p1,p2` — here is my IP and port, connect back to me — and the server originates the data connection from its port `20`. In **passive mode**, the client says `PASV`, the server replies `227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)`, and the client opens the second connection to that ephemeral port. Same bulk transfer either way; opposite direction of connection establishment. The trade-off is firewall traversal versus server exposure: active keeps server port surface small but demands inbound access to the client, passive flips the burden."
+    },
+    {
+      "type": "mermaid",
+      "title": "FTP control vs data flow",
+      "caption": "Control persists, data is per-transfer. Active vs passive only changes who connects to whom.",
+      "code": "flowchart TD\n  Client[FTP Client] --> C1[TCP 21 Control Connection]\n  C1 --> AUTH[USER PASS Login]\n  AUTH --> PARAM[TYPE MODE STRU CWD]\n  PARAM --> CHOICE{PASV or PORT}\n  CHOICE -->|PASV passive| PASV[Server opens ephemeral port Returns 227]\n  CHOICE -->|PORT active| PORT[Client opens port Sends PORT]\n  PASV --> D1[Client connects to server ephemeral port]\n  PORT --> D2[Server connects from port 20 to client]\n  D1 --> XFER[LIST RETR STOR over Data]\n  D2 --> XFER\n  XFER --> DONE[226 Complete on Control Connection stays open]"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Active vs passive: the NAT question"
+    },
+    {
+      "type": "paragraph",
+      "text": "Active mode assumes the client is directly reachable. That was true when every workstation had a public address. Behind NAT, home routers, corporate firewalls, and cloud security groups, it is false. The server's inbound data connection hits a firewall that never saw an outbound request and gets dropped, or arrives at a NAT address that does not map to the client. Passive mode fixes this by making the client — the host behind the firewall — initiate *both* connections. Outbound opens the pinhole, stateful firewalls allow the return traffic, NAT translation just works. That is why passive is the default everywhere today. The price: the server must expose a wide ephemeral port range to the internet and track it, which complicates server-side firewall rules and invites port scanning. Choose active and you punish every client behind NAT; choose passive and you accept server-side port management as the cost of client connectivity."
+    },
+    {
+      "type": "table",
+      "caption": "Active vs passive — same bytes, opposite operational burden.",
+      "headers": [
+        "Aspect",
+        "Active (PORT)",
+        "Passive (PASV)"
+      ],
+      "rows": [
+        [
+          "Data TCP initiator",
+          "Server connects to client from port 20",
+          "Client connects to server ephemeral port"
+        ],
+        [
+          "Client firewall",
+          "Must allow inbound to client-chosen port — usually blocked",
+          "No inbound rule needed — client initiates outbound"
+        ],
+        [
+          "Server firewall",
+          "Small surface: 21 inbound, 20 outbound",
+          "Must open 21 plus wide passive port range inbound"
+        ],
+        [
+          "NAT traversal",
+          "Breaks: server sees NAT address, PORT payload has private IP",
+          "Works: client behind NAT initiates both connections"
+        ],
+        [
+          "Default today",
+          "Legacy, opt-in only",
+          "Default in every client and cloud deployment"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Data representation: TYPE, MODE, STRU"
+    },
+    {
+      "type": "paragraph",
+      "text": "Before bytes move, both sides agree on three parameters, and getting them wrong is a classic corruption source. `TYPE` defines byte interpretation: `I` for image or binary — raw octet stream, no transformation — versus `A` for ASCII, which translates line endings between systems. `MODE` defines framing: `S` for stream with TCP as the only boundary, `B` for block with headers, `C` for compressed. `STRU` defines file organization: `F` for flat file with no record structure, `R` for record-oriented, `P` for page-oriented. In practice modern use is almost always `TYPE I, MODE S, STRU F` — just shovel bytes. The lesson for design interviews: FTP paid generality tax for mainframe-era heterogeneity that no longer exists. You inherit knobs nobody turns but everybody must implement. Simplicity would have been one mode; compatibility demanded three."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**`TYPE I` vs `TYPE A`:** use binary unless you *want* line-ending conversion. ASCII mode silently corrupts archives, images, and executables — the most common FTP data-loss bug.",
+        "**`MODE S` dominates:** stream mode delegates everything to TCP. Block and compressed modes add framing without adding integrity, so nobody uses them.",
+        "**`STRU F` dominates:** flat byte stream. Record and page structures survive only in spec documents and legacy mainframe gateways.",
+        "**Transfer commands:** `RETR` downloads, `STOR` uploads, `APPE` appends, `LIST`/`NLST` enumerate, `DELE`/`MKD`/`RMD`/`RNFR`/`RNTO` mutate. Each opens its own data connection.",
+        "**Replies drive automation:** `1xx` preliminary, `2xx` success, `3xx` need more input, `4xx` transient failure, `5xx` permanent failure. Script against the first digit, not the text."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Why FTP persisted and why it is being replaced.",
+      "headers": [
+        "What FTP buys you",
+        "What it costs you",
+        "The trade-off in one line"
+      ],
+      "rows": [
+        [
+          "Human-readable control channel, trivial to debug with telnet",
+          "Cleartext credentials and commands; verbose per-command round trips",
+          "Debuggability vs confidentiality — you cannot have both without TLS"
+        ],
+        [
+          "Separate control connection keeps session alive across transfers",
+          "Server must hold per-client state; sticky sessions required behind load balancers",
+          "Conversational ease vs stateless scalability"
+        ],
+        [
+          "Mature anonymous-read convention and ubiquitous client support",
+          "No integrity check, no atomicity, weak directory semantics",
+          "Ubiquity vs correctness — fine for public mirrors, wrong for systems of record"
+        ],
+        [
+          "Firewall-friendly passive mode for clients",
+          "Wide ephemeral port range open on server; NAT helpers must snoop control channel",
+          "Client convenience vs server attack surface"
+        ],
+        [
+          "Simple whole-file GET/PUT maps cleanly to batch jobs",
+          "No delta sync, no resume standard, no multiplexing; one transfer per data connection",
+          "Batch simplicity vs throughput and efficiency"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Why two connections at all? Because the designers wanted interactive control *during* a transfer — abort, status, directory navigation — without in-band escape sequences corrupting bulk data. Multiplexing both onto one TCP stream would have required framing, and framing did not exist yet as a solved pattern. So they spent a second port instead of a framing layer. Four decades later HTTP/2 and QUIC solve the same problem with streams on one connection, and the extra connection looks wasteful. It was the right call for a world without multiplexing; it is the wrong shape for a world with NAT, TLS, and elastic load balancers. Name that explicitly in an interview: the split was control-plane isolation before we had the vocabulary for it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "FTP failures are almost never about bandwidth. They are about middleboxes, state, and silent data mangling. The signature symptom is *login works, listing hangs, then times out*. Control on port `21` is open so authentication succeeds, but the data connection never establishes — the client sent `PASV`, the server returned an internal address in the `227` payload, and the client tried to connect to an unroutable IP. Or the server's passive port range was never opened in the security group. You stare at a successful login and a frozen `LIST` and conclude the server is slow. It is not slow; the second connection is firewalled. The second classic is *transferred file is corrupt but size looks right*: ASCII mode rewrote `\\n` to `\\r\\n` inside a binary artifact. The third is *intermittent failure behind a load balancer*: control landed on node A, data landed on node B, and node B has no session. Stateful protocol plus stateless routing equals flakiness."
+    },
+    {
+      "type": "table",
+      "caption": "Failure, symptom, root cause — what to check first.",
+      "headers": [
+        "Failure",
+        "Symptom you observe",
+        "Root cause and fix"
+      ],
+      "rows": [
+        [
+          "Data connection blocked",
+          "`USER/PASS` returns 230, then `LIST`/`RETR` hangs until timeout",
+          "Passive ports not open server-side, or active mode blocked client-side. Fix: force PASV, open and narrow passive range, enable NAT masquerade address."
+        ],
+        [
+          "NAT address leak in 227",
+          "Client tries to connect to `10.x.x.x` or `192.168.x.x` from the internet",
+          "Server advertises its private IP in PASV reply. Fix: configure external address for passive replies."
+        ],
+        [
+          "TLS + firewall inspection break",
+          "FTPS works without firewall helper, breaks with it, or vice versa",
+          "Control channel encrypted so NAT helper cannot rewrite PORT/PASV. Fix: use passive with fixed range, do not rely on ALG snooping."
+        ],
+        [
+          "Binary corrupted by ASCII mode",
+          "Zip or image fails checksum, text files fine",
+          "Default TYPE A on some clients. Fix: force `TYPE I` before every binary transfer."
+        ],
+        [
+          "Stale control, dead transfer",
+          "Long upload stalls, control times out by middlebox idle timer",
+          "Control idle during bulk data looks dead to NAT. Fix: TCP keepalive on control, shorter transfers, or switch to single-connection protocol."
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Security is not a hardening step, it is a replacement decision",
+      "text": "Base FTP sends **usernames, passwords, commands, and data in cleartext**. Anyone on the path reads everything. `FTPS` adds TLS but keeps the two-connection shape and multiplies firewall pain because encrypted `PASV` payloads defeat helpers. `SFTP` is not FTP at all — it is file transfer over SSH on one connection — and is almost always what you want for authenticated transfer. Do not propose plain FTP for anything credentialed or sensitive; the trade-off is indefensible once packet capture is in scope."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "A real session, annotated"
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "filename": "ftp-session.txt",
+      "code": "Client > CONNECT server:21             # control connection opens\nServer < 220 Ready\nClient > USER alice\nServer < 331 Password required\nClient > PASS ********\nServer < 230 Logged in                 # state now bound to this TCP socket\nClient > TYPE I                        # binary, no line-ending mangling\nServer < 200 OK\nClient > PASV                          # ask for passive data endpoint\nServer < 227 Entering Passive (203,0,113,10,195,80)  # = 203.0.113.10:50000\nClient > CONNECT 203.0.113.10:50000   # second TCP connection\nClient > RETR /reports/q3.csv         # intent on control, bytes on data\nServer < 150 Opening data connection\nServer < 226 Transfer complete        # completion reported on control\nClient > QUIT\nServer < 221 Goodbye"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that transcript as the protocol's thesis: everything except the bytes happens on control, and the bytes happen elsewhere. Notice the ordering risk — `RETR` is issued on control *before* the data connection carries bytes, so automation must correlate `150` start with `226` completion rather than assuming socket close means success. Notice also how much trust sits in the `227` payload: a single wrong IP there fails the entire transfer while login looks healthy. In interviews, walk through this exact sequence. It proves you know FTP is stateful, that `227` carries routable addressing, and that completion is signaled out-of-band — three facts that separate memorized definitions from operational understanding."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Derivatives: FTPS, SFTP, TFTP are not the same thing"
+    },
+    {
+      "type": "table",
+      "caption": "Do not conflate these in an interview — the names are the trap.",
+      "headers": [
+        "Protocol",
+        "What it actually is",
+        "When it makes sense"
+      ],
+      "rows": [
+        [
+          "FTPS (FTP + TLS)",
+          "Same dual-connection FTP, control and optionally data wrapped in TLS",
+          "Legacy partner mandates requiring FTP semantics with encryption; accept firewall complexity"
+        ],
+        [
+          "SFTP (SSH File Transfer)",
+          "Entirely different protocol tunneled over SSH, single connection on port 22",
+          "Default for authenticated server-to-server transfer; firewall-friendly, encrypted, scriptable"
+        ],
+        [
+          "TFTP (Trivial FTP)",
+          "Minimal lock-step UDP protocol, no auth, tiny code footprint",
+          "PXE boot and firmware push on trusted LANs only; never across the internet"
+        ],
+        [
+          "HTTP / object storage",
+          "Single-connection, stateless, TLS-native transfer with range and resume",
+          "Nearly all new designs: browsers, APIs, presigned uploads, CDN-backed distribution"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The exam trick is the name: SFTP shares four letters with FTP and zero wire compatibility. If an interviewer says *secure FTP*, ask which one they mean before designing anything. FTPS preserves FTP's directory and session semantics at the cost of preserving its connection problems plus TLS negotiation. SFTP discards FTP entirely and inherits SSH's authentication, multiplexing, and single-port traversal. For greenfield high-level designs, neither is usually correct — presigned object-store URLs over HTTPS give you stateless scale, partial `Range` fetches, and no server-held session. FTP survives in partner integrations and legacy batch feeds; it should not survive in your new architecture unless a constraint forces it."
+    },
+    {
+      "type": "mermaid",
+      "title": "FTP control session states",
+      "caption": "State lives on the server per control connection — the load-balancer problem in one diagram.",
+      "code": "stateDiagram-v2\n  [*] --> Disconnected\n  Disconnected --> Connected: TCP 21 open 220\n  Connected --> Authenticated: USER PASS 230\n  Connected --> Disconnected: 530 Login failed\n  Authenticated --> PassiveReady: PASV 227\n  Authenticated --> ActiveReady: PORT 200\n  PassiveReady --> Transferring: RETR STOR LIST 150\n  ActiveReady --> Transferring: RETR STOR LIST 150\n  Transferring --> Authenticated: 226 Complete\n  Transferring --> Authenticated: 426 550 Failed\n  Authenticated --> Disconnected: QUIT 221"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an HLD interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Explain the two connections in 60 seconds",
+          "text": "Draw control on `21` and ephemeral data. State who initiates each in active versus passive. If you cannot draw this cold, nothing else matters. Interviewers use it as a filter."
+        },
+        {
+          "title": "Diagnose login-OK but LIST-hangs",
+          "text": "Say data connection, not auth or DNS. Name three causes in order: server passive range closed, server advertising private IP in `227`, client firewall blocking active inbound. Propose forcing passive and fixing masquerade address."
+        },
+        {
+          "title": "Design a file-ingest service that still speaks FTP",
+          "text": "Put a stateful FTP gateway fleet behind a network load balancer with sticky control, backed by object storage — never local disk. Isolate passive port ranges per AZ, terminate TLS at the gateway, virus-scan and checksum before promoting to durable storage."
+        },
+        {
+          "title": "Argue for replacing it",
+          "text": "Compare on connections, state, security, and resume. Show why HTTPS presigned upload or SFTP wins on firewall traversal and operability. The trade-off to name: FTP maximizes legacy-client compatibility and minimizes migration friction, at the cost of permanent operational drag."
+        },
+        {
+          "title": "Handle scale and reliability follow-ups",
+          "text": "Address stickiness, idle-timeout killing control during long transfers, exactly-once ingestion via idempotent object keys plus checksum dedup, and quota and abuse controls on anonymous reads. Do not claim FTP itself gives you any of these."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**SFTP is FTP with security.** No. SFTP is a subsystem of SSH on one connection. FTPS is FTP with TLS. Mixing them up signals you have never operated either.",
+        "**FTP uses only port 21.** Only control does. Data uses port `20` in active mode and ephemeral ports in passive mode. Firewalling just `21` guarantees breakage.",
+        "**Active is more secure than passive.** Neither is secure without TLS, and active is simply less NAT-compatible. Security comes from encryption, not connection direction.",
+        "**Closing the data socket means success.** No. Success is `226` on control. A closed socket with a `426` or `550` is a failed transfer that looks complete if you only watch bytes.",
+        "**FTP checks integrity.** It does not. No checksum, no hash, no atomic commit. If you need verified delivery, add `XCRC`/`HASH` extensions or — better — move to a protocol that has them."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use FTP for compatibility, not for quality.",
+      "headers": [
+        "Use FTP / FTPS when",
+        "Do NOT use FTP when",
+        "Prefer instead"
+      ],
+      "rows": [
+        [
+          "External partner or legacy device only speaks FTP and cannot change",
+          "You control both ends and can choose the protocol",
+          "SFTP or HTTPS APIs with presigned URLs"
+        ],
+        [
+          "Public anonymous mirror of static files with existing FTP clients",
+          "Files are sensitive, credentialed, or need audit-grade access control",
+          "HTTPS + CDN or SFTP with key auth"
+        ],
+        [
+          "Short-lived compatibility gateway during migration",
+          "You need resume, delta sync, multiplexed streams, or mobile-friendliness",
+          "Object storage + Range requests, rsync, or dedicated sync"
+        ],
+        [
+          "Mainframe or appliance integration where FTP is the only adapter",
+          "You need elastic scale behind stateless load balancers",
+          "Stateless HTTPS ingest with async workers"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**FTP is a stateful dual-connection protocol — text control on port `21` plus a per-transfer data connection negotiated via `PORT` or `PASV` — so use passive behind NAT, force binary mode, never trust it without encryption, and replace it with SFTP or HTTPS unless legacy compatibility forces your hand.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:11:27.001Z",
+    "problems": []
+  }
+}

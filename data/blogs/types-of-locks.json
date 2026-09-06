@@ -1,0 +1,318 @@
+{
+  "slug": "types-of-locks",
+  "title": "Types of Locks",
+  "summary": "Types of locks for scalable systems: local, optimistic, and distributed lease-based locks, their trade-offs, failure modes, and what to say in HLD.",
+  "kind": "HLD",
+  "problemSlug": "types-of-locks-90-197",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔒",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Distributed-Locks",
+    "Concurrency"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Door Lock Types - A Simple Guide for your Home (with Pictures)",
+      "url": "https://www.locksmiths.co.uk/faq/door-lock-types-guide/",
+      "source": "locksmiths.co.uk",
+      "kind": "article"
+    },
+    {
+      "title": "Smart Lock Types & Features — Full Guide (2026)",
+      "url": "https://www.us-locksmith.com/blog/smart-lock-types-features-guide/",
+      "source": "us-locksmith.com",
+      "kind": "article"
+    },
+    {
+      "title": "Types Of Locks - Security Snobs",
+      "url": "https://securitysnobs.com/Types-Of-Locks.html",
+      "source": "securitysnobs.com",
+      "kind": "article"
+    },
+    {
+      "title": "Types of Door Locks - The Home Depot",
+      "url": "https://www.homedepot.com/c/ab/types-of-door-locks/9ba683603be9fa5395fab90dfb1e7e6",
+      "source": "homedepot.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A lock does not make your system correct. **A lock + a lease + a fencing token makes it correct *and* scalable.** Any distributed lock without expiry will deadlock you; any without fencing will corrupt you. If you remember nothing else, remember that."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a lock actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A lock is mutual exclusion over a defined scope for a bounded time. Three variables define it completely: **granularity** (what you exclude — a row, a shard, a whole job), **scope** (who must respect it — threads in one process, processes on one box, machines across regions), and **duration** (how long exclusion lasts and what happens if the holder dies). Most scalability arguments are just fights about getting granularity as small as possible and duration as short as possible without letting two owners overlap. Get those two right and throughput follows; get them wrong and you built a global bottleneck with extra steps."
+    },
+    {
+      "type": "paragraph",
+      "text": "In a single process a lock is memory + scheduler cooperation. A `mutex` flips a bit, parks waiters, and trusts the OS to wake them. In a distributed system there is no shared memory and no trusted scheduler. A lock becomes a **protocol**: acquire a key in an external store with `NX` semantics, hold it only for a lease, renew it while you work, release it only if you still own it, and stamp every downstream write with a monotonically increasing fencing token so a stale holder cannot overwrite a live one. The trade-off is brutal and unavoidable: local locks are fast but meaningless across hosts; distributed locks are meaningful across hosts but cost network round-trips, clock uncertainty, and a new failure domain."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not start with implementation. Start with contention. If conflicts are rare, you should never pay for exclusion up front — use optimistic concurrency. If conflicts are frequent or the critical section has side effects you cannot roll back, you must pay for pessimistic exclusion. If the contenders live on different machines, that pessimistic exclusion must be leased and fenced, otherwise one crashed holder freezes the system or two holders interleave. The decision is cost-driven: optimistic retries waste CPU under contention, pessimistic locks waste latency when there is no contention, distributed leases waste availability when the lock service is down."
+    },
+    {
+      "type": "mermaid",
+      "title": "Choosing a lock path",
+      "caption": "Contention and scope determine the mechanism, not habit.",
+      "code": "flowchart TD\n  A[Client wants to mutate state] --> B{Conflicts frequent?}\n  B -->|No| C[Optimistic: read + version, CAS on write]\n  B -->|Yes| D{Single host?}\n  D -->|Yes| E[Local mutex / RWLock / Spinlock]\n  D -->|No| F[Distributed lock with lease]\n  F --> G[Acquire SET NX PX + token]\n  G --> H[Work + heartbeat renew]\n  H --> I[Release with owner check]\n  I --> J[Downstream checks fencing token]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The flow matters because each branch has a different failure contract. Optimistic concurrency fails with `version mismatch` and forces the client to retry — cheap when retries are rare, catastrophic when 50 writers hammer the same row and all but one abort. Local pessimistic locks fail with queueing delay and convoying — throughput collapses to one critical section at a time. Distributed leases fail with expiry and split-brain — the old holder thinks it still owns the resource while the new holder has already taken over. That is why the last box matters most: the downstream store must reject writes with an old fencing token even if the stale client still believes it holds the lock. Without that check you do not have mutual exclusion, you have a suggestion."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The types that actually matter for scalability"
+    },
+    {
+      "type": "table",
+      "caption": "Lock families judged on scalability cost, not textbook purity.",
+      "headers": [
+        "Type",
+        "How it works",
+        "Scalability win",
+        "Scalability tax"
+      ],
+      "rows": [
+        [
+          "Mutex / Semaphore",
+          "One holder, kernel parks waiters, `tryLock` avoids blocking",
+          "Zero network cost, ~20-50ns uncontended, simple reasoning",
+          "Serialises all holders; contention causes context switches and convoys"
+        ],
+        [
+          "Spinlock",
+          "Busy-waits on atomic CAS, no deschedule",
+          "Best for critical sections under a few microseconds, no scheduler overhead",
+          "Burns CPU while waiting; disastrous if section blocks or is preempted"
+        ],
+        [
+          "Read-Write Lock",
+          "Shared read mode, exclusive write mode",
+          "Read-heavy workloads scale near-linearly across cores",
+          "Writer starvation under read flood; single slow reader blocks writers"
+        ],
+        [
+          "Optimistic (CAS + version)",
+          "Read version, write only if version unchanged",
+          "No lock traffic when conflicts rare; scales reads and writes independently",
+          "Retry storm under write contention; requires idempotent or rollback-safe work"
+        ],
+        [
+          "Lease-based distributed lock",
+          "`SET key token NX PX ttl`, renew by owner only",
+          "Survives holder crash via expiry; scopes exclusion across hosts",
+          "Adds 1-2 RTTs per acquisition; needs renewal loop and highly available store"
+        ],
+        [
+          "Hierarchical / Striped lock",
+          "Many fine-grained locks or lock tree: row < partition < table",
+          "Shrinks contention domain; hot keys do not freeze cold keys",
+          "Deadlock risk from lock ordering; more memory and bookkeeping"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Optimistic versus pessimistic is the highest-leverage choice. Optimistic says **detect conflicts at commit**. You read `balance=100, version=7`, compute `balance=80`, then run `UPDATE ... WHERE version=7`. If another writer beat you, you abort and retry. Why it scales: no coordination in the common case, no queue, no lease service to call. The trade-off: you pushed contention handling to the client. When write contention exceeds ~10-20% on the same item, retries compound and effective throughput falls below what a simple queue would have given you. Use it for low-contention state like user profiles, inventory of distinct SKUs, config edits. Never use it for a hot counter or leader election — you will livelock on retries."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Local primitives: mutex, spin, RWLock"
+    },
+    {
+      "type": "paragraph",
+      "text": "On one box, pick by hold time and read ratio. A mutex is correct default because it parks waiters instead of burning cores — you pay a context switch to save CPU for real work. A spinlock inverts that trade: it burns CPU to save wake-up latency, which only wins if the critical section is shorter than a context switch and never blocks on I/O. An `RWLock` is a specialised bet that reads dominate; 95% reads and 5% writes scales beautifully because readers do not exclude each other. The trap is writer starvation: under sustained read load the writer never drains the reader count and tail latency explodes. Prefer `StampedLock` with try-optimistic-read or RCU-style versioning if reads must never block writes, and always bound read hold time."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Distributed primitives: lease, Redlock-style quorum, coordination service"
+    },
+    {
+      "type": "paragraph",
+      "text": "Across hosts you cannot trust process liveness, so every lock must expire. The sane pattern is single-store lease: `SET lock:order:123 <random-token> NX PX 10000`, do work, renew every 3 seconds with a Lua script that checks `token` matches, release with the same check-and-delete. Why this store and not rolling your own: stores like etcd or ZooKeeper give you linearizable compare-and-set plus sessions and fencing via sequential ephemerals, which is exactly what you need for correctness. Quorum schemes that write to N independent Redis nodes reduce the blast radius of one node failing but add clock-skew and partial-write risk — you trade operational independence for a harder correctness proof and 2x-3x latency. Choose the boring linearizable store unless you can prove you need multi-region independence and you have fencing to cover the skew."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Leases are not ownership",
+      "text": "A lease expiring does not stop the old holder's process. It is still alive, still running code, still about to write. If your storage accepts its write, you have corruption, not failover. **Every write after lock acquisition must carry a fencing token** — a monotonic id from the lock service — and the sink must reject stale tokens. No fencing, no distributed lock."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Locks fail in exactly three ways, and each has a distinct symptom you can alert on. First, **deadlock and lock convoy**: holders queue behind one slow holder, latency p99 climbs vertically while CPU looks idle because threads are parked, not working. Second, **premature expiry**: GC pause or network stall stops heartbeats, lease lapses, two holders enter the critical section, and you see duplicate side effects — double charges, double job runs, overwritten rows with no version error. Third, **lock-service outage**: if every request path acquires a distributed lock synchronously, a slow lock store becomes your system bottleneck and availability of the whole product drops to availability of the lock service. The fix is never just tune the TTL. Short TTLs cause false expiry; long TTLs cause long freezes after crashes. You must pair a moderate TTL with renewal and fencing."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Symptom: p99 spikes, thread dumps show hundreds parked on same monitor / lock key, CPU low — **diagnosis: too coarse granularity or missing tryLock + timeout**. Fix by striping the lock or shrinking the critical section.",
+        "Symptom: duplicate cron runs or double inventory decrement after deploy / GC pause — **diagnosis: lease expired while holder still running**. Fix with heartbeat thread, pause detection, and fencing token on sink.",
+        "Symptom: `lock wait timeout` errors cascade during traffic peak — **diagnosis: lock service saturated or hot key**. Fix by caching, request coalescing, or partitioning the keyspace.",
+        "Symptom: writer never progresses while reads succeed — **diagnosis: RWLock writer starvation**. Fix with write-preferring policy or switch to optimistic versioning.",
+        "Symptom: system halts when coordination store is slow — **diagnosis: lock on hot request path**. Fix by moving lock off path: partition by key, use optimistic CAS, or make lock acquisition asynchronous."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that clarifies: leased lock with fencing"
+    },
+    {
+      "type": "paragraph",
+      "text": "This is the minimum shape you should whiteboard. Note what is deliberate: random token per acquisition so only the owner can renew or release, atomic Lua for check-and-set so renew and release cannot race expiry, monotonic fencing counter incremented on every successful acquire so downstream stores can reject stale writers. The trade-off made explicit here is liveness over safety window: a 10s TTL with 3s renewal means a crashed holder blocks at most 10s, but a 5s STW pause will cause false handover — which fencing then contains."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "leased_lock.py",
+      "code": "import uuid, time, redis\nr = redis.Redis()\nACQUIRE = \"SET\"  # SET key token NX PX ttl\nRENEW_LUA = \"if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('pexpire',KEYS[1],ARGV[2]) else return 0 end\"\nRELEASE_LUA = \"if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end\"\n\ndef acquire(key, ttl_ms=10000):\n    token = uuid.uuid4().hex\n    fencing = r.incr(f\"fencing:{key}\")  # monotonic per lock name\n    ok = r.set(f\"lock:{key}\", token, nx=True, px=ttl_ms)\n    if not ok:\n        return None\n    return (token, fencing)\n\ndef renew(key, token, ttl_ms=10000):\n    return r.eval(RENEW_LUA, 1, f\"lock:{key}\", token, ttl_ms) == 1\n\ndef release(key, token):\n    r.eval(RELEASE_LUA, 1, f\"lock:{key}\", token)\n\n# sink must enforce fencing:\n# UPDATE accounts SET bal=..., fence=22 WHERE id=:id AND fence < 22"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why the sink check is non-negotiable: after expiry, holder A with `fencing=21` may still issue `UPDATE ... fence=21` after holder B already wrote `fence=22`. The `WHERE fence < 22` predicate drops A's write, turning split-brain into a harmless failed write. Without it, last-writer-wins silently resurrects stale state. The cost is one extra column and one extra predicate on every guarded write — negligible compared to debugging divergence across replicas. In interview terms: if you draw a distributed lock without drawing the fenced write, you drew only half the design."
+    },
+    {
+      "type": "mermaid",
+      "title": "Lock lifecycle with expiry",
+      "caption": "Expiry returns liveness; fencing preserves safety after expiry.",
+      "code": "stateDiagram-v2\n  [*] --> Free\n  Free --> Held: acquire NX + fencing++\n  Held --> Held: renew if token matches\n  Held --> Free: release if token matches\n  Held --> Expired: lease timeout / renew fail\n  Expired --> Free: fencing blocks stale writes\n  Expired --> Held: new owner acquires"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name scope and granularity first",
+          "text": "Say: what is the contention domain? One row, one shard, one job? Starting here signals seniority. Interviewers fail candidates who jump to Redis without stating what key they lock and why that key is narrow enough to scale."
+        },
+        {
+          "title": "Choose optimistic vs pessimistic with numbers",
+          "text": "Say: expected write contention is <5% so I use versioned CAS; if this becomes a hot key I switch to partitioned queue + per-partition lock. Give the threshold where you would flip — that is the trade-off they grade."
+        },
+        {
+          "title": "Draw lease + renewal + fencing",
+          "text": "Draw acquire with TTL, background renew, release with token check, and fenced write to DB. Explicitly call out GC pauses and clock skew as the reason for fencing. This separates you from candidates who think SET NX is enough."
+        },
+        {
+          "title": "Bound the blast radius",
+          "text": "Explain timeouts on tryLock, lock striping, and what happens if the lock service is down: degrade, shed, or queue? Never design a system where lock-store downtime equals full outage without saying so."
+        },
+        {
+          "title": "Quantify the cost",
+          "text": "State RTT cost, renewal traffic, and hold time. Example: 2ms Redis RTT x 2 per job x 10k jobs/s = 40k ops/s on lock cluster — therefore partition keys and keep critical section under 50ms. Numbers beat adjectives."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`SET NX` alone is a distributed lock — false. Without TTL you deadlock on crash; without owner token you let anyone release; without fencing you allow stale writes.",
+        "More locking equals more safety — false. Coarse locks serialize the system and create convoys. Safety comes from narrow scope + short hold + fencing, not from holding bigger locks longer.",
+        "Redlock / quorum removes the need for fencing — false. Clock skew and partial quorum writes still permit two holders. Fencing is required regardless of quorum size.",
+        "RWLock always scales reads — only if reads are short and writers are rare. Long-held read locks starve writers and inflate tail latency worse than a mutex would.",
+        "Optimistic locking has no contention cost — it just moves the cost to aborts and retries. Under hot write contention it performs worse than explicit queueing.",
+        "Releasing a lock you do not own is harmless — it is the fastest path to corruption. Always compare token on release and renew; never use bare `DEL`."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Choose by contention, scope, and reversibility of work.",
+      "headers": [
+        "Scenario",
+        "Use this",
+        "Why / trade-off"
+      ],
+      "rows": [
+        [
+          "Single-process counter, short section",
+          "Mutex or atomic CAS",
+          "Cheapest correct option; no network, no lease complexity"
+        ],
+        [
+          "In-memory cache with 99% reads",
+          "RWLock / StampedLock optimistic read",
+          "Read parallelism wins; accept writer-delay risk and bound read time"
+        ],
+        [
+          "Distinct-row DB updates, rare conflicts",
+          "Optimistic version column + retry",
+          "Zero coordination overhead; pay retry cost only on true conflict"
+        ],
+        [
+          "Hot key, high write contention",
+          "Partition + per-partition queue / pessimistic lock",
+          "Serialise intentionally to avoid retry storm; trade latency for throughput"
+        ],
+        [
+          "Cross-host job / leader / cron singleton",
+          "Lease lock + heartbeat + fencing token",
+          "Survives crash via expiry; fencing contains false handover — costs RTTs"
+        ],
+        [
+          "Global lock on every request",
+          "Do not lock — redesign",
+          "Global exclusion caps throughput at 1/TTL; partition, cache, or use CAS instead"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The rule of thumb for scalability reviews: push exclusion as far down and as narrow as possible. Prefer atomic increment over locked read-modify-write. Prefer per-shard lock over global lock. Prefer versioned CAS over distributed lock when conflicts are rare. Reserve leased distributed locks for true singletons — leadership, exactly-once job execution, cross-service resource claims — where duplicate execution is more expensive than extra latency. Everywhere else, a distributed lock is a confession that partitioning failed. Say that in the interview and you will sound like someone who has operated the system, not just drawn it."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Use the narrowest lock that covers the contention domain, lease and fence it if it crosses hosts, and prefer optimistic CAS unless conflicts are frequent — because **correctness comes from fencing, scalability comes from shrinking scope and hold time.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:12:52.960Z",
+    "problems": []
+  }
+}

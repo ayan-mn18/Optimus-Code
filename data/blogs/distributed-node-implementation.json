@@ -1,0 +1,318 @@
+{
+  "slug": "distributed-node-implementation",
+  "title": "Distributed Node Implementation",
+  "summary": "How distributed cache nodes own data, replicate it, and fail — and what trade-off you accept with every choice.",
+  "kind": "HLD",
+  "problemSlug": "distributed-node-implementation-95-307",
+  "topic": "Caching Mechanisms",
+  "difficulty": "Medium",
+  "coverEmoji": "🗄️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Caching",
+    "Distributed Systems",
+    "Medium"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is a distributed system? | Atlassian",
+      "url": "https://www.atlassian.com/microservices/microservices-architecture/distributed-architecture",
+      "source": "atlassian.com",
+      "kind": "article"
+    },
+    {
+      "title": "Building reliable distributed systems in Node.js - Temporal",
+      "url": "https://temporal.io/blog/building-reliable-distributed-systems-in-node",
+      "source": "temporal.io",
+      "kind": "article"
+    },
+    {
+      "title": "What Are Distributed Systems? | IBM",
+      "url": "https://www.ibm.com/think/topics/distributed-systems",
+      "source": "ibm.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A distributed cache is not a bigger cache. It is a **membership and ownership problem**: every node must agree on who serves which key without asking a master on every read. Get ownership right and everything else — scaling, failover, consistency — falls out. Get it wrong and you built a distributed way to miss."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a cache node actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A cache node is an independent process with its own CPU, RAM, eviction policy, and usually no durable disk. It holds a **shard** — a slice of the total keyspace — plus replicas of someone else's slice. It can serve reads and writes alone, gossip membership with peers, and take over slots when a neighbor dies. That independence is the point. You choose it because you have outgrown vertical RAM: one box cannot hold the working set, cannot absorb the request rate, and is a single point of failure. You accept coordination cost to buy independent scaling and survival of single-box loss. The trade-off is immediate: you trade simple, strictly consistent local memory for fast, roughly consistent shared memory that needs a routing layer."
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not confuse a cache node with an application node that happens to have a local map. A local in-process cache like Caffeine or a plain `dict` has zero network hops, zero serialization, and zero coherence — which is why it is fast and why it lies to you under multiple app servers. A distributed cache node exists precisely to fix that lie: all app servers see the same value for the same key, at the cost of a network round trip, serialization, and partial-failure handling. If your data fits on one box and stale reads across app instances are tolerable, you do not need distributed nodes. If correctness across instances matters or the working set exceeds one box, you do."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: route, own, replicate"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every operation follows the same three steps. First, **route**: map `key -> owner node` deterministically so any client or proxy reaches the same node without a lookup service. Second, **serve**: the owner checks its in-memory hash table, handles TTL and eviction, and returns. Third, **replicate**: the owner asynchronously or synchronously copies the write to N-1 other nodes for survival. Membership runs underneath all three via heartbeats and gossip: nodes constantly assert liveness, agree on who is in the ring, and reassign slots when that set changes. You choose deterministic routing over a central directory because a directory is a bottleneck and a fate-sharing dependency — every cache miss would wait on it. The trade-off: deterministic routing makes topology changes expensive, because the hash function has to remap keys when nodes come and go."
+    },
+    {
+      "type": "mermaid",
+      "title": "Request path through distributed cache nodes",
+      "caption": "Client routes by hash, owner serves, replicas trail.",
+      "code": "flowchart LR\n  Client[App Server] --> Router[Hash Router]\n  Router --> NA[Node A - slots 0-5460]\n  Router --> NB[Node B - slots 5461-10922]\n  Router --> NC[Node C - slots 10923-16383]\n  NA <--> NB\n  NB <--> NC\n  NA <--> NC"
+    },
+    {
+      "type": "paragraph",
+      "text": "This diagram is the whole system in five boxes. The router can be a client library, a sidecar proxy, or a dedicated tier — placement is an operational choice, not a correctness one. Smart clients are fastest because they skip a hop, at the cost of forcing every client to understand topology versions. Proxy routers are slower by one hop but let you upgrade hashing and failover logic in one place. Pick smart clients when you control the client and p99 matters. Pick proxies when you have heterogeneous clients and cannot push upgrades to all of them. Either way, node-to-node links exist for replication and slot migration, not for serving client reads in the happy path."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Sharding: who owns what"
+    },
+    {
+      "type": "paragraph",
+      "text": "Modulo hashing — `node = hash(key) % N` — is simple and wrong for production. Add or remove one node and you remap almost every key, which means a routine scale event becomes a full cache flush and a thundering herd on your database. That is why serious implementations use **consistent hashing** or fixed slot maps. In consistent hashing, keys and nodes share a ring; each key belongs to the first node clockwise from its hash. Adding a node only steals the ranges of its immediate neighbors. In fixed-slot systems, you divide the keyspace into e.g. 16384 slots and assign slot ranges to nodes; topology changes move slots, not keys. Both exist to minimize data movement on membership change. The trade-off: you pay with uneven load if your hash is poor or your virtual nodes are too few, and you pay with metadata — someone has to store and version the ring or slot table."
+    },
+    {
+      "type": "mermaid",
+      "title": "Consistent hashing ownership and replication",
+      "caption": "Key maps to successor node, replicas go to next N-1 nodes.",
+      "code": "graph TD\n  K[Key user-42] --> H[Hash function]\n  H --> R[Ring position 142]\n  R --> N1[Node 2 - primary owner]\n  N1 --> N2[Replica on Node 3]\n  N1 --> N3[Replica on Node 4]"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Replication and coordination"
+    },
+    {
+      "type": "paragraph",
+      "text": "Each shard has one primary and `R-1` replicas. Writes go to the primary, then propagate. Synchronous replication gives you no data loss on single-node failure but adds replica latency to every write — you chose durability over speed, which is usually the wrong call for a cache that can be repopulated. Asynchronous replication keeps writes fast and risks losing the last few hundred milliseconds on failover — the correct default for cache, because loss just means a miss, not corruption. Reads normally go to the primary only; replica reads buy availability during partitions at the cost of staleness. Quorums (`W + R > N`) tighten that staleness but cost latency and are overkill for most caching workloads. Use them only when the cache is acting as a system of record, which it should not be."
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure detection is gossip and timeouts, not perfect knowledge. Nodes heartbeat every few hundred milliseconds; miss several in a row and peers mark you dead and promote a replica. This is deliberately imprecise. Fast timeouts promote quickly but flap on GC pauses and network blips, causing replica promotion storms and resync churn. Slow timeouts are stable but extend the window where a shard has no primary and requests fail or fall through to the database. There is no correct timeout — only the trade-off between false positives and detection delay. Set it from your p99 GC pause and cross-AZ latency, not from a default."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every node design choice buys something by selling something else.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Consistent hashing / slots vs mod-N",
+          "Add or remove node moves ~1/N keys, no full flush",
+          "Uneven load without virtual nodes, ring metadata to version"
+        ],
+        [
+          "Smart client routing vs proxy tier",
+          "One fewer hop, lowest p99",
+          "Every client must handle topology updates; harder to evolve"
+        ],
+        [
+          "Async vs sync replication",
+          "Async: fast writes, primary never waits; Sync: no loss on failover",
+          "Async: lose recent writes on crash; Sync: replica latency on every write"
+        ],
+        [
+          "Primary-only reads vs replica reads",
+          "Primary-only: no staleness; Replica: survives primary loss",
+          "Primary-only: shard unavailable during failover; Replica: stale reads"
+        ],
+        [
+          "Many small nodes vs few large nodes",
+          "Small: blast radius is tiny, scaling is fine-grained",
+          "Small: more gossip, more connections, more operational load"
+        ],
+        [
+          "In-memory only vs persistence on node",
+          "Persistence: fast warm restart without DB hammer",
+          "Persistence: slower writes, disk ops, recovery complexity for data you could recompute"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Distributed cache nodes fail in boring, repeatable ways. **Hot keys** are first: one celebrity key hashes to one primary, and that node saturates on CPU or NIC while its peers idle. Symptom is lopsided CPU, one node at 95% with soaring p99 while cluster throughput looks fine. Fix is not more nodes — hashing still sends that key to one place — fix is key splitting, local short-TTL fronting, or replication of the hot key to multiple nodes. **Topology flapping** is second: a GC-paused node is declared dead, its slots migrate, it returns, slots migrate back, repeat. Symptom is sawtooth hit rate and replica sync traffic dwarfing client traffic. Fix is longer suspicion timeouts and hinted handoff instead of immediate ownership transfer. **Cold restart after full-cluster loss** is third: every node empty, every request misses, database collapses under the refill stampede. Symptom is cache hit rate near zero and database connection exhaustion within seconds of cache recovery. Fix is staggered warmup, request coalescing, and probabilistic early expiration so TTLs never align."
+    },
+    {
+      "type": "table",
+      "caption": "Failure signatures you must recognize on a dashboard.",
+      "headers": [
+        "Failure",
+        "Symptom you observe",
+        "Correct response"
+      ],
+      "rows": [
+        [
+          "Hot key / hot slot",
+          "One node CPU/NIC pinned, others idle; p99 spikes",
+          "Replicate hot key, add L1 front cache, split key"
+        ],
+        [
+          "Node crash with async replication",
+          "Brief spike in misses for its slots, then recovery",
+          "Promote replica, backfill from DB on miss; accept loss"
+        ],
+        [
+          "Network partition / split-brain",
+          "Two primaries for same slot, divergent values, conflict on heal",
+          "Fencing + versioning; last-writer-wins only if staleness is safe"
+        ],
+        [
+          "Thundering herd on expiry",
+          "Hit rate cliff at TTL boundary, DB latency explodes",
+          "Jitter TTLs, request coalescing, stale-while-revalidate"
+        ],
+        [
+          "Full-cluster restart",
+          "0% hit rate, DB overload",
+          "Warm gradually, shed load, serve stale if available"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The cache is not the database",
+      "text": "If node loss can corrupt truth, your architecture is already broken. Cache nodes must be **expendable**: any slot can be dropped and rebuilt from the source of truth. The moment you rely on the cache for durability, every replication and failover trade-off inverts and you should be designing a database, not a cache."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code where it clarifies: routing is the design"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cache_nodes.py",
+      "code": "import hashlib, bisect\n\nVIRTUAL_NODES = 128\n\nclass CacheRing:\n    def __init__(self):\n        self.ring = []  # (position, node_id)\n        self.nodes = set()\n\n    def _pos(self, s: str) -> int:\n        return int(hashlib.md5(s.encode()).hexdigest(), 16)\n\n    def add_node(self, node_id: str):\n        self.nodes.add(node_id)\n        for i in range(VIRTUAL_NODES):\n            p = self._pos(f\"{node_id}#{i}\")\n            self.ring.append((p, node_id))\n        self.ring.sort()\n\n    def remove_node(self, node_id: str):\n        self.nodes.discard(node_id)\n        self.ring = [(p, n) for p, n in self.ring if n != node_id]\n\n    def primary(self, key: str) -> str:\n        h = self._pos(key)\n        idx = bisect.bisect(self.ring, (h, \"\"))\n        if idx == len(self.ring):\n            idx = 0  # wrap around the ring\n        return self.ring[idx][1]\n\n    def replicas(self, key: str, r: int = 3):\n        # Next r-1 distinct nodes clockwise from primary.\n        h = self._pos(key)\n        idx = bisect.bisect(self.ring, (h, \"\"))\n        out, seen = [], set()\n        i = idx\n        while len(out) < r and self.ring:\n            _, n = self.ring[i % len(self.ring)]\n            if n not in seen:\n                seen.add(n)\n                out.append(n)\n            i += 1\n        return out"
+    },
+    {
+      "type": "paragraph",
+      "text": "This is the entire routing idea in thirty lines, and interviewers care that you can write it. Virtual nodes exist to smooth load: without them, a physical node that happens to own a large arc of the ring gets disproportionate traffic. With 100+ virtual nodes per physical node, arcs interleave and ownership evens out. The trade-off is memory and lookup cost for the ring table versus load balance quality. `replicas()` walking clockwise is not an implementation detail — it is the failover plan: if the primary dies, the next node in the list is already the promotion candidate, no election needed. That simplicity is why ring order doubles as replica order."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the bottleneck, not the topology",
+          "text": "Say: single node fails on memory and throughput. We shard by hash so capacity and QPS scale by adding nodes. Name the trade-off immediately: we now need routing and rebalancing."
+        },
+        {
+          "title": "Draw route -> serve -> replicate",
+          "text": "Sketch client, hash router, three nodes with slot ranges, and replica arrows. State sync vs async replication and defend async as the cache default because loss equals miss, not data loss."
+        },
+        {
+          "title": "Handle membership change on the whiteboard",
+          "text": "Walk through adding node D: only neighboring ranges move, not the whole keyspace. Contrast with mod-N to show you understand why naive hashing is a production outage."
+        },
+        {
+          "title": "Design failover without hand-waving",
+          "text": "Heartbeat timeout, mark dead, promote replica, replay missed writes on heal. Give numbers: heartbeat 200ms, suspect after 3 misses, full promotion in ~1s. Explain why shorter timers flap on GC pauses."
+        },
+        {
+          "title": "Close with the failure you expect",
+          "text": "Volunteer hot keys, thundering herd, and cold restart before being asked. Propose jittered TTL, coalescing, and hot-key replication. Interviewers promote candidates who design for the failure, not just the happy path."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail the round"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**More nodes fix hot keys.** They do not. A single key still maps to a single primary. Throughput for that key is capped by one node until you replicate or split the key.",
+        "**Replication equals consistency.** It does not. Async replicas are stale by design. If you need read-your-write across app servers, you need versioning or a quorum — and you should question whether this data belongs in cache.",
+        "**Consistent hashing balances load.** It balances key *count*, not request *rate*. Ten cold keys and one burning key can hash evenly and still melt one node. You need load-aware migration or fronting for skew.",
+        "**Eviction is per-cluster.** It is per-node, usually LRU or LFU over that node's shard. A key evicted on Node A says nothing about Node B. Global LRU across nodes costs coordination you will never afford.",
+        "**Persistence makes cache durable.** It makes restart faster. Durability still lives in the database. If you tune cache persistence like database WAL, you paid database costs for data you could have re-fetched."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use distributed nodes, and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use node count as a scaling knob, not a default.",
+      "headers": [
+        "Use distributed cache nodes when",
+        "Stay local or single-node when"
+      ],
+      "rows": [
+        [
+          "Working set exceeds one box RAM or QPS exceeds one NIC",
+          "Dataset fits in one box and one failure is tolerable"
+        ],
+        [
+          "Multiple app servers must agree on values",
+          "Stale reads across instances are harmless"
+        ],
+        [
+          "Miss penalty is high (slow DB, expensive compute)",
+          "Miss penalty is low; extra hop costs more than it saves"
+        ],
+        [
+          "Access pattern is shardable by key with tolerable skew",
+          "Workload is one hot key or requires cross-key transactions"
+        ],
+        [
+          "You can afford operations: discovery, rebalancing, observability",
+          "No one will own gossip tuning, slot migration, and herd protection"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The judgment call is operational, not intellectual. Three nodes with async replication, jittered TTLs, and a documented hot-key plan beat a twelve-node quorum-replicated design nobody can debug at 3am. Choose the smallest topology that holds the working set with headroom for one node loss, then spend your complexity budget on coalescing and expiry behavior — that is where production caches actually die. Distributed nodes are a capacity tool. Treat them like one."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "Each cache node **owns a hash-mapped slice plus replicas of its neighbors, so we scale by adding nodes and survive loss by promoting replicas — trading perfect consistency for independent scaling and fast failover**."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:42:15.619Z",
+    "problems": []
+  }
+}

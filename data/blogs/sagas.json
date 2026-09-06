@@ -1,0 +1,272 @@
+{
+  "slug": "sagas",
+  "title": "Sagas",
+  "summary": "Sagas replace distributed atomicity with sequenced local transactions plus compensations — how they work, fail, and when to use them.",
+  "kind": "HLD",
+  "problemSlug": "sagas-96-216",
+  "topic": "Data consistency in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔄",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Distributed Systems",
+    "Data Consistency"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "trade items best combinations to trade ? - SaGa Emerald Beyond",
+      "url": "https://gamefaqs.gamespot.com/boards/426392-saga-emerald-beyond/80866180",
+      "source": "gamefaqs.gamespot.com",
+      "kind": "article"
+    },
+    {
+      "title": "Explain saga cards like I'm 5 : r/magicTCG - Reddit",
+      "url": "https://www.reddit.com/r/magicTCG/comments/1b6gnzs/explain_saga_cards_like_im_5/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Saga - MTG Wiki - Fandom",
+      "url": "https://mtg.fandom.com/wiki/Saga",
+      "source": "mtg.fandom.com",
+      "kind": "article"
+    },
+    {
+      "title": "Magic the gathering Keyword abilities explained: how do \"SAGAS\" work",
+      "url": "https://www.youtube.com/watch?v=r-tTcj1kMt8",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A Saga does **not give you atomicity**. It gives you **eventual consistency without holding locks across services** by committing each step locally and undoing completed steps with explicit compensating actions when something later fails. If you remember nothing else: **forward commit, backward compensate, never block.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A Saga is a sequence of **local transactions `T1, T2, ..., Tn`**, each owned by a different service and committed in its own database, plus a defined **compensating transaction `C1, C2, ..., Ck`** for every step that has a semantic undo. If all `Ti` succeed, the Saga succeeds. If `Tj` fails, you run compensations in **reverse order `C(j-1) ... C1`** to semantically undo what already committed. There is no global lock, no prepare phase, no shared transaction log. Each service guarantees only its own ACID properties; the Saga as a whole guarantees only that you end in either a fully completed state or a fully compensated state — with a long, visible window in between where the system is **partially complete and observable to other readers**."
+    },
+    {
+      "type": "paragraph",
+      "text": "You reach for this because **two-phase commit (2PC) does not survive service autonomy**. 2PC requires every participant to hold locks and promise to commit on command from a coordinator. That means synchronous availability coupling — if one participant is slow or down, everyone blocks — plus lock contention that kills throughput, plus a coordinator that becomes a single point of failure and a deployment bottleneck when teams own separate databases, schemas, and release cycles. Sagas accept the trade-off explicitly: **give up isolation to keep availability, autonomy, and independent evolution**. The cost is application-level complexity: you must design every undo, tolerate dirty reads, and handle a compensation that itself can fail."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: orchestration vs choreography"
+    },
+    {
+      "type": "paragraph",
+      "text": "In **orchestration**, one controller — a saga orchestrator or the originating service — issues commands, tracks state, and decides to proceed or compensate. The logic lives in one place: `reserve payment -> reserve inventory -> book shipment`, and on failure the orchestrator walks backward. Choose this when the flow is complex, has branching, or needs centralized timeouts and retries, because debugging is dramatically easier. The trade-off is coupling to the orchestrator and load concentration — it must be stateful, durable, and highly available, otherwise every in-flight saga dies with it."
+    },
+    {
+      "type": "paragraph",
+      "text": "In **choreography**, there is no controller. Each service publishes domain events and the next service reacts: `OrderCreated -> PaymentReserved -> InventoryReserved -> Shipped`, with failure events triggering listeners that compensate locally. Choose this for simple linear flows with stable service topology, because it removes a central bottleneck and keeps services decoupled. The trade-off is **emergent behavior**: the end-to-end flow exists nowhere in code, so adding a step, changing order, or answering *where is order 42 stuck?* requires tracing events across logs. Most production pain I have seen comes from teams picking choreography for a flow that was actually complex and then drowning in event spaghetti."
+    },
+    {
+      "type": "mermaid",
+      "title": "Orchestrated order saga with reverse compensations",
+      "caption": "Each forward step commits locally; failure triggers compensations in reverse order.",
+      "code": "flowchart TD\n  A[Order Created] --> B[ T1 Reserve Payment ]\n  B --> C[ T2 Reserve Inventory ]\n  C --> D[ T3 Book Shipment ]\n  D --> E[Saga Completed]\n  B -->|T2 fails| F[C1 Refund Payment]\n  C -->|T3 fails| G[C2 Release Inventory]\n  G --> H[C1 Refund Payment]\n  D -->|T4 fails| I[C3 Cancel Shipment]\n  I --> J[C2 Release Inventory]\n  J --> K[C1 Refund Payment]"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Compensation is not rollback",
+      "text": "A database rollback restores old values and is invisible. A compensation is a **new business action with side effects** — refund, cancel, restock, send correction email. It can fail, it can be partial, and the outside world already saw the intermediate state. Design it as a first-class operation, not an `except: rollback()` afterthought."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Isolation without locks"
+    },
+    {
+      "type": "paragraph",
+      "text": "This is the part candidates hand-wave and interviewers pounce on. Because `T1` commits before `T2` runs, other transactions **see dirty intermediate state**: inventory looks reserved before payment clears, seats look booked before fraud check finishes. You cannot prevent this with the saga pattern itself. You mitigate it three ways, each with a cost. One, **semantic locks**: mark the entity as `PENDING` so concurrent readers treat it as unavailable — simple, but you just reintroduced contention at the application layer. Two, **commutativity and last-writer-wins design**: make operations order-tolerant so temporary overshoot is acceptable and corrected later — works for counters and carts, fails for non-fungible resources like the last airline seat. Three, **pessimistic reservation with expiry**: hold a short TTL reservation that auto-releases — bounds the anomaly window but requires a reaper and clock discipline. Name which one you picked and why; *no isolation* is not an answer."
+    },
+    {
+      "type": "table",
+      "caption": "Saga vs two-phase commit, stated honestly.",
+      "headers": [
+        "Dimension",
+        "Saga",
+        "Two-Phase Commit"
+      ],
+      "rows": [
+        [
+          "Atomicity",
+          "No. Intermediate states visible. Ends compensated, not as if never happened.",
+          "Yes. All commit or all abort, no visible partial state."
+        ],
+        [
+          "Isolation",
+          "None across services. Must handle dirty reads in app logic.",
+          "Strong. Locks held until global decision."
+        ],
+        [
+          "Availability",
+          "High. Each step proceeds independently; failed steps compensate asynchronously.",
+          "Low. All participants block on coordinator; one slow node stalls all."
+        ],
+        [
+          "Latency / throughput",
+          "High throughput, no distributed locks. More messages for compensations.",
+          "Lock hold time grows with slowest participant; throughput collapses under contention."
+        ],
+        [
+          "Complexity",
+          "In application code: idempotent compensations, state machine, observability.",
+          "In infrastructure: coordinator HA, recovery log, blocking failure handling."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Sagas do not fail cleanly — they get **stuck halfway** in ways that page you at 3am. The classic killers: a **non-compensatable step** executes and then a later step fails — you charged the card, the warehouse step timed out, and there is no automatic undo for *shipped a physical box*, so you need human intervention. A **compensation fails** — refund API returns `500` three times, message broker drops the `ReleaseInventory` event, and you now hold money and stock forever. **Lost saga state** — the orchestrator crashed without persisting its cursor, so on restart it re-issues `T2` and double-reserves. **Out-of-order or duplicate events** in choreography cause a compensation to run before its forward step completes, or twice. Every one of these is a direct consequence of the core trade-off: you removed the coordinator lock, so correctness now depends on **durable state, idempotency, and retry discipline** that you must build yourself."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Money moved but order shows failed:** payment `T1` committed, inventory `T2` timed out ambiguously, compensation `C1` never ran or failed silently. Check for missing idempotency keys and dead-lettered refund messages.",
+        "**Inventory leak / phantom reservations:** `ReleaseInventory` lost or applied out of order. Reservations with no TTL pile up, available-to-promise drifts to zero while the warehouse is half empty.",
+        "**Duplicate side effects:** customer charged twice, two shipment labels created. Symptom of orchestrator retry without idempotent receivers — same command delivered twice, both executed.",
+        "**Zombie sagas stuck in COMPENSATING for hours:** one compensation keeps failing and blocks the rest because you compensated strictly sequentially without a retry backoff plus escalation path.",
+        "**Inconsistent read anomalies reported by support:** user saw *order confirmed* then *order cancelled* minutes later. Not a bug — it is saga isolation semantics surfacing. Fix is UX and semantic `PENDING` state, not stronger consistency."
+      ]
+    },
+    {
+      "type": "mermaid",
+      "title": "Saga execution state machine",
+      "caption": "Compensating is a durable state, not a transient catch block.",
+      "code": "stateDiagram-v2\n  [*] --> Active\n  Active --> Completed: all Ti succeeded\n  Active --> Compensating: Tj failed or timed out\n  Compensating --> Compensated: all Ck succeeded\n  Compensating --> Stuck: compensation failed after retries\n  Stuck --> Compensating: retry or manual fix\n  Stuck --> Escalated: alert human workflow"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code where it clarifies"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "saga_orchestrator.py",
+      "code": "class SagaOrchestrator:\n    def __init__(self, store, bus):\n        self.store = store  # durable saga log\n        self.bus = bus\n\n    def run(self, saga_id, steps):\n        # steps: list of (forward_fn, compensate_fn)\n        completed = self.store.load(saga_id)  # must survive crash\n        for i, (forward, compensate) in enumerate(steps):\n            if i < len(completed):\n                continue  # already done, do not re-execute blindly\n            try:\n                # forward must be idempotent on saga_id + step index\n                forward(key=f\"{saga_id}:{i}\")\n                self.store.append(saga_id, i)\n            except Exception:\n                self.compensate(saga_id, steps, completed)\n                return False\n        return True\n\n    def compensate(self, saga_id, steps, completed):\n        # reverse order, each idempotent and retried with backoff\n        for i in reversed(completed):\n            _, compensate = steps[i]\n            self.bus.enqueue_retry(\n                fn=compensate, key=f\"{saga_id}:{i}:comp\",\n                max_retries=\"infinite until acked + alert\"\n            )"
+    },
+    {
+      "type": "paragraph",
+      "text": "The code looks trivial and that is the trap. Three decisions carry all the weight. First, **durable cursor before next call**: `store.append` must be flushed before invoking the next service, otherwise a crash causes double-execution or a skipped compensation — you traded a distributed lock for a local write-ahead log, so make that log bulletproof. Second, **idempotency keys on every forward and compensation** (`saga_id:step_index`): without them retries are unsafe and at-least-once delivery becomes double-charge. Third, **compensations are enqueued, not called inline**: a compensation that throws must go to a durable retry queue with backoff and eventual human escalation, never bubble up and vanish. If your compensation path is `try/except: log.error`, you do not have a saga — you have a hope."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Check compensatability first",
+      "text": "Before drawing any saga, list each step as **compensatable, retryable, or pivot**. The pivot is the point of no return (e.g., *dispatch courier*). Everything after the pivot cannot be undone — you must go forward with retries and human workflow. If a step is neither compensatable nor retryable, **do not put it in a saga**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "You get a multi-service write",
+          "text": "Design order checkout, travel booking, or money transfer across services. The interviewer wants you to reject distributed transactions explicitly and propose sagas with reasons, not jump to events."
+        },
+        {
+          "title": "Orchestration vs choreography choice",
+          "text": "Say which one and defend it. Good answer: orchestration for complex checkout with timeouts and visibility; choreography only for simple linear pipelines. Mention the debuggability trade-off."
+        },
+        {
+          "title": "Define compensations concretely",
+          "text": "For every forward step, name the exact compensation: `reserve -> release`, `charge -> refund`, `book -> cancel with fee`. Flag any non-compensatable step and propose a pivot plus manual process."
+        },
+        {
+          "title": "Handle the nasty properties",
+          "text": "Bring up idempotency keys, durable orchestrator state, retry with backoff, out-of-order events, and dirty reads with `PENDING` states — before being asked. This is where medium becomes hire."
+        },
+        {
+          "title": "Close with failure and observability",
+          "text": "Explain stuck-saga detection, dead-letter queues, saga audit trail per ID, and alerting on `COMPENSATING` age. Interviewers grade whether your saga is operable, not just drawable."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Sagas are ACID across services** — false. They provide atomicity of outcome only after compensations settle, with no isolation. Anyone claiming *rollback* does not understand the pattern.",
+        "**Choreography is always more decoupled and therefore better** — false. It decouples runtime but couples evolution: changing step order requires touching every publisher and subscriber, and end-to-end reasoning is lost.",
+        "**Compensations always succeed** — the most dangerous assumption. Compensations call real APIs that fail, so they need their own retries, idempotency, and escalation. A saga without a `Stuck` state is incomplete.",
+        "**Exactly-once messaging solves sagas** — there is no exactly-once across services. You get at-least-once plus idempotent handlers. Design for duplicates from day one.",
+        "**Sagas replace all consistency needs** — they do not fix reads. If the business cannot tolerate *confirmed then cancelled*, you need a different boundary: co-locate the data, use a reservation pattern, or admit the UX must expose pending state."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use sagas for autonomous multi-service writes; avoid them when you can avoid distribution.",
+      "headers": [
+        "Use a Saga when",
+        "Do NOT use a Saga when"
+      ],
+      "rows": [
+        [
+          "Write spans 2+ services/databases owned by different teams with independent deploys.",
+          "All data can live in one database — use a local ACID transaction instead. Simpler and strictly stronger."
+        ],
+        [
+          "Business can tolerate temporary inconsistency and a visible PENDING state (e-commerce, booking, provisioning).",
+          "Business requires immediate strong consistency (last seat, ledger balance check) — co-locate or use reservations + synchronous check."
+        ],
+        [
+          "Every step has a defined compensation or a clear pivot with manual fallback.",
+          "A step is irreversible with no business remedy — e.g., firing a missile, sending an immutable legal filing."
+        ],
+        [
+          "Long-lived flow with timeouts, human steps, or third-party calls that cannot hold DB locks.",
+          "Short, low-latency, high-contention update where lock hold time is tiny and 2PC cost is acceptable — rare, but real inside one trust domain."
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Use a saga when a business process spans autonomous services: commit each step locally for availability, and on failure run idempotent compensations in reverse order — accepting temporary inconsistency to avoid distributed locks.**"
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:35:52.425Z",
+    "problems": []
+  }
+}

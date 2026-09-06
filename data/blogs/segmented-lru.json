@@ -1,0 +1,330 @@
+{
+  "slug": "segmented-lru",
+  "title": "Segmented LRU",
+  "summary": "Segmented LRU splits the cache into probation and protected segments to stop one-time scans from evicting hot data. This concept guide covers the exact mechanism, sizing trade-offs, failure modes, and interview framing.",
+  "kind": "HLD",
+  "problemSlug": "segmented-lru-95-215",
+  "topic": "Caching Mechanisms",
+  "difficulty": "Medium",
+  "coverEmoji": "🧊",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Caching Mechanisms",
+    "Medium"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Replacement Policy: Segmented LRU | by Ajit Soni - Medium",
+      "url": "https://medium.com/@ajitsoni000005/replacement-policy-segmented-lru-07ad8ad95826",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Cache replacement policies - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Cache_replacement_policies",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding lru cache: fast data access - Redis",
+      "url": "https://redis.io/glossary/lru-cache/",
+      "source": "redis.io",
+      "kind": "article"
+    },
+    {
+      "title": "SS-LRU: a smart segmented LRU caching - ACM Digital Library",
+      "url": "https://dl.acm.org/doi/10.1145/3489517.3530469",
+      "source": "dl.acm.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Plain **LRU dies on scans**. One pass over cold data flushes everything hot. **Segmented LRU (SLRU) fixes this with probation**: new entries must prove themselves with a second hit before they are allowed into the protected segment. That one gate is the entire design. Everything else is sizing."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Segmented LRU actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Segmented LRU is **two LRU lists operated as one cache with admission control**. The cache is partitioned into a **probation segment** (sometimes called transient, eden, or probationary) and a **protected segment** (sometimes called tenured or guarded). Both segments maintain internal **most-recently-used to least-recently-used** order on every hit. The difference is privilege: eviction always victimizes probation first, and promotion from probation to protected requires a hit while resident in probation. In effect, the first access buys you temporary residence. The second access buys you safety. This is why SLRU is classified as a **scan-resistant recency policy** rather than a frequency policy. It does not count hits beyond one. It does not timestamp. It only asks: **did you get touched twice while you were still in the cache?** If yes, you are probably working-set. If no, you are probably a scan, a prefetch gone wrong, or a one-off."
+    },
+    {
+      "type": "paragraph",
+      "text": "The split is usually expressed as a fixed capacity ratio, for example **20% probation and 80% protected**, or a fixed probation size with the remainder protected. Variants use more than two segments — classic descriptions use probationary plus two protected sub-segments — but the two-segment model captures 95% of the value and is what you should draw in an interview. Total capacity `C = P + R` where `P` is probation capacity and `R` is protected capacity. On a miss, the new entry enters at the **MRU of probation**. On a hit in probation, it moves to the **MRU of protected** and demotes the **LRU of protected** back to the **MRU of probation** if protected is full. On a hit in protected, it moves to the **MRU of protected** with no cross-segment movement. On overflow in probation, you evict the **LRU of probation**. That is the complete state machine. The trade-off being bought here is **hit ratio under mixed workloads versus implementation simplicity**: you add one extra pointer move and one size parameter to gain immunity to the most common LRU pathology."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Think of SLRU as **LRU with a bouncer**. The probation segment is the queue outside. The protected segment is inside the club. Everyone queues outside first. Only repeat visitors get in, and when the club is full, someone inside gets kicked back out to the queue to make room — they are not thrown onto the street immediately. That demotion-not-eviction detail matters because it gives formerly-hot keys one more chance to get re-promoted instead of forcing a full miss and refetch. The reason this works is temporal: **scans have high cardinality but zero re-reference**. A nightly job that touches 10 million distinct keys will churn probation furiously but will almost never hit the same key twice before it falls off the LRU end of probation. Hot keys, by contrast, have high re-reference probability and quickly graduate. So protected occupancy converges to the true working set even while a scan is running. The cost is **one wasted slot-write per cold key** and slightly slower warm-up for genuinely new hot keys, which must suffer two misses-worth of latency before they are protected."
+    },
+    {
+      "type": "mermaid",
+      "title": "SLRU request flow",
+      "caption": "All misses enter probation. Only re-hits reach protected. Eviction always hits probation LRU first.",
+      "code": "flowchart TD\n    REQ[Incoming Request] --> HIT{Cache Hit}\n    HIT -->|Miss| PROB[Insert at MRU of Probation]\n    HIT -->|Hit in Probation| PROM[Promote to MRU of Protected]\n    HIT -->|Hit in Protected| PROT[Move to MRU of Protected]\n    PROB --> FULL1{Probation Full}\n    FULL1 -->|Yes| EVICT1[Evict LRU of Probation]\n    FULL1 -->|No| DONE[Done]\n    EVICT1 --> DONE\n    PROM --> FULL2{Protected Full}\n    FULL2 -->|Yes| DEMOTE[Demote LRU of Protected to MRU of Probation]\n    FULL2 -->|No| DONE\n    DEMOTE --> FULL1\n    PROT --> DONE"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk a concrete example with `P = 2` and `R = 2`. Cache starts empty. Requests `A, B` fill probation as `[B, A]` in MRU-to-LRU order. Request `A` hits in probation: `A` moves to protected MRU, protected is now `[A]`, probation is `[B]`. Requests `C, D` fill probation to `[D, C, B]` conceptually, but `P = 2` so `B` — the LRU of probation — is evicted on insertion of `D`, leaving probation `[D, C]`. Now a scan of `X, Y, Z` arrives. Each enters probation MRU and pushes the prior occupant down. `C` and `D` get evicted without ever touching protected. Crucially, `A` in protected is untouched. Under plain LRU of size 4, that same scan would have evicted `A`. Now request `A` again: hit in protected, move to MRU, no cross-segment traffic. Request `C` again: miss, re-enters probation. It must be hit *again* before promotion. That double-touch requirement is the scan filter. The tuning knob is `P`: **larger probation admits scans more easily but warms new hot keys faster; smaller probation is more scan-resistant but starves newly-hot keys and thrashes on demotions**. Most systems settle around 20-30% probation for exactly this trade-off."
+    },
+    {
+      "type": "paragraph",
+      "text": "Sizing is where interviews separate memorization from understanding. If `P` is too large, SLRU degenerates to LRU — scans walk straight through a roomy probation and get promoted on accidental re-hits from looping scans. If `P` is too small, you get **probation thrash**: legitimate new working-set keys get evicted before their second touch, so they never graduate, so protected stagnates with stale entries and hit ratio collapses to worse than LRU. The correct mental model is that `P` should be large enough to hold the **re-reference window** of your hot keys — the typical distance between first and second access — but small enough that a scan working set does not fit. For a database buffer pool with 8KB pages and loop joins, that window might be thousands of entries. For an edge cache serving images with a Zipf distribution, it might be hundreds. This is why fixed-ratio SLRU is often replaced in production by adaptive variants that grow probation when demoted entries get quickly re-promoted. The trade-off is **predictability versus adaptability**: fixed SLRU is trivially explainable and debuggable; adaptive adds a control loop that can oscillate if you get the feedback signal wrong."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly stated"
+    },
+    {
+      "type": "table",
+      "caption": "What SLRU buys you and what it charges.",
+      "headers": [
+        "Dimension",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Scan resistance",
+          "Sequential scans and one-off bulk reads churn only probation; protected hit ratio stays flat",
+          "Genuinely new hot keys need two accesses to graduate, so cold-start latency is higher than LRU"
+        ],
+        [
+          "Implementation cost",
+          "Still O(1) per op with hash map plus two doubly-linked lists; no counters, no clocks, no sampling",
+          "Two lists means more pointer surgery, more lock contention points, and a second size parameter to misconfigure"
+        ],
+        [
+          "Memory overhead",
+          "No per-entry frequency counters or ghost history; overhead is just list pointers",
+          "Demoted entries occupy probation MRU and can delay eviction of true garbage by one full probation pass"
+        ],
+        [
+          "Tunability",
+          "One knob (probation ratio) with intuitive behavior; easy to reason about in review",
+          "One knob that is workload-dependent; optimal ratio for Zipf traffic is wrong for cyclic traffic"
+        ],
+        [
+          "Concurrency",
+          "Segments can use separate locks, reducing contention versus a single global LRU lock",
+          "Promotion and demotion touch both segments, so cross-segment ops still need careful lock ordering to avoid deadlock"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The core judgment call is this: **SLRU trades a small, bounded penalty on first-time and newly-hot data for a large, unbounded protection of long-term hot data**. That trade is correct whenever your traffic is a mixture of a stable hot set plus intermittent floods of cold data — which describes almost every real cache: CDN origins with cache-busting deploys, database pools with reporting queries, application caches with backfills. It is the wrong trade when every key is equally likely to be re-referenced soon, because then the promotion gate is pure overhead with no filtering benefit. And it is an incomplete trade when frequencies are heavily skewed and stable over long horizons — there, counting (LFU-family or TinyLFU admission) beats recency-gating because SLRU still cannot distinguish *warm* from *scalding*. Say that explicitly in design reviews: SLRU answers **is this re-used at all**, not **how much is this re-used**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "SLRU fails in three recognizable ways. First, **probation too small under a growing working set**. Symptom: protected hit ratio looks healthy on dashboards but overall hit ratio sags and `promotion rate` collapses to near zero while `probation eviction rate` spikes. New keys never survive long enough for a second touch. You will see this after a traffic shift — new endpoints, new tenant, new feature — where the hot set changes faster than protected turns over. Second, **looping scans larger than probation but with periodicity shorter than protected residency**. A job that cycles over `2x` cache size every 10 minutes will get each key promoted on its second loop iteration, polluting protected with lukewarm entries that then demote good entries. Symptom: sawtooth hit ratio synchronized with a cron schedule, plus a surge in `demote-then-evict` transitions. Plain SLRU has no defense here; you need frequency sketches or scan detection. Third, **lock convoy on promotion**. In a high-throughput in-process cache, every probation hit grabs both segment locks in sequence. Under contention you see p99 latency spikes on reads that should be pure hash lookups, with lock-wait time dominating profiles. The fix is segment sharding or lock-free LRU approximations, which trades exact recency for throughput — again, state the trade-off."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Flat protected hits during a scan, but overall misses still climb**: scan is contained, but scan itself is all misses — expected, not a bug. Alert on protected eviction rate, not total miss rate.",
+        "**Zero promotions for minutes after deploy**: probation is undersized or traffic is all one-offs. Check promotion counter before resizing the cache.",
+        "**Hit ratio oscillates with a batch job**: classic scan-pollution or loop-promotion. Correlate miss spikes with job scheduler, then isolate scan traffic to a separate pool or bypass the cache.",
+        "**p99 read latency jumps while hit ratio is fine**: lock contention on the LRU lists, not storage. Shard the cache or switch to clock-style approximate lists."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The demotion trap",
+      "text": "Demoted entries land at the **MRU of probation**, not the LRU. That is deliberate — it gives ex-hot keys a second chance — but it means a *churning protected segment* can clog probation with yesterday's hot keys and starve today's. If your `demote rate` exceeds your `promote rate` for sustained windows, protected is thrashing. **Shrink probation or bypass bulk traffic**; do not just add capacity."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that clarifies instead of obscuring"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "slru.py",
+      "code": "from collections import OrderedDict\n\nclass SegmentedLRU:\n    def __init__(self, probation_cap: int, protected_cap: int):\n        assert probation_cap > 0 and protected_cap > 0\n        self.probation: OrderedDict = OrderedDict()  # key -> value\n        self.protected: OrderedDict = OrderedDict()\n        self.P = probation_cap\n        self.R = protected_cap\n\n    def get(self, key):\n        if key in self.protected:\n            self.protected.move_to_end(key, last=True)  # MRU at end\n            return self.protected[key]\n        if key in self.probation:\n            val = self.probation.pop(key)\n            self._promote(key, val)\n            return val\n        return None  # miss: caller fetches and calls put()\n\n    def put(self, key, value):\n        if key in self.protected:\n            self.protected[key] = value\n            self.protected.move_to_end(key, last=True)\n            return\n        if key in self.probation:\n            self.probation[key] = value\n            self.probation.move_to_end(key, last=True)\n            return\n        # miss: always admit to probation MRU\n        self.probation[key] = value\n        self.probation.move_to_end(key, last=True)\n        if len(self.probation) > self.P:\n            self.probation.popitem(last=False)  # evict probation LRU\n\n    def _promote(self, key, value):\n        # make room in protected by demoting its LRU to probation MRU\n        if len(self.protected) >= self.R:\n            dem_key, dem_val = self.protected.popitem(last=False)\n            self.probation[dem_key] = dem_val\n            self.probation.move_to_end(dem_key, last=True)\n            if len(self.probation) > self.P:\n                self.probation.popitem(last=False)\n        self.protected[key] = value\n        self.protected.move_to_end(key, last=True)"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the code for the invariants, not the syntax. Three lines carry the whole policy: misses go to `probation` MRU, probation hits call `_promote`, protected hits only reorder within `protected`. Eviction happens in exactly one place — probation LRU — which is why SLRU is easy to make `O(1)`: a hash map for lookup plus two ordered dictionaries for recency. Note the demotion path inside `_promote`: popping protected LRU and pushing it to probation MRU can itself overflow probation, so one promotion can cause one eviction. That coupling is the source of both the protection property and the thrash pathology. In a concurrent version you would shard by hash or guard each `OrderedDict` with its own lock and take them in probation-then-protected order to avoid deadlock — and you would immediately see why high promotion rates hurt tail latency. The trade-off made visible by this implementation is **exactness versus contention**: exact doubly-linked LRU gives perfect recency but serializes every read as a write."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Where SLRU sits among alternatives"
+    },
+    {
+      "type": "table",
+      "caption": "Pick the policy that matches the workload pathology you actually have.",
+      "headers": [
+        "Policy",
+        "Mechanism in one line",
+        "Beats SLRU when",
+        "Loses to SLRU when"
+      ],
+      "rows": [
+        [
+          "Plain LRU",
+          "Single recency list; every miss evicts global LRU",
+          "Traffic has no scans and working set fits; simpler and faster warm-up",
+          "Any sequential scan or backfill exists; one pass wipes hot set"
+        ],
+        [
+          "LFU / LFUDA",
+          "Evict lowest frequency; aging prevents staleness",
+          "Frequencies are stable and skewed; need to distinguish warm from very hot",
+          "Frequencies shift over time or counters cost too much; scans with repeats pollute counts"
+        ],
+        [
+          "ARC",
+          "Adaptive probation plus ghost histories; self-tuning sizes",
+          "Workload oscillates between recency-friendly and frequency-friendly phases",
+          "You need explainability and bounded behavior; ARC adaptation can oscillate and is harder to debug"
+        ],
+        [
+          "TinyLFU + W-TinyLFU",
+          "Sketch-based admission filter in front of LRU",
+          "High-churn edge with tiny metadata budget; excellent scan rejection with minimal memory",
+          "You want no probabilistic structures or need deterministic behavior for correctness review"
+        ],
+        [
+          "FIFO / CLOCK",
+          "Insert-order or single-bit second-chance approximation",
+          "Throughput dominates and approximate recency is fine; very cheap under contention",
+          "Scan resistance matters more than raw ops; FIFO has zero protection, CLOCK has only one bit of it"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "State your selection logic out loud: **if the problem statement mentions scans, backfills, or mixed hot-plus-bulk traffic, reach for SLRU before LRU**. If it mentions stable popularity skew — top 1% of keys serve 50% of traffic indefinitely — reach for frequency-aware policies. If it mentions shifting phases where you cannot pre-tune a ratio, reach for adaptive policies and accept the complexity. SLRU's sweet spot is deliberately narrow: it is the cheapest policy that survives scans. Do not oversell it as a general popularity engine. It keeps one bit of history — *seen twice* — and that bit is powerful against scans and useless for ranking. The honest trade-off versus ARC and TinyLFU is **determinism and simplicity against adaptivity and precision**. In an interview, choosing SLRU and naming that trade-off scores higher than reciting a stronger policy you cannot implement correctly on a whiteboard."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from LRU failure, not from definition",
+          "text": "Do not open with segments. Open with: plain LRU with capacity 4 serving A,B,C,D then scan X,Y,Z evicts everything hot. Draw that. Then say: I will gate admission with a probation segment. Interviewers grade the motivation more than the diagram."
+        },
+        {
+          "title": "Draw the two lists and the four transitions",
+          "text": "Sketch probation and protected as two LRU stacks. Label miss-to-probation-MRU, probation-hit-to-protected-MRU, protected-hit-to-protected-MRU, and protected-full-demote-to-probation-MRU with probation-LRU eviction. State all ops are O(1) with map plus linked lists."
+        },
+        {
+          "title": "Name the sizing trade-off with numbers",
+          "text": "Propose 20-30% probation as a default, then explain when you would move it: larger probation for fast warm-up and short re-reference windows, smaller for aggressive scan resistance. Mention measuring promotion rate and probation eviction rate to tune."
+        },
+        {
+          "title": "Handle the concurrency and TTL follow-ups",
+          "text": "Expect: how do you make this thread-safe, and where do TTLs live? Answer: per-segment locks with fixed ordering or sharding by key hash for throughput; lazy expiry on access plus background sweep so TTL does not disturb recency ordering. Expiry removes from whichever segment holds the key."
+        },
+        {
+          "title": "Close with when you would not use it",
+          "text": "Volunteer the limits: looping scans that fit the re-reference window, heavily skewed stable frequencies where LFU-family wins, and phase-changing workloads where adaptive policies win. Suggest scan bypass or a separate pool for bulk traffic as the production companion to SLRU."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the interviewer is listening for",
+      "text": "They want one sentence proving you understand admission control: **new keys enter probation, only re-hits reach protected, eviction always takes probation LRU**. Then they want the trade-off: scan resistance at the cost of slower warm-up plus one tuning knob. Say both in the first ninety seconds."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**SLRU counts frequencies** — it does not. It remembers one re-hit, not a count. Two hits and two hundred hits look identical once in protected; internal LRU order is all that remains.",
+        "**Protected entries can never be evicted by scans** — they can, indirectly. A scan never promotes, but sustained demotions from other traffic plus probation pressure eventually push demoted hot keys off probation LRU.",
+        "**Bigger probation is always safer** — the opposite past a point. Oversized probation admits scans and behaves like plain LRU. Undersized probation starves new hot keys. The ratio *is* the design.",
+        "**Demoted entries go to probation LRU** — they go to probation MRU. Misplacing this inverts the second-chance property and is the most common whiteboard bug.",
+        "**SLRU and two independent LRU caches are the same** — they are not. SLRU has coupled overflow: protected overflow feeds probation, and probation overflow evicts. Independent caches have no demotion path and no shared admission gate.",
+        "**SLRU solves cache stampede or thundering herd** — unrelated problem. Stampede is concurrent miss collapse on one key; SLRU is eviction ordering across keys. You still need request coalescing or negative caching."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The deepest misunderstanding is treating SLRU as a ranking system. It is a **filter**, not a ranker. Probation answers a binary question — was this touched twice within a window — and protected is just LRU among keys that passed. That is why SLRU pairs well with a separate admission sketch when you need true frequency ranking, and why it pairs well with traffic separation when you know bulk reads are coming. If you can articulate that distinction — filter versus rank — you demonstrate the judgment interviewers associate with senior-level caching design rather than textbook recall."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Default to SLRU for mixed workloads; reach past it only for a named reason.",
+      "headers": [
+        "Use SLRU when",
+        "Avoid SLRU when"
+      ],
+      "rows": [
+        [
+          "Read-heavy cache with stable hot set plus intermittent scans, backfills, or deployments that bust locality",
+          "Working set fits entirely and traffic is uniform — plain LRU is simpler and warms faster"
+        ],
+        [
+          "Database buffer pool where reporting queries threaten transactional pages",
+          "Popularity is highly skewed and stable for long horizons — frequency-aware policies rank better"
+        ],
+        [
+          "Application cache where new keys should prove reuse before displacing proven keys",
+          "Workload phases flip unpredictably between scan-heavy and frequency-heavy — adaptive policies self-tune"
+        ],
+        [
+          "You need O(1) ops with no counters, no sampling, and explainable behavior on call",
+          "Contention dominates and even doubly-linked promotion is too costly — approximate CLOCK or sharded designs win"
+        ],
+        [
+          "You can isolate or bypass known bulk traffic but want a safety net for unknown bulk traffic",
+          "LoopingWorking sets larger than cache with periodicity — SLRU will promote loops; bypass or sketch-based admission instead"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Practical default for a medium-difficulty design discussion: **propose SLRU with roughly 25% probation, per-key TTL handled lazily, sharded by hash for concurrency, with metrics on hits per segment, promotion rate, demotion rate, and probation evictions**. Add one companion rule: bulk or scan traffic bypasses the cache or uses a dedicated small pool. That combination — SLRU plus bypass — resolves the majority of real eviction incidents without adaptive machinery. Only escalate to frequency sketches or self-tuning when measurements show loop-promotion or chronic probation starvation. The trade-off you are defending is intentional: a slightly slower warm-up and one manual knob in exchange for predictable scan immunity that any on-call engineer can reason about at 3 AM."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "**Segmented LRU splits the cache into a probation LRU and a protected LRU so that new entries must be re-hit before they can displace hot data — which buys scan resistance at the cost of slower warm-up and one sizing knob.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:41:01.161Z",
+    "problems": []
+  }
+}

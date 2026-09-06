@@ -1,0 +1,283 @@
+{
+  "slug": "relational-model-pagination",
+  "title": "Relational Model & Pagination",
+  "summary": "Relational pagination is a stable ordering problem, not a LIMIT problem. Keyset wins on efficiency, offset wins on random access — pick by access pattern and name the cost.",
+  "kind": "HLD",
+  "problemSlug": "relational-model--pagination-149-328",
+  "topic": "Resources Efficient & Extensible System Design",
+  "difficulty": "Medium",
+  "coverEmoji": "📄",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Relational Model",
+    "Pagination",
+    "Efficiency"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Pagination patterns in Amazon Aurora DSQL | AWS Database Blog",
+      "url": "https://aws.amazon.com/blogs/database/pagination-patterns-in-amazon-aurora-dsql/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    },
+    {
+      "title": "Pagination from a Database Perspective | by Aldinofrizal - Medium",
+      "url": "https://medium.com/@aldinofrizal/pagination-from-a-database-perspective-602ccee7ded2",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Syncing pagination between relational and non-relational database",
+      "url": "https://stackoverflow.com/questions/59226367/syncing-pagination-between-relational-and-non-relational-database",
+      "source": "stackoverflow.com",
+      "kind": "article"
+    },
+    {
+      "title": "Pagination for database objects - Brain dump",
+      "url": "https://www.n16f.net/blog/pagination-for-database-objects/",
+      "source": "n16f.net",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A table has **no order**. Pagination is you imposing a **total, stable order** and then resuming from a **position in that order** — not skipping rows. If your `ORDER BY` is not unique and indexed, and your resume token is not a predicate on that order, you will get slow pages, missing rows, and duplicates. Everything else is detail."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Pagination over a relational model means serving a large ordered result set as bounded chunks through a stateless API. You agree on three things: a **sort key** that defines sequence, a **page size** (`LIMIT`) that bounds work per request, and a **resume position** that tells the database where the next chunk starts. The resume position is either a count of rows to discard (`OFFSET`) or a value from the sort key to seek past (`cursor` / keyset). The database still executes the full query semantics — `WHERE` filters, `JOIN`s, `ORDER BY` — then it either discards the prefix or seeks directly into the index. That difference is the entire design decision. Get the sort key wrong and no database tuning saves you, because you asked an unordered set to behave like a list without giving it a deterministic rule."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why the relational model makes this hard: SQL tables are multisets until you add `ORDER BY`. Without it the engine may return any physical order — heap order, index order, parallel-worker merge order — and that order can change between two identical queries. Add `ORDER BY created_at` and you still do not have a total order if two rows share the same timestamp. Add concurrent inserts, deletes, and read replicas with lag, and page 2 executed two seconds after page 1 is literally a different query over different data. **Trade-off:** a stronger stability guarantee costs more coordination. Snapshot isolation or a fixed `as-of` timestamp gives repeatable pages but holds resources and complicates the API. Accepting drift keeps the API stateless and cheap but forces the client to tolerate gaps and replays."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: discard vs seek"
+    },
+    {
+      "type": "paragraph",
+      "text": "`LIMIT n OFFSET m` is discard. The engine evaluates the filtered, sorted set, walks `m + n` rows, throws away the first `m`, returns `n`. Cost grows with `m` even if `n` stays at 20. On a B-tree ordered by `id`, fetching offset 500,000 still traverses and sorts 500,020 entries before returning. That is why deep pages get linearly slower and why high-offset queries dominate slow-query logs while returning tiny payloads. **Trade-off:** you buy arbitrary random access — jump to page 47, show total page count, let the UI render a page bar — and you pay with wasted database work that scales with page number, not page size. Use it when the table is small, the sort is cheap, and users genuinely need random jumps."
+    },
+    {
+      "type": "mermaid",
+      "title": "Offset vs keyset execution",
+      "caption": "Offset discards; keyset seeks on the index.",
+      "code": "flowchart TD\n  C[Client requests page] --> A[API validates limit and cursor]\n  A --> D{Resume token present?}\n  D -- No --> E[First page: ORDER BY id LIMIT n]\n  D -- Yes --> F[Next page: WHERE id > cursor ORDER BY id LIMIT n]\n  E --> G[Encode last row as next_cursor]\n  F --> G\n  G --> C"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keyset (cursor) pagination is seek. The client returns the last seen sort value, and the next query adds it as a predicate: `WHERE id > :last_id ORDER BY id LIMIT 20`. The engine seeks into the index at `last_id` and reads the next 20 entries. Cost is `O(page size × lookup)`, independent of how deep you are. New inserts before the cursor do not shift the window, so you never re-read the same row twice due to prefix growth — the failure that makes offset feeds show duplicates when someone posts between page 1 and page 2. **Trade-off:** you buy constant-time deep pages and drift-resistant forward iteration, and you pay by losing random access. You cannot jump to page 47 without walking there, you cannot compute total pages without a separate `COUNT`, and backward traversal needs an inverted predicate."
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "pagination.sql",
+      "code": "-- OFFSET: simple, slow when deep. Cost grows with OFFSET.\nSELECT id, created_at, name\nFROM users\nORDER BY id\nLIMIT 20 OFFSET 500000; -- processes 500020 rows, returns 20\n\n-- KEYSET: constant cost per page. Seeks on the index.\nSELECT id, created_at, name\nFROM users\nWHERE id > 500042 -- :last_seen_id from previous page\nORDER BY id\nLIMIT 20; -- reads ~20 index entries regardless of depth"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Four pagination mechanisms compared on cost and guarantees.",
+      "headers": [
+        "Mechanism",
+        "How it resumes",
+        "Wins",
+        "Costs"
+      ],
+      "rows": [
+        [
+          "OFFSET (`LIMIT/OFFSET`)",
+          "`OFFSET = page * size` discards prefix",
+          "Random access, trivial UI page numbers, works with any `ORDER BY`",
+          "O(offset + limit) work per page; duplicates and skips under concurrent writes; deep pages time out"
+        ],
+        [
+          "Keyset (`WHERE key > cursor`)",
+          "Predicate on last seen sort key",
+          "O(limit) per page at any depth; no re-reads on prefix inserts; index-friendly",
+          "No jump to page N; requires unique stable sort; needs inverted predicate for previous page"
+        ],
+        [
+          "Opaque cursor + tiebreaker",
+          "`WHERE (sort, id) > (:sort, :id)` with encoded token",
+          "Stable order on non-unique sorts like `created_at`; API can evolve sort without breaking clients",
+          "Composite index required on `(sort, id)`; cursor must be opaque, signed, and versioned or clients will forge it"
+        ],
+        [
+          "Snapshot / scroll / search-after",
+          "Pinned snapshot or point-in-time plus sort position",
+          "Repeatable full export; consistent across pages despite writes",
+          "Holds database resources; not for interactive UI; expires and forces restart on long jobs"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Choose by access pattern, not habit. Interactive feed that only moves forward: keyset. Admin table with 2,000 rows where the user wants page 14 of 80: offset is fine and simpler to reason about. Full export or audit scan: snapshot or batched keyset with a fixed filter, never live offset. **Trade-off to state out loud:** efficiency and stability point to keyset; flexibility and total counts point to offset. If you need both — jump-to-page plus fast deep traversal — say so and split the path: offset for the first few pages where it is cheap, keyset beyond a threshold, and admit the hybrid complicates the contract."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Non-unique sort keys silently corrupt pages",
+      "text": "`ORDER BY created_at LIMIT 20` with duplicate timestamps has no defined tie order. Two consecutive keyset queries with `WHERE created_at > :last` will **skip every row sharing the boundary timestamp** or replay them, depending on the operator. Fix: always append the primary key as tiebreaker — `ORDER BY created_at, id` with `WHERE (created_at, id) > (:ts, :id)` — and back it with a composite index on `(created_at, id)`. No tiebreaker, no correctness."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is deep-offset latency that looks like a capacity problem. P99 climbs on one endpoint, the slow log fills with `LIMIT 20 OFFSET 180000` queries scanning hundreds of thousands of rows to return one screen, and adding read replicas does nothing because every replica repeats the same wasted walk. You see connection-pool exhaustion under moderate traffic, because each deep page holds a connection ten to a hundred times longer than a keyset equivalent. The fix is not more hardware; it is removing the discard work. Cap `OFFSET` at a small maximum, switch infinite scroll to keyset, and move total counts to an estimate or a cached counter. **Trade-off:** exact `COUNT(*)` for page bars costs a full scan on large filtered sets — approximate or defer it."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Deep pages time out while shallow pages are fast.** Symptom of offset discard. Confirm with `EXPLAIN`: rows examined grows with page number while rows returned stays flat.",
+        "**Duplicates or gaps when scrolling a live feed.** New inserts shift offset windows. Page 2 repeats the tail of page 1, or skips rows. Keyset with a monotonic key eliminates replays from prefix inserts.",
+        "**Different pages disagree with each other.** Replica lag or read-your-write violation: page 1 from the primary, page 2 from a lagging replica. Symptom is a missing fresh row or a row that appears twice. Pin pagination to one replica or accept bounded staleness explicitly.",
+        "**Same timestamp boundary loses rows.** Missing records exactly at page edges when sorting by `created_at`, score, or rank. You forgot the `(sort, id)` tiebreaker or the composite index, so the seek predicate is not a total order.",
+        "**Search-plus-join pagination mismatches.** IDs ranked in a secondary index and then hydrated with `WHERE id IN (...)` in the primary store apply different filters in two systems. Pages drift because the two queries disagree on membership. Fix by pushing the authoritative filter into one system or by over-fetching IDs and paginating after the join — and name the extra read cost."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "A second failure family is unstable filters. If page 1 applies `WHERE status = 'active' ORDER BY score` but page 2 re-sorts or drops the filter, the cursor is meaningless — it is a position in a different sequence. Every page must replay the identical `WHERE` and `ORDER BY`, with only the seek predicate advancing. Encode the filter hash into the cursor or store the query definition server-side so a client cannot change sort mid-stream and then blame the database. **Trade-off:** fully stateless cursors are simple to scale but trust the client to return the right position; server-side search contexts are safer but hold memory and need expiry."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Making keyset correct: tiebreaker and opaque cursor"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "keyset_tiebreaker.sql",
+      "code": "-- Total order on non-unique sort: (created_at, id)\n-- Requires: CREATE INDEX ON users (created_at, id);\nSELECT id, created_at, name\nFROM users\nWHERE (created_at, id) > ('2026-01-15 10:00:00', 91342)\nORDER BY created_at ASC, id ASC\nLIMIT 20;\n\n-- Previous page: invert comparison and reverse order, then flip in app\nSELECT id, created_at, name\nFROM users\nWHERE (created_at, id) < ('2026-01-15 10:00:00', 91342)\nORDER BY created_at DESC, id DESC\nLIMIT 20;"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cursor.py",
+      "code": "import base64, json\n# Opaque cursor: client sees a string, server sees (sort, tiebreaker, version).\n# Never expose raw offsets or allow client-constructed SQL fragments.\ndef encode_cursor(created_at: str, last_id: int, v: int = 1) -> str:\n    payload = json.dumps({\"v\": v, \"ts\": created_at, \"id\": last_id}).encode()\n    return base64.urlsafe_b64encode(payload).decode()\n\ndef decode_cursor(token: str) -> tuple:\n    data = json.loads(base64.urlsafe_b64decode(token.encode()).decode())\n    assert data[\"v\"] == 1  # bump version when sort changes; reject old cursors\n    return data[\"ts\"], data[\"id\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep cursors opaque even though they carry just two values. Opaqueness lets you change the sort, add a shard hint, or rotate the encoding without breaking mobile clients that cached tokens. Validate and bound `LIMIT` server-side — typical cap 20 to 100 — because an unbounded `limit=100000` turns any method back into a full scan. Return `next_cursor` only when a full page arrived; an empty or short page means end of set. **Trade-off:** small pages mean more round trips and higher tail latency for bulk readers; large pages mean fewer trips but heavier single queries and spikier replicas. Default to 20–50 for UI, 500–1000 for internal export, and make the cap a config, not a constant."
+    },
+    {
+      "type": "mermaid",
+      "title": "Cursor lifecycle",
+      "caption": "Each response carries the position for the next seek.",
+      "code": "graph TD\n  P1[Page 1: no cursor] --> P2[Page 2: cursor from last row of P1]\n  P2 --> P3[Page 3: cursor from last row of P2]\n  P3 --> P4[Short page or empty: end of set]\n  P2 --> B[Prev page: inverted predicate]\n  B --> P1"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the feed, not the syntax",
+          "text": "State the requirement as ordered iteration over a changing set: deterministic `ORDER BY`, bounded `LIMIT`, resume token. Say upfront that tables are unordered and offset windows drift under writes. This frames every later choice as correctness first, performance second."
+        },
+        {
+          "title": "Reject naive offset with numbers",
+          "text": "Write `LIMIT 20 OFFSET N`, then explain discard cost with an index walk: fetching page 25,000 reads 500,020 rows to return 20. Propose keyset `WHERE id > :last ORDER BY id LIMIT 20` and note it is constant cost. Name the loss: no random jump, no cheap total pages."
+        },
+        {
+          "title": "Handle the real sort key",
+          "text": "The follow-up is always sorting by something non-unique — timestamp, score, name. Add the tiebreaker `ORDER BY created_at, id` with row-value comparison and the composite index that makes it a seek instead of a sort. Missing this is the most common fail."
+        },
+        {
+          "title": "Design the API contract",
+          "text": "Define opaque `next_cursor`, server-enforced `limit` cap, identical filters replayed per page, and empty-means-done. Cover backward navigation with the inverted predicate and cover count strategy: exact for small sets, estimate or cached counter for large ones. Mention cursor versioning so sort changes do not corrupt old clients."
+        },
+        {
+          "title": "Close with scale and consistency",
+          "text": "Discuss replica lag, snapshot needs for exports, and the split-system case where ranking and hydration live in different stores. Offer the hybrid explicitly: offset for shallow admin pages, keyset for deep or live feeds, snapshot for bulk jobs — each with its resource cost stated."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**`OFFSET` is fine because `LIMIT` is small.** `LIMIT` bounds what returns, not what executes. The engine still walks and discards the offset prefix, so small pages at large offsets are the most wasteful queries in the system.",
+        "**Adding an index on the sort column fixes pagination.** It fixes the sort, not the resume. Without a unique total order plus a seek predicate on that order, the index still gets scanned from the start on every page.",
+        "**Keyset prevents all missed rows.** It prevents replays from prefix inserts, but rows inserted ahead of the cursor or deleted before you arrive still change what you see. Only a pinned snapshot gives repeatable reads — at the cost of held resources.",
+        "**Cursors should be readable offsets.** Exposing `?offset=40` or raw IDs invites tampering, breaks when the sort changes, and leaks internals. Encode, sign, and version the token; validate it like any untrusted input.",
+        "**Total page count is free.** Exact counts need `COUNT` over the filtered set, which on large tables costs as much as the pages themselves. If the UI needs it, pay with a periodic counter, an estimate, or a capped display like `100+ results`."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "When to use each pattern and when to avoid it.",
+      "headers": [
+        "Pattern",
+        "Use when",
+        "Avoid when"
+      ],
+      "rows": [
+        [
+          "OFFSET",
+          "Small tables, shallow pages, genuine need for jump-to-page and exact page bars",
+          "Feeds, infinite scroll, or any depth beyond a few thousand rows — discard cost and drift dominate"
+        ],
+        [
+          "Keyset with `(sort, id)`",
+          "Forward iteration over large or live sets, timestamp or ranked order, API must stay fast at depth",
+          "UI requires random page jumps or server cannot guarantee a stable unique sort"
+        ],
+        [
+          "Opaque cursor API",
+          "Public or mobile API where sort may evolve and clients cache tokens",
+          "One-off internal script where transparent `WHERE id > N` is simpler and versioning is overhead"
+        ],
+        [
+          "Snapshot / point-in-time export",
+          "Bulk export, audit, or migration needing a consistent view across many pages",
+          "Interactive browsing — holding snapshots per user wastes resources and adds expiry complexity"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Impose a **total order with `(sort, id)` and a matching composite index**, then paginate by **seeking with `WHERE (sort, id) > cursor`** — constant cost at any depth — and reserve `OFFSET` only for shallow random access where you accept discard cost and drift."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:27:02.401Z",
+    "problems": []
+  }
+}

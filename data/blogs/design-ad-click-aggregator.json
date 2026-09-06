@@ -1,0 +1,461 @@
+{
+  "slug": "design-ad-click-aggregator",
+  "title": "Design Ad Click Aggregator",
+  "summary": "Design a billion-clicks-per-day ad aggregation pipeline: edge ingest, Kafka, windowed stream processing with dedup, and serving pre-aggregates for billing and analytics.",
+  "kind": "HLD",
+  "problemSlug": "design-ad-click-aggregator-150-318",
+  "topic": "More Interview Problems",
+  "difficulty": "Hard",
+  "coverEmoji": "📊",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Streaming",
+    "Aggregation",
+    "Hard"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.youtube.com/watch?v=Zcv_899yqhI",
+      "title": "Design an Ad Click Aggregator w/ a Ex-Meta Staff Engineer ... - YouTube",
+      "source": "youtube.com",
+      "kind": "roundup",
+      "companies": [
+        {
+          "name": "Meta",
+          "quote": "A step-by-step breakdown of the popular FAANG+ system design interview question, Design an Ad Click Aggregator, which is asked at top companies like Meta, Google, Amazon, Microsoft, and more."
+        },
+        {
+          "name": "Google",
+          "quote": "A step-by-step breakdown of the popular FAANG+ system design interview question, Design an Ad Click Aggregator, which is asked at top companies like Meta, Google, Amazon, Microsoft, and more."
+        },
+        {
+          "name": "Amazon",
+          "quote": "A step-by-step breakdown of the popular FAANG+ system design interview question, Design an Ad Click Aggregator, which is asked at top companies like Meta, Google, Amazon, Microsoft, and more."
+        },
+        {
+          "name": "Microsoft",
+          "quote": "A step-by-step breakdown of the popular FAANG+ system design interview question, Design an Ad Click Aggregator, which is asked at top companies like Meta, Google, Amazon, Microsoft, and more."
+        }
+      ]
+    },
+    {
+      "url": "https://www.reddit.com/r/leetcode/comments/1c7ci1t/metagoogleamazon_system_design_question_design_an/",
+      "title": "Meta/Google/Amazon System Design Question: Design an Ad Click ...",
+      "source": "reddit.com",
+      "kind": "roundup",
+      "companies": [
+        {
+          "name": "Meta",
+          "quote": "Meta/Google/Amazon System Design Question: Design an Ad Click Aggregator - Broken Down By Meta Staff Engineer"
+        },
+        {
+          "name": "Google",
+          "quote": "Meta/Google/Amazon System Design Question: Design an Ad Click Aggregator - Broken Down By Meta Staff Engineer"
+        },
+        {
+          "name": "Amazon",
+          "quote": "Meta/Google/Amazon System Design Question: Design an Ad Click Aggregator - Broken Down By Meta Staff Engineer"
+        }
+      ]
+    },
+    {
+      "url": "https://leetcode.com/discuss/interview-question/6467921/",
+      "title": "Amazon | SDE 2 | Loop | USA - Reject - Discuss - LeetCode",
+      "source": "leetcode.com",
+      "kind": "report",
+      "companies": [
+        {
+          "name": "Amazon",
+          "role": "SDE 2",
+          "date": "Feb 25, 2025",
+          "quote": "Design Ad Click Aggregator"
+        }
+      ]
+    },
+    {
+      "url": "https://www.glassdoor.sg/Interview/DoubleVerify-Interview-Questions-E379389.htm",
+      "title": "DoubleVerify Interview Questions (2026) - Glassdoor",
+      "source": "glassdoor.sg",
+      "kind": "report",
+      "companies": [
+        {
+          "name": "DoubleVerify",
+          "role": "Senior Software Engineer",
+          "date": "7 Aug 2026",
+          "quote": "System design - Ad click aggregator"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "Meta Mid Level Interview Experience : r/leetcode - Reddit",
+      "url": "https://www.reddit.com/r/leetcode/comments/1lpsdq1/meta_mid_level_interview_experience/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "AI Interview Prep | DSA Patterns, AI Coaching - Thita.ai",
+      "url": "https://thita.ai/system-design/practice/design-ad-click-aggregator/interview",
+      "source": "thita.ai",
+      "kind": "article"
+    },
+    {
+      "title": "Designing an Ad Click Aggregator: A Hands-On Walkthrough",
+      "url": "https://blog.stackademic.com/designing-an-ad-click-aggregator-a-hands-on-walkthrough-b14514244eb2",
+      "source": "blog.stackademic.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design an Ad Click Aggregator w/ a Ex-Meta Staff Engineer ... - YouTube",
+      "url": "https://www.youtube.com/watch?v=Zcv_899yqhI",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Meta/Google/Amazon System Design Question: Design an Ad Click ...",
+      "url": "https://www.reddit.com/r/leetcode/comments/1c7ci1t/metagoogleamazon_system_design_question_design_an/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Designing an Ad Click Aggregation System: Meta Senior Engineer ...",
+      "url": "https://medium.com/@bugfreeai/designing-an-ad-click-aggregation-system-meta-senior-engineer-system-design-interview-guide-18db8a974c3b",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "This is not a counting problem. It is a **streaming + correctness under failure** problem. Anyone can say Kafka and Spark. The interviewer wants to hear you choose where **deduplication happens, where time is assigned, and what you lose when something lags**. If you cannot defend at-least-once ingest with idempotent aggregation versus exactly-once end-to-end, you fail the round even if the boxes look right."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Build a system that ingests ad click events from web and mobile clients at internet scale and serves aggregated counts sliced by dimensions. The write path must accept `click(ad_id, user_id, timestamp, request_id, ip, user_agent, campaign_id)` at peak rates of hundreds of thousands per second and never lose billable data. The read path must answer: how many **unique** clicks did `ad_id` get in the last `N` minutes, hours, or days, grouped by `campaign_id`, `country`, or `device`? Billing queries demand accuracy and auditability. Dashboard queries demand low latency over approximate recent data. Late, duplicate, and fraudulent clicks are part of the input, not exceptions."
+    },
+    {
+      "type": "paragraph",
+      "text": "Scale makes the naive database design collapse. Assume **1-5 billion clicks per day**, ~50-100K sustained writes per second with 5-10x ad-campaign bursts, and reads that fan out across thousands of ads simultaneously. Click-to-visible latency target is **seconds to a minute** for dashboards and **minutes to an hour** for finalized billing aggregates. Data must be retained raw for **30-90 days** for fraud replay and rolled up for **years** for reporting. You must survive region failure, consumer lag, and clock skew without double-billing advertisers."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "What counts as a click?",
+          "text": "Ask if one `request_id` equals one billable event, what the dedup window is, and whether bot-filtered clicks still count for analytics. This decides your idempotency key and whether you need two pipelines: raw and billable."
+        },
+        {
+          "title": "Which time defines the window?",
+          "text": "Event time versus arrival time changes everything. Agree that aggregation uses event time with a bounded lateness allowance, e.g. 10 minutes, and late data goes to a correction path. Otherwise watermarks are meaningless."
+        },
+        {
+          "title": "What slices and freshness do reads need?",
+          "text": "Pin down dimensions: ad, campaign, advertiser, country. Pin down SLAs: dashboard p99 <500ms on last hour, billing exact within 1 hour. This justifies pre-aggregation instead of scanning raw events."
+        },
+        {
+          "title": "Unique or raw counts?",
+          "text": "Clarify unique-by-what: user, IP + agent, request_id? Unique counting forces sketches or stateful dedup. Raw counting is embarrassingly parallel. Most candidates skip this and design the wrong store."
+        },
+        {
+          "title": "Scale, retention, and budget?",
+          "text": "Ask daily volume, peak-to-average ratio, hot ads skew, and retention for raw versus rolled-up data. This drives partitioning, TTL, and whether you can afford a serving OLAP cluster."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Agreed scope before drawing any boxes.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Ingest click event with idempotency key",
+          "Retries from clients are guaranteed; without a key every retry becomes fake billing"
+        ],
+        [
+          "Functional",
+          "Aggregate by ad / campaign / geo / device over sliding windows",
+          "Group-by dimensions dictate your aggregation key and cardinality explosion"
+        ],
+        [
+          "Functional",
+          "Serve recent counts in seconds, finalized billing counts in minutes",
+          "Splits system into fast approximate path and slow exact path"
+        ],
+        [
+          "Functional",
+          "Filter fraud and duplicates with audit trail",
+          "Advertisers will dispute invoices; you need replayable evidence"
+        ],
+        [
+          "Non-functional",
+          "Sustain 100K+ writes/sec, scale horizontally",
+          "Single DB writer dies on day one"
+        ],
+        [
+          "Non-functional",
+          "No data loss on process or AZ failure",
+          "Trade-off: you accept duplicates to avoid loss, then dedup downstream"
+        ],
+        [
+          "Non-functional",
+          "p99 read <500ms for dashboards",
+          "Forces precomputed rollups, not on-demand scans"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the direct-write database"
+    },
+    {
+      "type": "paragraph",
+      "text": "The obvious first sketch is: edge API writes each click as a row into Postgres or Mongo, and a `SELECT COUNT(*) WHERE ad_id=? AND ts > now()-interval` serves the dashboard. It is correct at 100 clicks per second and reads cleanly. It fails for three structural reasons. First, write throughput and hot partitions: a viral campaign hammers one `ad_id` key and saturates a single primary. Second, read-write contention: aggregation queries scan millions of rows while ingest is trying to insert, so both miss latency targets. Third, no notion of event time, retries, or fraud: duplicates are stored as truth and late events silently shift historical counts. You cannot bolt on exactly-once billing after the fact."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Write bottleneck: OLTP row-per-click cannot absorb 100K inserts/sec with secondary indexes on ad and time without sharding pain.",
+        "Read blowup: every dashboard refresh becomes a full range scan. Caching does not help because windows slide every second.",
+        "No dedup boundary: retries and double-sends create permanent overcounts with no idempotent sink.",
+        "No backpressure: a slow DB propagates slowness to edge collectors and drops client traffic instead of buffering it."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design: log-first, pre-aggregate, serve rollups"
+    },
+    {
+      "type": "paragraph",
+      "text": "Separate **ingest, processing, and serving**. Edge collectors do validation and nothing else, then append to a durable log. A stateful stream processor owns windowing, deduplication, and fraud filtering. Two sinks emerge: a low-latency store for precomputed minute-level rollups, and a lake for immutable raw events used for replay and billing correction. Reads never touch raw data in the hot path. Trade-off you must state: you accept **eventual consistency for aggregates** in exchange for **durability and horizontal scale on writes**. Billing finality lags by minutes so you can wait for late events and quarantine fraud."
+    },
+    {
+      "type": "mermaid",
+      "title": "End-to-end pipeline",
+      "caption": "Log-centric design isolates bursty ingest from stateful aggregation.",
+      "code": "flowchart LR\n  SDK[Client SDK] --> ELB[Edge Collector]\n  ELB --> K1[Raw Clicks Log]\n  K1 --> SP[Stream Processor]\n  SP --> K2[Clean Aggregates Log]\n  K2 --> OLAP[Serving Store]\n  SP --> LAKE[Data Lake Raw]\n  OLAP --> API[Query API]\n  LAKE --> BATCH[Batch Correction Job]\n  BATCH --> OLAP"
+    },
+    {
+      "type": "paragraph",
+      "text": "Edge collectors are stateless and autoscaled behind a load balancer. They assign `arrival_ts`, validate schema, enforce rate limits per IP, and produce to Kafka with `request_id` as the message key. Keying by `request_id` spreads load while keeping retries routable, but hot `ad_id` still skews downstream state — so the processor re-partitions by `ad_id + window_start` for aggregation. Kafka retention of 7 days is your shock absorber. Trade-off: a large log costs storage but decouples availability; a slow processor causes lag, not loss. Size partitions as `max(throughput / per-partition throughput, consumer parallelism)` and never use the ad ID as the Kafka partition key alone or one viral ad stalls the partition."
+    },
+    {
+      "type": "paragraph",
+      "text": "Storage is two-tier by access pattern. The serving store holds `(ad_id, window_start, dimensions) -> count, unique_estimate` at 1-minute granularity for 14 days, then hourly and daily rollups for months. Use **Druid, Pinot, or ClickHouse** — columnar, bitmap-indexed, and built for `GROUP BY` over time. Do not use Redis as primary; use it only as a look-aside cache for top-K ads. The lake in S3 or GCS holds immutable JSON or Parquet partitioned by `dt/hour`, encrypted and TTL-managed. Trade-off: OLAP gives sub-second slices but poor ad-hoc joins; the lake gives full replayability but minute-plus query time. Billing reads from a reconciled table that batch jobs overwrite after the watermark passes."
+    },
+    {
+      "type": "mermaid",
+      "title": "Core state model",
+      "caption": "Processor holds window state; serving layer holds only rollups.",
+      "code": "classDiagram\n  class ClickEvent {\n    +String requestId\n    +String adId\n    +String userId\n    +long eventTime\n    +String country\n  }\n  class WindowState {\n    +String windowKey\n    +long count\n    +add()\n    +expire()\n  }\n  class Rollup {\n    +String adId\n    +long windowStart\n    +long total\n    +long uniques\n  }\n  class FraudFilter {\n    +bool isBot()\n  }\n  ClickEvent --> WindowState : grouped by\n  WindowState --> Rollup : flush\n  FraudFilter --> WindowState : gate"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Core aggregation logic"
+    },
+    {
+      "type": "paragraph",
+      "text": "The only code worth writing in the interview is the windowed dedup-aggregate loop. Everything else is configuration. Show event-time bucketing, idempotent update via a dedup store, and watermark-triggered flush. The point to narrate: duplicates are dropped by key, late events past the watermark go to a side output for batch correction instead of corrupting finalized windows. Trade-off: a longer allowed lateness improves billing accuracy but holds state longer and increases memory pressure — typically 5-15 minutes is the compromise."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ClickAggregator.java",
+      "code": "public class ClickAggregator {\n  private final DedupStore seen; // Redis / RocksDB with TTL e.g. 24h\n  private final RollupSink sink;\n  private final long windowSec = 60;\n  private final long allowedLatenessSec = 600;\n\n  public void process(ClickEvent e, long watermarkMs) {\n    if (e.eventTimeMs < watermarkMs - allowedLatenessSec * 1000) {\n      sink.writeLate(e); // side output for batch correction\n      return;\n    }\n    // Idempotency first: retry storms must not inflate counts.\n    // Trade-off: dedup store costs a lookup per event to buy correctness.\n    if (!seen.putIfAbsent(e.requestId, windowSec * 20)) return; // duplicate\n    if (FraudFilter.isBot(e)) {\n      sink.writeQuarantine(e);\n      return;\n    }\n    long windowStart = (e.eventTimeMs / 1000 / windowSec) * windowSec;\n    String key = e.adId + \":\" + windowStart + \":\" + e.country;\n    sink.increment(key, windowStart, e);\n  }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "rollup.py",
+      "code": "from collections import defaultdict\n\nWINDOW = 60\nALLOWED_LATE = 600\n\ndef aggregate(events, watermark, seen: set):\n    rollups = defaultdict(int)\n    late = []\n    for e in events:\n        if e[\"event_time\"] < watermark - ALLOWED_LATE:\n            late.append(e)  # batch path overwrites finalized windows later\n            continue\n        if e[\"request_id\"] in seen:\n            continue  # at-least-once delivery made this safe\n        seen.add(e[\"request_id\"])\n        if e.get(\"is_bot\"):\n            continue\n        w = (e[\"event_time\"] // WINDOW) * WINDOW\n        rollups[(e[\"ad_id\"], w, e.get(\"country\", \"xx\"))] += 1\n    return rollups, late"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity and capacity"
+    },
+    {
+      "type": "table",
+      "caption": "Costs that actually matter at interview scale.",
+      "headers": [
+        "Operation",
+        "Complexity",
+        "Note"
+      ],
+      "rows": [
+        [
+          "Ingest append",
+          "O(1) per click",
+          "Kafka append; edge does no DB lookup in hot path"
+        ],
+        [
+          "Dedup check",
+          "O(1) avg per click",
+          "Bloom filter pre-check + exact store; memory proportional to window cardinality"
+        ],
+        [
+          "Window increment",
+          "O(1) per click",
+          "In-memory RocksDB state keyed by ad + window; no cross-partition transaction"
+        ],
+        [
+          "Dashboard read",
+          "O(windows touched)",
+          "1-min rollups mean 60 rows per hour per slice; no raw scan"
+        ],
+        [
+          "Billing reconcile",
+          "O(late events)",
+          "Batch overwrite touches only windows with corrections"
+        ],
+        [
+          "Storage",
+          "O(raw + rollups)",
+          "Raw dominates; rollups are ~1/100th after 60:1 minute collapse"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The hardest follow-up: duplicates, fraud, and time"
+    },
+    {
+      "type": "paragraph",
+      "text": "Expect the interviewer to attack exactly-once. Answer crisply: you run **at-least-once delivery with idempotent processing**. Producers retry with the same `request_id`. The processor does `putIfAbsent` into a TTL store before counting. Sinks use upserts on `(ad_id, window_start, dimensions)` so replays overwrite instead of double-add. True end-to-end exactly-once via transactions is slower and still breaks when event time is ambiguous — so you do not promise it. Trade-off: dedup state costs RAM and a network hop per event, but it is the only way to survive client retries without overbilling. For uniques, do not keep a user-ID set per ad; use **HyperLogLog** for approximate uniques in real time and exact `COUNT DISTINCT` in the nightly batch that finalizes invoices. Fraud follows the same split: lightweight rules inline (velocity, known bot agent, datacenter IP), heavy models offline that emit blocklists and retroactive adjustments."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Clock skew will fail you",
+      "text": "Never window by arrival time and call it billing. Mobile clocks lie by minutes. Use event time for correctness, watermark for progress, and arrival time only for lag metrics. If a candidate cannot explain what happens when the watermark stalls, they have never operated a streaming job."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Hot ad skew?",
+          "text": "Salt the aggregation key: split a viral ad_id into N sub-keys in the mapper, then combine. Trade-off: two-stage aggregation adds latency but prevents one key from pinning one task slot."
+        },
+        {
+          "title": "Late events after billing finalized?",
+          "text": "Emit versioned rollups with Lambda-style correction: stream layer serves v0 fast, batch job writes v1 exact hourly. Query layer prefers the newest sealed version."
+        },
+        {
+          "title": "Cross-region active-active?",
+          "text": "Keep Kafka regional, replicate cleaned rollups globally. Conflict resolution is last-writer-wins on window version. Trade-off: regional autonomy over global instant consistency."
+        },
+        {
+          "title": "Privacy and PII?",
+          "text": "Hash user_id + IP at the edge, drop raw IP after geo-lookup, enforce TTL. Aggregates are k-anonymized before advertiser exposure."
+        },
+        {
+          "title": "Cost control?",
+          "text": "Downsample raw to 1% after fraud window for analytics, keep 100% of billable keys. Tier S3 to Glacier after 90 days. This is where seniors win points."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Duplicate `request_id` arriving in different windows due to retry delay — dedup must be global by ID, not per-window.",
+        "Out-of-order burst after offline mobile reconnect — watermark hold + side output, never drop silently.",
+        "Midnight and DST boundaries for daily billing rollups — bucket in UTC, render in advertiser timezone.",
+        "Botnet with rotating IPs and valid request IDs — velocity cap per ad + device fingerprint, quarantine first.",
+        "Consumer lag masking as traffic drop — alert on `arrival - event` lag and watermark drift separately.",
+        "Backfill replay double-writing live windows — versioned sinks with idempotent keys prevent corruption.",
+        "Top-K dashboard stampede on one viral ad — cache minute rollup for 10-30s; serve stale while revalidating."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak versus strong signals for this round.",
+      "headers": [
+        "Area",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Ingest",
+          "REST directly to DB",
+          "Stateless edge + durable log with backpressure and keyed partitioning"
+        ],
+        [
+          "Correctness",
+          "Ignore duplicates",
+          "Idempotency key, dedup TTL, upsert sinks, late-data path"
+        ],
+        [
+          "Time",
+          "Use server arrival time",
+          "Event time, watermarks, allowed lateness, versioned corrections"
+        ],
+        [
+          "Serving",
+          "Scan raw for every read",
+          "Pre-aggregated OLAP rollups with granularity ladder: minute, hour, day"
+        ],
+        [
+          "Scale",
+          "It scales horizontally",
+          "Numbers: partitions, state size, hot-key salting, cache TTL for top ads"
+        ],
+        [
+          "Ops",
+          "No failure story",
+          "Lag vs loss trade-off, replay runbook, exactly why billing lags dashboards"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "45-minute plan",
+      "text": "Spend **5 min** scoping time semantics and unique-vs-raw. **10 min** on ingest + log sizing. **15 min** on stream processing: dedup, windowing, fraud split, and the diagram above. **10 min** on serving and billing reconciliation. **5 min** on hot keys and replay. If you are still drawing boxes at minute 30, you are behind — start defending trade-offs out loud."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:45:18.678Z",
+    "problems": []
+  }
+}

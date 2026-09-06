@@ -1,0 +1,274 @@
+{
+  "slug": "distributed-consensus-with-paxos",
+  "title": "Distributed Consensus with Paxos",
+  "summary": "Paxos is majority-quorum consensus: safety from intersecting quorums, liveness from a stable leader. Know the two phases cold and why Multi-Paxos exists.",
+  "kind": "HLD",
+  "problemSlug": "examples-paxos-raft-zookeeper-zab-protocol-97-320",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Medium",
+  "coverEmoji": "⚖️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Consensus",
+    "Fault-Tolerance"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Paxos (computer science) - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Paxos_(computer_science)",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "PAXOS Consensus Algorithm - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/computer-networks/paxos-consensus-algorithm/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "What is Paxos Consensus Algorithm? Definition & FAQs | ScyllaDB",
+      "url": "https://www.scylladb.com/glossary/paxos-consensus-algorithm/",
+      "source": "scylladb.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Paxos never trusts a single node. It trusts **any majority**. Safety comes from one fact: any two majorities overlap in at least one node, so no two different values can both get a majority for the same slot. Everything else — prepare, promise, ballot numbers — exists only to enforce that overlap."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Paxos actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Paxos solves **single-value consensus among crash-prone processes with an asynchronous, lossy network**. A set of proposers each try to get one value chosen. A set of acceptors vote. Learners observe the outcome. At the end, either no value is ever chosen, or exactly one value is chosen and every process that learns anything learns that same value. That is safety, and Paxos never violates it, no matter how many messages drop or how many minority nodes die. What Paxos does *not* guarantee is progress. Under contention or partition it is allowed to stall forever. You choose Paxos when you want **correctness under failure at the cost of availability under contention**. That is the first trade-off, and you must state it upfront."
+    },
+    {
+      "type": "paragraph",
+      "text": "The system model is deliberately weak, which is why the result is strong. Processes fail only by crashing and recovering with stable storage intact — no arbitrary Byzantine behavior in classic Paxos. The network can drop, duplicate, delay, and reorder messages. There is no bound on clock skew or delivery time, so you cannot use timeouts for correctness, only for liveness. You run `2F+1` acceptors to tolerate `F` crash failures because a quorum is `F+1`, and any two quorums of size `F+1` intersect. With 3 acceptors you survive 1 failure. With 5 you survive 2. Adding acceptors does not make agreement faster; it makes quorums larger and writes slower. That is the second trade-off: **fault tolerance vs. quorum latency**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: two phases that protect each other"
+    },
+    {
+      "type": "paragraph",
+      "text": "Phase 1 exists to discover what may already be decided and to block older contenders. A proposer picks a unique, monotonically increasing ballot number `n` — typically `counter.nodeId` so ordering is total without coordination — and sends `Prepare(n)` to at least a majority. An acceptor persists `minPromise`, the highest ballot it has ever promised to, and replies with `Promise(n, acceptedBallot, acceptedValue)` only if `n > minPromise`. That promise is a contract: *I will ignore every ballot below `n` from now on.* If the acceptor already accepted something, it includes the highest-ballot value it accepted. The proposer waits for a majority of promises. Why a majority? Because any previously decided value must live on at least one node in this new majority. The proposer is forced to see it. Trade-off: Phase 1 costs a full round trip before you can propose anything, which is pure overhead in the common case."
+    },
+    {
+      "type": "paragraph",
+      "text": "Phase 2 exists to actually choose. After collecting a majority of promises, the proposer must propose the value attached to the highest `acceptedBallot` it saw — or any value of its own if nobody accepted anything. It sends `Accept(n, v)` to a majority. An acceptor accepts if `n >= minPromise`, persists `(n, v)` to stable storage before replying, and emits `Accepted(n, v)` to learners. A value is *chosen* when a majority has accepted the same `(n, v)` for the same slot. The forcing rule is the whole safety argument: if `v` was chosen at ballot `k`, every higher ballot that reaches a majority in Phase 1 will observe at least one acceptor carrying `v` at ballot `>= k` and will be compelled to propose `v` again. Old proposers cannot overwrite it because their ballots are now rejected by promise. You pay proposal freedom to buy stability."
+    },
+    {
+      "type": "mermaid",
+      "title": "Basic Paxos message flow",
+      "caption": "Two round trips per value: Prepare/Promise to block the past, Accept/Accepted to fix the future.",
+      "code": "flowchart TD\n  Client --> Proposer\n  Proposer -->|Prepare n| A1[Acceptor 1]\n  Proposer -->|Prepare n| A2[Acceptor 2]\n  Proposer -->|Prepare n| A3[Acceptor 3]\n  A1 -->|Promise n| Proposer\n  A2 -->|Promise n| Proposer\n  Proposer -->|Accept n v| A1\n  Proposer -->|Accept n v| A2\n  Proposer -->|Accept n v| A3\n  A1 -->|Accepted n v| Learner\n  A2 -->|Accepted n v| Learner"
+    },
+    {
+      "type": "paragraph",
+      "text": "Ballot ordering is where implementations quietly break. Ballots must be unique across proposers and comparable, but they do not need to be dense or globally synchronized. The standard trick is to partition the ballot space: ballot equals `round dot proposerId` compared lexicographically, so proposer 3 owns `1.3, 2.3, 3.3`. A proposer that gets rejected learns a higher `minPromise` from the rejection and retries with something larger. Acceptors must fsync `minPromise` and `accepted` state before responding, not after. If you acknowledge first and crash before the write, you can promise two different majorities two different futures and split safety. Durability before messaging is not an optimization; it is the correctness condition. Trade-off: every Paxos write is a synchronous disk write on a majority of nodes, so your commit latency floor is disk plus network."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Multi-Paxos: the version you actually deploy"
+    },
+    {
+      "type": "paragraph",
+      "text": "Basic Paxos reaches agreement on one value at the cost of two round trips. Nobody replicates a log that way. Multi-Paxos observes that a replicated state machine is just an infinite sequence of consensus slots, and if the same proposer wins Phase 1 for all future slots at once, it can skip Phase 1 thereafter. That proposer is the leader. Election is just running Phase 1 with a high ballot across all slots. Once a majority promises that ballot, the leader owns the log tail and streams Phase 2 messages slot after slot: one round trip per command in the steady state. This is why every production consensus system has a stable-leader fast path. You collapse proposer, acceptor, and learner roles onto the same servers for locality, run Phase 1 only on leadership change, and pipeline Phase 2. Trade-off: you convert two round trips into one, but you create a throughput bottleneck and a single point of liveness failure — the leader."
+    },
+    {
+      "type": "mermaid",
+      "title": "Multi-Paxos steady state",
+      "caption": "After one Phase 1, the stable leader replicates each log entry with a single Accept round.",
+      "code": "flowchart LR\n  Client --> Leader[Leader Proposer]\n  Leader -->|Accept n slot5 v| A1[Acceptor 1]\n  Leader -->|Accept n slot5 v| A2[Acceptor 2]\n  Leader -->|Accept n slot5 v| A3[Acceptor 3]\n  A1 -->|Accepted| Leader\n  A2 -->|Accepted| Leader\n  Leader -->|Commit slot5| Client\n  Leader -->|Commit slot5| S1[Learner 1]\n  Leader -->|Commit slot5| S2[Learner 2]"
+    },
+    {
+      "type": "table",
+      "caption": "Paxos design decisions and what each one costs you.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Majority quorums",
+          "Survive any minority failure without config change",
+          "Every write waits for the slowest node in the fastest majority"
+        ],
+        [
+          "Two phases",
+          "Safety without clocks or timing assumptions",
+          "Two round trips per decision; 2x latency of naive primary-backup"
+        ],
+        [
+          "Stable leader in Multi-Paxos",
+          "One round trip per command, ordered log for free",
+          "Leader bottleneck; leadership change stalls all writes"
+        ],
+        [
+          "Disk write before ack on acceptors",
+          "Safety survives crash-recovery",
+          "Commit latency bounded below by fsync on a majority"
+        ],
+        [
+          "More acceptors (5 vs 3)",
+          "Tolerate 2 failures instead of 1",
+          "Larger quorums, slower tail, more expensive recovery"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is **dueling proposers and livelock**. Two proposers with increasing ballots keep preempting each other in Phase 1: proposer A gets promises, proposer B with a higher ballot steals them, A retries higher and steals them back. No Phase 2 ever completes. Safety holds — nothing wrong is chosen — but throughput is zero. Symptom you would see: `prepare` message rate spikes, `accept` rate collapses, ballot numbers climb monotonically, client latency times out while CPU and network look healthy. The fix is not in the core protocol; it is leadership discipline: randomized backoff plus a single distinguished proposer per epoch. If you do not name this failure mode, you do not understand Paxos liveness."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second family of failures is **quorum and durability erosion**. A slow acceptor makes every quorum wait for it if the other majority member is also marginal — tail latency becomes commit latency. An acceptor that loses stable storage and rejoins with amnesia can vote twice in the same slot for different values, breaking the intersection argument silently. A partitioned learner falls behind and then demands a full log replay that saturates the leader. Symptoms: p99 write latency tracks your slowest disk, not your median; a recovered node causes a safety violation or forces a full snapshot transfer; adding a learner degrades leader throughput. Mitigations are all outside the textbook: pre-voting to avoid disruptive re-elections, persistent ballot storage verified on restart, snapshots plus log truncation, and quorum read leases for linearizable reads without running full Paxos. Trade-off in every case: each hardening step adds code that can itself fail."
+    },
+    {
+      "type": "list",
+      "items": [
+        " ballot storm with no accepts → dueling proposers, no stable leader; fix with backoff and leader election.",
+        "Writes hang with 1 of 3 nodes down and 1 slow → you lost majority responsiveness, not just one node; alert on quorum latency, not node count.",
+        "p99 spikes on every fsync → acceptor durability is on the hot path; move to battery-backed or group-commit writes.",
+        "Rejoined node triggers full replay → log grew unbounded because snapshots lag; monitor gap between commit index and snapshot index.",
+        "Reads served stale after leader change → learner applied uncommitted entries; serve linearizable reads only from quorum-confirmed state."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The core logic in 30 lines"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "paxos.py",
+      "code": "class Acceptor:\n    def __init__(self, store):\n        self.store = store  # durable: must survive crash\n        self.min_promise = store.load(\"promise\", 0)\n        self.acc_ballot = store.load(\"acc_ballot\", 0)\n        self.acc_value = store.load(\"acc_value\", None)\n\n    def on_prepare(self, n):\n        if n > self.min_promise:\n            self.min_promise = n\n            self.store.fsync(\"promise\", n)  # before reply\n            return (\"promise\", self.acc_ballot, self.acc_value)\n        return (\"reject\", self.min_promise)\n\n    def on_accept(self, n, v):\n        if n >= self.min_promise:\n            self.min_promise = n\n            self.acc_ballot, self.acc_value = n, v\n            self.store.fsync_all(n, v)  # before reply\n            return \"accepted\"\n        return (\"reject\", self.min_promise)\n\ndef pick_value(promises, own):\n    # promises: list of (acc_ballot, acc_value)\n    seen = [(b, v) for b, v in promises if v is not None]\n    if not seen:\n        return own\n    return max(seen, key=lambda t: t[0])[1]  # highest ballot wins"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet carries the entire safety proof. Note where `fsync` sits: before the reply in both handlers. Reorder it and you have a protocol that passes every unit test and corrupts data on power loss. Note `pick_value`: the proposer has no choice when any acceptor reports prior state — it must adopt the highest-ballot value. That coercion is what propagates an already-chosen value forward through higher ballots. Everything else in a real implementation — NAK handling, ballot bumping, retransmission, log slots, snapshots — is scaffolding around these two constraints. If you can whiteboard this file and defend both orderings, you can derive the rest under questioning."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the requirement, not the algorithm",
+          "text": "Say: we need linearizable agreement on a log across N nodes with F crash failures. That forces 2F+1 nodes and majority quorums. Derive the quorum size before naming Paxos."
+        },
+        {
+          "title": "Draw the three roles and the two phases",
+          "text": "Sketch proposer, acceptor, learner. Walk Prepare/Promise then Accept/Accepted. State the forcing rule explicitly: propose the highest-seen value, not your own."
+        },
+        {
+          "title": "Prove safety in one sentence with quorum intersection",
+          "text": "Any two majorities share a node, so a decided value is visible to every later majority, which is then forced to re-propose it. That sentence is the pass/fail line."
+        },
+        {
+          "title": "Admit liveness is not guaranteed, then fix it",
+          "text": "Name dueling proposers. Introduce a stable leader and Multi-Paxos to get one round trip per entry. Explain leader election as Phase 1 run once for all slots."
+        },
+        {
+          "title": "Talk durability, reads, and reconfiguration",
+          "text": "Cover fsync-before-ack, log compaction via snapshots, quorum reads versus lease reads, and how to change membership safely without overlapping majorities breaking."
+        },
+        {
+          "title": "Compare honestly when pushed",
+          "text": "Say when you would pick the Paxos family versus a simpler equivalent: same safety, different comprehensibility and leader-transfer behavior. Argue on operational cost, not elegance."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Paxos needs 3 round trips or a unanimous vote — it needs two phases and only a majority in each.",
+        "The leader is required for safety — the leader is purely a liveness optimization; safety holds with any number of competing proposers.",
+        "Highest ballot always wins with its own value — it must adopt the highest previously accepted value it observed, or safety breaks.",
+        "Paxos solves Byzantine faults — classic Paxos assumes crash-recovery only; arbitrary malicious behavior needs a different protocol family.",
+        "More nodes means more reliable and faster — more nodes raises quorum size and tail latency; 5 nodes is slower than 3 in the common case.",
+        "Once a value is accepted by one node it is chosen — chosen means accepted by a majority; single-node acceptance is invisible until quorum."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Where Paxos-family consensus earns its complexity, and where it does not.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Replicated log for strong consistency across zones",
+          "Use Multi-Paxos family",
+          "Majority survival plus total order is exactly what it buys"
+        ],
+        [
+          "Configuration, locking, or exactly-once shard assignment",
+          "Use it",
+          "Low throughput, high correctness value; overhead is irrelevant"
+        ],
+        [
+          "Single-datacenter cache or ephemeral session state",
+          "Do not use",
+          "You pay fsync plus quorum latency for durability you do not need"
+        ],
+        [
+          "High-write log needing simple operations and comprehensibility",
+          "Prefer simpler equivalent",
+          "Same quorum logic with far lower operational and onboarding cost"
+        ],
+        [
+          "Byzantine or mutually untrusted participants",
+          "Do not use classic Paxos",
+          "Threat model mismatch; crash-recovery proofs do not transfer"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "\"Paxos guarantees at most one value is chosen per slot by forcing every new ballot through a majority, adopting any previously accepted value it finds there, and running steady-state replication through a stable leader — safety from quorum overlap, liveness from leadership.\""
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:57:48.443Z",
+    "problems": []
+  }
+}

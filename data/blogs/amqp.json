@@ -1,0 +1,293 @@
+{
+  "slug": "amqp",
+  "title": "AMQP",
+  "summary": "AMQP is a brokered messaging protocol that trades raw throughput for explicit routing and delivery control — understand exchanges, bindings, and acks or you will misdesign it.",
+  "kind": "HLD",
+  "problemSlug": "amqp-94-210",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "📨",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "AMQP"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is AMQP The protocol explained - A1 Digital",
+      "url": "https://www.a1.digital/knowledge-hub/what-is-amqp-the-protocol-explained/",
+      "source": "a1.digital",
+      "kind": "article"
+    },
+    {
+      "title": "Advanced Message Queuing Protocol - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Advanced_Message_Queuing_Protocol",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "The AMQP 0.9.1 Protocol - LavinMQ",
+      "url": "https://lavinmq.com/blog/the-amqp-091-protocol",
+      "source": "lavinmq.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is AMQP? Advanced Message Queuing Protocol & RabbitMQ ...",
+      "url": "https://www.youtube.com/watch?v=xs1YOA6Ij-0&vl=en",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "AMQP does not send messages to consumers. It sends messages to an **exchange that runs a routing rule**, and consumers read from **queues** that subscribed to that rule. That indirection — routing separated from storage — is the entire reason AMQP exists, and the entire reason it costs more than a raw log or HTTP call."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What AMQP actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "AMQP — Advanced Message Queuing Protocol — is a binary wire protocol plus, in the 0.9.1 lineage, a defined broker model. Wire protocol means it specifies bytes on the network, not an API in one language. Any client that emits correct frames interoperates with any compliant broker. That is why a Python producer can feed a Java consumer through the same broker without either side knowing the other exists. The trade-off is rigidity: you pay framing, negotiation, and broker-state costs on every operation because interoperability was chosen over minimalism."
+    },
+    {
+      "type": "paragraph",
+      "text": "You must keep two versions separate or you will sound confused. AMQP 0.9.1 defines the broker itself: virtual hosts, exchanges, queues, bindings. The broker does routing and storage. AMQP 1.0 throws that model away and defines only peer-to-peer link mechanics — addresses, links, disposition states — with no standard exchange or queue. In practice when an interviewer says AMQP they mean 0.9.1 behavior as implemented by RabbitMQ-style brokers. Say which version you mean before you draw anything. The trade-off: 0.9.1 buys you portable routing semantics at the cost of broker lock-in to that model; 1.0 buys you vendor neutrality at the cost of making you rebuild routing yourself."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it works: the broker model"
+    },
+    {
+      "type": "paragraph",
+      "text": "A producer opens a TCP connection, then multiplexes lightweight channels over it, and publishes to an exchange with a routing key and persistence flags. The exchange evaluates bindings — rules installed by operators or consumers — and appends copies to zero or more queues. Consumers subscribe to queues, receive deliveries, then explicitly acknowledge them. Nothing is delivered end-to-end. Every hop is store-then-forward with its own acknowledgement. The reason for this shape is decoupling under failure: producers keep publishing when consumers are down, and consumers crash without losing unacknowledged work. The price is latency and broker state: each message crosses at least two network acknowledgements and one queue index write."
+    },
+    {
+      "type": "mermaid",
+      "title": "AMQP routing path",
+      "caption": "Producer never addresses a queue directly; the exchange decides.",
+      "code": "flowchart TD\n  P1[Producer] -->|publish routing key| X[Exchange]\n  X -->|binding match| Q1[Queue A]\n  X -->|binding match| Q2[Queue B]\n  Q1 --> C1[Consumer A]\n  Q2 --> C2[Consumer B]\n  C1 -->|ack or nack| Q1\n  C2 -->|ack or nack| Q2"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Exchange types are routing programs"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are four exchange types and each is a different matching function, not a performance tweak. Direct routes on exact key equality — use it for work distribution like `orders.created` to exactly one queue set. Fanout ignores the key and copies to all bound queues — use it for broadcast like cache invalidation where you want every replica notified. Topic routes on dot-delimited pattern match with `*` and `#` wildcards — use it when consumers select subsets like `payments.*.failed`. Headers routes on arbitrary header predicates — almost never use it; it duplicates what topic plus a filter stage does more observably. Pick the weakest exchange that satisfies the routing need, because every step up in expressiveness costs matching CPU and makes the topology harder to reason about during an incident."
+    },
+    {
+      "type": "paragraph",
+      "text": "Two mechanics exist to keep this affordable. Virtual hosts partition one broker process into isolated namespaces with separate exchanges, queues, users, and permissions — the reason you can run staging and production topologies on one cluster without cross-talk. Channels multiplex many logical sessions over one TCP connection so you avoid TLS and TCP handshake storms. Do not open a connection per thread or per publish; open one connection per process and one channel per thread. The trade-off is fate-sharing: a TCP stall or broker-side connection close kills every channel on it, so you need connection recovery with topology re-declaration, not just a blind reconnect."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of choosing AMQP 0.9.1",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why the trade exists"
+      ],
+      "rows": [
+        [
+          "Decoupled routing: producers and consumers never name each other",
+          "Broker is a stateful hot path and single logical bottleneck",
+          "Indirection requires somewhere to store bindings and queues"
+        ],
+        [
+          "Flexible routing without redeploying producers",
+          "Per-message match cost and operational complexity of bindings",
+          "Expressiveness moves logic from code into broker configuration"
+        ],
+        [
+          "Per-message acknowledgements and redelivery",
+          "Lower throughput and higher p99 latency than log-based systems",
+          "Durability requires fsync plus an ack round trip"
+        ],
+        [
+          "Back-pressure via prefetch and consumer acks",
+          "Slow consumers cause broker memory and disk growth",
+          "Flow control only works if someone buffers, and that someone is the broker"
+        ],
+        [
+          "Cross-language interop on bytes, not SDK",
+          "Chatty binary framing and strict negotiation",
+          "Interop demands a precise wire contract"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Reliability is explicit, not magic"
+    },
+    {
+      "type": "paragraph",
+      "text": "AMQP gives you three independent durability switches and most outages come from setting only one of them. Publisher confirms tell the producer the broker accepted the message — without them you have at-most-once from the producer side and silent loss on broker crash. Durable exchanges, durable queues, and persistent delivery mode tell the broker to write to disk — without all three the message lives only in RAM and vanishes on restart. Consumer acknowledgements tell the broker the work actually finished — with auto-ack you convert every consumer crash into message loss. If you want the commonly asked at-least-once behavior you need all three: confirms plus durable topology plus persistent messages plus manual acks plus idempotent consumers. There is no exactly-once here. The trade-off is direct: each durability switch adds a disk or network round trip, so durable topologies run at a fraction of transient throughput."
+    },
+    {
+      "type": "mermaid",
+      "title": "Message delivery lifecycle",
+      "caption": "Every arrow is an acknowledgement you must configure.",
+      "code": "stateDiagram-v2\n  [*] --> Published\n  Published --> Routed: binding match\n  Published --> Dropped: no route\n  Routed --> Queued: stored\n  Queued --> Delivered: pushed to consumer\n  Delivered --> Acked: ack\n  Delivered --> Requeued: nack requeue\n  Delivered --> Dead: nack reject\n  Acked --> [*]\n  Dead --> DLQ: dead letter exchange"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "AMQP failures do not look like connection errors. They look like growing latency, growing disk, and consumers that appear idle while the broker burns. The broker absorbs mismatch between produce rate and consume rate, so by the time you page, the queue is already millions deep and redelivery is amplifying the load. Learn to read the broker, not the application logs: queue depth, unacknowledged count, publish rate versus deliver-plus-ack rate, and file-descriptor plus Erlang-process pressure tell you which failure you have."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Unbounded queue growth from a slow consumer: publish rate exceeds ack rate for hours. Symptom is steadily rising `messages_ready`, rising broker disk, then flow-control that throttles even healthy publishers.",
+        "Poison message loop: one malformed message crashes every consumer, each `nack + requeue` puts it back at the head. Symptom is high redelivery rate, zero ack rate, CPU burn with no progress.",
+        "Prefetch misconfiguration: `prefetch=1` starves throughput on high-latency work; unbounded prefetch OOMs the consumer and then mass-requeues on crash. Symptom is either low utilization or sawtooth redelivery storms.",
+        "Missing publisher confirms with transient network loss: producer thinks it sent, broker never stored. Symptom is gaps in downstream data with no error on either side.",
+        "Topology mismatch on deploy: producer declares a durable exchange, consumer declares the same name as non-durable, channel closes with a precondition error. Symptom is flapping channels and `PRECONDITION_FAILED` in broker logs.",
+        "No-route drops: published with a routing key no binding matches and no alternate exchange. Symptom is silent loss unless you set the mandatory flag or a dead-letter path and alert on it."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The fix pattern is the same every time: bound the damage before you optimise the path. Set a `max-length` or `max-length-bytes` policy with an overflow behavior of `reject-publish` or `dead-letter` so a slow consumer degrades one workload instead of filling the disk for all vhosts. Put every work queue behind a dead-letter exchange with a TTL-bounded retry queue and a final parking queue, so poison messages age out after N attempts instead of spinning forever. Set prefetch to roughly `2-4x` the consumer's parallelism, never unlimited, because prefetch is your memory bound — throughput gained beyond that is borrowed from crash-recovery cost. The trade-off you are accepting: you will drop or park messages under sustained overload rather than keep a fantasy of infinite buffering."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Auto-ack is data loss",
+      "text": "If `auto_ack=True` or `no_ack=True`, the broker deletes the message the moment it writes it to the socket. Any consumer crash, deploy, or slow GC pause after that point loses the message with no redelivery. Default to manual acks and ack **after** the side effect commits. You pay one round trip per message — that is the cost of at-least-once."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete shape: minimum viable topology"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "amqp_demo.py",
+      "code": "import pika\n\nconn = pika.BlockingConnection(pika.ConnectionParameters(\"broker\", heartbeat=30))\nch = conn.channel()\n# One connection per process, one channel per thread. Re-declare on recovery.\nch.exchange_declare(exchange=\"orders\", exchange_type=\"topic\", durable=True)\nch.queue_declare(queue=\"orders.created.v1\", durable=True,\n                 arguments={\"x-dead-letter-exchange\": \"orders.dlx\",\n                            \"x-max-length\": 1000000,\n                            \"x-overflow\": \"reject-publish\"})\nch.queue_bind(queue=\"orders.created.v1\", exchange=\"orders\",\n              routing_key=\"orders.*.created\")\n\n# Producer: wait for broker accept, persist to disk.\nch.confirm_delivery()\nch.basic_publish(exchange=\"orders\", routing_key=\"orders.eu.created\",\n                 body=b'{\"id\": 42}',\n                 properties=pika.BasicProperties(delivery_mode=2))  # persistent\n\n# Consumer: bound prefetch, manual ack after work commits.\nch.basic_qos(prefetch_count=32)\nch.basic_consume(queue=\"orders.created.v1\",\n                 auto_ack=False,\n                 on_message_callback=lambda c, m, p, b: (do_work(b), c.basic_ack(m.delivery_tag)))"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet carries four deliberate choices. Durable exchange plus durable queue plus `delivery_mode=2` means the message survives broker restart — omit any one and it does not. `confirm_delivery` turns the publish into a broker ack so network loss surfaces as an exception you can retry. `basic_qos` with 32 caps unacknowledged deliveries so a crashed consumer requeues at most 32 messages instead of tens of thousands. The dead-letter exchange plus max-length policy converts overload and poison messages into observable parked messages instead of disk-full or infinite redelivery. Each choice costs latency or operator attention, which is exactly why you state them in a design review."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "0.9.1 versus 1.0: stop mixing them up"
+    },
+    {
+      "type": "paragraph",
+      "text": "If you draw exchanges and queues and then say you will use AMQP 1.0, you have contradicted yourself. 1.0 has no exchanges. It has sending and receiving links with settlement states like accepted, rejected, released, and modified. Routing, if you want it, lives in the broker product or your own layer. That is why cross-broker portability stories differ: 0.9.1 topologies move between 0.9.1 brokers with small client changes because the primitives match; 1.0 clients move between 1.0 endpoints but routing behavior does not transfer. Choose 0.9.1 when you want the broker to own routing rules. Choose 1.0 when you need a neutral framing for point-to-point reliable transfer and you are willing to own routing, or when the counterpart mandates it. The trade-off is who owns the hard part: broker or application."
+    },
+    {
+      "type": "table",
+      "caption": "When AMQP fits and when it loses to the alternative",
+      "headers": [
+        "Use AMQP 0.9.1 when",
+        "Do not use it when",
+        "Use this instead"
+      ],
+      "rows": [
+        [
+          "Many consumer types need different subsets of the same events",
+          "All consumers need the same ordered log replay",
+          "Partitioned log for replay and high fan-in throughput"
+        ],
+        [
+          "Work distribution with per-message ack and redelivery matters",
+          "Payloads are large blobs or sustained >100K msgs/s per stream",
+          "Object storage plus a pointer message, or a partitioned log"
+        ],
+        [
+          "Request routing by pattern without redeploying producers",
+          "Devices are tiny, lossy, or battery-constrained",
+          "Lightweight pub-sub designed for weak networks"
+        ],
+        [
+          "Enterprise integration across languages with strict delivery contracts",
+          "You need browser-to-broker messaging with minimal framing",
+          "Text-oriented or websocket-facing protocol plus a gateway"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Throughput expectations keep this honest. A tuned single broker handles tens of thousands of small persistent messages per second with confirms and acks, not hundreds of thousands. A partitioned log handles the latter because it appends sequentially and replays by offset instead of acknowledging each message individually and maintaining per-queue indexes. AMQP wins when routing flexibility and per-message outcome dominate; it loses when raw ingest rate, total retention, or ordered replay dominate. Name that split explicitly in an interview or you will recommend a broker where a log belongs."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Draw the topology before the code",
+          "text": "Start with producers, one exchange, bindings with concrete keys, queues, and consumers. State exchange type and why nothing weaker works. Interviewers fail candidates who jump to publish and subscribe without showing where routing lives."
+        },
+        {
+          "title": "State the delivery contract in one line",
+          "text": "Say at-least-once with confirms plus durable topology plus manual acks plus idempotent consumers, or at-most-once with auto-ack and transient queues. Then name what you gave up: latency and throughput for durability, or safety for speed."
+        },
+        {
+          "title": "Bound the failure modes",
+          "text": "Add prefetch, max-length with overflow, TTL retry with dead-letter exchange, and idempotency keys. Explain what the operator sees for each: queue depth alert, dead-letter rate alert, redelivery metric."
+        },
+        {
+          "title": "Defend broker versus log",
+          "text": "Expect why not use a partitioned log or plain HTTP. Answer with routing granularity and per-message settlement versus replay and sequential throughput. Pick one and justify the rejected one."
+        },
+        {
+          "title": "Handle ordering and scale",
+          "text": "State that a single queue gives order but caps parallelism, competing consumers break global order, and consistent-hash exchange or sharded queues restore parallelism at the cost of hot partitions. Do not promise ordered broadcast. It does not exist here."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "AMQP is a product. It is a wire contract plus, in 0.9.1, a broker model. Products implement it differently and performance characteristics do not transfer.",
+        "A queue guarantees exactly-once processing. It guarantees at-least-once delivery with redelivery. Exactly-once requires idempotent consumers plus deduplication keys — the broker cannot do it alone.",
+        "Durable queue means messages are safe. Safety needs durable exchange plus durable queue plus persistent messages plus confirms. Any missing piece silently downgrades you to in-memory.",
+        "Topic exchanges preserve order across consumers. Competing consumers on one queue interleave, and multiple queues bound to one topic diverge by design. Order holds only within one queue consumed serially.",
+        "More prefetch always means more throughput. Prefetch is an outstanding-work bound. Beyond consumer parallelism it only grows memory held and redelivery cost on crash."
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "AMQP 0.9.1 is a brokered protocol where producers publish to **exchanges that route by binding rules into queues**, and consumers get **at-least-once delivery via confirms, persistence, and manual acks** — chosen when flexible routing and per-message settlement matter more than raw log throughput."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:08:09.283Z",
+    "problems": []
+  }
+}

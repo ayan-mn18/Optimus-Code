@@ -1,0 +1,288 @@
+{
+  "slug": "locks-and-types-of-locks",
+  "title": "Locks and Types of Locks",
+  "summary": "Java locks from synchronized to StampedLock: what each guarantees, what each costs, and which one to defend in an LLD interview.",
+  "kind": "LLD",
+  "problemSlug": "locks-and-types-of-locks-43-83",
+  "topic": "Concurrency in Java",
+  "difficulty": "Medium",
+  "coverEmoji": "🔒",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Java"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Door Lock Types - A Simple Guide for your Home (with Pictures)",
+      "url": "https://www.locksmiths.co.uk/faq/door-lock-types-guide/",
+      "source": "locksmiths.co.uk",
+      "kind": "article"
+    },
+    {
+      "title": "Types Of Locks - Security Snobs",
+      "url": "https://securitysnobs.com/Types-Of-Locks.html",
+      "source": "securitysnobs.com",
+      "kind": "article"
+    },
+    {
+      "title": "Types of Door Locks - The Home Depot",
+      "url": "https://www.homedepot.com/c/ab/types-of-door-locks/9ba683603be9fa5395fab90dfb1e7e6",
+      "source": "homedepot.com",
+      "kind": "article"
+    },
+    {
+      "title": "Types, Metals and Manufacturing of Locks - IQS Directory",
+      "url": "https://www.iqsdirectory.com/articles/lock.html",
+      "source": "iqsdirectory.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A lock does **two jobs at once**: it gives you **mutual exclusion** *and* a **memory visibility guarantee**. If you only talk about one in an interview, you have missed half the mechanism. Every lock type in Java is just a different trade-off between **how many threads can proceed, under what conditions, and at what coordination cost**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a lock is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A lock is a coordination object that serialises access to a critical section and establishes a *happens-before* edge between the thread that releases it and the next thread that acquires it. Without that second property, exclusion alone is useless on modern hardware: writes could sit in a core-local cache or be reordered and a second thread could enter later and still see stale state. In Java this contract is explicit. Exiting a `synchronized` block or calling `Lock.unlock()` flushes your writes in the Java Memory Model sense; entering the block or calling `Lock.lock()` invalidates stale reads. That is why `volatile` is not a cheaper lock and `synchronized` is not just a queue — one solves visibility for a single variable, the other solves atomicity plus visibility for a compound action like check-then-act."
+    },
+    {
+      "type": "paragraph",
+      "text": "There are two families you must separate from the first minute. **Intrinsic locks** — every Java object has one, acquired with `synchronized` — are implicit, non-interruptible, block-structured, and always released when you leave the block. **`java.util.concurrent.locks.Lock` implementations** — `ReentrantLock`, `ReentrantReadWriteLock`, `StampedLock` — are explicit objects with `lock()` and `unlock()` calls. The trade-off is control versus safety. Intrinsic locks cannot be leaked across methods by accident because the compiler enforces release; explicit locks can be leaked, forgotten in an exception path, or double-unlocked, but they buy you `tryLock()`, timed waits, interruptible acquisition, fairness policies, multiple `Condition` queues, and read/write separation. Choose implicit when the critical section is short and structured. Choose explicit when you need to *decide* whether to block at all."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: acquire, park, release"
+    },
+    {
+      "type": "paragraph",
+      "text": "Underneath every Java lock is the same loop: attempt to take ownership with an atomic compare-and-set, and if that fails, park the thread until it is signalled. `synchronized` does this inside the JVM with monitor inflation — it starts as a cheap CAS on the object header, then inflates to a full monitor with a wait set when contended. `ReentrantLock` does it in pure Java on top of `AbstractQueuedSynchronizer` (AQS): a volatile `state` integer plus a FIFO CLH queue of parked threads. The reason AQS matters for interviews is that it explains fairness, reentrancy, and `Condition` in one mental model. Reentrancy is just a counter plus an owner field: same thread increments, different thread queues. Fairness is just whether a newly arriving thread is allowed to barge ahead of the queue with a CAS or must enqueue behind waiters."
+    },
+    {
+      "type": "mermaid",
+      "title": "Lock acquisition path",
+      "caption": "Same path for synchronized and AQS locks; only the queue policy differs.",
+      "code": "flowchart TD\n  T[Thread wants critical section] --> Try{CAS on state succeeds}\n  Try -->|Yes| Own[Become owner, set count to 1]\n  Own --> Exec[Execute critical section]\n  Exec --> Rel[Release: decrement count, volatile write]\n  Rel --> Sig{Waiters in queue}\n  Sig -->|Yes| Wake[Unpark next waiter]\n  Sig -->|No| Done[Lock becomes free]\n  Try -->|No| Re{Owner is self}\n  Re -->|Yes| Inc[Increment reentry count]\n  Inc --> Exec\n  Re -->|No| Fair{Can barge or must queue}\n  Fair -->|Queue| Park[Enqueue and park thread]\n  Park --> Try"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two properties fall out of that diagram that most candidates hand-wave. First, **blocking is expensive because parking is an OS event**: a contended `lock()` costs microseconds and a context switch, while an uncontended CAS costs tens of nanoseconds. That 100x gap is why splitting a lock, shrinking a critical section, or switching to a read lock matters more than micro-optimising the code inside. Second, **fairness is throughput versus starvation**. A non-fair lock lets a fresh arrival steal the lock from a woken waiter, which gives higher throughput because the woken thread may not even be rescheduled yet. A fair lock enforces FIFO order, which bounds wait time but forces more context switches and kills throughput under load. This is why `ReentrantLock` defaults to non-fair, and why you should never turn on fairness unless you can name the starvation scenario you are fixing — the trade-off is always latency predictability bought with raw ops per second."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The lock types you must be able to compare"
+    },
+    {
+      "type": "table",
+      "caption": "The four primitives that cover 95% of LLD concurrency questions.",
+      "headers": [
+        "Lock",
+        "How it works",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "`synchronized` (intrinsic)",
+          "Monitor on object header; block-structured; one wait set via `wait/notify`",
+          "Zero API to misuse; JVM optimises with biased locking, lock elision, coarsening; works with every tool",
+          "No timeout, no `tryLock`, not interruptible while blocked; single condition queue; must hold to call `wait`"
+        ],
+        [
+          "`ReentrantLock`",
+          "AQS-based explicit mutex; reentrant count + owner; optional fairness; multiple `Condition` objects",
+          "Interruptible `lockInterruptibly`, timed `tryLock`, fairness switch, separate conditions for producers/consumers",
+          "Must `unlock` in `finally` or you deadlock; more code; non-fair by default so barging still possible; heavier object"
+        ],
+        [
+          "`ReentrantReadWriteLock`",
+          "Pair of locks sharing one AQS state: shared read count + exclusive write count",
+          "Readers proceed in parallel; ideal for read-heavy maps, caches, config; downgrade write to read is safe",
+          "Writer starvation if readers never drain; write is exclusive and expensive; cannot upgrade read to write without release; larger memory and slower than `synchronized` when writes dominate"
+        ],
+        [
+          "`StampedLock`",
+          "Long stamp instead of reentrant count; modes: write, read, optimistic read with `validate()`",
+          "Optimistic reads are lock-free and extremely fast for read-mostly data; no reader blocks writer in optimistic mode",
+          "Not reentrant; optimistic read can fail and must retry; brutal API — forget `unlock(stamp)` or use wrong stamp and you corrupt state; no `Condition`"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "My opinionated default for LLD: **start with `synchronized` or `ConcurrentHashMap` and force the interviewer to give you a reason to upgrade.** Most designs never need more. Reach for `ReentrantLock` when you need to *avoid* blocking — a booking service that should fail fast with `tryLock(50, MILLISECONDS)` instead of queueing 10,000 threads behind a hot account. Reach for `ReadWriteLock` only when profiling shows reads outnumber writes by an order of magnitude and the read section is long enough to matter; for a short `map.get()` it is slower than a `ConcurrentHashMap` read which takes no lock at all. Reach for `StampedLock` only for in-memory, read-mostly structures like price tables or routing tables where you can tolerate retry logic. It is not a drop-in replacement — the lack of reentrancy and the manual stamp discipline make it the most misused lock in the JDK."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Locks do not fail by throwing a clean error. They fail by freezing, slowing, or silently corrupting. The four signatures you must recognise from a thread dump or dashboard are distinct. **Deadlock** shows as flat CPU, growing request queues, and threads in `BLOCKED` or `WAITING` on two locks in opposite order — the classic account-A to account-B transfer. **Lock convoying / contention collapse** shows as high CPU plus falling throughput: 64 threads hammer one monitor, 63 are parked, and every handoff costs a context switch. You see this as `synchronized` on a global cache or a single `ReentrantLock` guarding an I/O call. **Missed release** shows as a single thread holding a lock forever after an exception path skipped `unlock()` — everything behind it starves while the holder is idle. **Stale read or lost update** shows as correct locking in 99% of paths and one unlocked fast path — a `size` field updated outside the lock, or a `get` that skips the read lock because it looked harmless."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Deadlock symptom:** all request threads stuck, `jstack` shows a cycle like `Thread-1 waiting for lock <0x1> held by Thread-2` and vice versa. Fix is lock ordering, `tryLock` with timeout + backoff, or collapsing two locks into one.",
+        "**Convoy symptom:** p99 latency spikes linearly with thread count while CPU is saturated in kernel park/unpark. Fix is lock splitting, striping, smaller critical section, or replacing the lock with a concurrent structure.",
+        "**Writer starvation symptom:** with `ReentrantReadWriteLock`, writes never complete because readers continuously overlap. Fix is `fair=true` or switching to `StampedLock` write-preferring behaviour — trading read throughput for write progress.",
+        "**Optimistic-read corruption symptom:** with `StampedLock`, a thread uses data after `validate()` returned `false` without retry. Symptom is rare, unreproducible wrong values. Fix is the mandatory `try-optimistic-read, validate, fallback to read lock` loop."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The leak that kills juniors",
+      "text": "This is wrong: `lock.lock(); doWork(); lock.unlock();`. If `doWork()` throws, the lock is never released and every future acquirer blocks forever. The only correct shape is `lock.lock(); try { doWork(); } finally { lock.unlock(); }`. With `synchronized` the JVM writes that `finally` for you — that safety is the whole reason it still exists."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that clarifies the choice"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ExplicitLock.java",
+      "code": "class Account {\n    private final ReentrantLock lock = new ReentrantLock();\n    private long balance;\n\n    // Fail-fast transfer: never park forever behind a hot account.\n    boolean tryWithdraw(long amount, long timeoutMs) throws InterruptedException {\n        if (!lock.tryLock(timeoutMs, TimeUnit.MILLISECONDS)) {\n            return false; // caller sheds load instead of queueing\n        }\n        try {\n            if (balance < amount) return false;\n            balance -= amount;\n            return true;\n        } finally {\n            lock.unlock(); // non-negotiable: finally or deadlock\n        }\n    }\n\n    void deposit(long amount) {\n        lock.lock(); // interruptible variant exists if cancellation matters\n        try {\n            balance += amount;\n        } finally {\n            lock.unlock();\n        }\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ReadCache.java",
+      "code": "class ConfigCache {\n    private final ReentrantReadWriteLock rw = new ReentrantReadWriteLock();\n    private volatile Map<String, String> snapshot = Map.of();\n\n    String get(String key) {\n        // Reads run in parallel. No writer => no parking.\n        rw.readLock().lock();\n        try {\n            return snapshot.get(key);\n        } finally {\n            rw.readLock().unlock();\n        }\n    }\n\n    void reload(Map<String, String> fresh) {\n        rw.writeLock().lock(); // exclusive: blocks all readers and writers\n        try {\n            snapshot = Map.copyOf(fresh); // publish immutable copy\n        } finally {\n            rw.writeLock().unlock();\n        }\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read those two snippets as design statements, not syntax. The first says *contention is a load-shedding problem*: `tryLock` with a timeout turns an unbounded queue into a bounded fast failure, which is exactly what a payment or inventory service wants under a flash sale. The trade-off is that callers must handle `false` — you push complexity outward. The second says *reads dominate*: ten threads can hold the read lock simultaneously, so a config reload that happens once a minute never blocks steady-state traffic. The trade-off is that if writes become frequent the write lock becomes a convoy point and you would have been faster with a `ConcurrentHashMap` or a copy-on-write reference with no read lock at all. Never hold any of these locks across I/O, RPC, or `sleep` — you convert a nanosecond coordination primitive into a seconds-long parking lot."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design a thread-safe counter / ID generator",
+          "text": "They expect you to start with `synchronized` or `AtomicLong`, then defend why you do not need `ReentrantLock`. Say the critical section is three instructions with no timeout need — explicit locks add risk for zero benefit."
+        },
+        {
+          "title": "Design a cache with read-heavy traffic",
+          "text": "This is the `ReadWriteLock` trap. Strong answer: propose `ConcurrentHashMap` first, then explain when you would switch to `ReadWriteLock` (long compound reads, reload consistency) and when to `StampedLock` optimistic reads. Name the writer-starvation trade-off unprompted."
+        },
+        {
+          "title": "Transfer between two accounts without deadlock",
+          "text": "They want global lock ordering (by account ID) or `tryLock` on both with retry. Write the ordering code live: `first = min(a,b); second = max(a,b);` then lock in order. Mention that ordering buys deadlock-freedom but costs an extra comparison and a global convention every caller must obey."
+        },
+        {
+          "title": "Producer-consumer with two conditions",
+          "text": "`synchronized` gives one wait set; `ReentrantLock` gives `notFull` and `notEmpty` conditions. Explain why separate conditions avoid thundering-herd wakeups — the trade-off is more code for fewer spurious wakeups."
+        },
+        {
+          "title": "Why is throughput collapsing at 64 threads?",
+          "text": "Diagnose contention: show `jstack`, lock splitting, stripe the map into N locks, shrink the critical section, move I/O out. Interviewers promote candidates who reach for measurement and smaller sections before reaching for a fancier lock."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`synchronized` is always slower than `ReentrantLock` — false on modern JVMs. Uncontended `synchronized` is CAS-speed with elision and coarsening. `ReentrantLock` wins only when you use its extra features.",
+        "`volatile` can replace a lock for increments — false. `volatile` gives visibility, not atomicity. `count++` is read-modify-write and races without mutual exclusion or `AtomicInteger`.",
+        "`ReadWriteLock` is always faster for reads — false. If writes are frequent or reads are trivial map lookups, its bookkeeping is slower than `synchronized` or lock-free reads.",
+        "`StampedLock` is a faster `ReadWriteLock` — dangerous. It is non-reentrant, has no conditions, and optimistic reads require a validate-and-retry loop. Use it wrong and you get silent corruption, not just slowness.",
+        "More locks means more concurrency — often the opposite. Fine-grained locking adds ordering obligations and deadlock surface. One well-placed coarse lock with a tiny critical section beats five nested fine locks.",
+        "`synchronized(this)` locks the whole object — imprecise. It locks the monitor associated with that reference. Other methods using different lock objects still run concurrently. Which monitor guards which state must be a documented invariant."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, when to avoid it"
+    },
+    {
+      "type": "table",
+      "caption": "Choose by contention pattern, not by fashion.",
+      "headers": [
+        "Situation",
+        "Use this",
+        "Avoid this",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Short critical section, no timeout needed",
+          "`synchronized`",
+          "`StampedLock`",
+          "Compiler-enforced release beats manual stamps; JVM optimises the uncontended path for free"
+        ],
+        [
+          "Need timeout, fail-fast, or interruptible wait",
+          "`ReentrantLock.tryLock`",
+          "`synchronized`",
+          "Only explicit locks can refuse to block; blocking forever on a hot key is a design bug"
+        ],
+        [
+          "Read-mostly map with long compound reads",
+          "`ReentrantReadWriteLock`",
+          "Single global `synchronized`",
+          "Parallel readers lift throughput 5-10x; single lock serialises work that never conflicts"
+        ],
+        [
+          "Read-mostly numeric / reference data, extreme read rate",
+          "`StampedLock` optimistic read",
+          "`ReentrantReadWriteLock`",
+          "Optimistic reads avoid all CAS on the read path; trade-off is retry code and no reentrancy"
+        ],
+        [
+          "Simple counter, flag, single variable",
+          "`AtomicLong` / `volatile`",
+          "Any blocking lock",
+          "Lock-free atomics give visibility plus CAS without parking; a lock here is pure overhead"
+        ],
+        [
+          "High write contention on one key",
+          "Striping, sharding, or queue + single writer",
+          "Finer lock modes",
+          "No lock type fixes a hot key; only fewer threads touching the same state does"
+        ]
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "\"A lock buys **mutual exclusion plus visibility**; I use **`synchronized`** by default, **`ReentrantLock`** when I need timeout or interruptibility, **`ReadWriteLock`** for read-heavy compound reads, and **`StampedLock`** optimistic reads only when reads dominate and I can afford retry logic — and I never hold any of them across I/O.\""
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:05:55.376Z",
+    "problems": []
+  }
+}

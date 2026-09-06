@@ -1,0 +1,337 @@
+{
+  "slug": "sso-authorization-mechanism",
+  "title": "SSO Authorization Mechanism",
+  "summary": "SSO moves login out of your apps into a central Identity Provider. Your APIs never see passwords — they only validate signed tokens. This is the trade every API SSO design makes.",
+  "kind": "HLD",
+  "problemSlug": "sso-authorization-mechanism-93-207",
+  "topic": "Application Programming Interface (API)",
+  "difficulty": "Medium",
+  "coverEmoji": "🔐",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "API",
+    "SSO",
+    "Auth"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What Is Single Sign-on (SSO)? How It Works - YouTube",
+      "url": "https://www.youtube.com/watch?v=O1cRJWYF-g4",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is SSO? | How single sign-on works - Cloudflare",
+      "url": "https://www.cloudflare.com/learning/access-management/what-is-sso/",
+      "source": "cloudflare.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is Single Sign-On Authentication (SSO) And How Does It Work?",
+      "url": "https://auth0.com/blog/what-is-and-how-does-single-sign-on-work/",
+      "source": "auth0.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is single sign-on in Microsoft Entra ID?",
+      "url": "https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/what-is-single-sign-on",
+      "source": "learn.microsoft.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "SSO is **authentication outsourcing**. Your apps and APIs stop checking passwords entirely. A central Identity Provider checks the user once, signs a proof of who they are, and every API just validates that signature. If your API still has a password column, you do not have SSO — you have duplicated login."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What SSO actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Single Sign-On is federated authentication: one party authenticates the user, other parties believe the result. The party that logs the user in is the Identity Provider (IdP). The applications the user wants to reach are Service Providers (SPs) in SAML vocabulary, or Relying Parties / clients in OpenID Connect vocabulary. The federation part is the trust agreement set up in advance: the SP knows the IdP's public key, entity ID, and expected audience values. When the IdP later says 'this is alice@work, authenticated with MFA at 09:02, groups = engineering', the SP does not re-check her password. It checks the signature, the audience, and the expiry, then creates its own local session. That signature check is the entire security boundary. Break it and any caller can forge identity."
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not confuse this with authorization. SSO answers **who is this**, not **what can they do**. Authorization still happens locally at each API: the API maps claims in the token — `sub`, `groups`, `roles`, `scope` — to permissions on its own resources. A common HLD mistake is saying 'we use SSO for authorization.' You do not. You use SSO to get a trustworthy `sub` and group list without handling credentials, then you enforce RBAC, ABAC, or scopes inside the gateway or service. If you push permission logic into the IdP beyond coarse groups, you couple every product change to identity team review. Keep the IdP dumb about your domain: identity + coarse groups out, fine-grained checks in."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: redirect once, validate everywhere"
+    },
+    {
+      "type": "paragraph",
+      "text": "The browser is the messenger because the user must authenticate directly with the IdP — the app must never see the password. The standard SP-initiated flow has six moves. The user hits the app unauthenticated. The app responds with an authentication request and redirects the browser to the IdP. The user authenticates at the IdP, ideally with MFA. The IdP creates a signed statement and posts it back through the browser to the app. The app validates it and mints its own session plus tokens for API calls. The reason for the browser bounce instead of a direct server-to-server call is simple: only the IdP should touch credentials, and only the browser holds the IdP session cookie that makes the second login disappear."
+    },
+    {
+      "type": "mermaid",
+      "title": "SP-initiated SSO flow",
+      "caption": "Browser carries the signed proof so credentials never touch the app.",
+      "code": "flowchart TD\n  U[\"User Browser\"]\n  SP[\"Service Provider - App\"]\n  IDP[\"Identity Provider\"]\n  API[\"Resource API\"]\n  U-->|1 Unauthenticated request|SP\n  SP-->|2 AuthnRequest redirect|U\n  U-->|3 Redirect with request|IDP\n  IDP-->|4 Login plus MFA|U\n  U-->|5 Signed assertion via browser|SP\n  SP-->|6 Session plus tokens|U\n  U-->|7 API call with access token|API"
+    },
+    {
+      "type": "paragraph",
+      "text": "The second app is where SSO pays off. When the same user opens another integrated app, that app redirects to the IdP exactly as before. The difference: the browser already carries a session cookie for the IdP domain from the first login. The IdP sees a valid session, skips the password prompt, and immediately issues a new signed assertion scoped to the new app. That is why the user perceives 'log in once, access everything.' The trade-off is explicit: the IdP session becomes a high-value target. A stolen IdP cookie yields access to every connected app, which is why IdP sessions get short idle timeouts, strict `HttpOnly` + `Secure` + `SameSite` flags, device checks, and forced re-authentication for sensitive actions. You buy convenience with central risk concentration."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What your API actually receives"
+    },
+    {
+      "type": "paragraph",
+      "text": "Web login and API authorization use different tokens, and mixing them is the most common implementation bug. The ID Token (OIDC) or SAML Assertion tells the **app** who just logged in: subject, issuer, audience, authentication time, expiry, usually under five minutes. The app consumes it once and discards it. The Access Token is what the **API** sees on every call in the `Authorization: Bearer` header: subject, issuer, audience for the API or gateway, scopes like `read:docs`, expiry typically 5-15 minutes, plus an optional refresh token held only by the client. Your resource server must validate the access token, never the ID token. ID tokens are for the login client. Access tokens are for APIs. Accept an ID token at your API and you have broken audience separation — any app login can be replayed as API access."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "token_validation.py",
+      "code": "import jwt  # PyJWT\n# APIs never check passwords. They check issuer, audience, expiry, signature.\nJWKS_URL = \"https://idp-internal/.well-known/jwks.json\"\n# Cache JWKS client aggressively; fetching per-request adds 50-150ms p99.\njwks_client = jwt.PyJWKClient(JWKS_URL, cache_keys=True)\n\ndef authorize_request(bearer_token: str) -> dict:\n    key = jwks_client.get_signing_key_from_jwt(bearer_token).key\n    claims = jwt.decode(\n        bearer_token, key,\n        algorithms=[\"RS256\"],\n        issuer=\"https://idp-internal\",\n        audience=\"api-gateway\",  # NOT the web app client_id\n        options={\"require\": [\"exp\", \"iss\", \"aud\", \"sub\"]},\n    )\n    # Fine-grained check stays in the service, not the IdP\n    if \"read:ledger\" not in claims.get(\"scope\", \"\").split():\n        raise PermissionError(\"missing scope\")\n    return claims"
+    },
+    {
+      "type": "table",
+      "caption": "The two protocols you will be asked to compare. Pick one deliberately.",
+      "headers": [
+        "Aspect",
+        "SAML 2.0",
+        "OIDC + OAuth 2.0"
+      ],
+      "rows": [
+        [
+          "Token format",
+          "XML assertion, verbose, signed",
+          "JWT, compact JSON, signed"
+        ],
+        [
+          "Best fit",
+          "Legacy enterprise web apps, deep attribute needs",
+          "Modern web, mobile, SPAs, APIs"
+        ],
+        [
+          "Mobile / API story",
+          "Poor — built for browser POST, no scopes",
+          "Native — access tokens, scopes, refresh"
+        ],
+        [
+          "Complexity",
+          "Heavy metadata exchange, clock skew pain",
+          "Lighter, JWKS rotation, library support"
+        ],
+        [
+          "Why still used",
+          "Installed base; some buyers mandate it",
+          "Default for anything new with APIs"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Centralising login is a net win with real costs you must name.",
+      "headers": [
+        "Benefit",
+        "Cost you pay",
+        "Why it is worth it (or not)"
+      ],
+      "rows": [
+        [
+          "One credential, MFA enforced once",
+          "IdP outage logs everyone out of everything",
+          "Worth it if you run the IdP multi-region with static fallback; otherwise you built a single point of failure"
+        ],
+        [
+          "Apps never store passwords",
+          "Token validation bugs become auth bypass",
+          "Worth it — validating JWTs in one gateway is auditable, validating passwords in 40 services is not"
+        ],
+        [
+          "Central offboarding and policy",
+          "SSO session lifetime vs revocation lag",
+          "Worth it only with short access tokens (minutes) plus revocation push or introspection for high-risk APIs"
+        ],
+        [
+          "Standard protocols, no custom crypto",
+          "Redirect + JWKS fetch adds latency and complexity",
+          "Worth it for user-facing apps; not worth it for pure machine-to-machine — use client credentials instead"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The central argument for SSO in an HLD interview is operational, not cryptographic. Enforcing MFA, password rotation, anomaly detection, and deprovisioning in one hardened service beats reimplementing them in every microservice. A single team can rotate signing keys, patch CVEs, and emit audit logs correctly. The price is blast radius and availability coupling: the IdP is now Tier-0 infrastructure, same as DNS. Design it that way — active-active across regions, cached JWKS at the edge, short-lived tokens so a regional IdP blip degrades to re-login rather than total API failure. If the interviewer pushes on cost, say it directly: SSO trades many small auth bugs for one big dependency, and you mitigate the dependency with caching and short token lifetimes."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "SSO failures look like 'random logouts' or '403s for valid users' and almost always trace to validation strictness, clock drift, or key rotation — not to user error. The symptoms are specific enough to diagnose blind. Expired assertions after a slow MFA step, audience mismatches after a copy-paste config, and JWKS caching bugs during rotation cause most pages. Treat any auth change as a rollout: dual-publish keys, tolerate configurable skew, and alert on validation failure rate by reason, not just total 401s. Without per-reason metrics you will stare at a flat 401 graph while enterprise users cannot log in."
+    },
+    {
+      "type": "table",
+      "caption": "Failure, user-visible symptom, and what to check first.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Fix"
+      ],
+      "rows": [
+        [
+          "Clock skew between IdP and SP",
+          "Intermittent `invalid signature / expired` right after login",
+          "Allow 60-120s skew, run NTP, keep assertion lifetime 2-5 min"
+        ],
+        [
+          "JWKS rotation without cache invalidation",
+          "Spike of 401s on APIs while web login works",
+          "Cache JWKS with `kid` lookup, prefetch new `kid`, support two active keys"
+        ],
+        [
+          "Wrong audience configured",
+          "Login succeeds, every API call 403",
+          "Assert `aud` equals API identifier, not web client ID; separate IDs per environment"
+        ],
+        [
+          "Overlong IdP session",
+          "Revoked user still calls APIs for an hour",
+          "Short access tokens (5-15 min), check revocation or introspect on sensitive endpoints"
+        ],
+        [
+          "SAML XML canonicalisation bug",
+          "One SP rejects assertions others accept",
+          "Do not hand-roll XML validation; use a maintained library, pin metadata URL"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Validate everything, every time",
+      "text": "Signature alone is not validation. Check **issuer, audience, expiry, not-before, replay ID, and algorithm** on every request. The classic bypass is `alg=none` or swapping RS256 for HS256 with the public key as HMAC secret. Pin expected algorithms to `RS256` or `ES256`, reject everything else, and fail closed on JWKS fetch errors for auth paths."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Where validation lives in an API architecture"
+    },
+    {
+      "type": "mermaid",
+      "title": "Gateway validates, services authorize",
+      "caption": "One place to get crypto right, many places to enforce domain permissions.",
+      "code": "flowchart LR\n  C[\"Client App\"]\n  GW[\"API Gateway\"]\n  JWKS[\"JWKS Endpoint\"]\n  A[\"Service A\"]\n  B[\"Service B\"]\n  C-->|Bearer access token|GW\n  GW-->|Fetch and cache keys|JWKS\n  GW-->|Verified claims plus scope|A\n  GW-->|Verified claims plus scope|B"
+    },
+    {
+      "type": "paragraph",
+      "text": "For a service mesh or microservice estate, terminate token validation at the edge gateway, then forward verified claims downstream as headers or a re-signed internal JWT. The reason is blast-radius control: JWKS caching, algorithm pinning, and issuer allow-listing are subtle and must exist once, be tested once, and be patched once. Downstream services do not re-validate the external signature; they trust the gateway over mTLS and enforce their own scopes and roles. The trade-off is that header-spoofing inside the VPC becomes privilege escalation, so strip external claim headers at the edge and deny direct-to-service traffic by network policy. Edge validation without internal trust boundaries is just moving the bypass one hop inward."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "gateway_claims.py",
+      "code": "# Gateway strips caller-supplied headers, then injects verified identity.\n# Services behind the gateway MUST reject requests without this header\n# when traffic does not come over mTLS from the gateway.\nTRUSTED_GW_PEER = \"spiffe://gateway/prod\"\n\ndef build_upstream_headers(claims: dict, peer_id: str) -> dict:\n    assert peer_id == TRUSTED_GW_PEER\n    return {\n        \"X-Verified-Sub\": claims[\"sub\"],\n        \"X-Verified-Scope\": claims.get(\"scope\", \"\"),\n        \"X-Verified-Groups\": \",\".join(claims.get(\"groups\", [])),\n    }"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with the split",
+          "text": "Say: browser flow for login, bearer tokens for APIs, gateway validates. Draw IdP, app, browser, gateway, JWKS in the first 90 seconds."
+        },
+        {
+          "title": "Name the protocol and why",
+          "text": "Default to OIDC + OAuth 2.0 for any API topic. Mention SAML only as legacy interop. Justify with token size, mobile support, and scopes."
+        },
+        {
+          "title": "Go deep on validation",
+          "text": "List the six checks: signature via JWKS, issuer, audience, expiry, algorithm allow-list, replay/nonce. This is where medium becomes senior."
+        },
+        {
+          "title": "Talk lifetime and revocation",
+          "text": "Propose 5-15 min access tokens, rotating refresh tokens, IdP session with idle timeout. Explain revocation lag and when to force introspection."
+        },
+        {
+          "title": "Close with failure modes",
+          "text": "Name IdP as Tier-0, JWKS caching, clock skew, audience misconfig. Offer multi-region IdP and gateway key cache as mitigations."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**SSO equals authorization.** It does not. SSO proves identity. Scopes, roles, and resource ownership are still checked by each API.",
+        "**ID token goes to the API.** Wrong token. APIs take access tokens with an API audience. ID tokens are for the login client only.",
+        "**Valid signature means valid request.** Without issuer, audience, expiry, and algorithm checks, a token for staging works in prod.",
+        "**Logout equals revocation.** Local app logout does not kill the IdP session or outstanding access tokens. You need front-channel logout plus short lifetimes.",
+        "**SSO removes the need for per-service auth.** Every service still enforces its own permissions from verified claims. The gateway authenticates; services authorize.",
+        "**SAML and OIDC are interchangeable.** SAML carries rich attributes for browser SSO; OIDC carries scoped, short-lived tokens for APIs. Pick by client type."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, when not to"
+    },
+    {
+      "type": "table",
+      "caption": "SSO is the default for humans, the wrong tool for machines.",
+      "headers": [
+        "Use SSO when",
+        "Avoid SSO when"
+      ],
+      "rows": [
+        [
+          "Humans access multiple apps or APIs via a browser or mobile app",
+          "Pure service-to-service calls — use client-credentials flow or workload identity instead"
+        ],
+        [
+          "You need central MFA, audit, and instant deprovisioning",
+          "You need fine-grained domain permissions — keep those in the service, only groups in the token"
+        ],
+        [
+          "Enterprise buyers require federated login for your SaaS API",
+          "Ultra-low-latency internal paths that cannot tolerate JWKS fetch — use locally verified short tokens or mTLS identity"
+        ],
+        [
+          "You want to delete password storage from every app team",
+          "A single low-risk internal tool where operating an IdP exceeds the risk of local auth"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "**SSO centralises human authentication in an IdP that issues short-lived signed tokens, and every API validates issuer, audience, expiry, and signature at the edge before enforcing its own scopes.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:51:41.419Z",
+    "problems": []
+  }
+}

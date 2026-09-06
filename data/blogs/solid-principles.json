@@ -1,0 +1,298 @@
+{
+  "slug": "solid-principles",
+  "title": "SOLID Principles",
+  "summary": "SOLID is five bets on change: what each principle costs, what it buys, and when to refuse it in LLD interviews.",
+  "kind": "LLD",
+  "problemSlug": "solid-principles-30-66",
+  "topic": "Design Principles",
+  "difficulty": "Medium",
+  "coverEmoji": "🧱",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Design Principles",
+    "OOP"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "SOLID is not solid. Balancing tradeoffs usually requires domain knowledge.",
+      "url": "https://www.reddit.com/r/SoftwareEngineering/comments/1301amo/solid_is_not_solid_balancing_tradeoffs_usually/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "SOLID Design Principles Explained: Building Better Software Architecture",
+      "url": "https://www.digitalocean.com/community/conceptual-articles/s-o-l-i-d-the-first-five-principles-of-object-oriented-design",
+      "source": "digitalocean.com",
+      "kind": "article"
+    },
+    {
+      "title": "SOLID Principles with Real Life Examples - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/solid-principle-in-programming-understand-with-real-life-examples/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "The SOLID Principles of Object-Oriented Programming ...",
+      "url": "https://www.freecodecamp.org/news/solid-principles-explained-in-plain-english/",
+      "source": "freecodecamp.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "SOLID is not five moral rules. It is five bets on **where change will hurt you**. Each principle trades **present indirection for future optionality**. If you cannot name the edit you are insuring against, you are just adding interfaces and call hops. Trade-off stated up front: more files and longer call chains now, smaller blast radius later — but only on the axis you guessed right."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "SOLID is five coupled heuristics for controlling dependency direction and change propagation in object-oriented code. **S**ingle Responsibility: a module should have one reason to change, meaning one actor or one axis of requirements owns it. **O**pen-Closed: you should be able to add new behavior without editing tested code, by closing the stable core and opening extension points. **L**iskov Substitution: any subtype must honor the contract of its supertype so callers do not need `instanceof` checks. **I**nterface Segregation: no client should be forced to depend on methods it never calls. **D**ependency Inversion: high-level policy should depend on abstractions, not on concrete low-level details; both should depend on the abstraction. The WHY is shared: edits are expensive when they ripple. SOLID tries to force ripples to flow toward code you already expected to touch. The trade-off is shared too: every boundary you draw makes one kind of change cheap and the opposite kind more expensive."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**SRP:** one class, one owner, one reason to edit. Not “does one thing” — “changes for one reason.”",
+        "**OCP:** closed for modification, open for extension via polymorphism or composition. New case = new class, not new `if`.",
+        "**LSP:** substitutability is behavioral, not syntactic. If `Child` breaks caller expectations of `Parent`, the hierarchy is wrong.",
+        "**ISP:** many small role interfaces beat one fat interface. Do not make `Robot` implement `eat()`.",
+        "**DIP:** invert the `new`. `OrderService` depends on `PaymentGateway`, `StripeGateway` implements it. Direction of dependency opposes direction of control flow."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The mechanism is always the same: insert an abstraction at the point where variation is expected, then push details behind it. SRP does it by splitting by actor so commits do not collide. OCP does it by moving the volatile `switch` into a registry of strategies. LSP does it by defining the contract — preconditions, postconditions, invariants — and enforcing it in every override. ISP does it by slicing a fat interface along client roles. DIP does it by flipping who owns the interface: the high-level policy declares what it needs, low-level adapters conform. WHY this works: the compiler and the test suite can then protect the stable part. You get a seam where you can substitute a fake, add a variant, or delete a feature without recompiling your brain. Trade-off: each seam adds indirection, more types to discover, and a mapping cost when you need a cross-cutting operation over all variants."
+    },
+    {
+      "type": "mermaid",
+      "title": "Dependency Inversion seam",
+      "caption": "High-level policy depends on the abstraction; details plug in from below.",
+      "code": "flowchart TD\n  Client[OrderService] --> Gateway[PaymentGateway]\n  Stripe[StripeGateway] --> Gateway\n  Cash[CashGateway] --> Gateway\n  Fake[FakeGateway] --> Gateway"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "S — Single Responsibility"
+    },
+    {
+      "type": "paragraph",
+      "text": "SRP means **co-locate what changes together for the same reason, separate what changes for different reasons**. An `Order` that holds pricing rules, SQL statements, and email templates has three owners: product, persistence, notifications. A pricing change risks breaking persistence because they share a file, share tests, share merge conflicts. Split into `Order`, `OrderRepository`, `OrderNotifier`. WHY: version control and code review scale by ownership. The symptom SRP fixes is not size — a 1000-line pure pricing engine is fine — it is mixed commit reasons. Trade-off: you now have three classes and wiring between them. Navigation cost goes up. If the three concerns truly always change together, you split for no gain and tripled the places to look. Apply SRP by actor, not by verb count."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "O — Open-Closed"
+    },
+    {
+      "type": "paragraph",
+      "text": "OCP means **new behavior ships as new code, not edited old code**. The classic shape: a closed loop over an open set of policies. `PriceCalculator` iterates `List<DiscountPolicy>`; adding `FestivalDiscount` means adding a class and registering it, never touching the loop. WHY: edited code must be re-tested and re-reasoned; added code only needs its own tests plus the contract test. That is why interviewers probe for `switch` on type codes or enums — each new case edits the same function and risks every old case. Trade-off: OCP front-loads abstraction design and makes the simple case harder to read. Adding a boolean flag is one line; adding a strategy hierarchy is five files. If the domain only ever has two stable variants, the `if` is cheaper and more honest. Use OCP when the set is open and product keeps inventing members."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "L — Liskov Substitution"
+    },
+    {
+      "type": "paragraph",
+      "text": "LSP means **a subtype must be usable wherever the supertype is promised, without the caller knowing**. This is behavioral, not just `extends`. If `Square extends Rectangle` and overrides `setWidth` to also change height, code that assumed width and height are independent breaks. If `ReadOnlyFile extends File` and throws on `write()`, callers that checked no preconditions now crash. The rule: you cannot strengthen preconditions, weaken postconditions, or throw new checked exceptions; invariants must hold. WHY: polymorphism only pays if callers can reason once against the base contract. Every `instanceof` or `try/catch UnsupportedOperationException` is proof LSP already failed. Trade-off: honoring LSP often forces you to reject a tempting hierarchy and use composition instead. You lose code reuse via inheritance to gain caller sanity. Prefer small, honest hierarchies or interfaces over deep trees."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "I — Interface Segregation"
+    },
+    {
+      "type": "paragraph",
+      "text": "ISP means **clients depend only on the operations they actually invoke**. A fat `Worker` interface with `work()`, `eat()`, `attendMeeting()` forces `RobotWorker` to stub `eat()` with a no-op or throw, which then poisons every caller with meaningless methods. Split into `Workable`, `Eatable` and depend on the role you need. WHY: fat interfaces couple deployment and recompilation. Change `eat()` and you rebuild and retest robots that never eat. More importantly, they lie about capability and push runtime failures where compile-time separation was possible. Trade-off: you get more interfaces and more constructor parameters typed to narrow roles. Discovery cost rises, and if every client actually uses the full fat interface, you segregated for nothing and scattered a coherent concept. Segregate by client role, not by method count."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "D — Dependency Inversion"
+    },
+    {
+      "type": "paragraph",
+      "text": "DIP means **depend on the need, not the supplier**. Business logic should not `new SmtpMailer()` or `new PostgresOrderRepo()` inline. It should take `Notifier` and `OrderRepository` as constructor arguments, with the interfaces owned by the business package. Adapters in the outer layer implement them. WHY: this inverts change propagation. A mail-provider swap or a database migration touches one adapter, not fifty call sites, and unit tests can inject a fake without sockets or disks. Control flows from policy to detail at runtime, but source dependency points from detail to policy. Trade-off: object construction moves elsewhere — factories, wiring code, or a DI container — and stack traces get longer. Over-applied, every class gets an interface with exactly one implementation, which buys testability you never use at the price of doubled files. Invert volatile infrastructure and external I/O; do not invert stable value objects like `Money` or `String`."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs: what you pay versus what you buy.",
+      "headers": [
+        "Principle",
+        "What you pay now",
+        "What you buy later",
+        "When the bet loses"
+      ],
+      "rows": [
+        [
+          "SRP",
+          "More classes, wiring, navigation hops",
+          "Fewer merge conflicts, clear ownership, focused tests",
+          "Concerns always co-change; split triples edits"
+        ],
+        [
+          "OCP",
+          "Abstraction up front, harder first read",
+          "Add variant without retesting core",
+          "Only 2 stable variants; strategy is overkill"
+        ],
+        [
+          "LSP",
+          "Reject convenient inheritance, write contract tests",
+          "Callers reason once, no type checks",
+          "Deep tree forced where composition was correct"
+        ],
+        [
+          "ISP",
+          "More role interfaces, more parameters",
+          "No fake methods, minimal recompilation",
+          "All clients use full interface; slicing adds noise"
+        ],
+        [
+          "DIP",
+          "Factories, injection, longer traces",
+          "Swap infra, fast unit tests",
+          "Single impl forever; interface doubles files"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "In production SOLID violations do not show up as ugly code — they show up as incident shape and lead time. SRP violation shows up as **unrelated deploys breaking each other**: a logging-format change takes down billing because both lived in `OrderManager`. You see it in `git blame` where every line has a different team, and in three-team merge conflicts on one file. OCP violation shows up as **flag sprawl**: a 400-line `calculate()` with nested `if (type == X)` where adding coupon #17 regresses coupon #3 because the same function was edited. LSP violation shows up as **defensive callers**: `if (bird instanceof Penguin)` before `fly()`, or crash loops after a new subtype throws `UnsupportedOperationException` in a path the base promised was safe. ISP violation shows up as **forced redeploys and fake implementations**: changing one method on a 30-method interface restarts services that never called it, and logs fill with `NotImplemented` from adapters. DIP violation shows up as **untestable policy and slow suites**: business logic constructs sockets, clocks, and random generators inline, so unit tests need databases and flake, and swapping a provider means editing fifty files. The fix is never apply all five harder — it is to find the actual axis of change from incidents and put exactly one seam there."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Symptom of SRP failure: one file in every incident review, commits mixing product + infra + reporting reasons.",
+        "Symptom of OCP failure: linear growth of `switch` size with feature count; test time of core grows with variant count.",
+        "Symptom of LSP failure: `instanceof`, downcasts, or `catch UnsupportedOperationException` spreading through callers.",
+        "Symptom of ISP failure: empty method bodies, `return null`, or throws in implementations; wide rebuild on narrow change.",
+        "Symptom of DIP failure: `new` on infrastructure inside domain logic; no unit test without Spring, DB, or network."
+      ]
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Violation.java",
+      "code": "class OrderService {\n  // Violates SRP + DIP + OCP in 20 lines. Typical LLD starting point.\n  public void checkout(Order order, String type) {\n    double total = order.getAmount();\n    if (type.equals(\"STUDENT\")) total *= 0.9;        // OCP: edit me per coupon\n    else if (type.equals(\"FESTIVAL\")) total *= 0.8;\n\n    PostgresOrderRepo repo = new PostgresOrderRepo(); // DIP: concrete inside policy\n    repo.save(order);                                 // untestable without DB\n    SmtpMailer mailer = new SmtpMailer();             // SRP: pricing + persistence + notify\n    mailer.send(order.getEmail(), \"paid \" + total);\n  }\n}\n// LSP smell elsewhere: class ReadOnlyOrder extends Order { write() { throw ... } }"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Solid.java",
+      "code": "interface DiscountPolicy { double apply(Order o); }\ninterface OrderRepository { void save(Order o); }\ninterface Notifier { void send(String to, String msg); }\n\nclass OrderService {\n  private final List<DiscountPolicy> policies; // OCP: new discount = new class\n  private final OrderRepository repo;          // DIP: owned by domain, injected\n  private final Notifier notifier;             // SRP: persistence + notify moved out\n\n  OrderService(List<DiscountPolicy> policies, OrderRepository repo, Notifier notifier) {\n    this.policies = policies; this.repo = repo; this.notifier = notifier;\n  }\n  public void checkout(Order order) {\n    double total = order.getAmount();\n    for (DiscountPolicy p : policies) total = p.apply(order);\n    repo.save(order);\n    notifier.send(order.getEmail(), \"paid \" + total);\n  }\n}\n// ISP: Notifier is 1 method, not a 20-method MessagingService.\n// LSP: every DiscountPolicy must honor apply() with no new exceptions."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Split the god class",
+          "text": "You get `ParkingLot` or `LibraryManager` doing booking, pricing, persistence, and notifications. Say which actor owns each piece, then extract `SlotRepository`, `PricingStrategy`, `Notifier`. Trade-off to state: more constructors to wire, but reviews no longer collide."
+        },
+        {
+          "title": "Kill the switch",
+          "text": "Interviewer adds a vehicle type, coupon type, or notification channel. Do not add another `if`. Introduce `FeePolicy` or `Channel` interface plus a registry map. Trade-off to state: five files instead of one line, but core loop stays unedited and tested."
+        },
+        {
+          "title": "Defend the hierarchy",
+          "text": "They propose `Square extends Rectangle` or `Admin extends User` with narrowed behavior. Reject or constrain it. Show the caller that breaks, then prefer composition or a narrower base. This is the LSP trap — name preconditions and postconditions explicitly."
+        },
+        {
+          "title": "Slice the fat interface",
+          "text": "They hand you `SmartDevice` with `print()`, `scan()`, `fax()`. Show `BasicPrinter` forced to throw. Split into `Printable`, `Scannable` and depend on roles in `PrintJobRunner`. Trade-off: more types, but no fake methods."
+        },
+        {
+          "title": "Invert the construction",
+          "text": "They ask how you test without a database. Move `new PostgresX()` out of domain code into a factory or constructor injection. Domain declares `XRepository`, infra implements it. Trade-off: wiring complexity moves to composition root, policy becomes instant to unit test."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose marks"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**SRP means a class does one thing or has few methods.** No — it means one reason to change. A pricing engine with 20 pure functions is fine; a 50-line class touched by three teams is not.",
+        "**OCP means never edit code.** No — it means stable core resists edits for *expected* variation. Bug fixes and genuinely new axes still edit. Freezing everything creates speculative hooks.",
+        "**LSP is about syntax — if it compiles, it substitutes.** No — it is about behavior. Compiling `Penguin extends Bird { fly() { throw ... } }` still breaks every caller that believed `fly()` works.",
+        "**ISP means one method per interface.** No — it means one client role per interface. Atomising to single-method interfaces when clients always use them together just scatters cohesion.",
+        "**DIP means every class needs an interface and a DI framework.** No — it means invert volatile dependencies. Wrapping stable values or single-impl domain concepts in interfaces adds cost with no option value.",
+        "**More SOLID always equals cleaner.** No — each letter bets against a specific future. Wrong bet = indirection tax with no payout. YAGNI overrides speculative SOLID every time."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "When to apply it and when to refuse it.",
+      "headers": [
+        "Situation",
+        "Apply",
+        "Skip"
+      ],
+      "rows": [
+        [
+          "2-3 payment providers, more coming",
+          "DIP + OCP: `PaymentGateway` interface, strategy list",
+          "Inline `if (provider==X)` when only one will ever exist"
+        ],
+        [
+          "Report + persist + notify in one class",
+          "SRP: split by owner into repo, service, notifier",
+          "Split when all three always change in same commit"
+        ],
+        [
+          "Bird / Shape hierarchy question",
+          "LSP: narrow contract or prefer composition",
+          "Deep inheritance to reuse 3 lines of code"
+        ],
+        [
+          "Client uses 2 of 20 methods",
+          "ISP: extract role interface the client actually needs",
+          "Slice when every client uses the whole surface"
+        ],
+        [
+          "Unit test needs DB/network",
+          "DIP: inject repo/clock/notifier, use fakes",
+          "Interface for `Money`, `DateRange`, pure functions"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**“I use SOLID to put a seam exactly where requirements vary — SRP by owner, OCP by extension, LSP by contract, ISP by client role, DIP by volatility — and I skip any seam whose future change I cannot name, because indirection without option value is just cost.”**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:52:58.273Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,337 @@
+{
+  "slug": "forward-reverse-proxy",
+  "title": "Forward & Reverse Proxy",
+  "summary": "Forward proxy stands in for the client, reverse proxy stands in for the server. Same interception trick, opposite trust direction — and that decides everything about caching, security, and scaling.",
+  "kind": "HLD",
+  "problemSlug": "forward--reverse-proxy-94-213",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "🔀",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "Proxy"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Difference between Forward Proxy and Reverse Proxy - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/difference-between-forward-proxy-and-reverse-proxy/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Forward vs Reverse Proxies: Understanding Their Role ... - Medium",
+      "url": "https://medium.com/ortigan/forward-vs-reverse-proxies-understanding-their-role-in-network-architecture-63b6f22ad6cf",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is A Reverse Proxy? | Proxy Servers Explained - Cloudflare",
+      "url": "https://www.cloudflare.com/learning/cdn/glossary/reverse-proxy/",
+      "source": "cloudflare.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Both proxies intercept and forward. The only question is **who they impersonate**. A **forward proxy pretends to be the client** toward the internet. A **reverse proxy pretends to be the server** toward the client. Get the trust direction right and every use case — privacy, filtering, load balancing, TLS termination — falls out naturally. Get it wrong and you will put caching, auth, and TLS in the wrong place."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Forward vs reverse: the precise definition"
+    },
+    {
+      "type": "paragraph",
+      "text": "A forward proxy is a middlebox you configure on the **client side**. The client sends its request to the proxy, not to the origin. The proxy opens its own connection to the origin, relays the request, gets the response, and hands it back. The origin sees the proxy IP, not the client IP. The client must trust the proxy, because the proxy sees full request content unless the traffic is end-to-end encrypted. A reverse proxy is a middlebox you configure on the **server side**, published under the server DNS name. The client thinks it is talking to the origin. In reality it hits the reverse proxy, which then picks a backend, forwards the request over its own connection, and returns the backend response. The client never learns backend addresses. The server operator trusts the proxy to enforce routing, TLS, and access policy."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why the distinction survives: it defines **whose policy is enforced and whose identity is hidden**. Forward proxy hides clients from servers and enforces client-side policy — what this user or machine is allowed to reach, what identity it presents, what gets logged. Reverse proxy hides servers from clients and enforces server-side policy — which backend serves this path, whether this client is allowed in, whether the response can be served from cache. If you cannot state in one sentence whose IP is hidden and whose admin wrote the rules, you do not understand the design yet. Interviewers probe exactly that."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Where each one sits in the path"
+    },
+    {
+      "type": "mermaid",
+      "title": "Forward proxy flow",
+      "caption": "Client explicitly sends to proxy; origin only sees proxy.",
+      "code": "graph TD\n  Client[Client browser] --> Fwd[Forward Proxy]\n  Fwd --> Filter[Policy and Filter]\n  Filter --> OriginA[Origin A]\n  Filter --> OriginB[Origin B]\n  OriginA --> Fwd\n  OriginB --> Fwd\n  Fwd --> Client"
+    },
+    {
+      "type": "mermaid",
+      "title": "Reverse proxy flow",
+      "caption": "Client hits one name; proxy fans out to backends.",
+      "code": "graph TD\n  User[Client] --> Rev[Reverse Proxy]\n  Rev --> TLS[TLS Termination]\n  TLS --> Route[Routing and LB]\n  Route --> S1[Backend 1]\n  Route --> S2[Backend 2]\n  Route --> S3[Backend 3]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Trace a single `GET`. With a forward proxy, the client is explicitly configured — proxy env var, PAC file, or transparent interception — to send the full destination to the proxy. The proxy resolves DNS, opens the upstream TCP and TLS session, and copies bytes in both directions. With a plain HTTP proxy it can read and cache. With `CONNECT` tunneling for HTTPS it mostly just shuttles opaque TLS bytes unless it does TLS interception with a locally installed CA, which is why enterprises can inspect and why that design is controversial. With a reverse proxy, the client does normal DNS for `example.com` and lands on the proxy. The proxy terminates TCP and usually TLS, reads the HTTP request, applies routing on host and path, picks a backend via load-balancing policy, reuses a keepalive pool to that backend, and streams the response back, optionally from cache. The trade-off is set here: forward proxies add a client-side choke point to gain control; reverse proxies add a server-side choke point to gain control. Both add a hop, a failure domain, and a place where latency and bugs accumulate."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Forward proxy in detail"
+    },
+    {
+      "type": "paragraph",
+      "text": "Use a forward proxy when you control the clients and distrust the network beyond them. Classic shape: corporate egress, school network, data-center crawler fleet sharing one NAT and policy layer. The proxy authenticates the user or workload, checks allow and deny lists, logs the request for audit, and then forwards. Caching helps only when many clients fetch the same cacheable object over plain HTTP or when you deliberately break TLS for inspection — which trades privacy and breakage risk for visibility. The honest cost: you centralize all egress. That gives you one place to enforce policy, but also one place to saturate, to misconfigure, and to leak sensitive headers and cookies if logging is sloppy. Do not deploy TLS interception unless you own the devices, can rotate the custom CA cleanly, and have accepted that pinned clients and strict transports will break."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Reverse proxy in detail"
+    },
+    {
+      "type": "paragraph",
+      "text": "Use a reverse proxy when you control the servers and distrust direct client access. This is the front door to almost every production web service: TLS termination, HTTP/2 and HTTP/3 edge handling, path-based routing, header normalization, rate limiting, WAF checks, compression, caching of static and slowly changing responses, and load balancing across backends with health checks. The reason it works is connection and concern splitting. Slow, diverse internet clients talk to the edge, which is tuned for that. Fast, uniform backend connections stay warm inside the datacenter. Backends stay simple — plain HTTP behind the proxy — because the proxy owns certificates, cipher choice, and protocol translation. The trade-off you accept: the edge now owns correctness of routing, session stickiness, header forwarding, and timeout budgets. A wrong `X-Forwarded-For` trust rule means IP spoofing. A wrong timeout means cascading retries. A stateful edge cache means stale reads you must version explicitly."
+    },
+    {
+      "type": "table",
+      "caption": "Same interception pattern, opposite obligations.",
+      "headers": [
+        "Dimension",
+        "Forward proxy",
+        "Reverse proxy"
+      ],
+      "rows": [
+        [
+          "Stands in for",
+          "Client toward many origins",
+          "Server toward many clients"
+        ],
+        [
+          "Deployed by",
+          "Client admin or device owner",
+          "Service owner"
+        ],
+        [
+          "Hides",
+          "Client IP and identity from origin",
+          "Backend topology and IP from client"
+        ],
+        [
+          "Core jobs",
+          "Egress allow-list, content filter, audit log, shared cache",
+          "Routing, load balancing, TLS offload, edge cache, WAF"
+        ],
+        [
+          "Sees plaintext?",
+          "Only for HTTP or with installed CA interception; opaque for CONNECT TLS",
+          "Yes, terminates TLS so it sees and can modify HTTP"
+        ],
+        [
+          "Scaling pressure",
+          "Total egress bandwidth of the user population",
+          "Total ingress request rate plus TLS handshake rate"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What each one buys you — and costs you"
+    },
+    {
+      "type": "paragraph",
+      "text": "Neither proxy is free. A forward proxy buys uniform egress policy and client anonymity at the cost of a bandwidth bottleneck and a privacy blast radius. Every byte leaves through it, so you need horizontal proxy capacity, explicit bypasses for high-volume trusted traffic, and ruthless log redaction. A reverse proxy buys backend simplicity and edge agility at the cost of a critical-path dependency and subtle state. You can rotate certificates, change balancing weights, and shed load without touching backends — which is exactly why backends become helpless when the edge misroutes or caches too aggressively. My bias: put TLS termination and request shaping at the reverse proxy by default, because operating certificates and rate limits in every app server is operational suicide. Keep forward proxies narrow — filter and audit — and resist turning them into general caches for HTTPS traffic, because hit rates rarely justify the interception complexity."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Forward proxy gain: one egress IP set, one filter list, one audit trail. Cost: all client traffic shares fate — proxy CPU, upstream NAT ports, and DNS latency become your ceiling.",
+        "Forward proxy caching gain: real only for repeated plain-HTTP artifacts or internal package mirrors. Cost: for modern HTTPS, you either get near-zero hits or you pay for TLS interception and its breakage.",
+        "Reverse proxy gain: backends stay dumb and interchangeable; you can blue-green, canary, and drain without DNS games. Cost: you must version cache keys, normalize headers, and propagate client IP explicitly or observability lies.",
+        "Reverse proxy TLS offload gain: hardware-friendly handshake handling and single cipher policy. Cost: plaintext inside your network and certificate private keys concentrated in one tier — protect both deliberately.",
+        "Both gain: a single enforcement point. Both cost: a single failure point. If you cannot run it as a tier with independent scaling and failover, do not put policy in it."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Proxies fail in boring, repeatable ways: connection exhaustion, header lies, cache poisoning, and timeout mismatch. A forward proxy under load stops opening upstream connections first — clients see slow `CONNECT` establishment and intermittent `502` or `504` while direct-to-origin tests look fine, which misleads debuggers. An overloaded reverse proxy shows a different signature: p99 spikes at the edge while backend CPU looks healthy, because the queue is in the proxy accept backlog or TLS handshake pool. Header bugs are quieter and worse. If the reverse proxy appends `X-Forwarded-For` without stripping client-supplied values, attackers forge internal IPs and bypass IP allow-lists. If it forwards hop-by-hop headers or large cookies into cache keys, cache hit rate collapses or one user sees another user personalized response. Timeout mismatch is the classic cascade: proxy read timeout shorter than backend processing time causes the proxy to retry an already-executing non-idempotent request, doubling write load at exactly the wrong moment. Always align proxy timeout, backend timeout, and retry policy as one unit, not three independent knobs. The trade-off you are managing is safety versus liveness — stricter limits protect backends but drop legitimate slow requests."
+    },
+    {
+      "type": "table",
+      "caption": "Failure, symptom, and the fix that actually works.",
+      "headers": [
+        "Failure mode",
+        "Symptom you observe",
+        "Fix"
+      ],
+      "rows": [
+        [
+          "Forward proxy port and connection exhaustion",
+          "New requests hang on CONNECT; existing flows fine; upstream origin healthy",
+          "Scale proxy tier, split bulk traffic to direct bypass, cap per-client connections"
+        ],
+        [
+          "Reverse proxy TLS overload",
+          "Handshake latency climbs, p99 explodes, backend CPU flat",
+          "Session resumption, right-size handshake pool, scale edge before backends"
+        ],
+        [
+          "Spoofed forwarding headers",
+          "Rate limit or auth bypass from forged X-Forwarded-For",
+          "Strip inbound forwarding headers at edge; trust only proxy-appended values"
+        ],
+        [
+          "Over-broad edge cache key",
+          "Logged-in users see each other content; low hit rate",
+          "Key on method plus normalized path plus Vary; never key on cookies by default"
+        ],
+        [
+          "Retry storm on timeout",
+          "Write QPS multiplies during partial outage",
+          "Idempotency keys, retry only safe methods, proxy timeout longer than backend p99"
+        ]
+      ]
+    },
+    {
+      "type": "list",
+      "items": [
+        "If only proxied traffic is broken and direct traffic works, suspect the proxy tier — not the origin. Compare both paths before blaming backends.",
+        "If p99 degrades but backend utilization is low, look at edge accept queue, TLS session cache hit rate, and upstream keepalive reuse.",
+        "If auth behaves differently through the proxy, dump headers on both sides. Nine times out of ten a header was stripped, duplicated, or trusted when it should have been overwritten.",
+        "If cache seems useless, log key construction and origin Cache-Control. Private, Set-Cookie, and Vary explosions kill hit rate silently."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Headers are the contract",
+      "text": "A reverse proxy **must** strip inbound `X-Forwarded-For` and `Forwarded` and set them itself, and backends **must** read only that value. Trusting client-supplied forwarding headers is not a minor bug — it is an auth bypass. Same for `X-Forwarded-Proto`: if the edge does not set it correctly, backends generate `http` redirects in an `https` world and create redirect loops."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete config: a reverse proxy that does real work"
+    },
+    {
+      "type": "code",
+      "language": "nginx",
+      "filename": "edge.conf",
+      "code": "upstream api {\n  least_conn;\n  server 10.0.1.11:8080 max_fails=3 fail_timeout=10s;\n  server 10.0.1.12:8080 max_fails=3 fail_timeout=10s;\n  keepalive 256;\n}\nserver {\n  listen 443 ssl http2;\n  ssl_certificate /etc/edge/cert.pem;\n  ssl_certificate_key /etc/edge/key.pem;\n  # Strip spoofable headers, then set canonical ones.\n  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n  proxy_set_header X-Forwarded-Proto $scheme;\n  proxy_set_header Host $host;\n  # One timeout budget: edge longer than backend p99, retries only for GET.\n  proxy_connect_timeout 2s;\n  proxy_read_timeout 5s;\n  proxy_next_upstream error timeout http_502;\n  proxy_next_upstream_tries 2;\n  location /static/ {\n    proxy_cache static_zone;\n    proxy_cache_valid 200 10m;\n    proxy_cache_key \"$request_method|$host|$request_uri\";\n    proxy_pass http://api;\n  }\n  location /api/ {\n    proxy_pass http://api;\n    proxy_http_version 1.1;\n    proxy_set_header Connection \"\";\n  }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This file shows why the reverse proxy exists. TLS lives here so backends do not manage certificates. Backend selection lives here via `least_conn` plus health-aware failover, so you can drain a host without DNS changes. Header hygiene lives here: overwrite forwarding headers instead of passing client values through. Caching is deliberately narrow — only `/static/`, keyed on method, host, and URI, never on cookies — because broad caching is how you serve private data publicly. Timeouts and `proxy_next_upstream` encode the retry trade-off: retry only idempotent failures, at most once, and keep the edge read timeout above backend p99 so you do not duplicate in-flight writes. If you copy this pattern, copy the reasoning too: every line is policy that used to live scattered across app servers and is now centralized where it can be reviewed and rolled back atomically."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Draw the trust line first",
+          "text": "Start with client, proxy, origin boxes and label who configured the proxy and whose address is hidden. Interviewers forgive missing details if the direction is correct; they fail you if you swap forward and reverse under pressure."
+        },
+        {
+          "title": "Name the jobs by side",
+          "text": "Say explicitly: forward proxy for egress filtering and audit, reverse proxy for ingress routing, TLS termination, and edge caching. Then justify why each job belongs on that side — visibility for egress, control for ingress."
+        },
+        {
+          "title": "Go deep on one mechanism",
+          "text": "Pick TLS handling or caching and walk the bytes. For HTTPS forward proxy explain CONNECT tunneling versus interception and why interception needs a managed CA. For reverse proxy explain termination, keepalive reuse to backends, and cache key construction."
+        },
+        {
+          "title": "Volunteer the failure modes",
+          "text": "Bring up header spoofing, cache-key explosion, and retry storms before they ask. Explain the symptom you would graph — edge p99 versus backend CPU, hit rate versus origin load — and the single config change that fixes each."
+        },
+        {
+          "title": "Close with placement",
+          "text": "State where you would put each proxy in their system and what you would deliberately not proxy. The trade-off sentence wins: centralize policy where the churn is, bypass the proxy where the bytes are huge and trusted."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "\"A reverse proxy is just a load balancer.\" No — load balancing is one job. TLS termination, routing, caching, and request filtering are the reason the tier exists; balancing alone does not justify it.",
+        "\"A forward proxy makes HTTPS safe to cache.\" It does not. Without TLS interception the bytes are opaque and uncacheable; with interception you inherit CA management and client breakage.",
+        "\"X-Forwarded-For is trustworthy input.\" It is attacker input unless your edge strips it. Backends that trust it for auth or rate limiting are exploitable.",
+        "\"More caching always helps.\" Broad keys leak private responses and `Set-Cookie` plus `Vary: *` silently drive hit rate to zero while adding latency.",
+        "\"Proxies add security by obscurity.\" Hiding backend IPs helps, but real protection comes from terminating TLS, validating input, and enforcing auth at the edge — not from hoping attackers cannot guess topology.",
+        "\"API gateway and reverse proxy are synonyms.\" A gateway embeds API policy — auth, quotas, request shaping per route. A reverse proxy can host that logic, but conflating the two leads to a fat edge that is hard to change safely."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, when to skip it"
+    },
+    {
+      "type": "table",
+      "caption": "Choose by who needs control, not by fashion.",
+      "headers": [
+        "Situation",
+        "Use",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Corporate or school egress must filter and audit",
+          "Forward proxy",
+          "Only central egress gives uniform policy and logs; accept the bottleneck and scale it"
+        ],
+        [
+          "Crawler orходящий fleet needs shared identity and politeness",
+          "Forward proxy",
+          "Central queue enforces rate limits and rotation; direct egress would abuse origins"
+        ],
+        [
+          "Public web service needs TLS, routing, scale",
+          "Reverse proxy",
+          "Edge owns certificates and balancing so backends stay replaceable; worth the extra hop"
+        ],
+        [
+          "Static or slowly changing reads dominate",
+          "Reverse proxy with narrow cache",
+          "Edge absorbs repeat reads; keep keys tight and TTLs explicit to avoid staleness"
+        ],
+        [
+          "Single backend, no TLS, internal only",
+          "Neither",
+          "A proxy adds latency and a failure domain with no policy to centralize"
+        ],
+        [
+          "Bulk trusted transfer inside one VPC",
+          "Neither or direct bypass",
+          "Hairpinning gigabytes through a proxy buys nothing and saturates it"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "A **forward proxy enforces client-side policy by impersonating clients**, while a **reverse proxy enforces server-side policy by impersonating servers** — put filtering and audit in the former, and TLS, routing, and edge caching in the latter."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:18:54.347Z",
+    "problems": []
+  }
+}

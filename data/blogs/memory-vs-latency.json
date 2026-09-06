@@ -1,0 +1,336 @@
+{
+  "slug": "memory-vs-latency",
+  "title": "Memory vs latency",
+  "summary": "Memory capacity buys hit rate, latency decides stall time. Effective performance is hit-rate math, not RAM size or MT/s alone.",
+  "kind": "HLD",
+  "problemSlug": "memory-vs-latency-91-183",
+  "topic": "System Design Tradeoffs",
+  "difficulty": "Medium",
+  "coverEmoji": "🧠",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "System Design Tradeoffs",
+    "Caching",
+    "Memory Hierarchy"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Is Speed or Latency More Important When Choosing RAM? - Corsair",
+      "url": "https://www.corsair.com/us/en/explorer/diy-builder/memory/is-speed-or-latency-more-important-when-choosing-ram/?srsltid=AfmBOoqbTx8SRMiKkPcNeIcXYqSkGgnXumEd14NJdLi5gud_qqxR0N8T",
+      "source": "corsair.com",
+      "kind": "article"
+    },
+    {
+      "title": "The difference between RAM speed and CAS latency - Crucial",
+      "url": "https://www.crucial.com/articles/about-memory/difference-between-speed-and-latency?srsltid=AfmBOop3U11L-NGK96H8jXHJ9BTM4V5MqG1gwy4m5XIM7tHRLLkmQ7-A",
+      "source": "crucial.com",
+      "kind": "article"
+    },
+    {
+      "title": "Memory Bandwidth vs Latency: What Matters More? - YouTube",
+      "url": "https://www.youtube.com/watch?v=fWXFOhldhPs",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "About memory latency - Arm Learning Paths",
+      "url": "https://learn.arm.com/learning-paths/cross-platform/memory-latency/what-is-latency/",
+      "source": "learn.arm.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Adding memory never makes anything faster by itself. It only raises the probability the data you need is already close. **Latency is the price of a miss, capacity is the price of avoiding the next miss.** Every memory decision is hit-rate math: `effective_time = hit_time + miss_rate * miss_penalty`."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three different quantities hide behind the word **memory**, and conflating them is how designs go wrong. **Capacity** is how much working set you can hold close to the CPU. **Bandwidth** is how much data you can move per second once you start moving it, measured in GB/s. **Latency** is how long you wait between asking for the first byte and getting it, measured in nanoseconds. Capacity controls miss rate. Latency controls stall duration. Bandwidth controls refill speed. In high-level design you almost never care about raw DRAM specs. You care about **effective access time** as observed by a request thread, which is dominated by where the data happens to sit: CPU cache, DRAM, local SSD, or across the network."
+    },
+    {
+      "type": "paragraph",
+      "text": "The governing equation is brutal and simple: `T_effective = T_hit + (miss_rate * T_miss)`. A 0.5ns `L1` hit versus a 100ns DRAM fetch versus a 150,000ns random SSD read are not incremental differences — they are three to five orders of magnitude apart. That is why a 99% cache hit rate can still be too slow if the 1% miss goes to disk, and why doubling RAM from 64GB to 128GB does nothing if your hot set was already 20GB. **Trade-off named:** you pay real money and operational complexity in capacity to buy down `miss_rate`, because you cannot buy down `T_miss` for a given tier."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: a hierarchy that hides latency with hits"
+    },
+    {
+      "type": "mermaid",
+      "title": "Read path through the hierarchy",
+      "caption": "Each level is larger, slower, and cheaper. Performance is determined by how early you stop.",
+      "code": "flowchart TD\n    CPU[CPU issues load] --> L1{L1 hit? 0.5ns}\n    L1 -->|yes| DONE1[return]\n    L1 -->|no| L2{L2 hit? 7ns}\n    L2 -->|yes| DONE2[return]\n    L2 -->|no| L3{L3 hit? 20ns}\n    L3 -->|yes| DONE3[return]\n    L3 -->|no| DRAM{DRAM hit? 100ns}\n    DRAM -->|yes| DONE4[return]\n    DRAM -->|no| SSD{SSD or remote? 150us to 500us}\n    SSD -->|yes| DONE5[return after stall]\n    SSD -->|no| NET[Cross-region fetch 100ms+]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The CPU does not access DRAM directly on every load. It walks a chain of progressively larger, slower stores, and it stalls until the first one that holds the line returns it. `L1` and `L2` are tiny — tens of KB to a few MB — but answer in under 10ns. `L3` is tens of MB at ~20-40ns. DRAM is GBs at ~80-120ns. A local NVMe random read is ~150 microseconds, roughly 1,500x slower than DRAM. A same-datacenter round trip is ~500 microseconds. A cross-continent fetch is ~150 milliseconds, over a million times slower than DRAM. The hierarchy exists because physics forces it: fast storage cells are physically larger, hotter, and more expensive per bit. You cannot build a 1TB `L1`. So the system cheats with locality — keep what was recently used close, and bet it will be used again."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Why bandwidth and latency move independently"
+    },
+    {
+      "type": "paragraph",
+      "text": "Newer DRAM generations widen the pipe without shortening the wait. They transfer more bits per clock by prefetching larger bursts and running the I/O bus faster, but the internal array still takes roughly the same number of nanoseconds to open a row and sense the first bit. That is why a high-transfer-rate kit can advertise twice the MT/s yet show nearly identical true latency in nanoseconds once you divide cycle count by clock rate. The formula is `true_latency_ns = CAS_cycles * 2000 / transfer_rate_MT_s`. A higher MT/s with proportionally higher CAS cancels out. **Trade-off named:** bandwidth helps sequential scans, bulk copies, and refills; latency governs pointer-chases, hash lookups, and dependency chains where the next address depends on the previous value and cannot be parallelised. Buy bandwidth for throughput, buy latency for tail response time."
+    },
+    {
+      "type": "table",
+      "caption": "Orders of magnitude that should drive every estimate.",
+      "headers": [
+        "Operation",
+        "Typical latency",
+        "What it tells you"
+      ],
+      "rows": [
+        [
+          "L1 cache reference",
+          "~0.5 ns",
+          "Free if you stay in registers and tight loops"
+        ],
+        [
+          "L2 cache reference",
+          "~7 ns",
+          "14x L1; still negligible at request scale"
+        ],
+        [
+          "Main memory reference",
+          "~100 ns",
+          "200x L1; pointer-chase heavy code stalls here"
+        ],
+        [
+          "Send 1KB over 1 Gbps",
+          "~10 us",
+          "Network starts to dominate over memory"
+        ],
+        [
+          "Random 4KB read from NVMe SSD",
+          "~150 us",
+          "~1,500x DRAM; one page fault wrecks a p99"
+        ],
+        [
+          "Same-datacenter round trip",
+          "~500 us",
+          "Remote cache miss costs more than local SSD"
+        ],
+        [
+          "Cross-region round trip",
+          "~150 ms",
+          "A million DRAM accesses; never put it on the hot path"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Caching: buying latency with memory"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every cache in a distributed system — CPU cache, page cache, application LRU, CDN edge, Redis cluster — is the same bet replayed at a larger scale: spend capacity to hold the hot working set one tier closer, and accept invalidation cost to keep it correct. Hit rate follows working-set size, not total data size. If 5% of keys serve 95% of reads, a small cache wins big. If access is uniform over 10TB, no reasonable cache helps and you have built an expensive extra hop. Size the cache from measured key-frequency distribution and object size, not from total database size. **Trade-off named:** each GB of cache reduces `miss_rate` with diminishing returns while increasing coherency work, cold-start time, and blast radius on eviction bugs."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "effective_latency.py",
+      "code": "def true_latency_ns(cas_cycles: int, mt_per_s: int) -> float:\n    # Higher MT/s with proportionally higher CAS is a wash.\n    return cas_cycles * 2000.0 / mt_per_s\n\ndef effective_ns(hit_ns: float, miss_ns: float, hit_rate: float) -> float:\n    return hit_ns + (1.0 - hit_rate) * miss_ns\n\n# DRAM hit vs SSD miss: hit rate is everything\nprint(true_latency_ns(36, 6000))  # ~12.0 ns\nprint(effective_ns(100, 150_000, 0.99))  # ~1600 ns\nprint(effective_ns(100, 150_000, 0.999)) # ~250 ns\n# Going from 99% to 99.9% cuts effective time 6x. That is why capacity sizing is tail-latency work."
+    },
+    {
+      "type": "paragraph",
+      "text": "Run those two numbers before any design review. At 99% hit rate against SSD, your average is 1,600ns even though 99% of accesses cost 100ns. At 99.9% it drops to 250ns. That 0.9% of hit rate was worth more than any DRAM speed grade. This is the argument for measuring `miss_rate` and `miss_penalty` separately in load tests instead of reporting average latency alone. Averages hide the tier where the misses land."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Memory-versus-latency failures never announce themselves as memory failures. They show up as cliff-shaped latency graphs, because hierarchical systems degrade discontinuously when the working set spills out of a tier. The system is fine, fine, fine, then p99 jumps 50x at a specific throughput or dataset size and never comes back. Common triggers: dataset growth past DRAM into swap, heap growth past young generation into full GC pauses, cache cardinality explosion that drops hit rate from 98% to 60%, or a deployment that doubles object size and halves effective cache entries without changing any configuration. **Trade-off named:** safety margin in capacity is insurance against non-linear miss-penalty cliffs; running hot maximises utilisation right up to the edge where latency explodes."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Thrashing / swap death:** p99 jumps from milliseconds to seconds, CPU `iowait` spikes, throughput collapses while CPU looks idle. The host is paging, not computing. Symptom: `sar` shows high `pswpout`, application logs show timeouts with no CPU saturation.",
+        "**GC stall cascade:** regular 200ms–2s pauses correlated with allocation rate, not request rate. Young-gen sized too small for request-scoped objects, or cache holds giant deserialised graphs. Symptom: sawtooth heap with latency spikes aligned to full GC events.",
+        "**Cache stampede after eviction:** hit rate falls off a cliff, database connections saturate, downstream latency multiplies. One cold key or deploy flushes the hot set and every app server refills simultaneously. Symptom: DB CPU 100%, cache `get` latency fine but `miss_rate` near 1.0.",
+        "**False sharing / cache-line ping-pong:** throughput scales negatively with cores. Two threads mutate adjacent fields on the same 64-byte line and the coherency protocol bounces it. Symptom: perf counters show high `LLC misses` and interconnect traffic on a tiny data structure.",
+        "**Oversized pages / large-object promotion:** 10KB JSON blobs cached as strings inflate heap 3x after deserialisation, halving effective entries. Symptom: hit rate decays slowly over hours, restart temporarily fixes it."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Do not average across tiers",
+      "text": "Reporting mean latency across a cache + database path is actively misleading. Report **hit rate, hit latency, and miss latency separately**. A 5ms average can be 1ms hits plus 400ms misses — and the fix is capacity or admission policy, not faster code."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Design moves that trade memory for latency"
+    },
+    {
+      "type": "table",
+      "caption": "Each row spends bytes somewhere to avoid waiting somewhere else.",
+      "headers": [
+        "Technique",
+        "Memory cost",
+        "Latency won",
+        "What you pay besides RAM"
+      ],
+      "rows": [
+        [
+          "Application look-aside cache (Redis/Memcached)",
+          "Full copy of hot set + overhead",
+          "100us–ms DB/remote fetch becomes sub-ms hit",
+          "Invalidation bugs, stampedes, cold start"
+        ],
+        [
+          "Denormalisation / materialised view",
+          "Duplicate fields across rows/documents",
+          "Join or scatter-gather removed from read path",
+          "Write amplification, skew on update"
+        ],
+        [
+          "Read-ahead / prefetching",
+          "Speculatively loaded pages never used",
+          "Sequential scan hides refill latency",
+          "Wasted bandwidth, cache pollution on random access"
+        ],
+        [
+          "Connection / object pooling",
+          "Idle buffers held per thread",
+          "Allocation + handshake + TLS setup off hot path",
+          "Memory fragmentation, stale-state bugs"
+        ],
+        [
+          "Compression (cached compressed)",
+          "CPU to decompress; smaller resident size",
+          "More logical entries per GB, fewer misses",
+          "Decompression latency on every hit; bad for tiny hot objects"
+        ],
+        [
+          "Pagination / streaming",
+          "Almost none; processes window at a time",
+          "Avoids giant allocation pauses",
+          "More round trips; higher total time for full scan"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Pick by access pattern, not by fashion. Read-heavy skewed workloads justify a look-aside cache because invalidation is rare and hits are frequent. Write-heavy uniform workloads do not — you pay double writes and gain nothing because the next read is unlikely to repeat the key. Prefetching is a win for table scans and video delivery where the next address is predictable, and pure pollution for hash joins and random key lookups where it evicts useful lines to load useless ones. Compression in cache is underrated when objects are large and misses go to disk: trading 5 microseconds of decompression to avoid a 150-microsecond SSD miss is a 30x win. It is a loss when objects are 200 bytes and hits are already sub-millisecond. **Trade-off named every time:** bytes held versus stalls avoided, plus the second-order cost in correctness or CPU."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "CacheSizing.java",
+      "code": "// Size from working set, not from DB size.\n// hotBytes = requestsPerSec * workingSetWindowSec * avgObjectBytes * skewFactor\nlong hotBytes = 20_000L * 300L * 2_048L; // 20k rps, 5-min reuse window ~ 12 GB\n// Allow headroom: target <= 70% occupancy to avoid LRU cliff + fragmentation.\nlong cacheBytes = (long) (hotBytes / 0.70);\n// Enforce admission: do not let one-shot keys evict the hot set.\n// TinyLFU / sampled LRU beats naive LRU when scan traffic exists.\nCache<String, byte[]> cache = Caffeine.newBuilder()\n    .maximumWeight(cacheBytes)\n    .weigher((String k, byte[] v) -> v.length)\n    .expireAfterWrite(Duration.ofMinutes(5))\n    .recordStats() // alert on hitRate, evictionCount, not just size\n    .build();"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Quantify the tiers out loud",
+          "text": "State your assumptions: DRAM ~100ns, SSD random ~150us, intra-AZ ~500us. Then compute effective time for a proposed hit rate. Interviewers promote candidates who do the arithmetic instead of saying caching will make it fast."
+        },
+        {
+          "title": "Name the working set and skew",
+          "text": "Ask for read/write ratio, key distribution, object size, reuse window. A 95/5 skewed read workload and a 50/50 uniform workload lead to opposite designs. Say which one you are assuming."
+        },
+        {
+          "title": "Propose the tier, then price the miss",
+          "text": "CDN for static, application cache for hot entities, page cache for warm scans, DB with indexes for the rest. For each tier, state the miss penalty and the fallback. Missing fallback analysis is the most common fail."
+        },
+        {
+          "title": "Address coherency before capacity",
+          "text": "TTL versus explicit invalidation versus versioned keys. Explain why you chose one: TTL bounds staleness with zero write-path coupling; invalidation is precise but couples every writer to the cache topology."
+        },
+        {
+          "title": "Close with the cliff test",
+          "text": "What happens when the dataset doubles or a node restarts cold? Describe load-shedding, request coalescing, and staged warmup. Senior signal is designing for the miss storm, not just the steady-state hit rate."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail interviews"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**More RAM equals lower latency.** No. Unused RAM does nothing. Only RAM that holds data on the critical path and raises hit rate matters. An oversized heap can *increase* p99 via longer GC pauses.",
+        "**Higher MT/s means proportionally faster responses.** Only for bulk transfers. Pointer-chasing latency tracks true nanoseconds, which barely moves across generations when CAS rises with clock rate.",
+        "**Average latency describes the system.** Averages across tiers lie. A system with 1ms hits and 5% 500ms misses averages ~26ms and still violates every SLO. Always split hit and miss.",
+        "**A cache always helps.** A cache on uniform access with fast backing store adds a hop, doubles operational surface, and barely dents miss rate. Measure skew first.",
+        "**Latency and bandwidth are interchangeable optimisations.** Prefetching and wider buses hide throughput limits but cannot hide dependent-load latency. If operation B needs the result of A, only shorter wait or fewer hops help.",
+        "**Virtual memory is free overflow.** Swap turns a 100ns miss into a 150us+ stall plus jitter. Treating disk as slow RAM is how healthy services develop multi-second tails overnight."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to spend memory, and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Default rules; override with measured hit-rate curves.",
+      "headers": [
+        "Spend memory to cut latency when",
+        "Do not spend it when"
+      ],
+      "rows": [
+        [
+          "Reads dominate and keys are skewed — small hot set serves most traffic",
+          "Writes dominate or access is uniform — cache churns without hits"
+        ],
+        [
+          "Miss penalty is severe — cross-AZ, disk, recomputation, or downstream fan-out",
+          "Backing store is already fast and close — in-process map or indexed local read"
+        ],
+        [
+          "Reuse window fits economically in RAM — minutes to hours, MBs to low GBs per node",
+          "Working set exceeds budget by 10–100x with no skew — you need partitioning, not caching"
+        ],
+        [
+          "Staleness is tolerable or versionable — TTL or key-versioning keeps correctness cheap",
+          "Strong consistency on every read is required — invalidation coupling costs more than the stall"
+        ],
+        [
+          "Startup can be warmed gradually — staged rollout, request coalescing absorbs the stampede",
+          "Cold starts are frequent and spiky — serverless or daily deploys will live in miss storms"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Memory trades capacity for miss rate, and latency is the penalty per miss — so size memory from the hot working set and quote effective time as hit time plus miss rate times miss penalty.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:27:31.210Z",
+    "problems": []
+  }
+}

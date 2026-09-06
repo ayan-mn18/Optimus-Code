@@ -1,0 +1,449 @@
+{
+  "slug": "design-snake-food-game",
+  "title": "Design Snake & Food Game",
+  "summary": "Design Snake with O(1) moves using deque + hash set, correct tail-collision rule, and Strategy-based food placement. Full Java + Python, complexity, concurrency, and follow-ups.",
+  "kind": "LLD",
+  "problemSlug": "design-snake-food-game-42-82",
+  "topic": "LLD Interview Problems",
+  "difficulty": "Medium",
+  "coverEmoji": "🐍",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Snake Game",
+    "Deque Design",
+    "Interview Patterns"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.linkedin.com/posts/pyasprasad_ausmallfinancebank-interviewexperience-redis-activity-7459933063364415490-hSxz",
+      "title": "AU Small Finance Bank Interview Experience: Redis, Kafka, SQL ...",
+      "source": "linkedin.com",
+      "kind": "report",
+      "companies": [
+        {
+          "name": "AU Small Finance Bank",
+          "quote": "I recently gave my interview at AU Small Finance Bank"
+        }
+      ]
+    },
+    {
+      "url": "https://www.hellointerview.com/community/questions/design-snake-game/cm5eh7nri04wt838owf8f8twj",
+      "title": "Leetcode 353. Design Snake Game - Hello Interview",
+      "source": "hellointerview.com",
+      "kind": "aggregate",
+      "companies": [
+        {
+          "name": "Bloomberg",
+          "role": "Senior",
+          "date": "Mid July, 2026",
+          "quote": "Mid July, 2026 Bloomberg Senior Given an input of N for size of grid (NxN), implement the backend of the Snake Game that eats an apple that auto regenerates randomly after being eaten, and will lose if it hits the borders or itself."
+        },
+        {
+          "name": "Atlassian",
+          "role": "Senior",
+          "date": "Late April, 2026",
+          "quote": "Late April, 2026 Atlassian Senior"
+        },
+        {
+          "name": "Meta",
+          "role": "Mid-level",
+          "date": "Late January, 2026",
+          "quote": "Late January, 2026 Meta Mid-level"
+        },
+        {
+          "name": "Palantir",
+          "quote": "Asked at: Meta Palantir Atlassian Bloomberg + 1 more"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "Microsoft SDE-2 L-62 Interview experience Live Cohort ... - Instagram",
+      "url": "https://www.instagram.com/reel/DazGrphhM7e/",
+      "source": "instagram.com",
+      "kind": "article"
+    },
+    {
+      "title": "Microsoft Interview Experience Here's the EXACT breakdown Round ...",
+      "url": "https://www.instagram.com/reel/Da8ABSws9tD/",
+      "source": "instagram.com",
+      "kind": "article"
+    },
+    {
+      "title": "Resources that helped me crack Microsoft ♥️ . . . 1. Leetcode - You ...",
+      "url": "https://www.instagram.com/reel/C5GcHcXpfgA/",
+      "source": "instagram.com",
+      "kind": "article"
+    },
+    {
+      "title": "Microsoft interview experience It's NOT just DSA. It's about: • How you ...",
+      "url": "https://www.instagram.com/reel/DWatkq8AIMp/",
+      "source": "instagram.com",
+      "kind": "article"
+    },
+    {
+      "title": "AU Small Finance Bank Interview Experience: Redis, Kafka, SQL ...",
+      "url": "https://www.linkedin.com/posts/pyasprasad_ausmallfinancebank-interviewexperience-redis-activity-7459933063364415490-hSxz",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design Snake & Food Game | codeWithAryan",
+      "url": "https://codewitharyan.com/tech-blogs/design-snake-food-game",
+      "source": "codewitharyan.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What you are actually being asked",
+      "text": "This is **not a graphics question**. The interviewer wants to see if you can maintain an *ordered, membership-testable* body under mutation, without scanning. The naive list-scan passes 10 moves and dies at 10,000. The expected answer is **`Deque` for order + `HashSet` for O(1) collision + `Strategy` for food placement**. Nail the tail-vacates-first rule, justify the double memory cost, and show where obstacles, levels, and multiplayer plug in without rewriting the core loop."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a `Snake` game on a `width x height` grid. The snake starts at `(0,0)` with length 1. You are given a sequence of food cells. Implement `int move(String direction)` where `direction` is one of `U, D, L, R`. On each move the head advances one cell: if it goes out of bounds or hits its own body, the game is over and you return `-1`. If the new head lands on food, the snake grows by one (tail stays), score increments, and the next food appears. Otherwise the snake moves forward at constant length (new head added, tail removed). The contract must stay **O(1) per move** even when the snake fills most of the board, and the design must survive follow-ups like random food, obstacles, and multiple snakes."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`SnakeGame(int width, int height, int[][] food)` — initialise board, snake at `(0,0)`, food queue in order.",
+        "`int move(String direction)` — advance one step; return current score, or `-1` once the game is over. All subsequent moves stay `-1`.",
+        "`int getScore()` / `boolean isOver()` — read-only observers that never mutate state.",
+        "Food is consumed **only** when the new head exactly equals the current food cell. Eating removes that food and exposes the next one.",
+        "Wall collision and self-collision both end the game immediately. No respawn, no wrap-around unless explicitly agreed."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The tail rule everyone gets wrong",
+      "text": "When you **do not eat**, the tail vacates in the **same tick** the head advances. That means moving into the *current tail cell* is **legal** — it will be gone by the time you arrive. When you **do eat**, the tail stays, so moving into any body cell including the tail is **fatal**. Check food *before* you check self-collision, and remove the tail from the set *before* testing membership on non-growing moves. Get this order wrong and LeetCode case `[[1,1],[0,1]]` kills you."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not start with `Deque`. Start with questions. The interviewer is scoring whether you bound the problem before choosing structures. Five sharp questions save you from building the wrong game, especially around food source, board topology, and whether `move` is driven by a human, a test harness, or a tick thread. State your assumptions out loud and lock them in."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Where does food come from?",
+          "text": "Fixed list supplied at construction (LeetCode 353 style) or spawned randomly during play? Fixed list means a simple `Queue<Cell>`. Random means you need a `FoodStrategy` with collision-avoidance against the body, and that changes the design completely. Ask and branch."
+        },
+        {
+          "title": "What is the board topology?",
+          "text": "Hard walls that kill, or toroidal wrap-around like classic Nokia Snake? Are coordinates `(row, col)` with `(0,0)` top-left? What happens on exact boundary — is `r == height` dead? Agree, because the bounds check is your first line of defence."
+        },
+        {
+          "title": "What is the move driver and timing?",
+          "text": "Is `move()` called synchronously by tests, or by a game loop thread at 10 ticks/sec while another thread renders? Single-threaded lets you use plain `ArrayDeque + HashSet`. Tick-threaded forces you to reason about visibility and atomicity of a whole tick."
+        },
+        {
+          "title": "Can direction reverse instantly?",
+          "text": "If snake is moving `R`, is `L` on the next tick an instant self-collision or ignored as an illegal input? Real games debounce or queue one turn per tick. Decide whether you validate, ignore, or punish the 180-degree turn."
+        },
+        {
+          "title": "What is the scale and score rule?",
+          "text": "Board 20x20 or 10^4 x 10^4? Score = food eaten or food + survival time? How long is the session — hundreds of moves or millions? This justifies O(1) vs O(L) and whether you encode a cell as an `int` or an object."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Scope agreed with the interviewer before writing any code.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "`move(dir)` advances head, grows on food, returns score or -1",
+          "The only mutating path; everything else is derived state"
+        ],
+        [
+          "Functional",
+          "Wall hit or self hit ends game permanently",
+          "Game-over is sticky; simplifies state machine to two states"
+        ],
+        [
+          "Functional",
+          "Food queue consumed in order; no reuse",
+          "Prevents phantom growth and double-counting score"
+        ],
+        [
+          "Non-functional",
+          "O(1) time per move, O(snake + food) space",
+          "Board scan or body scan per move fails at length 10^4+"
+        ],
+        [
+          "Extensibility",
+          "Food placement, collision rule, rendering are pluggable",
+          "Follow-ups (obstacles, random food, levels) must not touch `Snake` core"
+        ],
+        [
+          "Robustness",
+          "Illegal direction and post-game moves handled without exception leak",
+          "Interviewers probe error contract as much as happy path"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the naive list scan"
+    },
+    {
+      "type": "paragraph",
+      "text": "The obvious first attempt stores the body as a `List<Cell>` ordered from tail to head. On each move you compute `newHead`, linearly scan the list to detect self-collision, then `add(newHead)` and optionally `remove(0)`. Food is a list index pointer. This is easy to write in three minutes and it passes the examples, which is exactly why interviewers let you write it — then they ask for 50,000 moves on a 100x100 board with the snake 5,000 cells long. The trade-off is brutal: you saved ~8 bytes per cell by avoiding a set, but you pay **O(L) membership cost on every tick**. The game loop becomes O(moves × length), the UI stutters, and random-food generation that retries `while(body.contains(candidate))` becomes quadratic. Worse, `remove(0)` on an `ArrayList` is itself O(L) due to shifting. It is a correct simulation with the wrong asymptotics."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NaiveSnake.java",
+      "code": "class NaiveSnake {\n    List<int[]> body = new ArrayList<>(); // tail at 0, head at end\n    int[][] food; int foodIdx = 0; int W, H;\n    NaiveSnake(int w, int h, int[][] f) { W=w; H=h; food=f; body.add(new int[]{0,0}); }\n    int move(String d) {\n        int[] head = body.get(body.size()-1);\n        int r = head[0], c = head[1];\n        if (d.equals(\"U\")) r--; else if (d.equals(\"D\")) r++;\n        else if (d.equals(\"L\")) c--; else c++;\n        if (r<0||r>=H||c<0||c>=W) return -1;\n        // O(L) scan — the killer\n        for (int[] b : body) if (b[0]==r && b[1]==c) {\n            // BUG: also forbids legal move into vacating tail\n            return -1;\n        }\n        body.add(new int[]{r,c});\n        if (foodIdx < food.length && food[foodIdx][0]==r && food[foodIdx][1]==c) {\n            foodIdx++; // grow: keep tail\n        } else {\n            body.remove(0); // O(L) shift on ArrayList\n        }\n        return foodIdx;\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this fails in the interview, precisely: **three compounding costs**. First, collision is O(L) string/int compare per tick. Second, `ArrayList.remove(0)` memmoves the whole body. Third, the tail bug is hidden — it treats the vacating tail as occupied, so it returns `-1` on a legal move and the candidate defends it as correct. The fix is not a faster list. It is a different invariant: you need *both* order (which end is tail?) and membership (is this cell occupied?) in O(1). No single standard collection gives you both, so you pay for two structures. That is the whole design insight, and you should say it before writing the real code."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design — deque + set + strategy"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep two views of the same body: a `Deque<Cell>` for order (head push, tail pop) and a `HashSet<Cell>` for O(1) occupancy. Encode each cell as a single `int id = r * width + c` so hashing is one integer hash, no object allocation per tick, and equality is `==`. Keep food behind a `FoodProvider` interface — `QueueFoodProvider` replays the LeetCode list, `RandomFoodProvider` picks empty cells. Keep `Board` responsible only for `inside()` and `Obstacle` checks. The trade-off you must name: you **double memory** (every segment lives in both deque and set, ~2x) to buy **O(1) ticks forever**. That is always the right trade for a real-time loop — memory is cheap, frame budget is not. The second trade: encoding as `int` is faster and GC-free but less readable than a `Cell` object; wrap encode/decode in one place so debugging stays sane."
+    },
+    {
+      "type": "mermaid",
+      "title": "Game tick flow",
+      "caption": "Order matters: bounds, food check, tail vacate, then body check.",
+      "code": "flowchart TD\n  A[\"move(dir): compute newHead\"] --> B{\"outside board?\"}\n  B -- yes --> Z[\"over=true; return -1\"]\n  B -- no --> C{\"newHead == food?\"}\n  C -- yes --> D[\"grow: push head, add to set\"]\n  D --> E[\"score++; advance food\"]\n  E --> F[\"return score\"]\n  C -- no --> G[\"pop tail, remove from set\"]\n  G --> H{\"newHead in bodySet?\"}\n  H -- yes --> Z\n  H -- no --> I[\"push head, add to set\"]\n  I --> J[\"return score\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The flowchart order is the implementation. Compute `newHead` from direction deltas. Reject walls immediately — no state changes. Peek food: if you eat, **do not touch the tail**, add the head to both structures, bump score. If you do not eat, **evict the tail from deque *and* set first**, then test `set.contains(newHead)`. This single ordering makes the tail-vacate rule fall out naturally with no special-case `if (newHead == tail)` hack. For random food, the provider needs O(1) emptiness testing too — reuse the same `bodySet` plus an `obstacleSet`, and if the board is dense (>70% full) switch from rejection sampling to picking from a free-list, otherwise spawn latency spikes exactly when the game is tensest."
+    },
+    {
+      "type": "mermaid",
+      "title": "Class structure",
+      "caption": "Core loop isolated from food, board, and rendering.",
+      "code": "classDiagram\n  class SnakeGame {\n    +move(direction: String) int\n    +getScore() int\n    +isOver() bool\n  }\n  class Snake {\n    +head() Cell\n    +addHead(cell: Cell) void\n    +removeTail() Cell\n    +occupies(cell: Cell) bool\n  }\n  class Board {\n    +inside(cell: Cell) bool\n    +isBlocked(cell: Cell) bool\n  }\n  class FoodProvider {\n    <<interface>>\n    +peek() Cell\n    +consume() void\n  }\n  class QueueFoodProvider {\n    +peek() Cell\n    +consume() void\n  }\n  class Direction {\n    <<enumeration>>\n    U\n    D\n    L\n    R\n  }\n  SnakeGame *-- Snake\n  SnakeGame *-- Board\n  SnakeGame *-- FoodProvider\n  FoodProvider <|.. QueueFoodProvider"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Below is the version to write on a whiteboard or IDE. It is deliberately boring Java: `ArrayDeque<Integer>` + `HashSet<Integer>`, food as an index into the supplied array (which is just a queue specialised for the interview), sticky `gameOver` flag, and direction deltas in a `Map` so you never write four `if` branches twice. No statics, no singletons, no framework. The `int` encoding is the performance trick — state it: `id = r * width + c` makes `contains` a single integer hash and avoids allocating a `Cell` per move, which matters at 60 ticks/sec. If the interviewer wants Strategy + Factory, extract `FoodProvider` and add `FoodProviderFactory.fromMode()` without changing `move()` at all — that is the extensibility story made concrete."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "SnakeGame.java",
+      "code": "import java.util.*;\n\npublic class SnakeGame {\n    private final int width, height;\n    private final int[][] food;\n    private int foodIdx = 0;\n    private int score = 0;\n    private boolean over = false;\n\n    // Invariant: deque and set always contain exactly the same ids.\n    private final Deque<Integer> body = new ArrayDeque<>(); // head at front\n    private final Set<Integer> occupied = new HashSet<>();\n\n    public SnakeGame(int width, int height, int[][] food) {\n        this.width = width; this.height = height;\n        this.food = food == null ? new int[0][] : food;\n        body.offerFirst(encode(0, 0));\n        occupied.add(encode(0, 0));\n    }\n\n    private int encode(int r, int c) { return r * width + c; }\n\n    public int move(String dir) {\n        if (over) return -1;\n        int head = body.peekFirst();\n        int r = head / width, c = head % width;\n        switch (dir) {\n            case \"U\": r--; break;\n            case \"D\": r++; break;\n            case \"L\": c--; break;\n            case \"R\": c++; break;\n            default: return score; // ignore illegal input, don't kill game\n        }\n        if (r < 0 || r >= height || c < 0 || c >= width) {\n            over = true; return -1;\n        }\n        int next = encode(r, c);\n        boolean eating = foodIdx < food.length\n                && food[foodIdx][0] == r && food[foodIdx][1] == c;\n        if (!eating) {\n            // Tail vacates first: legal to move into old tail.\n            int tail = body.pollLast();\n            occupied.remove(tail);\n        }\n        if (occupied.contains(next)) {\n            over = true; return -1;\n        }\n        body.offerFirst(next);\n        occupied.add(next);\n        if (eating) { foodIdx++; score++; }\n        return score;\n    }\n\n    public int getScore() { return score; }\n    public boolean isOver() { return over; }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "snake_game.py",
+      "code": "from collections import deque\n\nclass SnakeGame:\n    def __init__(self, width, height, food):\n        self.W, self.H = width, height\n        self.food = food or []\n        self.fi = 0\n        self.score = 0\n        self.over = False\n        self.body = deque([0])  # encode r*W+c, head at left\n        self.occupied = {0}\n\n    def move(self, d: str) -> int:\n        if self.over:\n            return -1\n        head = self.body[0]\n        r, c = divmod(head, self.W)\n        dr, dc = {\"U\": (-1, 0), \"D\": (1, 0), \"L\": (0, -1), \"R\": (0, 1)}[d]\n        r, c = r + dr, c + dc\n        if not (0 <= r < self.H and 0 <= c < self.W):\n            self.over = True\n            return -1\n        nxt = r * self.W + c\n        eating = self.fi < len(self.food) and self.food[self.fi] == [r, c]\n        if not eating:\n            tail = self.body.pop()\n            self.occupied.discard(tail)\n        if nxt in self.occupied:\n            self.over = True\n            return -1\n        self.body.appendleft(nxt)\n        self.occupied.add(nxt)\n        if eating:\n            self.fi += 1\n            self.score += 1\n        return self.score"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Cost of the deque + set design. All bounds are worst-case.",
+      "headers": [
+        "Operation",
+        "Time",
+        "Space",
+        "Note"
+      ],
+      "rows": [
+        [
+          "`move()` (any direction)",
+          "O(1)",
+          "O(1) extra",
+          "One hash lookup, at most one deque push + one pop"
+        ],
+        [
+          "Self-collision check",
+          "O(1)",
+          "O(L) total in set",
+          "Trade-off: 2x memory for constant-time membership"
+        ],
+        [
+          "Food consume / advance",
+          "O(1)",
+          "O(F) for queue",
+          "Index pointer; random provider costs O(1) avg with retry"
+        ],
+        [
+          "Overall footprint",
+          "—",
+          "O(L + F)",
+          "L = snake length, F = remaining food; never O(W×H)"
+        ],
+        [
+          "Naive list scan (rejected)",
+          "O(L) per move",
+          "O(L)",
+          "O(moves × L) total; fails length 10^4+ and hides tail bug"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency and the hardest follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "The follow-up that separates seniors is: *two threads — a ticker calling `move()` at 10Hz and a renderer reading the body at 60Hz — plus random food spawn*. The naive answer (`synchronized` on every method or `Collections.synchronizedSet`) serialises rendering behind the tick and still leaks a torn snapshot if the renderer iterates the deque while the ticker mutates it. The correct stance: **a tick must be atomic, reads must see a consistent snapshot, and you never hold a lock during I/O**. Three options with explicit trade-offs. One, coarse `ReentrantLock` around the whole `move()` plus `snapshot()` that returns a defensive copy for the renderer — simple, correct, contention is irrelevant at 10Hz, but copies O(L) per frame. Two, `ReadWriteLock` with write on tick and read on render — only pays off with many concurrent readers and one writer; overkill for two threads and easy to deadlock if food spawn upgrades a read lock. Three, lock-free single-writer + volatile publication of an immutable snapshot (`List<Integer> publishedBody`) after each tick — best frame consistency, zero render blocking, but you allocate per tick and must reason about safe publication. For the interview, pick option one, name option three as the scale-up, and explicitly reject `ConcurrentHashMap` alone because deque + set must mutate atomically together — thread-safe parts do not make a thread-safe whole."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Say this line verbatim",
+      "text": "**The deque and the set are one invariant split across two objects — any lock must cover both.** Locking only the set still lets the renderer see a head with no set entry. Copy-on-snapshot under a single lock is the minimal correct answer."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Random food without overlap",
+          "text": "Introduce `FoodStrategy.next(board, occupied)`. Rejection sampling (`pick random, retry if occupied`) is O(1) on sparse boards and O(infinity) when nearly full — say so. Dense-board fix: maintain a free-count or free-list, or sample from `W*H - L` unoccupied ids. Factory picks `Queued` vs `Random` mode."
+        },
+        {
+          "title": "Obstacles and levels",
+          "text": "Add `Set<Integer> blocked` to `Board`. Check `blocked.contains(next)` alongside `occupied` in the same O(1) step. Levels become data (`blocked` + food list + speed), not code branches. Trade-off: another set, same 2x-memory argument."
+        },
+        {
+          "title": "Portals, wrap-around, power-ups",
+          "text": "Model board topology as `Board.resolve(newHead)` returning the effective cell or death. Wrap, portal pairs, and shrink/ghost power-ups all live there. Snake core never changes — this is the Strategy payoff the interviewer is listening for."
+        },
+        {
+          "title": "Multiplayer / AI snakes",
+          "text": "Each snake gets its own deque but all share one global `occupied` set plus per-snake id map for kill attribution. Head-to-head collision order must be resolved in a single atomic phase — sequential `move()` calls race. Mention turn-phase locking."
+        },
+        {
+          "title": "Undo, replay, persistence",
+          "text": "Log every `(dir, ate?)` as an event. Undo pops the log and reverses one tick (remove head, restore tail). Replay is event sourcing for free. Persist only seed + event log, not full board — O(moves) storage, trivial save/load."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Move into vacating tail without food → **legal**; same move while eating → **death**. State both.",
+        "Food placed on a body cell → skip or regenerate; never allow instant grow-through-wall logic.",
+        "Zero food (`food = []`) → snake just roams; `foodIdx` guard must not index out of bounds.",
+        "1×1 and 1×N boards → any move off-board dies immediately; test `R` on 1×1.",
+        "Post-game `move()` calls → sticky `-1`, no resurrection, no score change.",
+        "Illegal direction string → ignore or throw `IllegalArgumentException`, but decide and document — never silently reverse.",
+        "180-degree reversal into neck (`R` then `L`) → self-collision unless length is 1; do not special-case it.",
+        "Integer overflow on `r * width + c` for giant boards → use `long` id or `(r,c)` pair object and say why."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak vs strong signals for this LLD round.",
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Data structure choice",
+          "Single `List`, O(L) scan per move",
+          "`Deque + Set` with int encoding; names 2x-memory trade-off"
+        ],
+        [
+          "Tick ordering",
+          "Checks body before tail removal; fails tail-chase test",
+          "Eats? grow : vacate-then-check; explains why order is the fix"
+        ],
+        [
+          "Food design",
+          "Hard-coded array index everywhere",
+          "`FoodProvider` interface + factory; queued vs random swappable"
+        ],
+        [
+          "Extensibility",
+          "`move()` full of `if level==2` branches",
+          "Board topology, obstacles, rendering behind interfaces"
+        ],
+        [
+          "Concurrency",
+          "`synchronized` sprinkled or `ConcurrentHashMap` alone",
+          "One invariant, one lock scope; snapshot copy; names lock-free upgrade"
+        ],
+        [
+          "Communication",
+          "Codes immediately, silent",
+          "Clarifies topology, food source, threading first; states edge cases unprompted"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "45-minute plan",
+      "text": "**0–5:** clarify food source, topology, threading, reversal rule. **5–10:** state naive list-scan and kill it with O(L) math. **10–25:** write deque + set `move()` with correct tail order and int encoding. **25–35:** run tail-chase, wall, eat, post-game cases live. **35–45:** extensibility — `FoodStrategy` + factory, obstacles, snapshot locking, multiplayer sketch. Close by naming every trade-off: 2x memory for O(1), copy-per-frame for consistency, rejection sampling limits."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:31:08.395Z",
+    "problems": []
+  }
+}

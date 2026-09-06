@@ -1,0 +1,343 @@
+{
+  "slug": "transaction-level-implementation",
+  "title": "Transaction Level Implementation",
+  "summary": "Transaction isolation levels are contracts about which concurrent anomalies you accept. This page defines them precisely, shows how MVCC implements them, and when to pay for Serializable.",
+  "kind": "HLD",
+  "problemSlug": "transaction-level-implementation-96-216",
+  "topic": "Data consistency in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔒",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "consistency",
+    "transactions",
+    "postgres"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Documentation: 18: 13.2. Transaction Isolation - PostgreSQL",
+      "url": "https://www.postgresql.org/docs/current/transaction-iso.html",
+      "source": "postgresql.org",
+      "kind": "article"
+    },
+    {
+      "title": "Transaction Isolation in Postgres, explained",
+      "url": "https://www.thenile.dev/blog/transaction-isolation-postgres",
+      "source": "thenile.dev",
+      "kind": "article"
+    },
+    {
+      "title": "Isolation Levels in Databases Explained - Codefinity",
+      "url": "https://codefinity.com/blog/Isolation-Levels-in-Databases-Explained",
+      "source": "codefinity.com",
+      "kind": "article"
+    },
+    {
+      "title": "Overview of Transaction Implementation",
+      "url": "https://jcsites.juniata.edu/faculty/rhodes/dbms/transproc.htm",
+      "source": "jcsites.juniata.edu",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Isolation is what anomalies you agree to live with.** Every level is a deal: skip coordination and accept lost updates and skew, or pay in aborts and retries to get behavior that looks serial. If you cannot name the anomaly you are allowing, you did not choose a level — you inherited the default."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "A transaction is a set of reads and writes that must move the database from one valid state to another valid state, atomically and durably. **Isolation** answers a narrower question: when dozens of such transactions overlap, what interference between them is permitted? The ideal is **serializable execution** — the final state and the answers returned must match *some* order where those same transactions ran one at a time. It does not promise which order. It promises an order exists. Everything weaker than that is defined by which specific interference patterns you let through: reading data from a transaction that has not committed, seeing a row change value when you read it twice, seeing a query match a different set of rows when you repeat it, or committing a group of transactions whose combined result matches *no* serial order at all."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this separation matters: **atomicity protects one transaction from partial failure; isolation protects transactions from each other.** Moving money between two accounts needs both. Atomicity ensures the debit and credit happen together or not at all. Isolation ensures a concurrent balance check, a second transfer, or an interest calculation does not observe the halfway state and act on it. Confuse the two and you will add retries for atomicity problems or add constraints for isolation problems. In high-level design you pick isolation per transaction, not per database, because a balance transfer and a product-view counter have opposite correctness budgets. One justifies aborts. The other does not."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The four levels as contracts"
+    },
+    {
+      "type": "table",
+      "caption": "What each level forbids. Stronger levels forbid a superset.",
+      "headers": [
+        "Level",
+        "Dirty read",
+        "Non-repeatable read",
+        "Phantom",
+        "Serialization anomaly"
+      ],
+      "rows": [
+        [
+          "Read Uncommitted",
+          "allowed in theory",
+          "possible",
+          "possible",
+          "possible"
+        ],
+        [
+          "Read Committed",
+          "forbidden",
+          "possible",
+          "possible",
+          "possible"
+        ],
+        [
+          "Repeatable Read",
+          "forbidden",
+          "forbidden",
+          "forbidden in Postgres, allowed by standard",
+          "possible"
+        ],
+        [
+          "Serializable",
+          "forbidden",
+          "forbidden",
+          "forbidden",
+          "forbidden"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "**Read Committed is a per-statement promise.** Each statement sees a fresh snapshot containing only data committed before that statement started, never uncommitted data. Run the same `SELECT` twice inside one transaction and you can get different rows if someone committed in between. That is allowed and expected. The trade-off is deliberate: you get no stale-snapshot blocking, no retry burden, and short lock hold times, but you lose any claim that two reads in one transaction describe the same moment. Use it when each statement is independent — single-row lookups, filters that tolerate drift, bulk analytics that re-run. Do not use it to enforce multi-statement invariants like `balance_a + balance_b >= 0`, because the two balances can come from two different commit times."
+    },
+    {
+      "type": "paragraph",
+      "text": "**Repeatable Read is a per-transaction snapshot promise.** All statements in the transaction observe the database as of transaction start, plus the transaction's own writes. Re-read the same row or re-run the same predicate and you see the same answer, even if others committed. That kills non-repeatable reads and, in the multiversion implementation, phantoms too. What it does *not* kill is **write skew**: two concurrent transactions can each read overlapping state, decide there is no conflict, then write disjoint rows that together violate a constraint. Classic case is two doctors each checking on-call count and both signing off. Neither updated the row the other read, so snapshot isolation sees no overwrite conflict. The trade-off: cheap stable reads with no extra locking, but no protection against logic that spans a read-then-write across two transactions."
+    },
+    {
+      "type": "paragraph",
+      "text": "**Serializable is a no-anomaly promise, paid for with aborts.** The engine tracks read and write predicates and aborts any commit pattern that has no equivalent serial order — a technique called Serializable Snapshot Isolation. You get correctness that matches running transactions one by one, but you must handle `40001` serialization failures in application code and retry the whole transaction. Throughput under contention drops because work is thrown away instead of interleaved. That is the correct price. Choose it when the invariant cannot be expressed as a single-row constraint or a unique index and the cost of violation exceeds the cost of retries: ledger transfers, seat assignment, inventory decrement with a floor, uniqueness across two tables. Do not choose it as a global default to avoid thinking."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Mechanism: how MVCC actually enforces it"
+    },
+    {
+      "type": "mermaid",
+      "title": "Snapshot and SSI decision path",
+      "caption": "Each statement resolves visibility from a snapshot; Serializable adds abort on dangerous patterns.",
+      "code": "flowchart TD\n  C[Client BEGIN] --> D[Assign transaction snapshot]\n  D --> RC[Read Committed: new snapshot per statement]\n  D --> RR[Repeatable Read: one snapshot per transaction]\n  D --> SR[Serializable: snapshot plus SSI tracking]\n  RC --> O[Return committed rows visible to snapshot]\n  RR --> O\n  SR --> A{Abort on rw pattern}\n  A -->|No| O\n  A -->|Yes| R[Abort 40001 retry whole txn]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Multiversion concurrency control never overwrites in place for readers to block on. Every `UPDATE` creates a new row version stamped with the writer's transaction id; every `DELETE` marks a version dead. A reader carries a snapshot boundary — roughly `xmin` and `xmax` — and only versions committed before its snapshot are visible. That is why Read Committed versus Repeatable Read is just a question of **when you take the snapshot**: per statement or per transaction. Writers still take row locks to prevent two transactions from updating the same version, so lost updates on the *same row* are blocked even at Read Committed. The subtle part is that readers do not block writers and writers do not block readers. Blocking is replaced by version visibility plus, at Serializable, dependency tracking. The trade-off versus two-phase locking: far higher read concurrency and no read-lock deadlocks, at the cost of storage bloat from old versions, vacuum work, and the need for explicit abort logic at the top level."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Postgres specifics you must state",
+      "text": "**Read Uncommitted behaves as Read Committed.** There are no dirty reads even if you ask for them. **Repeatable Read blocks phantoms** even though the standard permits them — stronger than required, which is legal. Predicate locks at Serializable are not physical locks; they are tracked read-write dependencies that trigger aborts. Say this out loud in the interview so the interviewer knows you design against real behavior, not textbook squares."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Pick by anomaly budget and retry budget, not by habit.",
+      "headers": [
+        "Level",
+        "What you gain",
+        "What you pay",
+        "Failure mode if wrong"
+      ],
+      "rows": [
+        [
+          "Read Committed",
+          "max concurrency, no txn retries, simple reasoning per statement",
+          "re-reads can drift, multi-statement invariants unenforced",
+          "lost update across statements, inconsistent report read twice"
+        ],
+        [
+          "Repeatable Read",
+          "stable snapshot for whole txn, no phantom in Postgres",
+          "long snapshots hold bloat, still allows write skew",
+          "two txns each pass validation then jointly break rule"
+        ],
+        [
+          "Serializable",
+          "true serial equivalence, catches write skew and phantoms",
+          "abort rate spikes under contention, mandatory idempotent retry",
+          "retry storms and latency tail if applied to hot keys"
+        ],
+        [
+          "Explicit locking: SELECT FOR UPDATE",
+          "deterministic serialization for hot rows without aborts",
+          "lock waits, deadlocks, lower concurrency",
+          "deadlock timeouts if lock order is inconsistent"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The default of Read Committed exists for a reason: most operations do not need cross-statement stability, and forcing global Serializable turns every hotspot into a retry loop. **My opinionated rule: default to Read Committed, escalate the specific transaction that enforces money, inventory, or uniqueness invariants to Serializable or to a targeted `SELECT ... FOR UPDATE`.** The trade-off you are managing is abort cost versus lock-wait cost. Serializable wastes work after the fact by aborting. Explicit locking waits before the fact by queueing. Under low contention Serializable is cheaper because aborts are rare. Under high contention on the same few rows, locking is cheaper because queueing beats repeated wasted execution. Name that crossover in the design review and you sound senior."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three failures dominate. **Lost update at Read Committed:** two transactions read `balance = 100`, each adds `10` based on what it read, each writes `110` — one increment vanishes because the second write overwrote the first without seeing it. Symptom is counters and balances that drift low under load with no errors in logs. **Write skew at Repeatable Read:** batch job checks `total on-call = 2` and removes one person while a concurrent request does the same check and removes a different person, leaving zero. Each transaction updated a different row, so no row conflict fires. Symptom is a constraint that looks enforced in code but is violated in the table — negative stock, double-booked seat, zero coverage. **Serializable retry collapse:** you mark everything Serializable to fix the above, hotspot keys abort at 20-30%, clients retry immediately, database does 3x work for 1x commits. Symptom is `40001` in logs, p99 latency cliff, and throughput that falls as you add clients."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Balance or counter lower than sum of operations, no error — suspect lost update from read-modify-write at Read Committed.",
+        "Constraint violated despite application check passing in both transactions — suspect write skew allowed by Repeatable Read.",
+        "Same `SELECT` returns different counts inside one transaction — expected at Read Committed, bug if you assumed snapshot stability.",
+        "Spike in `could not serialize access` with falling commit rate — Serializable applied to a hotspot without backoff or lock alternative.",
+        "Table bloat and slowdown after long Repeatable Read analytics — old versions cannot be vacuumed while snapshot is open.",
+        "Deadlocks after adding `FOR UPDATE` to fix skew — lock ordering inconsistent across code paths."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The interview trap: write skew passes Repeatable Read",
+      "text": "Two transactions each read a *different* row, each writes a *different* row, together they break a rule over the set. No non-repeatable read occurred, no phantom occurred, yet the result matches no serial order. **Repeatable Read commits this. Serializable aborts one of them.** If you say Repeatable Read prevents all anomalies, you fail that follow-up."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code: making the contract enforceable"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "transfer.py",
+      "code": "import time, random\nimport psycopg2\nfrom psycopg2 import errorcodes\n\ndef transfer(conn, from_id, to_id, amount, max_retries=5):\n    # WHY Serializable: debit+credit must look like some serial order.\n    # Trade-off: we accept aborts (40001) to forbid write skew / phantoms.\n    for attempt in range(max_retries):\n        try:\n            with conn:\n                with conn.cursor() as cur:\n                    cur.execute(\"SET TRANSACTION ISOLATION LEVEL SERIALIZABLE\")\n                    # Lock ordering by id avoids deadlock when direction flips.\n                    a, b = sorted([from_id, to_id])\n                    cur.execute(\"SELECT id, balance FROM accounts WHERE id IN (%s,%s) FOR UPDATE\", (a, b))\n                    rows = {r[0]: r[1] for r in cur.fetchall()}\n                    if rows[from_id] < amount:\n                        raise ValueError(\"insufficient funds\")\n                    cur.execute(\"UPDATE accounts SET balance = balance - %s WHERE id = %s\", (amount, from_id))\n                    cur.execute(\"UPDATE accounts SET balance = balance + %s WHERE id = %s\", (amount, to_id))\n            return True  # commit succeeded\n        except psycopg2.errors.SerializationFailure:\n            # Mandatory: whole txn must retry, not just failed statement.\n            # Backoff + jitter prevents retry storm on hotspot.\n            conn.rollback()\n            if attempt == max_retries - 1:\n                raise\n            time.sleep(0.02 * (2 ** attempt) + random.uniform(0, 0.01))\n        except psycopg2.errors.DeadlockDetected:\n            conn.rollback()\n            if attempt == max_retries - 1:\n                raise\n            time.sleep(0.02 * (2 ** attempt) + random.uniform(0, 0.01))"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet shows the two non-negotiable habits. First, **retry the entire transaction on serialization or deadlock errors**, with exponential backoff and jitter — retrying just the statement reuses a doomed snapshot. Second, **make retries idempotent**: the transfer above is safe to re-execute because it re-reads balances inside the new transaction, but a non-idempotent side effect like sending an email or charging a card must use a transaction outbox key, not be re-fired on retry. The `FOR UPDATE` plus sorted ids is intentional belt-and-suspenders: Serializable alone would guarantee correctness via aborts, but pinning the hot rows with ordered locks converts some aborts into waits, which is cheaper when many transfers hit the same two accounts. That is the abort-versus-wait trade-off made explicit in code."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Distributed twist: single-node isolation is not enough"
+    },
+    {
+      "type": "paragraph",
+      "text": "Isolation levels govern one database engine. Once a business transaction spans two databases, a queue, or two microservices, no `SET TRANSACTION` covers the whole thing. Two-phase commit can give atomicity across shards but at the price of blocking on coordinator failure and latency on every write — which is why most systems refuse it and accept orchestration instead. The practical pattern is **transactional outbox plus saga**: commit business row and outbox event in one local transaction at the needed isolation level, relay the event asynchronously, and let downstream services apply compensating actions on failure. Trade-off is stark: you keep availability and avoid cross-shard locks, but you accept temporary inconsistency and must design compensations. Do not claim Serializable in Postgres makes a cross-service booking serializable. It only serializes access to that one database."
+    },
+    {
+      "type": "mermaid",
+      "title": "Cross-shard commit vs outbox",
+      "caption": "2PC blocks for atomicity; outbox avoids blocking by accepting eventual consistency.",
+      "code": "flowchart LR\n  App[App Service] --> Coord[Coordinator]\n  Coord --> S1[Shard 1 PREPARE]\n  Coord --> S2[Shard 2 PREPARE]\n  S1 --> OK1[Vote Yes]\n  S2 --> OK2[Vote Yes]\n  OK1 --> Commit[COMMIT all or ABORT all]\n  OK2 --> Commit"
+    },
+    {
+      "type": "table",
+      "caption": "When to use it and when not to.",
+      "headers": [
+        "Situation",
+        "Use",
+        "Avoid",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Single-statement lookup or counter increment",
+          "Read Committed",
+          "Serializable",
+          "No cross-statement invariant; aborts buy nothing"
+        ],
+        [
+          "Multi-statement report needing stable view",
+          "Repeatable Read",
+          "Read Committed",
+          "Re-reads must match; drift is a bug"
+        ],
+        [
+          "Money move, inventory with floor, set-wide uniqueness",
+          "Serializable + retry",
+          "Repeatable Read",
+          "Only Serializable catches write skew"
+        ],
+        [
+          "Hot counter with 10k contenders",
+          "Read Committed + atomic UPDATE",
+          "Serializable globally",
+          "Abort storm costs more than allowed drift"
+        ],
+        [
+          "Cross-service booking",
+          "Local txn + outbox and saga",
+          "Distributed 2PC everywhere",
+          "Blocking and tail latency outweigh atomicity"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "State the invariant first",
+          "text": "Do not start with levels. Say: balances must never go negative, seats must never double-book. Then map invariant to anomaly: lost update, skew, or phantom. Interviewers grade this mapping, not recitation."
+        },
+        {
+          "title": "Pick per transaction, not per system",
+          "text": "Propose Read Committed as default, Repeatable Read for stable reads, Serializable only for the two or three transactions that enforce money or uniqueness. Explain abort versus wait cost for each."
+        },
+        {
+          "title": "Draw the interleaving",
+          "text": "Sketch T1 read, T2 read, T1 write, T2 write on a timeline and show which level permits it. Write skew is the expected whiteboard test — show two different rows being written after a joint read."
+        },
+        {
+          "title": "Show the retry contract",
+          "text": "Write the 40001 retry loop with backoff, idempotency key, and lock ordering. Mention that callers must be retry-safe and side effects must go through an outbox."
+        },
+        {
+          "title": "Extend to distributed",
+          "text": "When asked about two databases, say explicitly that isolation does not span them. Propose outbox plus compensating saga, name the temporary inconsistency window, and say what the user sees during it."
+        }
+      ]
+    },
+    {
+      "type": "list",
+      "items": [
+        "*Serializable means no locks* — false. It means no anomalies; implementation may use SSI aborts, predicate tracking, or locks depending on engine.",
+        "*Repeatable Read prevents write skew* — false in snapshot implementations. It prevents re-read drift, not joint-constraint violation.",
+        "*Read Uncommitted gives dirty reads in Postgres* — false. It is aliased to Read Committed; there is no dirty-read mode.",
+        "*Higher isolation always means slower* — misleading. Under low contention Serializable cost is near zero; under hotspots explicit locking can beat it. Cost depends on contention, not level alone.",
+        "*Isolation fixes distributed consistency* — false. It scopes to one engine. Cross-service correctness needs idempotency, outbox, and saga design."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Choose the weakest level that still forbids the anomaly your invariant cannot tolerate, and pay for strength only on those transactions — with retries for Serializable or ordered locks for hotspots.**"
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:34:32.198Z",
+    "problems": []
+  }
+}

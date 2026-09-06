@@ -1,0 +1,284 @@
+{
+  "slug": "introduction-to-caching",
+  "title": "Introduction to caching",
+  "summary": "Caching trades correctness complexity for speed: keep a cheap, expiring copy close to the reader and define exactly when it is allowed to be wrong.",
+  "kind": "HLD",
+  "problemSlug": "introduction-to-caching-95-187",
+  "topic": "Caching Mechanisms",
+  "difficulty": "Easy",
+  "coverEmoji": "⚡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Caching",
+    "Performance"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is Caching? | How is a Website Cached? - Cloudflare",
+      "url": "https://www.cloudflare.com/learning/cdn/what-is-caching/",
+      "source": "cloudflare.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Caching and How it Works | AWS",
+      "url": "https://aws.amazon.com/caching/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    },
+    {
+      "title": "Caching - System Design Concept - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/caching-system-design-concept-for-beginners/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Caching Essentials: Types, Strategies, and Best Practices",
+      "url": "https://medium.com/@yaroslavzhbankov/caching-essentials-types-strategies-and-best-practices-459493cc47d9",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Caching is **deliberate staleness for speed**. You store a copy of expensive data somewhere cheap to read, and you accept that the copy can be wrong for a bounded time. If you cannot state that bound and how you invalidate, you do not have a cache — you have a bug waiting for traffic."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What caching is, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "A cache is a **lookup-first copy store**: on read you check the fast copy by `key`, and only on miss or expiry do you pay the slow path — database read, downstream call, recomputation, disk fetch. Every entry is three things: a **key** that fully identifies what was asked, **bytes** that answer it, and an **expiry or version rule** that says when the answer stops being trustworthy. Miss the third part and you built an unbounded memory leak with stale reads."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why it is faster is not magic. It removes one or more of the three costs that dominate backend latency: **network round trips**, **disk I/O**, and **repeated computation**. A 1ms in-memory lookup replaces a 20ms database query plus connection wait plus serialization, and it does so *close* to the caller — in process, in the same zone, or at the edge. The trade-off is immediate: you buy lower `p99` and higher throughput with **extra state, invalidation logic, and operational surface**."
+    },
+    {
+      "type": "paragraph",
+      "text": "That trade-off is why placement matters more than tooling. A browser copy avoids the network entirely but you cannot revoke it. An edge copy avoids cross-region fetch but multiplies invalidation fan-out. An application-side `Redis` or `Memcached` avoids database load but adds a network hop and a new failure mode. Same mechanism, different **distance vs control** compromise. Choose the layer by what you need to kill: latency, origin load, or compute cost."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: hit, miss, and expiry"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every cache, regardless of product, runs the same loop: **lookup, decide fresh vs stale, serve or refill**. Freshness comes from `TTL`, explicit invalidation, or version comparison. Eviction comes from size pressure via `LRU`, `LFU`, or `TTL` expiry. Writes diverge: you either update the cache alongside the source, invalidate and let the next read refill, or let the entry age out. The choice determines whether readers see stale data for milliseconds, seconds, or until memory pressure hits."
+    },
+    {
+      "type": "mermaid",
+      "title": "Read-through flow",
+      "caption": "All caches reduce to this decision: serve the copy or pay the origin.",
+      "code": "flowchart TD\n  R[Incoming request] --> L{Cache lookup by key?}\n  L -->|hit and fresh| H[Return cached bytes]\n  L -->|miss or expired| O[Fetch from origin]\n  O --> W[Write copy with TTL]\n  W --> H[Return bytes to caller]"
+    },
+    {
+      "type": "paragraph",
+      "text": "A hit that is fresh is the only fast path. A miss pays **both** costs — the lookup plus the origin fetch — so a low hit ratio makes you slower than no cache at all. That is why `hit ratio`, `TTL`, and `key cardinality` are design inputs, not metrics you check later. High-cardinality keys with short `TTL` thrash memory and never hit. Low-cardinality hot keys with long `TTL` are where caching pays. Design the keyspace first: what is cacheable, for how long, and what event makes it false."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Cache-aside (lazy load):** app checks cache, on miss reads DB and populates cache. Simple, only caches what is asked for. Trade-off: first reader pays the miss and concurrent misses can stampede the DB unless you add request coalescing.",
+        "**Read-through / write-through:** cache sits in front of the source and handles refill and writes. Cleaner app code. Trade-off: every write pays cache + store latency, and the cache becomes critical path — if it stalls, writes stall.",
+        "**Write-behind (write-back):** acknowledge on cache write, flush to source asynchronously. Very fast writes. Trade-off: you can lose acknowledged data on crash, and ordering plus retries become your problem.",
+        "**Invalidate vs expire:** explicit delete on write gives tighter consistency but requires you to know every key affected. Passive `TTL` expiry is robust and simple but guarantees a staleness window. Most production systems use `TTL` as a backstop even when they invalidate."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What caching gives you and what it bills you.",
+      "headers": [
+        "You gain",
+        "You pay",
+        "Why it hurts"
+      ],
+      "rows": [
+        [
+          "Lower latency and higher throughput on hot reads",
+          "Staleness window and invalidation complexity",
+          "Two copies of truth must be reconciled; every writer must know what to expire"
+        ],
+        [
+          "Database and origin offload",
+          "Extra infrastructure to run and monitor",
+          "Hit ratio, eviction, memory, and a new network dependency all need ownership"
+        ],
+        [
+          "Absorption of spikes and viral reads",
+          "Cold start, stampede, and hot-key risk",
+          "Empty cache under sudden load forwards the spike straight to the origin"
+        ],
+        [
+          "Cheaper scaling for read-heavy workloads",
+          "Harder reasoning about correctness",
+          "Debugging shifts from where is the data to which copy did this reader see and why"
+        ],
+        [
+          "Per-layer control of freshness vs speed",
+          "Multiplied consistency problem per layer",
+          "Browser, edge, app, and DB caches can each serve different stale versions simultaneously"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The opinionated default: **start with cache-aside plus short `TTL` at the application layer, and invalidate on write only for keys you can enumerate exactly.** It keeps the slow path working when the cache is dead, limits blast radius, and forces you to define the staleness contract up front. Add edge or write-through caching only when measurements prove origin load or global latency demands it. Each added layer doubles the states a reader can observe — do not pay that without a number."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Caches do not fail by returning errors. They fail by **returning the wrong speed or the wrong answer**. An empty or thrashing cache looks like database overload. A poisoned or overly broad cache looks like users seeing each other's data or stale prices that never converge. Because the symptom appears far from the cause — slow queries, not cache logs — you must instrument `hit ratio per key prefix`, `TTL age at serve`, and `origin concurrency during misses` from day one."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Thundering herd on expiry:** hot key expires, 5,000 concurrent misses hit the DB at once. Symptom: periodic latency spikes aligned exactly to `TTL` boundaries, DB CPU cliff, then recovery.",
+        "**Stale-forever due to missing invalidation:** writer updates DB but forgets one key pattern or a second layer. Symptom: some users see new data, some see old data indefinitely, and a manual cache flush fixes it — until next write.",
+        "**Cold start after deploy or failover:** new nodes start empty and every read is a miss. Symptom: deploy correlates with origin saturation and elevated `p99`, even though code did not change.",
+        "**Hot key and large object:** one celebrity key or 5MB value saturates a single cache node or network link. Symptom: one shard at 100% CPU or bandwidth while others idle, plus serialization latency the cache was supposed to remove.",
+        "**Cache poisoning / key collision:** user-specific data cached under a shared key, or unnormalised keys fragment the hit ratio. Symptom: wrong user data served, or hit ratio stuck near zero despite heavy reuse."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The failure to design for",
+      "text": "Assume the hot key **will** expire under peak load. Mitigate with **jittered TTLs, stale-while-revalidate, and single-flight refill** — only one request refills while others wait or get slightly stale data. If your answer to stampede is scale the database, you misunderstood what the cache was for."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete shape: cache-aside with TTL"
+    },
+    {
+      "type": "paragraph",
+      "text": "Cache-aside is the interview default because it keeps the database as source of truth and the cache as pure optimisation. The app owns the key format and the `TTL`, the cache never writes through on its own, and a dead cache degrades to slow reads rather than failed writes. The trade-off: callers handle the miss path and must coalesce concurrent refills if the key is hot."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cache_aside.py",
+      "code": "def get_profile(user_id: str) -> dict:\n    key = f\"profile:{user_id}\"  # key must fully identify the rendered answer\n    cached = cache.get(key)\n    if cached is not None:\n        return deserialize(cached)  # HIT: no DB traffic\n\n    # MISS: single-flight in real code so 100 concurrent\n    # misses trigger one DB read, not 100.\n    with singleflight(key):\n        cached = cache.get(key)\n        if cached is not None:\n            return deserialize(cached)\n        row = db.query(\"SELECT * FROM profiles WHERE id=%s\", user_id)\n        # TTL is the staleness contract: how long may this be wrong?\n        cache.set(key, serialize(row), ttl_seconds=60, jitter_seconds=10)\n        return row\n\ndef update_profile(user_id: str, patch: dict) -> None:\n    db.execute(\"UPDATE profiles SET ... WHERE id=%s\", user_id)\n    # Invalidate what you mutated; TTL covers what you missed.\n    cache.delete(f\"profile:{user_id}\")"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two details carry the design: **key naming** decides hit ratio and correctness — include every dimension that changes the response such as version, locale, or permissions — and **`TTL` with jitter** decides both staleness and stampede risk. Fixed 60-second `TTL` on a hot key synchronises expiry; adding ±10 seconds spreads refills. Explicit `delete` on write tightens consistency, but never rely on it alone: crashed writers and dual-layer caches make `TTL` the only guaranteed convergence."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the hot read and its cost",
+          "text": "Do not say add Redis. Say: which query or object is hot, what is its `QPS`, size, and current `p99` without cache. If you cannot quantify reuse, you cannot justify staleness."
+        },
+        {
+          "title": "Place the cache and define the key",
+          "text": "Pick one layer for the bottleneck — process-local for repeated compute, distributed store for shared DB offload, edge for global static assets. Write the key format and what makes two requests share vs split a key."
+        },
+        {
+          "title": "Fix the staleness contract",
+          "text": "State `TTL`, invalidation event, and worst-case stale window in seconds. Say who invalidates on write and what happens if that delete is lost. Interviewers grade this, not the product name."
+        },
+        {
+          "title": "Handle miss and stampede explicitly",
+          "text": "Describe cold start, thundering herd, and hot keys. Offer jittered `TTL`, single-flight, and stale-while-revalidate. This separates a textbook answer from a production answer."
+        },
+        {
+          "title": "Size it and say when to remove it",
+          "text": "Estimate entries × average size × replicas, eviction policy, and hit ratio target. Close by naming what would make you drop the cache: low reuse, strong consistency need, or write-heavy ratio where invalidation costs more than reads save."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Caching makes everything faster.** It makes *repeated reads of the same thing* faster. Low-reuse, highly unique, or write-heavy data gets slower from lookup overhead plus invalidation churn.",
+        "**A higher hit ratio always means a better design.** A 99% hit ratio serving stale private data is a correctness outage. Hit ratio without a freshness bound is meaningless.",
+        "**TTL equals consistency.** `TTL` is a hope, not a guarantee. Clock skew, layered caches, and failed deletes all stretch the real staleness window beyond the number you configured.",
+        "**The cache can be the source of truth.** Once writes only land in cache with async flush, loss and reordering are yours to handle. Keep the durable store authoritative unless you are explicitly building a write-back store with recovery.",
+        "**Eviction and expiry are the same.** Expiry is time-based staleness control. Eviction is memory-pressure removal via `LRU` or `LFU`. An entry can be fresh but evicted, or expired but still resident — size for both."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Apply caching where reuse pays for staleness.",
+      "headers": [
+        "Use it when",
+        "Avoid it when",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Read-heavy, skewed workload with clear hot keys",
+          "Uniform one-off reads with no reuse",
+          "No reuse means all miss cost, no hit benefit"
+        ],
+        [
+          "Tolerable staleness measured in seconds or minutes",
+          "Must read-your-write or linearizable reads",
+          "Invalidation cannot close the gap without making the cache write-critical"
+        ],
+        [
+          "Expensive origin: cross-region fetch, heavy query, render",
+          "Cheap, fast origin already under light load",
+          "Added state and ops cost exceeds milliseconds saved"
+        ],
+        [
+          "Spiky traffic that would overload the source",
+          "Write-heavy with constant invalidation",
+          "Every write deletes what reads just cached — churn, not offload"
+        ],
+        [
+          "Static or versioned immutable assets",
+          "Small working set that fits in process memory",
+          "A local map is faster than a network cache hop; do not add a service for it"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "**Cache the hot, reusable read close to the caller with cache-aside and a jittered `TTL`, invalidate exactly what writes mutate, and let `TTL` bound the worst-case staleness.** Then name the trade-off: lower `p99` and origin load in exchange for a defined staleness window and a stampede path you mitigate with single-flight."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:37:37.622Z",
+    "problems": []
+  }
+}

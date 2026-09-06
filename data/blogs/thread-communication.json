@@ -1,0 +1,279 @@
+{
+  "slug": "thread-communication",
+  "title": "Thread Communication",
+  "summary": "Thread communication in Java: how wait, notify, and BlockingQueue coordinate producer-consumer handoff without polling, and where hand-rolled signaling breaks.",
+  "kind": "LLD",
+  "problemSlug": "thread-communication-43-83",
+  "topic": "Concurrency in Java",
+  "difficulty": "Medium",
+  "coverEmoji": "🧵",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Java"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "[1904.11325] Communication trade-offs for synchronized ... - arXiv",
+      "url": "https://arxiv.org/abs/1904.11325",
+      "source": "arxiv.org",
+      "kind": "article"
+    },
+    {
+      "title": "Inter-thread Communication in Java - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/java/inter-thread-communication-java/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "What is Thread? Low-power IoT Networking for Smart Home Devices",
+      "url": "https://www.youtube.com/watch?v=5CauESYB9-A",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Thread Communication - an overview | ScienceDirect Topics",
+      "url": "https://www.sciencedirect.com/topics/engineering/thread-communication",
+      "source": "sciencedirect.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Thread communication is not threads talking. It is threads agreeing on state under one lock.** One thread changes a predicate like `queue not empty`, then wakes a thread parked on the *same* monitor. If you signal without holding the lock, wait on a different object, or check the condition without a loop, you have no communication — you have a race."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What thread communication actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "In Java, inter-thread communication means **ordered handoff of shared state between threads without busy-spinning**. The low-level form is `Object.wait()`, `notify()`, and `notifyAll()`, called only while holding the monitor of that same object via `synchronized`. `wait()` atomically releases the lock and parks the thread. `notify()` or `notifyAll()` moves one or all parked threads back to runnable, but does not release the lock — the woken thread still has to re-acquire it before it runs again. The higher-level form is `java.util.concurrent`: `BlockingQueue`, `Condition`, `Semaphore`, `CountDownLatch`, which wrap the exact same park-and-wake pattern so you do not hand-roll it. Either way the goal is identical: do not burn CPU checking `while(queue.isEmpty()) {}`, park instead and let the state changer wake you."
+    },
+    {
+      "type": "paragraph",
+      "text": "Separate three jobs that candidates blur together. **Mutual exclusion** means only one thread mutates the buffer at a time — that is `synchronized` or `Lock`. **Visibility** means a write by thread A is observable by thread B — that is the happens-before edge created by unlocking and re-locking the same monitor, or by a concurrent collection. **Ordering** means B does not proceed until a predicate is true, like *buffer non-empty* or *buffer not full* — that is `wait()` plus a re-check loop. `volatile` gives you visibility but no ordering. `synchronized` alone gives you exclusion and visibility but no efficient ordering. `wait` / `notify` exists only for the third job, and it only works because it temporarily gives up the first job while preserving the second."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: monitor, wait set, and re-check"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every Java object can act as a monitor: an entry set of threads blocked trying to enter `synchronized`, plus a wait set of threads that called `wait()` and gave up the lock. The reason `wait()` must own the lock is atomicity — the check-then-park sequence has to be indivisible, otherwise the signal lands between your `if(empty)` test and your park, and you sleep forever. That is why the JVM throws `IllegalMonitorStateException` if you call `wait()` or `notify()` outside `synchronized(obj)`. The reason you re-check in `while`, not `if`, is that wakeup is not a guarantee: spurious wakeups exist, `notifyAll()` wakes threads whose predicate may still be false, and multiple consumers can race so only the first one to re-acquire the lock finds work. The loop turns *I was woken* into *the condition I need is actually true now*."
+    },
+    {
+      "type": "mermaid",
+      "title": "Wait and notify lifecycle",
+      "caption": "Producer and consumer contend for the same monitor; wait releases it, notifyAll re-arms contention.",
+      "code": "flowchart TD\n  P1[\"Producer enters synchronized queue\"] --> P2{\"queue full?\"}\n  P2 -- Yes --> P3[\"queue wait: release lock and park\"]\n  P2 -- No --> P4[\"add item and notifyAll\"]\n  P4 --> P5[\"exit synchronized: release lock\"]\n  P5 --> P1\n  P3 --> P1\n  C1[\"Consumer enters synchronized queue\"] --> C2{\"queue empty?\"}\n  C2 -- Yes --> C3[\"queue wait: release lock and park\"]\n  C2 -- No --> C4[\"remove item and notifyAll\"]\n  C4 --> C5[\"exit synchronized: release lock\"]\n  C5 --> C1\n  C3 --> C1"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the diagram literally. The producer and consumer never signal each other directly — they signal *through the buffer state*. Producer adds, then calls `notifyAll()` while still holding the lock; that only moves consumers from the wait set to the entry set. The actual handoff happens when the producer exits `synchronized` and the OS reschedules a consumer to re-acquire the lock and re-test `while(queue.isEmpty())`. That is why `notify()` does not mean *hand over the lock now*. It means *re-check soon*. Choose `notifyAll()` by default when you have more than one waiter type or more than one consumer, because `notify()` can wake a producer when only a consumer can make progress — a textbook missed-signal deadlock. You pay one thundering-herd re-check to buy correctness. That trade-off is almost always worth it for a bounded buffer."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The primitives, honestly compared"
+    },
+    {
+      "type": "table",
+      "caption": "Pick by predicate complexity and number of waiter types, not by fashion.",
+      "headers": [
+        "Mechanism",
+        "How it signals",
+        "Where it wins",
+        "What it costs you"
+      ],
+      "rows": [
+        [
+          "`wait + notify`",
+          "Manual predicate + single monitor, one waiter woken",
+          "Zero dependencies, exact control over custom condition; good for interview baseline",
+          "You own every bug: missed signal, wrong monitor, `if` instead of `while`, `notify` starvation"
+        ],
+        [
+          "`wait + notifyAll`",
+          "Manual predicate + single monitor, all waiters woken",
+          "Correct default for multiple producers and consumers; survives heterogeneous waiters",
+          "Wakes threads that re-check and re-park; wasted context switches under high contention"
+        ],
+        [
+          "`Lock + Condition`",
+          "`await` / `signal` / `signalAll` with separate condition queues",
+          "Two conditions (`notFull`, `notEmpty`) so you wake only the useful side; interruptible and timed waits",
+          "More code, must `unlock` in `finally`; still manual predicate logic"
+        ],
+        [
+          "`BlockingQueue`",
+          "Encapsulated `put` / `take` that block internally",
+          "No explicit wait, no missed signal, no monitor bookkeeping; the production answer",
+          "Fixed queue semantics; cannot express arbitrary predicates like *wait until two slots free*"
+        ],
+        [
+          "`Semaphore / CountDownLatch / Exchanger`",
+          "Permits, one-shot gate, or pairwise rendezvous",
+          "Clean for startup gates, rate limits, one-shot sequencing without a buffer",
+          "Not a buffer; forcing data transfer through a latch produces convoluted state"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "My opinion is blunt: **never hand-roll `wait` / `notify` in production unless the predicate cannot be expressed as queue-full or queue-empty.** `BlockingQueue` was chosen precisely to collapse exclusion, visibility, and ordering into `put()` and `take()`. You trade a small loss of expressiveness for the elimination of four failure modes you will otherwise ship. `Lock` plus two `Condition` objects is the middle ground I accept when you need *wake producers only* versus *wake consumers only* and can prove the contention justifies it. Raw `notify()` instead of `notifyAll()` is almost never the right optimisation — the one context switch you save is not worth the liveness proof you now owe every reviewer."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Broken thread communication rarely throws. It stalls, duplicates work, or corrupts the buffer under load — exactly when you cannot attach a debugger. Learn the mapping from root cause to observable symptom so you can diagnose from thread dumps and metrics instead of guessing."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Missed signal: thread parks after the state already changed.** Cause: check-then-wait without holding the lock across both, or waiting on object A while notifying on object B. Symptom: consumer stuck in `WAITING` on `Object.wait` forever while the queue sits non-empty; producer idle. In a dump you see one parked consumer, zero lock contention, throughput drops to zero.",
+        "**`if` instead of `while`: woken thread proceeds on a false predicate.** Cause: spurious wakeup, `notifyAll` waking every waiter, or two consumers racing so the loser finds the queue empty again. Symptom: `NoSuchElementException`, `NullPointerException` on poll, or negative size accounting that only reproduces under parallel load. Intermittent, never in a single-threaded test.",
+        "**`notify` starvation with mixed waiters.** Cause: multiple producers and consumers but `notify()` wakes same-type thread — producer wakes producer when the queue is still full. Symptom: system freezes with a full queue and parked consumers that were never woken. Switching to `notifyAll()` or splitting into `notFull` / `notEmpty` conditions makes it vanish, which is your confirmation.",
+        "**`IllegalMonitorStateException` on `wait` / `notify`.** Cause: calling either outside `synchronized` on the same object, or synchronising on `this` but waiting on the queue field. Symptom: loud, immediate crash on first concurrent path. It is the only failure that is easy — treat it as a design smell that your monitor object is ambiguous. Fix by synchronising on a private final lock object and never `this`.",
+        "**Lock held across `notify` plus slow work, or `notify` never reached.** Cause: doing I/O, logging, or long computation while still inside `synchronized` after `notifyAll`, or an exception before the `notify` line. Symptom: latency spikes and `BLOCKED` threads piled on the monitor in dumps; woken threads cannot re-acquire. Fix by mutating state, signalling, and exiting the critical section fast — never call back out to unknown code while holding the monitor."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The three-line contract",
+      "text": "**Same monitor. `while`, not `if`. `notifyAll` by default.** Wait in `while(!predicate) lock.wait()`, mutate state, then `lock.notifyAll()` before leaving `synchronized`. Violate any one and the code may pass ten demos and deadlock on the eleventh run."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that proves you understand it"
+    },
+    {
+      "type": "paragraph",
+      "text": "Write the hand-rolled version first in an interview to prove you know the monitor rules, then say you would ship the second version. The difference in line count is the argument for `BlockingQueue`: every line you delete is a race you no longer have to prove absent. Note why the first version synchronises on the queue itself, re-checks capacity in a loop, and notifies *after* mutation."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "BoundedBufferWaitNotify.java",
+      "code": "import java.util.LinkedList;\nimport java.util.Queue;\n\npublic class BoundedBufferWaitNotify<T> {\n    private final Queue<T> queue = new LinkedList<>();\n    private final int capacity;\n\n    public BoundedBufferWaitNotify(int capacity) {\n        this.capacity = capacity;\n    }\n\n    public void put(T item) throws InterruptedException {\n        synchronized (queue) {\n            // WHY while: wakeup != predicate true. Spurious wakeups\n            // and racing consumers mean we must re-test after re-acquiring.\n            while (queue.size() == capacity) {\n                queue.wait(); // releases queue lock, parks producer\n            }\n            queue.add(item);\n            // WHY notifyAll: we do not know if waiters are producers or\n            // consumers. notify() can wake the wrong type and deadlock.\n            queue.notifyAll();\n        }\n    }\n\n    public T take() throws InterruptedException {\n        synchronized (queue) {\n            while (queue.isEmpty()) {\n                queue.wait(); // releases queue lock, parks consumer\n            }\n            T item = queue.remove();\n            queue.notifyAll(); // buffer changed: re-arm whoever is parked\n            return item;\n        }\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "BoundedBufferQueue.java",
+      "code": "import java.util.concurrent.ArrayBlockingQueue;\nimport java.util.concurrent.BlockingQueue;\n\npublic class BoundedBufferQueue<T> {\n    private final BlockingQueue<T> queue;\n\n    public BoundedBufferQueue(int capacity) {\n        this.queue = new ArrayBlockingQueue<>(capacity);\n    }\n\n    public void put(T item) throws InterruptedException {\n        // Blocks when full, handles park/wake, visibility, and\n        // re-check internally. No monitor bookkeeping left to get wrong.\n        queue.put(item);\n    }\n\n    public T take() throws InterruptedException {\n        return queue.take(); // blocks when empty\n    }\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How interviewers test it"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Implement a bounded producer-consumer",
+          "text": "Expect a fixed-capacity buffer with blocking `put` and `take`. Start by naming the monitor, the predicate for each side, and the lock scope — then write the `while + wait + notifyAll` version. They grade monitor choice and loop structure before correctness of the happy path."
+        },
+        {
+          "title": "Add N producers and M consumers",
+          "text": "The follow-up that kills `notify()` and `if`. Explain why one producer must be able to wake any of several consumers, why losers of the re-acquire race must re-park, and why shared-prefix state like size must only be touched under the lock. Switch to `notifyAll()` and defend the extra wakeups as a liveness tax."
+        },
+        {
+          "title": "Diagnose a deadlock or lost wakeup",
+          "text": "You will be shown code that waits on one object and notifies on another, or checks `if(empty)` once. Walk the interleaving out loud: signal lands before park, thread sleeps forever. Point at the thread-dump signature — `WAITING` with no contention versus `BLOCKED` pile-up — to show production fluency."
+        },
+        {
+          "title": "Handle spurious wakeups and interrupts",
+          "text": "Say the JVM permits `wait()` to return without a `notify`, so the loop is mandatory, not defensive. Propagate `InterruptedException` or restore the interrupt flag; swallowing it strands worker shutdown. Offer a timed `wait(timeout)` variant only if they ask for backpressure with deadlines."
+        },
+        {
+          "title": "Modernise it to production code",
+          "text": "Close by replacing the whole monitor with `ArrayBlockingQueue` or `LinkedBlockingQueue`, or `Lock` with `notFull` / `notEmpty` conditions if they demand selective wakeup. Name the trade-off: you lose custom predicates but delete missed-signal and wrong-monitor bugs entirely. That sentence is what separates a Medium pass from a Strong Hire."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**`notify()` hands the lock to the waiter.** It does not. It only moves a thread from the wait set to the entry set. The lock transfers at the next `synchronized` exit. Code that assumes immediate handoff and keeps mutating state after `notify()` corrupts the predicate the waiter is about to re-check.",
+        "**Polling with `sleep()` is simpler and fine.** It trades correctness bugs for permanent costs: latency bounded by sleep interval plus wasted CPU and noisy wakeups. `wait()` parks with zero CPU until the state actually changes. Polling is only acceptable when the condition source lives outside the JVM and cannot signal you.",
+        "**`volatile` or `ConcurrentHashMap` replaces `wait` / `notify`.** They solve visibility, not ordering. A consumer spinning on a `volatile boolean ready` still busy-waits; a map gives you safe publication but no blocking take. You need either a blocking primitive or an explicit wait set to park efficiently.",
+        "**`notifyAll()` is always wasteful; prefer `notify()`.** `notify()` is an optimisation that requires proving only one waiter type exists and only one waiter can make progress. With producers *and* consumers parked, that proof usually fails. Default to `notifyAll()`; reach for `notify()` or split `Condition`s only with measured contention to justify it.",
+        "**`wait()` can be called on any object from anywhere.** It must be the exact object you synchronised on, inside that critical section. Waiting on a field while locking `this`, or locking a freshly assigned lock reference, silently creates two monitors and guarantees missed signals. Use a `private final Object lock` and never reassign it."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Hand-rolled signaling is a teaching tool and an escape hatch, not a default.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Bounded buffer with blocking put and take",
+          "Use `BlockingQueue`",
+          "Encapsulates monitor, predicate, and re-check; no missed-signal surface"
+        ],
+        [
+          "Custom predicate, e.g. wait until batch of K items or two resources free",
+          "Hand-roll `wait + notifyAll` or `Lock + Condition`",
+          "Queue semantics cannot express it; you need an explicit wait set and loop"
+        ],
+        [
+          "One-shot startup gate: workers wait until initialisation done",
+          "Use `CountDownLatch`",
+          "Single transition needs no buffer; latch gives happens-before without a monitor loop"
+        ],
+        [
+          "Permit pool or rate limiter",
+          "Use `Semaphore`",
+          "Counting permits maps directly; hand-rolled counters reintroduce lost-wakeup bugs"
+        ],
+        [
+          "High-throughput pipeline with backpressure and metrics",
+          "Use `BlockingQueue` or reactive channel, never polling",
+          "Polling adds latency and CPU at exactly the load where you can afford neither"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "\"Threads coordinate by mutating guarded state under one monitor and parking in `while(!condition) lock.wait()` until the mutator calls `notifyAll()` — and in production I would ship that as a `BlockingQueue` unless the predicate needs custom conditions.\""
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:05:08.645Z",
+    "problems": []
+  }
+}

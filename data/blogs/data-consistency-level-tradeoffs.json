@@ -1,0 +1,277 @@
+{
+  "slug": "data-consistency-level-tradeoffs",
+  "title": "Data Consistency Level Tradeoffs",
+  "summary": "Tunable consistency is quorum math: choose how many replicas must acknowledge to trade stale reads for latency and availability.",
+  "kind": "HLD",
+  "problemSlug": "data-consistency-level-tradeoffs-96-188",
+  "topic": "Data consistency in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "⚖️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "consistency",
+    "distributed-systems",
+    "quorum"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What are Consistency Models? Definition & FAQs | ScyllaDB",
+      "url": "https://www.scylladb.com/glossary/consistency-models/",
+      "source": "scylladb.com",
+      "kind": "article"
+    },
+    {
+      "title": "Inconsistent thoughts on database consistency | DeBrie Advisory",
+      "url": "https://alexdebrie.com/posts/database-consistency/",
+      "source": "alexdebrie.com",
+      "kind": "article"
+    },
+    {
+      "title": "Consistency Level explained in 5min - YouTube",
+      "url": "https://www.youtube.com/watch?v=aK3-kosfqts",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Consistency Levels in a Database System | by Sindhura Venkatesh",
+      "url": "https://medium.com/designing-distributed-systems/consistency-levels-in-a-database-system-b7cbbe7fe30f",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Consistency level is not a property of your database. It is a per-operation decision about how many replicas must agree before you call it done.** Every choice is a direct trade: make more replicas acknowledge and you buy freshness with latency and fragility. Make fewer acknowledge and you buy speed and survival with staleness. If you cannot state that price for your pick, you do not understand the system."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it actually is, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "In a replicated store each logical value lives on **N** physical replicas. A **consistency level (CL)** answers one question: **how many of those replicas must respond for a single read or write to return?** `ONE` means one replica is enough. `QUORUM` means a majority. `ALL` means every replica. That number controls visibility. With `W=1` your write returns after one disk acknowledges; the other replicas converge later by gossip, hinted handoff, or read repair. With `W=ALL` your write does not return until every replica has it, so any later read sees it — unless something is down, in which case you return nothing at all."
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not conflate three different uses of the word **consistency**. **ACID-C** is about invariants inside one database: foreign keys, uniqueness, atomic transitions from one valid state to another. **CAP-C** is about linearizability during a network partition: does every non-failing node see the same most recent write, or do you stay available and diverge? **Replica consistency level** is the knob you turn to pick your position on that CAP spectrum per query. ACID is a single-node contract. CAP is a partition-time impossibility result. CL is the operational mechanism — `R`, `W`, `N` — that implements your compromise. Interviewers deliberately blur these. Separate them in your first thirty seconds."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: N, R, W, and why quorum works"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every tunable system exposes the same three variables. **N** is replication factor: how many nodes hold each partition, typically 3 across racks or zones. **W** is write threshold: how many must acknowledge a mutation. **R** is read threshold: how many must respond to a query, with the coordinator reconciling timestamps or versions and returning the newest. Latency of the operation is the latency of the **slowest replica in the required set**, not the fastest. That is why `ALL` is tail-latency poison: one GC pause, one slow disk, one cross-AZ spike, and every operation waits. **WHY quorum:** you pick `R + W > N` so the read set and write set must overlap on at least one node that saw the latest write. With `N=3, W=2, R=2`, any read of 2 intersects any write of 2. Overlap is what gives you strong-ish behavior without waiting for everyone. Break the inequality and you have explicitly accepted stale reads to gain speed."
+    },
+    {
+      "type": "mermaid",
+      "title": "Quorum write path",
+      "caption": "Coordinator waits for 2 of 3 replicas before returning success.",
+      "code": "flowchart TD\n  Client[Client Write] --> Coord[Coordinator]\n  Coord --> R1[Replica 1]\n  Coord --> R2[Replica 2]\n  Coord --> R3[Replica 3]\n  R1 --> A1[ACK fast]\n  R2 --> A2[ACK fast]\n  R3 --> Slow[Slow No ACK yet]\n  A1 --> Resp[Return Success QUORUM met]\n  A2 --> Resp"
+    },
+    {
+      "type": "paragraph",
+      "text": "Quorum is not magic, it is overlap plus repair. The coordinator stamps the write, sends it to all N replicas, and returns once W acknowledge. Replicas that missed it catch up asynchronously. On read, the coordinator asks R replicas, compares versions, returns the newest to the client, and kicks off **read repair** to push the newest value to laggards in the background. **TRADE-OFF:** this background convergence is why `QUORUM` still shows anomalies under concurrency — two writers to different quorums plus clock skew means last-write-wins can silently drop an update. If you need linearizable compare-and-set, counters without loss, or strict ordering, quorum alone is insufficient. You need consensus like Paxos or Raft for that partition, and you will pay a full round-trip penalty for it. Choose quorum because you can tolerate last-write-wins, not because it is strong."
+    },
+    {
+      "type": "table",
+      "caption": "Consistency levels as latency vs freshness vs survival trade-offs for N=3.",
+      "headers": [
+        "Level",
+        "What it waits for",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "ONE / LOCAL_ONE",
+          "1 replica ack",
+          "Lowest p99, survives 2 nodes down",
+          "Stale reads, lost writes on node death, no monotonic guarantees"
+        ],
+        [
+          "TWO",
+          "2 replicas ack",
+          "Middle ground, tolerates 1 failure",
+          "Still allows stale minority reads, higher tail than ONE"
+        ],
+        [
+          "QUORUM / LOCAL_QUORUM",
+          "Majority, 2 of 3",
+          "R+W greater than N overlap, safe default for most workloads",
+          "Fails if quorum unavailable, 2x slow-replica exposure vs ONE"
+        ],
+        [
+          "ALL",
+          "3 of 3 replicas",
+          "Strongest visibility, no stale reads when healthy",
+          "Zero fault tolerance, any replica down or slow blocks you"
+        ],
+        [
+          "ANY",
+          "Any node incl. hint holder",
+          "Write never blocks, maximum ingest availability",
+          "Data may be invisible for a long time, only for append-style firehose"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure mode one is **QUORUM or ALL during a partition or rolling restart**. Symptom: success rate cliffs to zero for one key range while nodes look healthy on CPU. You see `UnavailableException: Not enough replicas` or client timeouts at exactly the W threshold, not overload. Dashboards show coordinator pending queues exploding because threads block waiting for a replica that will never answer before timeout. **WHY it happens:** you bought freshness with fragility. With `N=3, W=ALL`, losing one node makes every write to its ranges fail. With `W=QUORUM`, losing two makes them fail. The fix is not bigger timeouts — that just converts errors into cascading latency. The fix is downgrading CL, adding locality like `LOCAL_QUORUM` so a remote AZ outage does not halt a healthy region, or accepting eventual writes with a reconciliation path."
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure mode two is **ONE on both sides with no repair budget**. Symptom: users see time travel — refresh and an order disappears, reappears, then shows an old total. Support tickets say *flaky*, metrics say 99.9% success. You will also see deleted data resurrect after a node comes back, and counters that drift downward because increments applied to different replicas overwrote each other. Root cause is tombstones expiring before a down replica replays them, plus last-write-wins resolving concurrent writes by timestamp instead of merging. **TRADE-OFF made visible:** you traded correctness anomalies for p99 and uptime, but never built the compensating logic — idempotent writers, versioned reads, CRDTs, or reconciliation jobs. Eventual consistency without anti-entropy tuning, read repair chance, and tombstone window discipline is just eventual incorrectness."
+    },
+    {
+      "type": "mermaid",
+      "title": "Stale read under CL ONE",
+      "caption": "Write reaches only one replica, next reader hits a stale replica.",
+      "code": "flowchart LR\n  Writer[Writer CL ONE] --> RA[Replica A has v2 new]\n  Writer --> RB[Replica B has v1 stale]\n  RB --> Reader[Reader CL ONE hits B]\n  Reader --> Stale[Returns stale v1]\n  Stale --> Repair[Read repair pushes v2 to B later]"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`Unavailable` errors correlated with single-node restarts -> your W is too strict for your N and rack layout.",
+        "p99 spikes equal to your slowest replica timeout -> you are waiting on ALL or cross-region QUORUM.",
+        "Users reporting flip-flopping values on refresh -> R+W is less than or equal to N and readers hit different replicas.",
+        "Deleted rows reappearing days later -> tombstone GC window shorter than replica downtime, classic CL ONE plus long outage.",
+        "Monotonic read violations in session logs -> no sticky routing or session consistency, load balancer sprays reads across regions."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Config that makes it concrete"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "orders_repository.py",
+      "code": "from cassandra import ConsistencyLevel\nfrom cassandra.query import SimpleStatement\n\n# Default path: LOCAL_QUORUM for both reads and writes.\n# WHY: R + W > N within one AZ. Survives single-node loss,\n# avoids cross-region tail latency on every operation.\nquery = SimpleStatement(\n    \"INSERT INTO orders (id, state) VALUES (%s, %s)\",\n    consistency_level=ConsistencyLevel.LOCAL_QUORUM,\n)\nsession.execute(query, (order_id, \"PLACED\"))\n\n# Exception path: charge / inventory decrement needs stronger guard.\n# WHY: pay the latency only where double-spend hurts.\n# Trade-off: this statement fails if quorum is unreachable.\ncritical = SimpleStatement(\n    \"UPDATE inventory SET count = count - 1 WHERE sku = %s IF count > 0\",\n    consistency_level=ConsistencyLevel.QUORUM,\n    serial_consistency_level=ConsistencyLevel.SERIAL,\n)\nsession.execute(critical, (sku,))\n\n# Analytics / feed path: tolerate staleness, protect availability.\nstale_ok = SimpleStatement(\n    \"SELECT * FROM orders WHERE id = %s\",\n    consistency_level=ConsistencyLevel.ONE,\n)\nsession.execute(stale_ok, (order_id,))"
+    },
+    {
+      "type": "paragraph",
+      "text": "The point of per-query tuning is economic: **do not pay QUORUM prices for data that tolerates staleness**. Product catalog reads, timelines, recommendation features, and dashboards should run at `ONE` or `LOCAL_ONE` with a staleness SLO like *95% converge under 2 seconds*. Money movement, seat reservation, uniqueness checks, and config distribution should run at `QUORUM` or linearizable serial, and you explicitly accept higher p99 and lower availability for those statements. **TRADE-OFF:** mixed levels on the same dataset mean different readers see different freshness at the same instant. Document which API is allowed to be stale, or on-call will chase ghosts that are actually working as configured."
+    },
+    {
+      "type": "paragraph",
+      "text": "Add session guarantees where the raw level is too weak. Pure `ONE` breaks **read-your-write** and **monotonic reads**: a user posts then immediately refreshes through another coordinator and misses their own post. Fix it without upgrading global CL by pinning a user session to one coordinator or replica set, routing reads to the same AZ that took the write, or attaching a version token the client echoes back until the server has caught up. Causal consistency libraries do exactly this — track dependencies, block reads that would go backward. **WHY this matters:** it converts an unbounded anomaly (*any* staleness) into a bounded, explainable one (*my* writes are always visible to me, others converge shortly). That is usually enough for social, cart, and profile workloads, at a fraction of the cost of `ALL`."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They ask you to design a feed, cart, or URL shortener",
+          "text": "Start with N=3, LOCAL_QUORUM reads and writes as default. State the inequality R+W>N and why it gives overlap. Then downgrade non-critical reads to ONE with a staleness budget."
+        },
+        {
+          "title": "They inject a partition or a slow replica",
+          "text": "Narrate the trade live: QUORUM preserves freshness but rejects writes on the minority side; ONE keeps accepting but diverges. Say which side you would keep writable and how you reconcile — version vectors, last-write-wins with wall-clock risk, or explicit merge."
+        },
+        {
+          "title": "They ask about read-your-write",
+          "text": "Do not say upgrade everything to ALL. Propose sticky sessions, quorum reads for own-writes only, or version gating. Name the saving: you avoid paying cross-replica latency on 95% of traffic."
+        },
+        {
+          "title": "They push on counters and check-and-set",
+          "text": "Admit quorum is unsafe for concurrent increments. Pivot to serial Paxos path, sharded counters, or single-writer per key. This is where candidates who memorised levels fail."
+        },
+        {
+          "title": "They ask for numbers",
+          "text": "Give SLOs: p99 read at ONE is one replica RTT; at QUORUM it is the second-fastest of three plus repair; at ALL it is the slowest. Availability at QUORUM tolerates floor of N over 2 failures. No numbers means no design."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Quorum equals strong consistency.** No. Quorum gives overlap, not linearizability. Concurrent writers can still lose updates under last-write-wins. Strong means single total order; quorum alone does not provide it.",
+        "**Eventual means fast convergence.** No. Eventual is a liveness promise with no deadline. Without tuned repair, enough hint capacity, and bounded tombstone windows, *eventual* can mean hours or never.",
+        "**ALL is always safest.** ALL is safest for freshness and most dangerous for availability. One dead replica halts the partition. Safety depends on which failure you fear more: stale data or downtime.",
+        "**LOW CL plus background repair equals QUORUM.** No. Repair narrows the staleness window but never closes the race where a read lands between write and repair. Only R+W>N on the synchronous path closes it.",
+        "**CAP means pick two forever.** CAP constrains behavior during a partition, not normal operation. Modern design is tunable per operation: strong where money moves, eventual where feeds render. Say *per request*, not *per system*."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Choosing a level by workload tolerance, not by habit.",
+      "headers": [
+        "Workload",
+        "Use this level",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Social feed, search index, product listing",
+          "ONE / LOCAL_ONE reads, QUORUM writes",
+          "Stale tile is invisible; fast p99 and survival matter more than instant global visibility"
+        ],
+        [
+          "Shopping cart, user profile own-view",
+          "QUORUM or ONE plus session stickiness",
+          "Must have read-your-write; global freshness can lag without user pain"
+        ],
+        [
+          "Payments ledger, inventory decrement, seat booking",
+          "QUORUM + SERIAL / linearizable",
+          "Double-spend and oversell cost real money; pay latency and accept unavailability on partition"
+        ],
+        [
+          "High-rate ingest, metrics, clickstream",
+          "ONE or ANY with durable hints",
+          "Throughput and never-block dominate; downstream jobs deduplicate and reconcile"
+        ],
+        [
+          "Cross-region default traffic",
+          "LOCAL_QUORUM, not global QUORUM",
+          "Keeps tail latency inside one region; reserve EACH_QUORUM for rare operations that truly need multi-region agreement"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "My opinionated default for a Medium HLD round: propose **N=3, LOCAL_QUORUM for reads and writes**, downgrade explicitly where staleness is harmless, and isolate the 1% of operations that need serial semantics behind a separate path with its own latency budget. Justify every deviation with a user-visible symptom: *feed at ONE because a 2-second-old timeline never pages anyone; charge at SERIAL because a double-charge does.* Interviewers reward that mapping of level to blast radius far more than reciting definitions."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Set W and R so R+W>N with LOCAL_QUORUM by default, drop to ONE only where staleness is harmless, and pay for SERIAL solely where loss or double-apply costs money — because every stronger level buys freshness with tail latency and outage fragility.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:31:45.432Z",
+    "problems": []
+  }
+}

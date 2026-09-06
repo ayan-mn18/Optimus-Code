@@ -1,0 +1,338 @@
+{
+  "slug": "single-node-implementation",
+  "title": "Single Node Implementation",
+  "summary": "Single-node cache is a bounded, process-local map that trades coherence for speed. When it fits, nothing beats it; when it doesn't, it fails in specific, debuggable ways.",
+  "kind": "HLD",
+  "problemSlug": "single-node-implementation-95-307",
+  "topic": "Caching Mechanisms",
+  "difficulty": "Medium",
+  "coverEmoji": "⚡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Caching",
+    "Single-Node"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Distributed and Single Node Systems | by Isha Shaw | Jul, 2026 - Medium",
+      "url": "https://medium.com/towardsdev/distributed-and-single-node-systems-ebaf2161ce36",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Clusters vs single nodes: which to use in training and inference scenarios",
+      "url": "https://nebius.com/blog/posts/single-vs-multi-node-clusters-for-training-inference",
+      "source": "nebius.com",
+      "kind": "article"
+    },
+    {
+      "title": "Quick Start Single-Node Linux Installation - Keyfactor Docs",
+      "url": "https://docs.keyfactor.com/agilesec/latest/on-prem-single-node-installation-guide",
+      "source": "docs.keyfactor.com",
+      "kind": "article"
+    },
+    {
+      "title": "How to Deploy a Single Node OpenShift (SNO) from Scratch",
+      "url": "https://www.youtube.com/watch?v=dlxRwooAplg",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A single-node cache is **correct only if stale or lost data is acceptable**. You get microsecond hits with zero network, and in exchange you accept per-process state, hard memory bounds, and no coherence. If you need every node to agree, you do not need this — you need a distributed cache."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A single-node implementation is an in-process cache: a concurrent hash structure living in the heap (or off-heap) of one application instance, fronting a slower source of truth like a database or upstream service. Typical forms are `ConcurrentHashMap` with TTL, Guava / Caffeine in Java, `functools.lru_cache` or `cachetools` in Python, or a local segment of an embedded store. Capacity is measured in entries or megabytes, not nodes. There is no replication protocol, no consistent hashing, no cross-instance invalidation bus. Each process builds its own working set independently, which is why hit ratio is per-instance, not global. The design choice is deliberate: remove the network from the read path so the p99 for hot keys collapses to memory-access time, at the cost of duplicating cached data N times for N processes."
+    },
+    {
+      "type": "paragraph",
+      "text": "Scope matters more than library choice. A single-node cache owns *derived, discardable* state — rendered fragments, deserialized rows, auth decisions with short TTLs, rate-limit counters that can be approximate. It never owns the source of truth. That boundary decides eviction aggressiveness, expiry policy, and whether a restart is a non-event or an outage. If evicting everything must not corrupt the system, only slow it down, the workload is eligible. If losing the cached copy loses committed writes, you have built a database without durability and you will pay for that confusion at 2 a.m. The trade-off: simplicity and speed versus durability and coherence, and you must pick one explicitly."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Location:** same process as the reader, no socket on a hit.",
+        "**Bound:** fixed maximum size or weight; unbounded local maps are memory leaks with extra steps.",
+        "**Lifetime:** TTL / TTI plus size-based eviction; entries die even if still valid.",
+        "**Visibility:** process-local only — instance A never sees instance B's hits, misses, or invalidations.",
+        "**Failure mode:** cold start and divergence, not partitions — a restart means an empty cache, a deploy means N different truths."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every request takes the same short path: hash the key, probe local memory under a striped lock or lock-free read, and either return or fall through to the source. The interesting work is everything around a miss: bounding memory, expiring stale values, preventing duplicate fills, and not blocking readers while you do it. Modern implementations split the hot read path (concurrent hash table, no global lock) from maintenance (asynchronous eviction queues, frequency sketches, expiry wheels). Writes update the source of truth first, then touch the cache — either by invalidation or by short-TTL natural decay. Read-through versus cache-aside is a real choice here: read-through centralises fill logic and stampede control inside the loader, cache-aside keeps the cache dumb and pushes fill discipline to every caller. Choose read-through when you can, because scattered fill logic is how stampedes and inconsistent TTLs happen."
+    },
+    {
+      "type": "mermaid",
+      "title": "Single-node read path",
+      "caption": "Hit returns without I/O; miss funnels through singleflight before touching the source.",
+      "code": "flowchart TD\n  R[Request arrives] --> L{Cache lookup}\n  L -->|Hit, not expired| H[Return value]\n  L -->|Miss or expired| S{Singleflight in progress}\n  S -->|Yes| W[Wait on in-flight load]\n  W --> H\n  S -->|No| DB[Load from source of truth]\n  DB -->|Found| P[Insert bounded + set TTL]\n  P --> H\n  DB -->|Not found| N[Cache negative + return miss]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Memory layout and concurrency decide whether this is fast or just a global lock pretending to be a cache. Reads must be lock-free or striped — a single `synchronized` map turns every hit into contention and destroys the point. Eviction metadata (access order, frequency counters) should not live on the read path; Caffeine-style designs buffer access events and drain them asynchronously, which is why they scale to dozens of cores while naive `LinkedHashMap` LRU collapses. Heap storage gives the fastest access but pressures the garbage collector; off-heap or serialized entries reduce GC pauses at the cost of encode/decode overhead on every hit. The trade-off is throughput versus tail latency under heap pressure: on-heap wins until GC pauses dominate, then off-heap or a smaller bound wins despite slower hits."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Eviction, expiry, and refresh"
+    },
+    {
+      "type": "paragraph",
+      "text": "Size-based eviction answers *what to drop when full*; time-based expiry answers *when data becomes untrustworthy*. You need both. LRU is simple and good for recency-skewed workloads like user sessions, but it is poisoned by scans — one full table walk evicts the entire hot set. LFU protects hot keys but is slow to adapt when popularity shifts. W-TinyLFU, the default in modern libraries, uses a frequency sketch plus a small admission window to get scan resistance and adaptivity without per-entry heavyweight bookkeeping, which is why you should default to it unless you can prove LRU is better for your trace. TTL bounds staleness; TTI (expire after inactivity) bounds waste on dead keys. Refresh-ahead or async reload keeps hot keys warm without blocking, but it trades extra source load for lower miss latency — only enable it for keys you can name as hot in advance."
+    },
+    {
+      "type": "mermaid",
+      "title": "Entry lifecycle",
+      "caption": "Entries move from admission to eviction or expiry; refresh avoids a hard miss on hot keys.",
+      "code": "stateDiagram-v2\n  [*] --> Admit: miss fill\n  Admit --> Resident: admitted by policy\n  Admit --> [*]: rejected by TinyLFU\n  Resident --> Resident: hit updates recency\n  Resident --> Refreshing: refresh triggered\n  Refreshing --> Resident: reload succeeded\n  Refreshing --> Expired: reload failed\n  Resident --> Expired: TTL or TTI elapsed\n  Resident --> [*]: evicted by size\n  Expired --> [*]: removed"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What a single-node cache buys you and what it charges.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay",
+        "Trade-off in one line"
+      ],
+      "rows": [
+        [
+          "Process-local storage",
+          "Sub-millisecond hits, no network, no extra service to operate",
+          "N copies of data, N cold starts, per-instance hit ratio",
+          "Latency vs efficiency: fastest hit, lowest global efficiency."
+        ],
+        [
+          "Bounded size + eviction",
+          "Predictable memory, GC safety, scan resistance with W-TinyLFU",
+          "Lower hit ratio than unbounded; policy tuning matters",
+          "Safety vs hit ratio: the bound that saves you also misses for you."
+        ],
+        [
+          "TTL / TTI expiry",
+          "Bounded staleness without invalidation plumbing",
+          "Stale reads within TTL; short TTLs hammer the source",
+          "Freshness vs load: shorter TTL is fresher and more expensive."
+        ],
+        [
+          "Cache-aside fill",
+          "Simple, library-free, caller controls keys",
+          "Every caller must handle stampede, errors, TTL consistently",
+          "Simplicity vs discipline: easy to write, easy to get subtly wrong."
+        ],
+        [
+          "On-heap entries",
+          "Fastest hits, zero serialization",
+          "GC pauses, hard to size large working sets",
+          "Speed vs tail latency: fast median until GC ruins p99."
+        ],
+        [
+          "No coherence protocol",
+          "No coordination overhead, trivial to deploy",
+          "Divergent views across instances after writes",
+          "Speed vs correctness: divergence is the price of zero coordination."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Single-node caches do not fail like distributed systems — they fail as memory pressure, stampedes, and silent divergence. Because there is no health endpoint screaming about a partition, the symptoms masquerade as database slowness or flaky correctness. Learn the mapping from symptom to cause or you will scale the wrong tier. The most expensive failure is always the same: the cache stops absorbing load at the moment you need it most, and the source of truth receives the full unfiltered traffic it was never sized for."
+    },
+    {
+      "type": "table",
+      "caption": "Failure to symptom mapping for in-process caches.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Why it happens"
+      ],
+      "rows": [
+        [
+          "Cold start after deploy or restart",
+          "Latency spike + source CPU / connection spike on every rollout",
+          "Every instance starts empty; hit ratio drops to zero simultaneously across the fleet."
+        ],
+        [
+          "Thundering herd on hot key expiry",
+          "Periodic source overload aligned to TTL boundaries, then recovery",
+          "Hundreds of threads miss the same key at once and each issues a fill; no singleflight or probabilistic early refresh."
+        ],
+        [
+          "Unbounded growth / wrong size metric",
+          "Rising heap, long GC pauses, eventual OOM-kill",
+          "Counting entries instead of weight; one large value counts the same as one small flag."
+        ],
+        [
+          "Scan poisoning with naive LRU",
+          "Hit ratio cliff during batch jobs or exports, hot keys suddenly slow",
+          "Sequential scan inserts evict the working set; LRU cannot distinguish frequency from recency."
+        ],
+        [
+          "Stale reads across instances",
+          "User writes then reads old data, but only sometimes; bug follows load-balancer affinity",
+          "Write invalidated only the instance that handled it, or relied on short TTL that has not elapsed on peers."
+        ],
+        [
+          "Negative-cache absence",
+          "Source crushed by repeated lookups for missing keys",
+          "Misses are not cached, so attackers or crawlers replay expensive not-found queries at full rate."
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The deploy-time stampede",
+      "text": "The worst stampede is not TTL expiry — it is a rolling restart. All instances go cold at once, and autoscaling adds *more* cold instances that add load instead of absorbing it. Mitigate with staged rollouts, warmed standby, jittered TTLs, and singleflight on fill. If your load test does not include a restart, you have not tested the cache."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "LocalCache.java",
+      "code": "Cache<String, Product> cache = Caffeine.newBuilder()\n    .maximumWeight(256 * 1024 * 1024) // bound BYTES, not entries: trade memory safety for hit ratio\n    .weigher((String k, Product v) -> v.estimatedBytes())\n    .expireAfterWrite(Duration.ofSeconds(60)) // bounds staleness, no cross-instance invalidation\n    .recordStats() // hit ratio, eviction count: without these you are blind\n    .build(key -> loadFromDb(key)); // read-through loader: centralises singleflight + error policy\n\n// Negative caching: cache misses briefly so absent keys cannot crush the DB.\n// Thundering herd: Caffeine coalesces concurrent loads on the same key;\n// add TTL jitter per-key if a whole keyspace expires in lockstep."
+    },
+    {
+      "type": "paragraph",
+      "text": "The config above encodes the opinions: bound by weight because entries are not uniform, expire aggressively because there is no invalidation bus, record statistics because hit ratio and eviction rate are the only signals that the policy fits the workload, and load through a single loader function so stampede suppression lives in one place. Note what is missing: no explicit invalidation on write. That is intentional for workloads where a 60-second stale window is acceptable. If it is not acceptable, add explicit `cache.invalidate(key)` on the write path and accept that only the local instance is corrected — peers converge on TTL. That residual staleness window is the irreducible cost of skipping coherence; shrinking TTL shrinks the window and raises source load in direct proportion."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Size the working set first",
+          "text": "State entry size × hot key count, then pick the bound from memory headroom. Say: '100k hot products × 2KB = 200MB per instance fits; 100M keys does not, so this tier only caches the head.' Interviewers reward arithmetic over library names."
+        },
+        {
+          "title": "Name the workload skew",
+          "text": "Declare Zipfian head vs uniform vs scan-heavy, then justify W-TinyLFU vs LRU vs TTL-only. If you cannot describe the access distribution, you cannot defend any policy."
+        },
+        {
+          "title": "Draw the write path",
+          "text": "Write-through vs invalidate vs short TTL. Explain who sees stale data for how long, and what happens when two instances race a write. This is where coherence trade-offs are graded."
+        },
+        {
+          "title": "Handle the miss storm",
+          "text": "Propose singleflight, probabilistic early refresh, jittered TTLs, and negative caching. Mention cold restart explicitly — most candidates forget deploys are the biggest stampede."
+        },
+        {
+          "title": "Prove it with metrics",
+          "text": "Hit ratio, eviction rate, load latency, source QPS. Say which dashboard would tell you the bound is too small (high evictions + low hit ratio) versus the TTL is too short (high load despite high hit ratio)."
+        },
+        {
+          "title": "State the migration trigger",
+          "text": "Close by naming when you would abandon single-node: need for shared hit ratio, write-heavy invalidation, or working set larger than one heap. Propose the next step — sticky routing, then external cache for the head only — not a wholesale rewrite."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail interviews"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**\"Local cache means no invalidation problem.\"** It means an *unbounded* invalidation problem — N divergent copies with no bus. Short TTL is still invalidation, just lazy and load-heavy.",
+        "**\"LRU is the safe default.\"** LRU is the fragile default under scans. Modern defaults use frequency sketches precisely because pure recency collapses on real traces.",
+        "**\"Bigger cache is always better.\"** Beyond the hot head, extra megabytes buy single-digit hit-ratio gains while linearly increasing GC pressure and cold-start time. Size to the knee of the curve.",
+        "**\"Hit ratio alone proves the design.\"** A 95% hit ratio with 5% of misses all landing on the same second still takes down the source. Burstiness and fill concurrency matter as much as the average.",
+        "**\"Caching errors the same as values is fine.\"** Caching failures or exceptions without a very short separate TTL turns a transient source blip into a self-inflicted outage. Cache negatives, not faults.",
+        "**\"One cache tier is enough.\"** Local and distributed tiers compose: local absorbs per-instance hot keys at nanosecond cost, external shares the warm tail. Arguing either/or signals shallow experience."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, when to avoid it"
+    },
+    {
+      "type": "table",
+      "caption": "Single-node cache fit checklist.",
+      "headers": [
+        "Use single-node when",
+        "Avoid it when",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Read-heavy, skewed workload with a small hot head",
+          "Uniform access over a huge keyspace",
+          "Local memory only pays off if a small set serves most reads."
+        ],
+        [
+          "Stale-within-TTL is acceptable",
+          "Reads must be linearizable after writes",
+          "Without coherence you can bound staleness but never eliminate it."
+        ],
+        [
+          "You want zero operational overhead",
+          "You already operate a shared cache fleet",
+          "Adding a second tier must beat just sizing the existing one."
+        ],
+        [
+          "Per-instance affinity or sticky routing exists",
+          "Requests spray randomly and hit ratio per instance is thin",
+          "Stickiness multiplies local hits; pure random routing divides them by N."
+        ],
+        [
+          "Source overload protection matters more than perfect freshness",
+          "Writes dominate and invalidations must be global and immediate",
+          "Write-heavy coherent workloads pay invalidation cost that local caches cannot centralise."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pragmatic middle path is tiered: a small bounded local cache with a 10–60 second TTL in front of a shared cache or the database. The local tier shaves the hottest keys and absorbs stampedes; the shared tier provides cross-instance efficiency and a single invalidation point. That composition trades a small amount of extra staleness reasoning for a large reduction in source load, and it gives you a clean migration story — shrink the local TTL to zero and you are back to a purely shared design without rewriting call sites."
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "Use a **bounded, TTL-expired in-process cache for the hot, stale-tolerant head of a skewed read workload**, and accept per-instance divergence and cold starts as the price of zero-network hits."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:42:28.756Z",
+    "problems": []
+  }
+}

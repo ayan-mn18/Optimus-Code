@@ -1,0 +1,328 @@
+{
+  "slug": "database-migrations",
+  "title": "Database Migrations",
+  "summary": "Database migrations are versioned schema-plus-data changes deployed while old and new code run together. This guide covers the expand-contract pattern, zero-downtime tactics, and production failure modes.",
+  "kind": "HLD",
+  "problemSlug": "database-migrations-92-205",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "🗄️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "Migrations",
+    "Zero-Downtime"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Database Migrations - Vadim Kravcenko",
+      "url": "https://vadimkravcenko.com/shorts/database-migrations/",
+      "source": "vadimkravcenko.com",
+      "kind": "article"
+    },
+    {
+      "title": "Database Migrations: What are the Types of DB Migrations? - Prisma",
+      "url": "https://www.prisma.io/dataguide/types/relational/what-are-database-migrations",
+      "source": "prisma.io",
+      "kind": "article"
+    },
+    {
+      "title": "Database migration: Concepts and principles (Part 1)",
+      "url": "https://docs.cloud.google.com/architecture/database-migration-concepts-principles-part-1",
+      "source": "docs.cloud.google.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A migration is **not a schema edit**. It is a **coordinated deployment across three moving parts — old code, new code, and data — that must stay compatible at every step**. If your plan requires all three to change atomically, you do not have a plan. You have downtime."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a migration actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A migration is a versioned, ordered, auditable transformation of a live database from state `N` to state `N+1`. It has two halves that most engineers conflate: the **schema change** (`ADD COLUMN`, `CREATE INDEX`, `ALTER TYPE`) and the **data change** (backfill, reformat, split, deduplicate). The schema change is cheap to describe and expensive to apply. The data change is the opposite — trivial in SQL, brutal at 100 million rows. Production-grade migration tooling exists for one reason: to make that transition replayable, ordered, and observable. Every applied file is recorded in a version table with a checksum, so any node can answer two questions: *where am I* and *what is next*. Without that ledger you are just running scripts by hand and hoping staging matched prod. It never did."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Schema migrations (DDL):** add/drop columns, change types, add constraints, create indexes. Risk is locking and rewrite cost, not logic.",
+        "**Data migrations (DML):** backfills, splits, merges, encryption rotations, tenant moves. Risk is volume, duration, and partial failure.",
+        "**Destructive migrations:** drops, renames, type narrows, `NOT NULL` additions, unique constraints. These are where outages live. Treat every one as a multi-release project.",
+        "**Non-destructive migrations:** new nullable columns, new tables, new optional indexes built concurrently. These are the only kind safe to ship in one step.",
+        "**Repeatable / idempotent migrations:** views, functions, seed data. Must be safe to re-run because they *will* be re-run."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How the machinery works"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every serious system — whether framework-native or standalone — converges on the same mechanism because the problem forces it. Migrations are numbered files applied in strict order, each wrapped in a transaction where the engine allows it, each recorded as applied only after success. On startup or deploy, the migrator diffs the filesystem against the `schema_migrations` ledger table and applies the gap. That is why ordering and immutability are sacred: editing an already-applied migration corrupts every environment that ran the old version. The checksum exists to catch exactly that lie. The trade-off is rigidity for determinism. You lose the freedom to hand-tweak prod, and you gain the ability to recreate any environment from zero by replaying the chain. That replay property is what makes rollbacks, ephemeral environments, and disaster recovery possible at all."
+    },
+    {
+      "type": "mermaid",
+      "title": "Migration lifecycle",
+      "caption": "How a migrator moves a fleet from version N to N+1 without guessing.",
+      "code": "flowchart LR\n  FS[Migration files V1..Vn] --> CHECK[Compare with ledger table]\n  CHECK --> PENDING{Pending?}\n  PENDING -- No --> DONE[Do nothing]\n  PENDING -- Yes --> LOCK[Acquire migration lock]\n  LOCK --> APPLY[Apply in order in transaction]\n  APPLY --> VERIFY[Verify checksum + record]\n  VERIFY --> RELEASE[Release lock]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The lock step is the one people skip in diagrams and hit in production. Without a distributed lock, two app replicas booting at once will both try to run `V42` and one will wedge the table or double-apply a backfill. With a lock, deploys serialize briefly on migration — which is correct, because schema convergence must be single-writer even when the application is multi-writer. The second subtlety is that most `DDL` in real systems is **not transactional** in the way you want. Postgres lets you wrap many `ALTER` statements in a transaction, MySQL historically does not for most of them, and neither lets you roll back a 40-minute table rewrite for free. That is why the ledger records *intent achieved*, not *transaction committed*. Design your migrations as if the process can die halfway: forward-fixable, resumable, and never assuming a clean rollback exists."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The only pattern that survives traffic: expand and contract"
+    },
+    {
+      "type": "paragraph",
+      "text": "You cannot deploy code and schema atomically across a fleet. During a rolling deploy, old code and new code hit the same database for minutes. Any migration that breaks either version breaks prod. The fix is to **decouple schema deployment from code deployment** into compatible steps, universally called expand-contract (or expand-migrate-contract). You first *expand* by adding the new shape alongside the old without breaking anyone, then *migrate* data and traffic to it, then *contract* by removing the old shape. It is slower — three to four deploys instead of one — and that is the entire point. You are trading deploy velocity for compatibility. Teams that refuse that trade get fast deploys and slow incidents. The pattern works because each intermediate state is readable by both code versions. The database becomes the compatibility layer while the fleet turns over."
+    },
+    {
+      "type": "mermaid",
+      "title": "Expand-contract in four releases",
+      "caption": "Each phase is independently deployable and rollback-safe.",
+      "code": "graph TD\n  E1[1 Expand: ADD first_name nullable] --> E2[2 Migrate: dual-write + batch backfill]\n  E2 --> E3[3 Switch: read from new columns]\n  E3 --> E4[4 Contract: drop name column]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Take the classic `name` to `first_name / last_name` split. Release 1 only adds two nullable columns — old code ignores them, so it is safe. Release 2 makes new code write to *both* `name` and the new columns and runs a batched backfill for history. Release 3 flips reads to the new columns once you have verified parity. Release 4 drops `name`, weeks later, after you are certain no rollback needs it. Why keep the old column that long? Because rollback is a forward problem. If Release 3 misparses names with edge-case characters, you need the source of truth still present to recompute. Drop it early and your rollback is data loss with extra steps. The trade-off: you carry redundant storage and dual-write logic for a full cycle in exchange for a revert that actually works."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "There is no safe fast migration, only explicit costs.",
+      "headers": [
+        "Approach",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Stop-the-world (maintenance window)",
+          "Simplicity. One deploy, trivial reasoning, no dual-write code.",
+          "Downtime. Unacceptable past toy scale; rewrite locks queue and time out all traffic."
+        ],
+        [
+          "Expand-contract",
+          "Zero downtime. Every step is rollback-safe and fleet-compatible.",
+          "3-4x deploys, temporary dual writes, leftover columns. Slow by design."
+        ],
+        [
+          "Online schema change tools (shadow-table copy)",
+          "No long locks on huge tables. Backfill happens on a ghost copy with change capture.",
+          "Heavy I/O, replication lag risk, complex failure modes. You must monitor the copy."
+        ],
+        [
+          "Batched async backfill",
+          "Bounded lock time. Throttleable, pausable, observable per batch.",
+          "Long tail. Dual-read logic and reconciliation needed until 100% complete."
+        ],
+        [
+          "Auto-generated diff migrations",
+          "Speed. No hand-written DDL drift.",
+          "Dangerous defaults: dropped columns, blocking defaults, missing backfills. Always review the SQL."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Migrations fail in three places: at lock time, at write time, and at rollback time. Lock failures are loud — the `ALTER` waits on a busy table, blocks every query behind it, and your p99 climbs until the deploy times out. Write failures are quiet — the backfill skipped rows, truncated values, or applied a parsing rule that does not hold for 0.01% of users, and you discover it weeks later when support tickets arrive. Rollback failures are catastrophic — you revert the code, the old code cannot read the new schema, and you are now debugging forward under pressure with half-migrated data. The common cause across all three is the same: the migration assumed a single moment of change, while production delivered a long window of mixed versions. Any statement that takes an exclusive lock, rewrites the table, or narrows the domain will find that window and explode in it."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Lock queue pileup — symptom: sudden p99 spike and connection exhaustion during deploy.** An `ALTER TABLE ... ADD COLUMN WITH DEFAULT` or `ADD CONSTRAINT NOT NULL` takes `ACCESS EXCLUSIVE` and every read queues behind it. You see it as latency, then timeouts, then cascading retries.",
+        "**Backfill OOM / long transaction — symptom: replica lag grows, autovacuum stalls, deploy hangs.** A single `UPDATE users SET first_name = ...` over 50M rows holds a huge transaction and bloats the table. Fix is batches of 1k–10k with sleeps, keyed on the primary key.",
+        "**Dual-write skew — symptom: new column is 99.9% correct and wrong in exactly the rows support cares about.** Writes landed between backfill batches, or old code wrote only the old column. You need a reconciliation pass and a `NOT VALID` constraint validated late, not trust.",
+        "**Irreversible data loss — symptom: rollback succeeds but rows come back half-empty.** Split, trim, or re-encode without keeping the source column. Emojis, collations, and timezone edge cases are where the reconstruction dies.",
+        "**Migration-order conflict — symptom: two branches both create `V42`, prod applies one and checksum-fails the other.** Parallel feature branches with sequential numbering collide. Fix with timestamped versions or a linearize-on-merge check in CI."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The three statements that cause most outages",
+      "text": "Adding a `NOT NULL` column without a default, adding a `UNIQUE` or `FOREIGN KEY` constraint inline, and changing a column type. All three can force a full table scan plus rewrite while holding a lock. The safe form is always: **add nullable → backfill in batches → add constraint as `NOT VALID` → `VALIDATE CONSTRAINT` → enforce `NOT NULL`**. More steps, no outage. That is the trade."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What good looks like in SQL"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "V06__split_name_expand.sql",
+      "code": "-- Release 1: EXPAND. Nullable, no backfill, no lock drama.\nALTER TABLE users ADD COLUMN first_name TEXT;\nALTER TABLE users ADD COLUMN last_name TEXT;\n-- Concurrent index, does not block writes (Postgres).\nCREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_last_name ON users (last_name);\n\n-- Release 2: MIGRATE. Run as batched job, not in DDL transaction.\n-- UPDATE users SET first_name = split_part(name, ' ', 1) WHERE id > $1 ORDER BY id LIMIT 1000;\n-- Repeat with throttle until 0 rows affected, then reconcile dual writes.\n\n-- Release 3: enforce late, after reads flip and parity is verified.\nALTER TABLE users ADD CONSTRAINT chk_names CHECK (first_name IS NOT NULL) NOT VALID;\nALTER TABLE users VALIDATE CONSTRAINT chk_names;\nALTER TABLE users ALTER COLUMN first_name SET NOT NULL;\n\n-- Release 4 (weeks later): CONTRACT. Only after rollback window closes.\n-- ALTER TABLE users DROP COLUMN name;"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that file as a policy document. Nothing in Release 1 can break old code because nothing is required and nothing is removed. The backfill is deliberately *not* in the migration transaction — it is a resumable job keyed on `id` so a deploy crash does not leave a half-committed 40-minute transaction. Constraints are added `NOT VALID` first so existing rows do not get scanned under lock, then validated as a separate pass that takes a weaker lock. `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block, which is exactly why naive auto-generated migrations break: the safe syntax and the transactional syntax are in conflict. You choose safety and orchestrate around it. Every shortcut in this file trades minutes of your time for minutes of global downtime."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Zero-downtime tactics that actually work"
+    },
+    {
+      "type": "table",
+      "caption": "Use these together; none of them saves you alone.",
+      "headers": [
+        "Tactic",
+        "Why it works",
+        "Cost you accept"
+      ],
+      "rows": [
+        [
+          "Add nullable / with default via metadata-only path",
+          "No table rewrite on modern engines; instant even at scale.",
+          "Temporary nulls; application must handle absent values."
+        ],
+        [
+          "Batch + throttle backfill by PK range",
+          "Each batch holds locks for milliseconds; pausable under load.",
+          "Slow convergence; needs progress table and reconciliation."
+        ],
+        [
+          "Dual write, then dual read, then single read",
+          "Old and new code stay compatible during rolling deploy.",
+          "Temporary write amplification and gnarly application code."
+        ],
+        [
+          "NOT VALID then VALIDATE for constraints",
+          "Validation takes weaker lock; avoids exclusive scan.",
+          "Window where invalid rows could exist; must verify before enforcing."
+        ],
+        [
+          "Shadow-table copy for huge rewrites",
+          "Reads/writes continue on original while copy catches up via changelog.",
+          "2x disk + I/O load; cutover still needs a brief lock. Watch replicas."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Rollback deserves its own paragraph because most plans lie about it. A code rollback does **not** roll back the database, and it must not try. Down migrations that drop columns or reverse backfills destroy data created by the new version and cannot be re-applied blindly. The production rule is: **roll code back, roll schema forward**. Keep the expanded schema compatible with old code, revert the deploy, then write a *new* forward migration to clean up once stable. That means you never drop anything in the same release you stop reading it. Keep the old column for one or two cycles, keep the dual-write flag configurable, and test the downgrade path — old binary plus new schema — in staging before you need it at 3 a.m. The trade-off is schema clutter for recoverability. Clutter is cheap. Lost writes are not."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with the fleet, not the SQL",
+          "text": "Say: two app versions will hit one database during rollout, so every intermediate schema must be readable by both. That one sentence puts you above candidates who jump to ALTER TABLE."
+        },
+        {
+          "title": "Name the migration type and its lock behavior",
+          "text": "Is it metadata-only, rewrite, or backfill? State which lock it takes and for how long. Interviewers promote you when you reason about ACCESS EXCLUSIVE vs concurrent builds without being prompted."
+        },
+        {
+          "title": "Walk expand-contract on their example",
+          "text": "Take whatever rename or split they give, split it into 3-4 releases on the whiteboard, and label where reads and writes flip. Draw the dual-write window explicitly."
+        },
+        {
+          "title": "Cover backfill mechanics with numbers",
+          "text": "Give batch size, ordering by PK, throttle, idempotency, and how you detect skew. Say how you monitor: rows remaining, lag, error rate. Vague backfill means no hire."
+        },
+        {
+          "title": "Close with rollback and cleanup",
+          "text": "State: code rolls back, schema rolls forward; old column stays until the rollback window closes. Name what you would alert on and when you would run the contract migration."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**\"ORM-generated migrations are safe to auto-apply.\"** They generate correct SQL, not safe SQL. They will happily emit a blocking default, a dropped column, or a type rewrite. You review every line as if it runs under load — because it does.",
+        "**\"Transactions make migrations atomic.\"** Only for small DDL on engines that support transactional DDL, and never for 50M-row backfills or concurrent index builds. Assume crash-midway and design for resume.",
+        "**\"Rollback means running the down migration.\"** Down migrations are for dev environments. In prod, reversing a data migration destroys new writes. Forward-fix is the rollback strategy.",
+        "**\"Small tables need no care.\"** Small tables become large tables without telling you, and a migration pattern that works at 10k rows wedges at 10M. Build the batched habit before you need it.",
+        "**\"Zero downtime means zero risk.\"** Expand-contract removes the lock outage but adds dual-write and skew risk. You traded a loud failure for a quiet one — so you must add verification to catch it."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Match the ceremony to the blast radius.",
+      "headers": [
+        "Situation",
+        "Approach",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Rename / split / type-narrow on a live table",
+          "Full expand-contract over 3-4 releases",
+          "Only way to stay compatible with mixed-version fleet and keep a working revert."
+        ],
+        [
+          "Backfill over millions of rows",
+          "Async batched job + reconciliation, not inline UPDATE",
+          "Bounds lock time and lets you throttle when replicas lag."
+        ],
+        [
+          "New nullable column or table, low traffic",
+          "Single straightforward migration",
+          "Blast radius is nil; extra ceremony buys nothing."
+        ],
+        [
+          "Prototype / pre-launch with no users",
+          "Stop-the-world, squash and rewrite freely",
+          "No compatibility window exists yet; speed beats safety."
+        ],
+        [
+          "Adding a hard constraint or dropping a column",
+          "Never in the same release as the code change",
+          "Decoupling is what makes rollback possible; coupling is what makes incidents."
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **\"I would ship it as expand-contract — add the new shape compatibly, dual-write and batch-backfill, flip reads after verification, and drop the old shape in a later release — so old and new code stay compatible and rollback is a forward fix.\"**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:28:57.846Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,325 @@
+{
+  "slug": "smtp",
+  "title": "SMTP",
+  "summary": "SMTP is a push-only, store-and-forward relay protocol for moving mail between servers — not to users. This guide explains the envelope, relay chain, and failure modes.",
+  "kind": "HLD",
+  "problemSlug": "smtp-94-210",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "📧",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "SMTP",
+    "Email"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Simple Mail Transfer Protocol (SMTP) Explained [2026] - Mailtrap",
+      "url": "https://mailtrap.io/blog/smtp/",
+      "source": "mailtrap.io",
+      "kind": "article"
+    },
+    {
+      "title": "7 Best SMTP Servers: Secure, Fast, and Easy to Integrate",
+      "url": "https://www.cm-alliance.com/cybersecurity-blog/7-best-smtp-servers-secure-fast-and-easy-to-integrate",
+      "source": "cm-alliance.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is the Simple Mail Transfer Protocol (SMTP)? - Cloudflare",
+      "url": "https://www.cloudflare.com/learning/email-security/what-is-smtp/",
+      "source": "cloudflare.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is SMTP? - SMTP Server Explained - AWS",
+      "url": "https://aws.amazon.com/what-is/smtp/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "SMTP never delivers mail to a person. It only pushes a blob to the next server's disk and trusts that server to push it further. Every design decision — queues, retries, spam, backscatter, port blocking — falls out of that one choice: **hop-by-hop store-and-forward with no end-to-end acknowledgement**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What SMTP actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "SMTP is an application-layer, TCP-based, line-oriented protocol for transferring mail from a sender toward a recipient's mail store. It is strictly a **push** protocol: the client opens a connection, announces who the message is from and to, then streams the content. There is no pull, no sync, no mailbox semantics. Once the receiving server replies `250 OK`, responsibility has moved. The sender can delete its copy. That handoff is the whole protocol. The trade-off is deliberate: by making each hop independently responsible, the system survives servers being down, networks partitioning, and domains living on different infrastructure, at the cost of never being able to tell the original sender with certainty that a human saw the message."
+    },
+    {
+      "type": "paragraph",
+      "text": "To reason about it correctly, separate three things that beginners conflate. First, the **envelope**: `MAIL FROM` and `RCPT TO` commands issued during the SMTP conversation. This is what routers use, not what users see. Second, the **headers + body**: `From:`, `To:`, `Subject:`, `DKIM-Signature:`, then the payload. This is opaque bytes to SMTP — it just transports them. Third, the **mailbox**: where the final server stores the message for later retrieval via a completely different protocol. The reason envelope and headers are split is that forwarding and mailing lists need to rewrite routing without rewriting authorship. That split is also why spoofing is trivial at the SMTP layer: the envelope sender and the `From:` header are independent claims, and base SMTP verifies neither."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: store, queue, forward"
+    },
+    {
+      "type": "paragraph",
+      "text": "A realistic send is never one connection. Your mail app does not speak to the recipient. It submits to your provider's submission server, that server queues the message on disk, looks up where the recipient domain wants mail, opens a new SMTP session to that host, and tries to hand it off. If that host is down, greylisting, or throttling, your provider keeps the message and retries with backoff for hours or days. Only when the final destination accepts it does it land in a mailbox store. Why this indirection? Because sender and recipient are almost never online at the same time and live in different administrative domains. Direct end-to-end delivery would require global presence and global trust. Store-and-forward replaces that with local durability: each hop only needs the next hop to be briefly reachable."
+    },
+    {
+      "type": "mermaid",
+      "title": "SMTP relay chain",
+      "caption": "Each arrow is a separate SMTP session with its own queue and retry policy.",
+      "code": "graph TD\n  MUA[Mail App] --> SUB[Submission Server 587]\n  SUB --> LQ[Local Queue on Disk]\n  LQ --> MX[MX Lookup for Recipient Domain]\n  MX --> DEST[Recipient MX Server 25]\n  DEST --> RQ[Recipient Queue and Filter]\n  RQ --> STORE[Mailbox Store]\n  STORE --> READ[Retrieve via IMAP or POP]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two mechanisms make the chain work. **DNS MX records** decouple the domain in the address from the machine that receives mail, so `user@example.com` can point at a third-party filter, a backup MX, or a pool with priorities and weights. The sender tries the lowest-preference value first and falls back. **Queues with retry** decouple time: every relay spools to persistent storage before acknowledging, so a crash between hops does not lose mail. The trade-off is latency and duplication. SMTP is at-least-once under failure. If a connection drops after the server stored the message but before the client saw `250 OK`, the sender will retry and the recipient will get two copies. Deduplication, if it happens at all, is the recipient's problem. That is why idempotency has to live above SMTP, not in it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a conversation looks like on the wire"
+    },
+    {
+      "type": "code",
+      "language": "text",
+      "filename": "smtp-session.txt",
+      "code": "S: 220 mx.example.com ready\nC: EHLO sender.example.org\nS: 250-mx.example.com\nS: 250-STARTTLS\nS: 250-AUTH PLAIN LOGIN\nS: 250-SIZE 26214400\nS: 250-ENHANCEDSTATUSCODES\nS: 250 8BITMIME\nC: MAIL FROM:<bounce@sender.example.org> SIZE=4120\nS: 250 2.1.0 Sender accepted\nC: RCPT TO:<user@recipient.example.com>\nS: 250 2.1.5 Recipient accepted\nC: DATA\nS: 354 Send content, end with <CRLF>.<CRLF>\nC: From: \"Billing\" <billing@sender.example.org>\nC: To: <user@recipient.example.com>\nC: Subject: receipt\nC: \nC: Your receipt is attached.\nC: .\nS: 250 2.0.0 Queued as 4F8A2C1\nC: QUIT\nS: 221 2.0.0 Bye"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every line has a job. `EHLO` is capability negotiation — the modern replacement for `HELO`. The server advertises what it supports: `STARTTLS` for upgrading to encryption, `AUTH` for proving who you are, `SIZE` for refusing oversized blobs early, `PIPELINING` for batching commands. `MAIL FROM` sets the envelope sender, which is where bounces go and is often empty (`<>`) for bounce messages themselves to avoid loops. `RCPT TO` is evaluated per recipient, so one message body can be accepted for some recipients and rejected for others. `DATA` streams the headers and body until a lone dot. The final `250 Queued` means *written to queue*, not *delivered to inbox*. Remember that distinction or you will misdiagnose every outage. ESMTP — the E just means extensible via `EHLO` keywords — exists because the original protocol had no auth, no encryption, and a 7-bit assumption. The trade-off of bolting them on as extensions is backward compatibility at the cost of downgrade and misconfiguration risk: a client that does not demand `STARTTLS` will happily send in cleartext."
+    },
+    {
+      "type": "table",
+      "caption": "Core design trade-offs of SMTP.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Text commands over TCP",
+          "Debuggable with telnet, trivial to implement, middlebox-friendly",
+          "Verbose, chatty round-trips, parsing and injection pitfalls if you build headers by string concat"
+        ],
+        [
+          "Hop-by-hop relay, no end-to-end ACK",
+          "Survives downtime and cross-domain routing, simple per-hop logic",
+          "No delivery guarantee to human, at-least-once duplicates, bounce latency measured in hours"
+        ],
+        [
+          "Envelope separated from headers",
+          "Aliases, lists, and forwarding can reroute without forging authorship",
+          "Spoofing is easy; you need SPF, DKIM, DMARC layered on top to bind claims"
+        ],
+        [
+          "Queue-and-retry with 4xx vs 5xx",
+          "Transient failures self-heal without sender involvement",
+          "Backpressure is implicit; a slow downstream fills your disk and your retry storm makes it worse"
+        ],
+        [
+          "Extensible via EHLO keywords",
+          "Added AUTH, TLS, SIZE, PIPELINING without breaking old servers",
+          "Capability downgrade attacks and a combinatorial testing matrix across servers"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "SMTP fails the way queues fail, not the way RPCs fail. The symptom is rarely a clean exception. It is delay, silent drop, or duplicate delivery three hours later. The most expensive failures come from treating a `250 Queued` as proof of delivery and deleting upstream state. It is not. It is proof that one disk in the middle accepted liability. If that downstream filter then quarantines the message as spam, rewrites it, or crashes before fsync, the sender sees success and the user sees nothing. Design for this explicitly: keep a message ID, keep per-recipient delivery status, and expose the queue depth and age, not just the accept rate. When mail is slow, the first graph to check is queue age by next-hop domain, not CPU."
+    },
+    {
+      "type": "table",
+      "caption": "Failure to symptom mapping you should memorise.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Why it happens"
+      ],
+      "rows": [
+        [
+          "Recipient server greylists or throttles",
+          "Multi-minute to multi-hour delay, then sudden delivery; `421` then later `250`",
+          "Defence against spam bursts; your retry looks like a legitimate sender only on second attempt"
+        ],
+        [
+          "IP or domain reputation block",
+          "Immediate `550` or `554` with a policy string, only for some providers",
+          "Shared sending IP burned by another tenant, missing reverse DNS, or no authentication alignment"
+        ],
+        [
+          "Oversized message or conversion failure",
+          "`552 Exceeded storage` or silent strip of attachment",
+          "Advertised `SIZE` limit exceeded, or 8-bit content forced through a 7-bit hop without `8BITMIME`"
+        ],
+        [
+          "Loop or misdirected MX / forward",
+          "Duplicate storms, exponential volume, bounce loops filling queues",
+          "Alias forwards to alias, catch-all plus auto-reply, or backup MX that relays back to primary"
+        ],
+        [
+          "TLS or AUTH misconfiguration",
+          "Submission rejected, or mail falls back to cleartext and gets blocked downstream",
+          "Expired certificate, hostname mismatch, client not enforcing STARTTLS, credentials scoped to wrong relay"
+        ],
+        [
+          "Full spool disk on relay",
+          "All sends start timing out, `452 Insufficient storage`, queue age spikes",
+          "Retry backlog plus inbound burst; relay accepted liability faster than it could drain downstream"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Never build an open relay",
+      "text": "If your relay accepts `RCPT TO` for arbitrary domains from arbitrary clients, spammers will find it within hours and your IP reputation will be destroyed for months. Lock submission with **authentication**, lock relay with **allow-listed sender networks plus auth**, and require **STARTTLS**. Port 25 between servers is unauthenticated by design — your defence there is not a password, it is narrow relay rules plus reputation filtering."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Ports: 25, 587, 465 — why three exist"
+    },
+    {
+      "type": "paragraph",
+      "text": "The port confusion is historical scar tissue, and interviewers use it to filter memorisation from understanding. Port **25** is server-to-server relay. It is expected to be unauthenticated and often plaintext-capable with opportunistic TLS, which is why residential ISPs and clouds block outbound 25 by default — the abuse cost exceeded the legitimate use. Port **587** is message submission from a user agent to your provider. It requires authentication and should enforce TLS via `STARTTLS`. This is where your application should send. Port **465** was implicit TLS submission, deprecated then un-deprecated because operators kept using it. Modern guidance treats 465 as submission over TLS from the first byte. The trade-off across them is compatibility versus control: 25 maximises reach to arbitrary domains, 587 and 465 maximise accountability for who injected the mail. If you let application servers emit on 25 directly, you lose auditability and you will be rate-limited as if you were a botnet."
+    },
+    {
+      "type": "table",
+      "caption": "Which port for which job.",
+      "headers": [
+        "Port",
+        "Use it for",
+        "Auth and encryption posture"
+      ],
+      "rows": [
+        [
+          "25",
+          "MX-to-MX relay only",
+          "Usually no auth; opportunistic TLS; expect blocks and strict filtering"
+        ],
+        [
+          "587",
+          "App and user submission — the default choice",
+          "Require AUTH + STARTTLS; enforce SPF/DKIM/DMARC alignment"
+        ],
+        [
+          "465",
+          "Submission when implicit TLS is preferred",
+          "TLS immediately, then AUTH; useful where STARTTLS stripping is a concern"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "SMTP versus retrieval: do not blur them"
+    },
+    {
+      "type": "paragraph",
+      "text": "SMTP moves mail toward the mailbox. It does not let a user read, search, or organise a mailbox. That is the job of **IMAP**, which keeps state on the server and supports folders, flags, and partial fetch, or the legacy **POP3**, which typically downloads and deletes. The reason the Internet split them is workload shape: sending is a short bursty push optimised for inter-domain routing, retrieval is a long-lived interactive session optimised for client sync. Mixing them produces bad designs like polling SMTP for new mail or trying to implement inbox search in the transfer path. In a system diagram, draw SMTP arrows pointing *toward* the mailbox store and IMAP arrows pointing *both ways* between store and reader. If an arrow points from the recipient back through SMTP, it is a new message — a reply or bounce — not a read."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design a notification sender that can emit millions of receipts",
+          "text": "Do not propose calling SMTP synchronously from the request path. Propose an outbox table plus a durable queue, a pool of submission workers speaking to 587 with auth, per-domain throttling, and a webhook or bounce mailbox to ingest delivery failures. Trade-off you must name: throughput via batching and pipelining versus blast radius when a template bug poisons the queue."
+        },
+        {
+          "title": "Explain a delayed then duplicated email",
+          "text": "Walk the relay chain: greylisted on first attempt with 421, queued locally, retried, accepted, then retried again because the first 250 was lost on a dropped connection. Name the at-least-once semantic and where you would deduplicate with Message-ID at the store."
+        },
+        {
+          "title": "Why is our mail flagged as spam after a migration?",
+          "text": "Check the three bindings: envelope domain versus header From, signing domain, and return-path alignment. Missing or mismatched SPF, DKIM, and DMARC plus a new IP with no warm-up is the standard answer. Name the trade-off: strict reject policy stops spoofing but drops legitimate forwards that break alignment."
+        },
+        {
+          "title": "How would you stop outbound abuse?",
+          "text": "Authenticate all submission, enforce per-key rate limits and per-domain quotas, scan content before queueing, isolate marketing and transactional streams onto different IPs and domains, and monitor queue age and bounce rate as kill-switch signals. Say why port 25 egress stays closed."
+        },
+        {
+          "title": "Sketch the bounce path",
+          "text": "Show that a failure to a remote RCPT produces a new message with empty envelope sender back to the envelope address, not an inline error to the original DATA connection after handoff. Explain backscatter risk if you accept-then-bounce instead of rejecting during the SMTP session."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**SMTP delivers to the user.** No. It delivers to the next queue. The user retrieves via IMAP or POP. Saying otherwise signals you have never traced a full path.",
+        "**Port 25 is for sending from apps.** Only if you want to look like spam infrastructure. Apps submit on 587 or 465 with auth; 25 is for MX-to-MX relay.",
+        "**`250 OK` means inbox.** It means queued on one hop. Filtering, quarantine, or a full mailbox can still silently absorb it afterwards.",
+        "**TLS on SMTP means end-to-end encryption.** No. Each hop decrypts, queues in cleartext, and re-encrypts opportunistically. For true privacy you need message-level encryption above SMTP.",
+        "**Blocking spam is an SMTP feature.** Base SMTP authenticates almost nothing. Reputation, content filtering, SPF, DKIM, and DMARC are layered controls with their own breakage modes, especially around forwarding.",
+        "**Retries are harmless.** Every retry multiplies load on an already sick downstream and fills your own spool. Unbounded retry without per-domain backoff and dead-lettering is how a partial outage becomes a disk-full outage."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Scope SMTP correctly in a larger notification design.",
+      "headers": [
+        "Use SMTP when",
+        "Do not use SMTP when"
+      ],
+      "rows": [
+        [
+          "You must interoperate with external mailboxes across organisations",
+          "All recipients are inside your own app — use an internal queue and inbox table instead"
+        ],
+        [
+          "You need durable cross-domain routing with offline recipients",
+          "You need instant delivery receipts, ordering, or exactly-once — use a message queue with ACKs"
+        ],
+        [
+          "You can own reputation: dedicated domain, auth alignment, bounce handling",
+          "You want fire-and-forget from ephemeral compute with no bounce path or warm-up plan"
+        ],
+        [
+          "Volume is bursty and downstream throttles — queue-and-retry helps",
+          "Payloads are large or structured for machines — use an API or object link, not a 25 MB attachment"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "**SMTP is an unauthenticated, hop-by-hop push protocol that spools each message to disk and retries toward the recipient MX, so I submit on 587 with auth, treat `250 Queued` as liability transfer rather than delivery, and handle spam, delays, and duplicates above the protocol.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:12:19.653Z",
+    "problems": []
+  }
+}

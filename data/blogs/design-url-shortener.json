@@ -1,0 +1,413 @@
+{
+  "slug": "design-url-shortener",
+  "title": "Design URL Shortener",
+  "summary": "Design a URL shortener that survives scale: read-heavy redirect path, write path ID generation, cache, sharding, and the trade-offs interviewers grade.",
+  "kind": "HLD",
+  "problemSlug": "design-url-shortener-150-318",
+  "topic": "More Interview Problems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔗",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "URL-Shortener",
+    "System-Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Sharing system design interview questions - Facebook",
+      "url": "https://www.facebook.com/groups/developerkaki/posts/2768099330202629/",
+      "source": "facebook.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design a URL Shortener (Bitly) - System Design Interview - YouTube",
+      "url": "https://www.youtube.com/watch?v=qSJAvd5Mgio",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "What's up with all the over engineering around URL shorteners?",
+      "url": "https://www.reddit.com/r/softwarearchitecture/comments/1mr2mca/whats_up_with_all_the_over_engineering_around_url/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "interview task \"url shortener\" code review : r/rust - Reddit",
+      "url": "https://www.reddit.com/r/rust/comments/1i73b6l/interview_task_url_shortener_code_review/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Designing a URL Shortener like Bitly in a System Design Interview",
+      "url": "https://www.linkedin.com/posts/ankit-pangasa_how-to-design-a-url-shortener-like-bitly-activity-7434071295786651648-c8_G",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design URL Shortener - System Design School",
+      "url": "https://systemdesignschool.io/problems/url-shortener/solution",
+      "source": "systemdesignschool.io",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "This is not a hashing puzzle. It is a **read-heavy mapping problem with a write bottleneck**. The hidden test is: can you separate the 100:1 read path from the write path, pick an ID strategy that stays unique under concurrency and sharding, and explain every shortcut you take? Anyone can draw boxes. Strong candidates justify **why the redirect must never touch the write path**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a service like Bitly: users submit a long URL and get back a short, opaque code. Anyone who visits `s.xxx/abc123` is redirected to the original URL in milliseconds, globally, for years. You must support custom aliases, optional expiry, and basic click accounting without slowing down the redirect. Scale target to design for: ~100M URLs created per month, ~10B redirects per month, roughly 100 reads per write. Availability of the redirect path matters more than perfect freshness of analytics or instant visibility of a new short link."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`POST /v1/urls` with `{longUrl, customAlias?, expiry?}` -> `{shortCode}` — creates mapping, returns 201 or 409 on alias collision.",
+        "`GET /{shortCode}` -> `301/302` to `longUrl` — must be fast, cacheable, and correct even if analytics lags.",
+        "`GET /v1/urls/{shortCode}` -> metadata — owner, creation time, expiry, click counts. Lower traffic, can tolerate higher latency.",
+        "Constraints: codes are 6-8 chars from `[a-zA-Z0-9]`, unguessable enough to avoid enumeration, immutable once created except delete/expire."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Read the contract twice",
+      "text": "Two traps kill candidates: **treating 302 vs 301 as trivia**, and **assuming hash(longUrl) is the ID**. 301 is cacheable by browsers — great for speed, terrible if you need expiry or revocation. Hashing the URL forces you to handle collisions and breaks custom aliases. Decide ID generation explicitly; do not let the hash function decide your architecture."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not start drawing. Spend four minutes pinning scope, because a shortener without agreed non-goals becomes an analytics warehouse plus a malware scanner. Force the interviewer to choose: exact redirect latency target, alias support, and how wrong analytics can be. That choice determines whether you need a cache, a queue, or a separate counter store at all."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Read vs write ratio and latency budget?",
+          "text": "Confirm 100:1 or higher, and that `GET` must be <50ms p99 globally while `POST` can be 200-300ms. This justifies putting all complexity on the write path and keeping the read path to cache plus one key lookup."
+        },
+        {
+          "title": "Is same long URL -> same code or different?",
+          "text": "Deduplication saves storage but leaks existence and complicates ownership and expiry. Default to one row per creation unless the interviewer demands dedup, and say why."
+        },
+        {
+          "title": "Custom aliases and expiry?",
+          "text": "If yes, you cannot use pure counter pre-generation without a reservation path, and you need a 302 plus server-side expiry check, not a cacheable 301 forever."
+        },
+        {
+          "title": "Analytics: real-time or eventual?",
+          "text": "Nobody needs exact per-second click counts on the redirect path. Agree to async increment via queue and batch rollup. This is what keeps redirect latency flat."
+        },
+        {
+          "title": "Scale and retention?",
+          "text": "Ask expected writes per second (~40/sec average, ~400 peak for 100M/month), reads per second (~4k/sec average), total rows over 5 years (~6B), and retention. This sizes code length and shard count instead of guessing."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Scope agreed before drawing any boxes.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Create shortCode -> longUrl, support custom alias",
+          "Custom path breaks pure sequential IDs; needs collision check"
+        ],
+        [
+          "Functional",
+          "Redirect shortCode -> longUrl with 302 by default",
+          "302 preserves control for expiry/revoke; trade-off: less browser caching"
+        ],
+        [
+          "Functional",
+          "Expiry and delete",
+          "Forces origin check even on cache hit; cannot cache forever"
+        ],
+        [
+          "Non-functional",
+          "10B redirects/mo at <50ms p99 global",
+          "Forces edge cache + in-memory lookup, not DB per read"
+        ],
+        [
+          "Non-functional",
+          "Redirect highly available; create can be less available",
+          "Justifies AP for reads, CP for writes; different stores if needed"
+        ],
+        [
+          "Non-functional",
+          "Durable mapping; no lost writes",
+          "Needs replicated persistent store, not cache-only"
+        ],
+        [
+          "Out of scope",
+          "Real-time exact analytics, full malware sandbox inline",
+          "Would put seconds of latency on critical path; do async/offline"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the naive single-box hash map"
+    },
+    {
+      "type": "paragraph",
+      "text": "One app server, one relational table `(short_code PK, long_url, created_at)`. On create, hash the long URL with MD5, take first 6 Base62 chars, insert; on collision append a salt and retry. On redirect, `SELECT long_url WHERE short_code = ?` and return 302. This passes a coding exercise and fails an HLD round for three structural reasons, not just scale. First, hashing couples identity to content, so custom aliases and per-user expiry become hacks. Second, collision handling under concurrency requires a unique constraint retry loop that serialises on the hottest key range. Third, every redirect hits the database, so p99 explodes the moment traffic skews to a few viral links or crosses regions — you have no cache tier, no replica isolation, and no way to split read and write scaling independently. The trade-off you ignored: you optimised for write simplicity and paid for it on every single read, which is 99% of traffic."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Collision logic is probabilistic: 62^7 is ~3.5T, safe at 6B rows, but birthday collisions still force retries and extra round trips on writes.",
+        "No cache means DB QPS equals redirect QPS (~4k avg, 40k+ peak) plus cross-region latency if DB is single-region.",
+        "Single DB is both durability and serving tier — one slow query or schema migration blocks redirects, violating the availability requirement where it hurts most.",
+        "Rate limiting, abuse filtering, and analytics on the request thread add 100ms+ to redirects that should be <10ms of serving logic."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The over-engineering trap",
+      "text": "Critics are right that a single box can hash millions of keys per second. **Throughput is not the problem — fault isolation and global latency are.** You do not add cache, replicas, and queues because one box is slow. You add them because one box in one region cannot do 30ms redirects in three continents while surviving a deploy, and because a viral link should not take down link creation. If the interviewer pushes back on complexity, concede it: start with app plus Postgres plus Redis, then add shards and pre-generated keys only when the numbers demand it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Split the system into a **thin, cache-first read path** and a **durable, queued write path**. Writes go through API servers to a key-generation authority and a sharded persistent store, then asynchronously warm cache and emit analytics events. Reads go through edge cache and a distributed cache to the read replica or primary shard only on miss. The core trade-off: you accept eventual visibility (a new code may take ~1s to reach every edge) and eventual analytics in exchange for redirects that survive DB slowness and region failure. That is the correct trade for a 100:1 workload where a stale counter is harmless but a failed redirect is not."
+    },
+    {
+      "type": "mermaid",
+      "title": "High-level flow",
+      "caption": "Read path avoids write dependencies; write path pays the cost.",
+      "code": "graph TD\n  Client[\"Client\"] --> CDN[\"CDN edge\"]\n  CDN --> LB[\"Load balancer\"]\n  LB --> ReadAPI[\"Read service\"]\n  LB --> WriteAPI[\"Write service\"]\n  ReadAPI --> Cache[\"Redis cache\"]\n  Cache --> DBR[\"DB read replica\"]\n  DBR --> DBP[\"DB primary shards\"]\n  WriteAPI --> KGS[\"Key service\"]\n  WriteAPI --> DBP\n  DBP --> Queue[\"Kafka queue\"]\n  Queue --> Analytics[\"Analytics rollup\"]\n  Queue --> Warmer[\"Cache warmer\"]\n  Warmer --> Cache"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape: `CDN` absorbs the hottest 10% of codes that cause 90% of traffic — viral links never reach your origin. `Load balancer` lets read and write services scale independently; you will run 10x more read containers. `Redis` gives single-digit millisecond key lookup and shields the DB from cache stampedes if you add request coalescing. `Sharded primary` is the source of truth keyed by `shortCode`, so lookup is a single-shard point read with no scatter-gather. `Kafka` decouples click logging from redirect — the redirect returns before the counter increments. The cost: two consistency gaps to name explicitly. Cache entries need a TTL plus explicit invalidation on delete/expire, otherwise a revoked phishing link stays live at the edge. Analytics will undercount during queue lag, so never serve billing from the fast counter."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "ID generation: counter plus Base62 beats hash"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three options, one winner for interviews. Hash of URL is stateless but needs collision retries and cannot support custom aliases cleanly — reject it as primary. Distributed Snowflake-style IDs are sortable and coordination-free but produce long numbers that still need Base62 shortening and leak creation time ordering — acceptable but more machinery. A central counter range allocator, often called KGS, pre-generates blocks of integers (e.g., allocate 10k at a time from a DB sequence) and hands them to write servers to Base62-encode locally. Writes never coordinate per request, codes are short and dense, and custom aliases just bypass KGS with a uniqueness check. Trade-off: KGS is a single logical point of failure, so run it as a replicated service with in-memory block buffering and a standby that resumes from the persisted high-water mark. You trade a small operational burden for O(1) collision-free generation and 7-char codes good for ~3.5 trillion mappings."
+    },
+    {
+      "type": "table",
+      "caption": "ID strategies compared — pick one and defend it.",
+      "headers": [
+        "Strategy",
+        "Pros",
+        "Cons / trade-off"
+      ],
+      "rows": [
+        [
+          "Hash longUrl + salt",
+          "Stateless, dedups naturally",
+          "Collisions need retries; custom aliases awkward; enumeration risk if unsalted"
+        ],
+        [
+          "Counter / KGS + Base62",
+          "No collisions, short codes, fast",
+          "Needs highly available allocator; IDs are sequential unless randomised"
+        ],
+        [
+          "Snowflake / UUID + Base62",
+          "Decentralised, sortable",
+          "Longer codes, extra encoding, clock skew handling"
+        ]
+      ]
+    },
+    {
+      "type": "mermaid",
+      "title": "Data model",
+      "caption": "One row per mapping; counters kept out of the hot path.",
+      "code": "classDiagram\n  class UrlMapping {\n    +String shortCode\n    +String longUrl\n    +String ownerId\n    +int createdAt\n    +int expiresAt\n    +bool revoked\n  }\n  class ClickDaily {\n    +String shortCode\n    +String day\n    +int count\n  }\n  class AliasReservation {\n    +String shortCode\n    +String ownerId\n  }\n  UrlMapping --> ClickDaily : aggregates to\n  WriteService --> UrlMapping : creates\n  ReadService --> UrlMapping : looks up"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ShortCode.java",
+      "code": "public final class ShortCode {\n    private static final String ALPHABET = \"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\";\n    private static final int BASE = 62;\n\n    // KGS hands out seq; encoding is pure local CPU, no coordination.\n    public static String encode(long seq) {\n        if (seq == 0) return \"a\";\n        StringBuilder sb = new StringBuilder();\n        while (seq > 0) {\n            sb.append(ALPHABET.charAt((int) (seq % BASE)));\n            seq /= BASE;\n        }\n        return sb.reverse().toString();\n    }\n\n    public static long decode(String code) {\n        long n = 0;\n        for (int i = 0; i < code.length(); i++) {\n            n = n * BASE + ALPHABET.indexOf(code.charAt(i));\n        }\n        return n;\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "redirect.py",
+      "code": "def redirect(short_code, cache, db, queue):\n    # 1. Cache first: trade stale-delete risk for speed.\n    #    Mitigate with short TTL + explicit invalidate on revoke.\n    target = cache.get(short_code)\n    if target is None:\n        row = db.get_mapping(short_code)  # single-shard point read\n        if row is None or row.revoked or row.is_expired():\n            return (404, None)\n        target = row.long_url\n        cache.set(short_code, target, ttl=3600)\n    # 2. Never block redirect on analytics.\n    queue.emit_async({\"code\": short_code, \"ts\": now()})\n    return (302, target)"
+    },
+    {
+      "type": "table",
+      "caption": "Complexity — single-shard point operations, not scans.",
+      "headers": [
+        "Operation",
+        "Time",
+        "Notes"
+      ],
+      "rows": [
+        [
+          "Create (KGS path)",
+          "O(1) + 1 insert",
+          "No collision retry in common case; custom alias adds 1 uniqueness check"
+        ],
+        [
+          "Create (hash fallback)",
+          "O(1) expected",
+          "Retry on unique-constraint violation; degrades under contention"
+        ],
+        [
+          "Redirect hit",
+          "O(1) cache",
+          "~2-5ms Redis, ~20-30ms via CDN edge"
+        ],
+        [
+          "Redirect miss",
+          "O(1) DB point read",
+          "Shard by shortCode hash; no cross-shard query"
+        ],
+        [
+          "Storage",
+          "O(N) rows",
+          "~6B rows x ~500B ~= 3TB before replicas; shard by code prefix"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency and the hardest follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "The interviewer will attack three seams: duplicate creation, cache stampede, and write throughput. Handle duplicates with a **DB unique constraint on `shortCode` as the arbiter**, not application locks — two writers racing on the same custom alias both attempt insert, one gets 409, retry only then. This trades a rare write retry for lock-free fast paths. Handle stampedes on viral misses with request coalescing (single-flight) plus jittered TTLs, so 10k concurrent misses for the same code collapse to one DB read; trade-off is slight complexity in the read service. Handle write scale by sharding on `hash(shortCode)` and scaling KGS via block allocation: each write server holds a 10k-ID block in memory, persists the high-water mark synchronously only on block refill, so per-write coordination cost is amortised to ~1/10000. If a KGS node dies, at most one block is skipped — you waste IDs, never duplicate them. That waste-for-safety trade is the sentence that signals seniority. Rate limiting and URL validation belong before KGS, otherwise attackers burn your ID space and cache with junk."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Say this out loud",
+      "text": "**Cache invalidation and expiry checks must happen on the read path, not just on write.** Serve from cache only if `expiry > now()` is re-validated or TTL is bounded below minimum expiry granularity. Otherwise a cached redirect outlives revocation — a correctness bug, not a performance quirk."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "How do you shard the DB?",
+          "text": "By hash of shortCode into e.g. 256 logical shards. Point reads stay single-shard. Trade-off: range scans and per-user listings need a secondary index or separate user->codes table."
+        },
+        {
+          "title": "How do analytics work without slowing redirects?",
+          "text": "Emit to Kafka on redirect, Flink/Spark rolls up per-minute then per-day counters in a columnar store. Reads of stats tolerate minutes of lag."
+        },
+        {
+          "title": "How do you prevent abuse?",
+          "text": "Per-IP and per-API-key token bucket at the edge, async malware scan on write with quarantine state, and blocklist check on read miss. Inline scan trades latency; do it offline and fail closed on blocklist hit."
+        },
+        {
+          "title": "301 vs 302?",
+          "text": "Default 302 for control and expiry. Offer 301 only for permanent, never-expiring links where browser caching is worth loss of revocation speed."
+        },
+        {
+          "title": "What if KGS goes down?",
+          "text": "Write servers drain buffered blocks, then degrade to UUID-based fallback codes or reject creates with 503 while reads stay healthy. Reads never depend on KGS — state that isolation explicitly."
+        }
+      ]
+    },
+    {
+      "type": "list",
+      "items": [
+        "Empty / malformed URL, missing scheme, 10KB query string — validate and normalise before storing, reject with 400.",
+        "Custom alias collision, case sensitivity (`AbC` vs `abc`) — define canonical alphabet and reserve case-insensitive check if needed.",
+        "Expired code visited via stale CDN edge — edge TTL must be < expiry granularity plus origin re-check.",
+        "Deleted long URL target returns 404 downstream — decide whether short link follows or parks; do not loop redirects.",
+        "Enumeration attack iterating sequential codes — randomise KGS output or use 7+ chars and rate-limit misses.",
+        "Clock skew in expiry across regions — compare against DB time or logical TTL, not edge clock.",
+        "Double-create retry from client — make `POST` idempotent with client-supplied idempotency key."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "What you are graded on.",
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Scoping",
+          "Draws boxes immediately",
+          "Pins read/write ratio, alias, expiry, analytics freshness first"
+        ],
+        [
+          "ID choice",
+          "\"Hash the URL\"",
+          "Compares hash vs KGS vs Snowflake, picks KGS + Base62 with waste-for-safety argument"
+        ],
+        [
+          "Read path",
+          "DB lookup per redirect",
+          "CDN + Redis + single-shard read, async analytics, stampede protection"
+        ],
+        [
+          "Trade-offs",
+          "Lists components",
+          "Names cost per choice: 302 vs 301, TTL vs revocation, sharding vs secondary index"
+        ],
+        [
+          "Failure handling",
+          "Happy path only",
+          "KGS failover, DB shard loss, cache invalidation, rate-limit behavior stated"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "45-minute plan",
+      "text": "0-5: clarify ratio, aliases, expiry, analytics freshness. 5-10: API plus scale math (QPS, storage, code length). 10-25: high-level diagram — separate read/write, cache, sharded DB, queue. 25-35: deep dive on **ID generation and sharding**, with Base62 sketch. 35-45: follow-ups — stampede, abuse, expiry, KGS failure. Close by restating trade-offs in one sentence each."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:44:02.644Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,360 @@
+{
+  "slug": "authentication-authorization",
+  "title": "Authentication/Authorization",
+  "summary": "AuthN proves who is calling your API, AuthZ decides what they can do — and mixing them up is how APIs get breached.",
+  "kind": "HLD",
+  "problemSlug": "authenticationauthorization-93-207",
+  "topic": "Application Programming Interface (API)",
+  "difficulty": "Medium",
+  "coverEmoji": "🔐",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "API",
+    "AuthN-AuthZ",
+    "Security"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Authentication vs. Authorization - Auth0 Docs",
+      "url": "https://auth0.com/docs/get-started/identity-fundamentals/authentication-and-authorization",
+      "source": "auth0.com",
+      "kind": "article"
+    },
+    {
+      "title": "Authentication vs Authorization: Key Differences",
+      "url": "https://www.fortinet.com/resources/cyberglossary/authentication-vs-authorization",
+      "source": "fortinet.com",
+      "kind": "article"
+    },
+    {
+      "title": "Authentication vs. Authorization: What's the Difference?",
+      "url": "https://www.ibm.com/think/topics/authentication-vs-authorization",
+      "source": "ibm.com",
+      "kind": "article"
+    },
+    {
+      "title": "Authentication vs Authorization: Key Differences Explained",
+      "url": "https://frontegg.com/blog/authentication-vs-authorization",
+      "source": "frontegg.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Authentication (AuthN) answers *who is this?* Authorization (AuthZ) answers *what can they do?*** For APIs that distinction is load-bearing: every request must first establish a verifiable principal, then evaluate policy against that principal, the resource, and the action. Merge the two and you get confused-deputy bugs, over-permissioned tokens, and `403` vs `401` confusion that leaks information."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Authentication is credential verification that produces a principal. The client presents something — password, refresh token, client assertion, mutual TLS certificate, WebAuthn signature — and the identity provider checks it and returns a signed statement: this is subject `sub`, issued by `iss`, valid until `exp`, authenticated at this strength (`amr`, `acr`). That is all AuthN does. It says nothing about permissions. Authorization is policy evaluation that produces an allow or deny. It takes four inputs: the authenticated principal, the resource (`/orders/{id}`), the action (`read`, `cancel`, `refund`), and context (time, IP, tenant, device posture, token scope). It checks those against stored permissions or rules and decides. In an API there is no interactive session to fall back on. Each HTTP request must carry its own proof, usually in the `Authorization` header, and the server must re-derive both answers from scratch without trusting the client."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why APIs make this split harder than a monolith login page: you serve three different callers with different trust. Users via browsers and mobile apps, services via machine-to-machine calls, and delegated third parties via consent. You cannot hand them all a session cookie and call it done. You need delegation without password sharing — that is why OAuth 2.0 exists — and federated identity without per-app passwords — that is why OpenID Connect (OIDC) exists on top of OAuth 2.0. The trade-off: standards give you interop and library support, but they add token types, redirects, key rotation, and clock-skew handling that most teams underestimate. Get the token confusion wrong — accept an ID Token where you needed an Access Token — and you have authenticated the user but authorized on unscoped data."
+    },
+    {
+      "type": "table",
+      "caption": "AuthN vs AuthZ — different inputs, different outputs, different failures.",
+      "headers": [
+        "Aspect",
+        "Authentication",
+        "Authorization"
+      ],
+      "rows": [
+        [
+          "Question",
+          "`Who is calling?`",
+          "`Can this caller do this action on this resource?`"
+        ],
+        [
+          "Input",
+          "Credentials, assertions, biometrics",
+          "Principal + resource + action + context + policy"
+        ],
+        [
+          "Output",
+          "Principal with `sub`, `iss`, `exp`, auth strength",
+          "Allow / deny, often with filtered view"
+        ],
+        [
+          "Token",
+          "ID Token — for the client, do not use for API access",
+          "Access Token — for the API, carries scopes / permissions"
+        ],
+        [
+          "Failure code",
+          "`401 Unauthorized` — missing or invalid identity",
+          "`403 Forbidden` — valid identity, denied by policy"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: every API call passes two gates"
+    },
+    {
+      "type": "paragraph",
+      "text": "Think of the request path as a pipeline with no shortcuts. The client obtains tokens out-of-band via an authorization server, then calls your API with an Access Token. Gate 1 validates that token: signature, issuer, audience, expiry, and binding. Gate 2 evaluates policy: does this token's subject, scopes, roles, or attributes permit this method on this path? Only if both pass does the request reach business logic, and business logic should receive a normalized context — `tenant_id`, `user_id`, `scopes` — never raw headers. The reason for strict ordering: AuthZ without a verified principal is attacker-controlled input. Any design that checks roles before verifying signatures is broken by construction."
+    },
+    {
+      "type": "mermaid",
+      "title": "API request through AuthN then AuthZ",
+      "caption": "Two gates in order. 401 means Gate 1 failed, 403 means Gate 2 denied.",
+      "code": "flowchart LR\n  Client[Client with Access Token] --> Gateway[API Gateway]\n  Gateway --> AuthN[Gate1 Authenticate Token]\n  AuthN -->|invalid| R401[Return 401 Unauthorized]\n  AuthN -->|valid| AuthZ[Gate2 Authorize Policy]\n  AuthZ -->|denied| R403[Return 403 Forbidden]\n  AuthZ -->|allowed| Svc[Backend Service]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Token types exist because they solve different problems, and swapping them is the most common API bug. An ID Token is an authentication receipt for the *client*: it says how and when the user logged in. It is audience-bound to the client ID and often contains PII. An Access Token is an authorization grant for the *API*: it says this bearer may invoke these scopes on this audience (`aud: orders-api`). It should be opaque to the client and minimal in claims. The trade-off of using JSON Web Tokens (JWTs) as Access Tokens: local signature verification is fast and needs no database lookup, which is why gateways prefer them for scale, but revocation becomes hard — a stolen JWT is valid until expiry unless you add short lifetimes plus revocation lists or rotation, which reintroduces state you were trying to avoid."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Where enforcement lives"
+    },
+    {
+      "type": "paragraph",
+      "text": "Choose one primary enforcement point and make the rest defense-in-depth, not competing sources of truth. The common choice is the edge — API gateway or sidecar — for coarse checks: is the token valid, does it have `orders:read`, does it belong to tenant `t_123`? That keeps bad traffic out early and keeps policy in one place, which is why platform teams prefer it. The trade-off: the gateway does not understand domain rules like *only the order owner or a support agent with an open ticket can refund*. So services must do fine-grained checks against their own data. If you put everything in the gateway, you push domain logic into infrastructure that cannot join against your database. If you put everything in each service, you duplicate token validation, key caching, and audit logging N times and they will drift."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Edge gateway:** validates signature, `iss`, `aud`, `exp`, tenant, coarse scopes. Rejects fast. Trade-off: central consistency vs no domain context.",
+        "**Sidecar / middleware:** same as gateway but per-service, good for polyglot fleets. Trade-off: uniform library vs extra hop and config sprawl.",
+        "**Service handler:** checks ownership, relationships, state transitions (`only refund if status=paid`). Trade-off: correct domain decision vs must trust context passed from edge.",
+        "**Policy agent (OPA / Cedar):** externalizes rules from code, versioned separately. Trade-off: fast policy change without deploy vs another dependency, latency, and testing burden."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every AuthN/AuthZ choice buys something by paying something else.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Stateless JWT access token",
+          "Local verification, no DB read, scales horizontally",
+          "Hard revocation, larger headers, key-rotation complexity",
+          "Pick this for high-RPS read APIs; accept 5-15 min lifetime + refresh"
+        ],
+        [
+          "Opaque token + introspection",
+          "Instant revocation, tiny token, minimal leakage",
+          "Per-request call to auth server or cache; added p99 latency",
+          "Pick this for banking, admin, or high-risk writes"
+        ],
+        [
+          "Central gateway AuthZ",
+          "One policy, one audit trail, fast to change",
+          "Gateway becomes blast radius; cannot do owner-checks well",
+          "Use for scopes and tenant isolation, not business rules"
+        ],
+        [
+          "Per-service AuthZ",
+          "Correct domain decisions with DB context",
+          "Duplicated logic, inconsistent deny messages, audit gaps",
+          "Required for ownership and state-dependent actions"
+        ],
+        [
+          "RBAC (roles)",
+          "Simple to reason, cheap to enforce",
+          "Role explosion as permutations grow",
+          "Good up to ~20 roles; fails for multi-tenant fine grain"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The default I defend for a medium-scale public API: short-lived JWT Access Tokens (5 minutes) verified at the gateway with cached JWKS, coarse `scope` and `tenant` checks at the edge, fine-grained ownership checks in the service, and refresh-token rotation with reuse detection for users. Why: you get edge scale without a per-request auth-server call, and you bound stolen-token damage to minutes. The trade-off you must name: you accept eventual revocation — a revoked user retains access until the current JWT expires — so high-risk operations (password change, payout, role change) must force re-introspection or a version check (`token_version != user.token_version → 401`). If the interviewer pushes on instant global logout, concede the pure-stateless design and switch those paths to opaque or allowlist checks."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Auth failures look identical to users — *it says access denied* — but the codes, logs, and blast radius tell you which gate broke. Treat `401` spikes as key, clock, or token-issuance problems. Treat `403` spikes after a deploy as policy or data-migration problems. Treat slow `p99` as introspection or policy-agent problems. Never return stack traces or *which claim was wrong* to the client; log the reason server-side with `token_jti`, `sub`, `aud`, and policy decision ID."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Expired or skewed keys: `401` storm after rotation.** Symptom: all services reject at once, JWKS fetch errors in gateway logs. Cause: cached old keys, clock skew >60s, or `aud` mismatch after env promotion. Fix: overlapping key IDs, 5-min clock leeway, canary on `aud`.",
+        "**Unrevocable JWT used as session: breach window.** Symptom: disabled user still calls API for minutes. Cause: 1-hour JWT with no version check. Fix: 5-min access + rotating refresh + `token_version` check on writes.",
+        "**Scope confusion / confused deputy: `200` when it should be `403`.** Symptom: partner service reads other tenants by changing `tenant_id` in body. Cause: edge checked `orders:read` but service trusted client-supplied tenant instead of token claim. Fix: derive `tenant_id` only from verified token.",
+        "**Over-broad scopes + PII in token: silent leakage.** Symptom: huge JWTs in logs, mobile app decodes email and roles. Cause: putting profile data and `*` scopes in Access Token. Fix: minimal claims (`sub`, `tid`, `scp`), fetch profile server-side.",
+        "**Policy-agent outage blocks everything: fail-closed vs fail-open.** Symptom: 100% `500` or full bypass. Cause: no cache or timeout on OPA call. Fix: cache last-good policy with TTL, fail closed on deny-paths, circuit-break and alert."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The nastiest one is the tenant-confusion bug because tests miss it. A valid token for tenant A calls `GET /orders/999` where order 999 belongs to tenant B. Gate 1 passes — the token is genuine. Gate 2 checks only `orders:read` scope and passes. The handler loads by primary key without a `WHERE tenant_id = token.tid` clause and returns someone else's data with a `200`. No error, no alarm, just a breach. That is why the rule is mechanical: the service must re-assert ownership on every read and write from the verified context, never from query params or body. The trade-off is an extra indexed predicate on every query, which costs a composite index and discipline, but it is the only check that actually enforces multi-tenancy."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "auth_middleware.py",
+      "code": "import time\nimport jwt  # PyJWT\n\nJWKS_KEY = \"<cached-public-key>\"  # fetched via JWKS, cached 10 min\nAUDIENCE = \"orders-api\"\nISSUER = \"https://auth.example.internal/\"\nLEEWAY_S = 60\n\ndef authenticate(headers):\n    # Gate 1: AuthN — who is this? No policy here.\n    token = headers.get(\"Authorization\", \"\").removeprefix(\"Bearer \").strip()\n    if not token:\n        raise Unauthorized(\"missing token\")\n    try:\n        claims = jwt.decode(token, JWKS_KEY, algorithms=[\"RS256\"],\n                            audience=AUDIENCE, issuer=ISSUER, leeway=LEEWAY_S)\n    except jwt.ExpiredSignatureError:\n        raise Unauthorized(\"expired\")\n    except jwt.InvalidTokenError as e:\n        raise Unauthorized(f\"invalid: {e}\")\n    return {\"sub\": claims[\"sub\"], \"tid\": claims[\"tid\"],\n            \"scp\": set(claims.get(\"scp\", []))}\n\ndef authorize(ctx, action, resource):\n    # Gate 2: AuthZ — can they do this? No crypto here.\n    if action == \"order:read\":\n        if \"orders:read\" not in ctx[\"scp\"]:\n            raise Forbidden(\"missing scope\")\n        # Ownership check must use DB, with tid from token only:\n        order = db.get_order(resource[\"order_id\"])  # indexed (id, tenant_id)\n        if order is None or order.tenant_id != ctx[\"tid\"]:\n            raise Forbidden(\"not your tenant\")  # do not return 404 vs 403 oracle\n        return order\n    raise Forbidden(\"unknown action\")"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet separates the gates on purpose: `authenticate` does only cryptography and claim validation, `authorize` does only scope plus ownership. The deliberate trade-off is verbosity — two functions, an extra DB fetch — for auditability and testability. You can unit-test AuthZ with fake contexts without forging tokens, and you can log `401` vs `403` distinctly. Note the `tid` comes only from verified claims, and the tenant predicate is applied in the data lookup, not after serializing the response."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Authorization models: pick by cardinality"
+    },
+    {
+      "type": "table",
+      "caption": "RBAC is simple, ABAC is expressive, ReBAC handles graphs. Cost rises left to right.",
+      "headers": [
+        "Model",
+        "Rule looks like",
+        "Strength",
+        "Weakness"
+      ],
+      "rows": [
+        [
+          "RBAC",
+          "`role:support → orders:refund`",
+          "Cheap, cacheable, easy to audit",
+          "Role explosion; cannot express owner or time bounds"
+        ],
+        [
+          "ABAC",
+          "`allow if user.dept == order.dept and ticket.open`",
+          "Fine grain without new roles; handles context",
+          "Policies harder to test; needs attribute pipeline"
+        ],
+        [
+          "ReBAC / graph",
+          "`allow if user is editor on parent folder`",
+          "Natural for sharing, docs, teams",
+          "Needs graph store, traversal latency, consistency lag"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "My opinionated default: start with RBAC plus scopes plus mandatory tenant-and-owner checks in code. That covers 80% of CRUD APIs with minimal machinery, which is why it survives team turnover. Move to ABAC when you hear *it depends on attributes* more than twice — region, ticket state, device trust, time window — because stuffing those into roles creates hundreds of roles that nobody can review. Adopt ReBAC only when the product is a sharing graph (drive-like, org-chart permissions); the trade-off is real infrastructure — a permission graph with consistency SLAs — and most teams should not pay it until RBAC/ABAC demonstrably fails."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Scope the callers and threat model",
+          "text": "Ask: browser vs mobile vs service-to-service? First-party vs third-party? What is the damage if a token leaks? State your trust boundary before drawing boxes."
+        },
+        {
+          "title": "Draw token issuance separately from API serving",
+          "text": "Show authorization server, JWKS endpoint, gateway, services, policy store. Mark where ID Tokens stop (client) and where Access Tokens start (API). Interviewers grade this separation."
+        },
+        {
+          "title": "Define the two gates with codes",
+          "text": "Say: invalid → `401` with `WWW-Authenticate`, valid-but-denied → `403` with no reason leaked. Explain key caching, `aud`/`iss` checks, clock leeway."
+        },
+        {
+          "title": "Push AuthZ down to the domain",
+          "text": "Walk a multi-tenant read: gateway checks scope + `tid`, service checks `order.tenant_id == token.tid` and state. Name the extra index as the cost."
+        },
+        {
+          "title": "Close with rotation, revocation, and audit",
+          "text": "Short access, rotating refresh, reuse detection, `token_version` on risky writes, decision logs with `jti`/`sub`/policy ID. Name the revocation-vs-latency trade-off explicitly."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Misconceptions to kill"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**`Authentication == login screen.` No — login is one AuthN ceremony; APIs authenticate every request via tokens, mTLS, or signatures, not sessions.**",
+        "**`An ID Token authorizes API calls.` No — it is audience-bound to the client and often over-privileged. APIs must require Access Tokens with `aud` = the API.**",
+        "**`401 vs 403 are interchangeable.` No — `401` means re-authenticate, `403` means do not retry without different permissions. Swapping them breaks clients and leaks state.**",
+        "**`JWT validation == authorization.` No — signature checks prove who minted it, not what the bearer may do. You still need scope and ownership checks.**",
+        "**`Hiding endpoints is access control.` No — security by obscurity plus client-side checks is bypassed by replay. Enforce server-side on every path, including internal ones.**"
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use what — and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Match the mechanism to the risk and call pattern, not to fashion.",
+      "headers": [
+        "Scenario",
+        "Use",
+        "Do not use",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "User-facing mobile / SPA API",
+          "OIDC login + short JWT access + rotating refresh",
+          "Long-lived JWT or raw API key in app",
+          "Leaked app secrets cannot be revoked cleanly; short life bounds damage"
+        ],
+        [
+          "Service-to-service",
+          "Client-credentials flow or mTLS with scoped tokens",
+          "User refresh tokens shared between services",
+          "Services need narrow audience and no user PII; user tokens over-permit"
+        ],
+        [
+          "Third-party integration",
+          "OAuth consent with granular scopes + expiries",
+          "Shared passwords or wildcard `*` scope",
+          "Delegation must be revocable per app without resetting passwords"
+        ],
+        [
+          "High-risk write (payout, role grant)",
+          "Step-up auth + introspection / version check",
+          "Pure offline JWT check",
+          "You need instant revocation; accept one stateful lookup here"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Authenticate every request with a short, audience-bound token at the edge, then authorize by scope plus server-side tenant and ownership checks in the service — because edge scale means nothing without domain-correct denies.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:50:40.817Z",
+    "problems": []
+  }
+}

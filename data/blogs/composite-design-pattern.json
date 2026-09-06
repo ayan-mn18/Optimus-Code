@@ -1,0 +1,279 @@
+{
+  "slug": "composite-design-pattern",
+  "title": "Composite Design Pattern",
+  "summary": "Composite lets clients treat single objects and object trees through one interface by pushing recursion into the structure itself.",
+  "kind": "LLD",
+  "problemSlug": "composite-design-pattern-37-77",
+  "topic": "Structural Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "🌳",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Structural Patterns",
+    "Composite",
+    "Medium"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Composite - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/composite",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Composite Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/composite-method-software-design-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Composite pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Composite_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Composite Design Pattern - Medium",
+      "url": "https://medium.com/@akshatsharma0610/composite-design-pattern-b1ebd0756aa9",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Composite is **recursion as an interface decision**. If the client has to ask “are you one thing or many things?” before calling you, you failed. Push the branching down into `Leaf` versus `Composite` so the caller makes one uniform call and the tree does the traversal itself. That uniformity is the entire payoff — and the entire cost."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Composite is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Composite composes objects into a **part-whole hierarchy** where a single object and a group of objects expose the same `Component` contract. A `Leaf` implements the behavior directly. A `Composite` holds a collection of `Component` children and implements the same behavior by delegating to each child and combining the results. The client references only `Component` and never branches on concrete type. That is the whole pattern: uniform treatment of leaves and subtrees, with recursive delegation hidden behind one interface. Use it only when your domain is naturally hierarchical — file systems, UI view trees, org structures, nested menus, graphic scenes, permission groups, BOMs — and when most operations genuinely make sense on both a single node and a subtree. If only half your operations apply to both, you do not have a Composite problem; you have two types awkwardly sharing an interface."
+    },
+    {
+      "type": "paragraph",
+      "text": "The critical property is **operational closure**: every operation declared on `Component` must be meaningful when invoked on a leaf *and* on an arbitrarily deep composite, and the composite’s result must be computable from its children’s results plus optionally its own contribution. `getSize()`, `render()`, `print()`, `applyDiscount()`, `validate()` qualify. `addChild()` and `removeChild()` usually do not, and that tension is where every real design argument about Composite happens. Choose the interface narrowly — one or two recursive behaviors — and Composite stays clean. Widen it to every convenience method and you get a fat interface where leaves throw `UnsupportedOperationException`, which destroys the uniformity you were buying in the first place."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Four roles, one rule. `Component` declares the shared behavior. `Leaf` does real work and has no children. `Composite` stores children, forwards each call to them, and aggregates. `Client` talks only to `Component`. Why this split? Because it moves the `if (isContainer)` conditional out of every call site and into polymorphic dispatch. The trade-off is explicit: the client gets dramatically simpler — a single loop disappears — but the structure pays with indirection, extra allocations for composite nodes, and a recursive call chain whose depth equals your tree depth. Debugging shifts from “where is the loop?” to “which level of the tree misbehaved?”, so you must make the traversal observable."
+    },
+    {
+      "type": "mermaid",
+      "title": "Composite structure",
+      "caption": "Client depends only on Component; Composite forwards to children.",
+      "code": "classDiagram\n    class Component {\n        <<interface>>\n        +operation()\n        +getSize() int\n    }\n    class Leaf {\n        +operation()\n        +getSize() int\n    }\n    class Composite {\n        -children List~Component~\n        +add(Component)\n        +remove(Component)\n        +operation()\n        +getSize() int\n    }\n    class Client\n    Component <|.. Leaf\n    Component <|.. Composite\n    Composite o-- Component : contains\n    Client --> Component : uses"
+    },
+    {
+      "type": "paragraph",
+      "text": "Execution is depth-first delegation. The client calls `operation()` on what it believes is one `Component`. If that reference is a `Leaf`, work happens immediately and returns. If it is a `Composite`, it iterates its children and invokes the same method on each, which may in turn be leaves or deeper composites. Each composite then folds the child results — summing sizes, concatenating renders, short-circuiting validations — and optionally adds its own overhead, like packaging cost on a box or padding on a layout container. The reason recursion lives inside `Composite` rather than in a utility or visitor is **encapsulation of structure**: only the composite knows its child list, ordering, and aggregation rule, so only it should own the traversal. The price is that every new traversal semantic either modifies `Component` or forces a second pattern on top."
+    },
+    {
+      "type": "mermaid",
+      "title": "Recursive dispatch",
+      "caption": "One call fans out down the tree and folds back up.",
+      "code": "flowchart TD\n    A[Client calls operation on Component] --> B{Leaf or Composite}\n    B -->|Leaf| C[Execute directly and return]\n    B -->|Composite| D[Iterate over children]\n    D --> E[Recursively call operation]\n    E --> F[Combine child results]\n    F --> G[Add own contribution and return]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What Composite buys you and what it charges.",
+      "headers": [
+        "Benefit",
+        "Cost you pay",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Uniform client code — no type checks, no manual unwrapping",
+          "Loss of type clarity — caller cannot tell leaf from subtree",
+          "Simplicity is bought with opacity; debugging and reasoning get harder"
+        ],
+        [
+          "Trivial to add new Leaf or Composite variants without touching clients",
+          "Painful to add new operations — every class must implement them",
+          "Open for new types, closed against new behaviors; the classic expression-problem trade"
+        ],
+        [
+          "Recursive operations come free once the tree exists",
+          "Recursion depth, repeated traversal, and aggregation overhead",
+          "Deep or wide trees blow stack or CPU unless you bound depth or memoize"
+        ],
+        [
+          "Natural model for hierarchical domains",
+          "Forces hierarchy where none exists; flat domains get fake containers",
+          "Misapplied Composite creates ceremony with zero payoff"
+        ],
+        [
+          "Composition at runtime — build arbitrary trees dynamically",
+          "Structural integrity is manual — cycles, orphans, shared children",
+          "Flexibility demands guards against cycles and double-parenting"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The deepest trade-off is **transparency versus safety**. Put `add()` and `remove()` on `Component` and every client can build trees uniformly — transparent — but leaves must then either no-op or throw, which means a compile-time-safe call fails at runtime. Keep `add()` and `remove()` only on `Composite` and leaves stay honest — safe — but clients building trees must downcast or type-check before adding children, which reintroduces exactly the branching Composite was supposed to eliminate. There is no version that gives you both. Pick transparent when clients mostly *consume* prebuilt trees and rarely mutate them. Pick safe when clients *construct* trees and a leaf that silently accepts `add()` would corrupt invariants. State the choice in an interview before writing code; interviewers grade that sentence more than the code."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Composite fails quietly because the tree hides the blast radius. A single misbehaving leaf poisons every aggregate above it, and the caller sees only a wrong total at the root with no indication of which subtree contributed it. The second failure mode is structural: someone wires a composite as its own descendant, directly or through three levels of indirection, and the next recursive operation never returns. The third is performance — a `getSize()` that walks a million-node subtree on every UI repaint, or an `isValid()` that revalidates unchanged children because no one cached anything. All three share one cause: treating the tree as free abstraction instead of as a data structure with depth, fan-out, and traversal cost that must be bounded, logged, and tested."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Stack overflow on deep trees:** symptom is intermittent `StackOverflowError` on large inputs only. A directory chain 5,000 levels deep or a degenerate org hierarchy recurses past the JVM stack. Fix with an explicit iterative traversal or a hard depth limit, not hope.",
+        "**Infinite recursion from a cycle:** symptom is a hang or CPU spike on one specific operation. A folder linked into its own descendant, or two composites referencing each other, loops forever. Fix with cycle detection on `add()` — reject ancestors — plus an identity set during traversal.",
+        "**Wrong aggregate, correct leaves:** symptom is totals that drift as the tree grows. Usually a composite double-counts its own contribution or a shared child is visited twice because one node has two parents. Fix by defining single-parent ownership and making aggregation associativity explicit and unit-tested.",
+        "**Leaf throws on structural methods:** symptom is `UnsupportedOperationException` in production logs on a path nobody tested. Transparent interface plus an unexpected `add()` on a file. Fix by choosing the safe variant or validating node type before mutation.",
+        "**Performance cliff on wide trees:** symptom is p99 latency spiking when one customer builds a 100k-child folder. Naive recursion plus repeated size computation is `O(n)` per call, called `m` times. Fix with cached aggregates invalidated on mutation, or paginated traversal."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Cycles are the silent killer",
+      "text": "Nothing in the naive `add(child)` prevents `root.add(root)` or `a.add(b); b.add(a)`. Every production Composite needs one guard: **reject any child that already contains `this` as a descendant**. Without it, a single bad mutation turns every future traversal into an infinite loop. Mention this in the interview before the interviewer has to ask."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete code that shows the shape"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "FileSystemComposite.java",
+      "code": "import java.util.*;\n\ninterface FileSystemNode {\n    String name();\n    int getSize();\n    void print(String indent);\n}\n\nfinal class File implements FileSystemNode {\n    private final String name;\n    private final int size;\n\n    File(String name, int size) {\n        this.name = name;\n        this.size = size;\n    }\n\n    public String name() { return name; }\n\n    public int getSize() { return size; } // Leaf: direct answer, no delegation.\n\n    public void print(String indent) {\n        System.out.println(indent + name + \" (\" + size + \")\");\n    }\n}\n\nfinal class Directory implements FileSystemNode {\n    private final String name;\n    private final List<FileSystemNode> children = new ArrayList<>();\n\n    Directory(String name) { this.name = name; }\n\n    public String name() { return name; }\n\n    // Safe variant: add/remove live ONLY on Composite, not on the interface.\n    public void add(FileSystemNode child) {\n        Objects.requireNonNull(child);\n        if (child == this || contains(child, this)) {\n            throw new IllegalArgumentException(\"cycle: cannot add ancestor as child\");\n        }\n        children.add(child);\n    }\n\n    public void remove(FileSystemNode child) { children.remove(child); }\n\n    public int getSize() {\n        int total = 0;\n        for (FileSystemNode c : children) total += c.getSize(); // recursion happens here\n        return total;\n    }\n\n    public void print(String indent) {\n        System.out.println(indent + name + \"/\");\n        for (FileSystemNode c : children) c.print(indent + \"  \");\n    }\n\n    private static boolean contains(FileSystemNode root, FileSystemNode target) {\n        if (root == target) return true;\n        if (root instanceof Directory d) {\n            for (FileSystemNode c : d.children) if (contains(c, target)) return true;\n        }\n        return false;\n    }\n}\n\n// Client: zero branching on type.\nclass DiskUsage {\n    static int totalFor(FileSystemNode node) { return node.getSize(); }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape and not the alternatives? The interface carries only `getSize()` and `print()` — behaviors meaningful for both files and directories — which keeps leaves honest and avoids throwing. Structural mutation lives on `Directory` alone, so the compiler prevents `file.add(...)` instead of failing at runtime; the cost is that tree-building clients must hold a `Directory` reference, not just a `FileSystemNode`, and that is the correct cost to pay. The cycle guard in `add()` is not optional decoration; it is the difference between a design and a liability. Aggregation is a plain loop with recursive calls, deliberately iterative at each level so ordering is deterministic and easy to instrument. If traversal cost becomes a problem later, this is the single place to add caching: store a `cachedSize` invalidated on `add()` and `remove()`, trading memory and invalidation complexity for `O(1)` reads."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Transparent versus safe — pick deliberately"
+    },
+    {
+      "type": "paragraph",
+      "text": "Textbooks present two flavors and most candidates cannot name either. In the **transparent** flavor, `add()`, `remove()`, and `getChild()` sit on `Component`, so a client can walk and build any subtree through one type. The price is paid by leaves, which must stub those methods out — usually by throwing — meaning the interface lies about what a leaf supports. In the **safe** flavor, shown in the code above, structural methods sit only on `Composite`, so no object ever exposes an operation it cannot honor, but clients must know whether they hold a composite before mutating. Why does this matter beyond aesthetics? Because it determines where bugs surface: transparent fails at runtime in production, safe fails at compile time on the developer’s machine. For interview purposes, default to safe unless the problem statement explicitly demands uniform tree construction through the base type, and say why: correctness errors should be caught by the compiler, and traversal uniformity — the actual value of the pattern — is fully preserved either way."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the hierarchy in ten seconds",
+          "text": "Say: “This is part-whole — files and directories, items and bundles, employees and teams. One interface, two implementations, recursive delegation.” If you hesitate here, the interviewer doubts you have seen the pattern before."
+        },
+        {
+          "title": "Draw Component, Leaf, Composite and stop",
+          "text": "Sketch the three boxes and the client arrow. Do not add Visitor, Iterator, or caching yet. State transparent versus safe explicitly: “I am putting add/remove only on Composite so leaves stay honest.” That one sentence earns more credit than any UML completeness."
+        },
+        {
+          "title": "Implement one recursive behavior live",
+          "text": "Write `getSize()` or `getPrice()` or `show()`. Keep it to a loop over children plus a base case. Then add the cycle guard in `add()`. Interviewers watch for the guard — its absence signals you have never operated one of these."
+        },
+        {
+          "title": "Handle the follow-up operation",
+          "text": "Expect: “Now add search / delete / permissions / discount.” Show that new behavior touches every class — the known weakness — and propose containing it: either extend Component deliberately or layer a Visitor so operations vary independently. Name the trade-off: Visitor fixes operation extension but complicates the design."
+        },
+        {
+          "title": "Discuss depth, sharing, and caching",
+          "text": "Close with production concerns: max depth, single-parent versus shared DAG children, who invalidates cached aggregates, thread safety of add/remove versus concurrent traversal. You do not need to implement all of it — naming the three risks shows senior judgment."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**“Composite is just a tree data structure.”** No — a tree is storage. Composite is a *behavioral contract* over a tree: uniform operations with recursive delegation. A tree of nodes with manual `instanceof` checks at every call site is not Composite.",
+        "**“Leaves should inherit add/remove and throw.”** That is only the transparent variant, and it should be a conscious choice, not a default. Defaulting to throwing leaves means your interface promises what your objects cannot do.",
+        "**“Composite and Decorator are interchangeable.”** Both recurse through wrappers, but Decorator adds responsibility to *one* object while preserving its interface; Composite aggregates *many* children into a whole. Nesting decorators gives you a chain; nesting composites gives you a tree.",
+        "**“Client never needs to know concrete types.”** True for *consuming* operations like size or render. False for *building* the tree in the safe variant — construction needs a Composite reference. Claiming total ignorance signals you have only read the diagram.",
+        "**“Recursion is free.”** Each level costs stack and each aggregate re-walks the subtree. Deep hierarchies overflow; wide hierarchies crawl. Bound depth, cache aggregates, or traverse iteratively when scale demands it.",
+        "**“Any group deserves Composite.”** If operations on the group and the individual diverge — a `Team.deploy()` means nothing like `Engineer.deploy()` — forcing one interface creates fake uniformity. Use a plain collection instead."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to avoid it"
+    },
+    {
+      "type": "table",
+      "caption": "Applicability: Composite earns its complexity only for genuine hierarchies.",
+      "headers": [
+        "Use it when",
+        "Avoid it when",
+        "What to do instead"
+      ],
+      "rows": [
+        [
+          "Domain is a natural tree and clients operate on subtrees as units — file systems, UI layouts, nested orders",
+          "Structure is flat or only one level deep",
+          "Use a `List<Item>` and plain functions; Composite adds nodes with no payoff"
+        ],
+        [
+          "Most operations make sense on both leaf and group — size, price, render, validate",
+          "Leaf and group semantics diverge sharply",
+          "Keep separate types or use an interface limited to the truly shared behavior"
+        ],
+        [
+          "You add new element types often but operations rarely",
+          "You add new operations often but types rarely",
+          "Consider Visitor over the composite, or a simple interpreter / strategy per operation"
+        ],
+        [
+          "Clients should ignore nesting depth",
+          "Callers must distinguish single from group for correctness — permissions, transactions",
+          "Expose distinct types so the compiler enforces the distinction"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "“Composite puts a uniform interface over leaves and containers so clients invoke one operation and each container recursively delegates to its children and aggregates the result — which simplifies clients at the cost of making new operations invasive and requiring guards against cycles and deep recursion.”"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:01:24.553Z",
+    "problems": []
+  }
+}

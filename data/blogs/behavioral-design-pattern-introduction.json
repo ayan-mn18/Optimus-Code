@@ -1,0 +1,342 @@
+{
+  "slug": "behavioral-design-pattern-introduction",
+  "title": "Behavioral Design Pattern Introduction",
+  "summary": "Behavioral patterns control how objects talk, decide, and delegate. This intro maps all ten, their trade-offs, failure modes, and interview angles.",
+  "kind": "LLD",
+  "problemSlug": "behavioral-design-pattern-introduction-36-76",
+  "topic": "Behavioral Design Patterns",
+  "difficulty": "Easy",
+  "coverEmoji": "🔀",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Behavioral Patterns",
+    "OOD"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Behavioral Design Patterns - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/behavioral-patterns",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Behavioral Design Patterns - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/behavioral-design-patterns/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding Behavioral Design Patterns in Java | by Pallavi Devraye",
+      "url": "https://medium.com/@psdevraye/understanding-behavioral-design-patterns-in-java-7551731091fd",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "(PDF) Behavioral Design Patterns: Enhancing Software Interaction and ...",
+      "url": "https://www.researchgate.net/publication/384318655_Behavioral_Design_Patterns_Enhancing_Software_Interaction_and_Communication",
+      "source": "researchgate.net",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Creational patterns control **what gets built**. Structural patterns control **what fits together**. Behavioral patterns control **who decides what happens next**. If your problem is `if-else` sprawl, tangled callbacks, or objects calling each other directly until you cannot change anything, you have a behavioral problem. Every pattern in this family buys you flexibility by adding one indirection — and charges you complexity for it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A behavioral pattern is a named protocol for distributing work across objects at runtime. It answers three questions explicitly instead of burying them in ad-hoc code: **who initiates an action, who carries it out, and how control passes between them**. The mechanism is almost always the same at the object level — define a small interface for a piece of behavior, hold a reference to it instead of hard-coding it, and let the caller vary independently of the callee. The reason this category exists is that communication logic rots faster than construction logic. Object creation stabilizes early. Interaction logic keeps changing because business rules, event sources, undo requirements, traversal orders, and notification fan-out all change after release. Behavioral patterns isolate that churn."
+    },
+    {
+      "type": "paragraph",
+      "text": "Contrast this with the other two families so you stop misclassifying them under pressure. Creational patterns hide `new` — they decide which concrete class appears behind an interface. Structural patterns hide wiring — they decide how one interface adapts to another through composition or wrapping. Behavioral patterns hide **decision-making** — they decide which object runs, in what order, with what state, and with what ability to reverse or replay the action. If you can delete the pattern and the program still compiles but becomes rigid, that rigidity is the proof it was behavioral. A `switch` on payment type replaced by a `PaymentStrategy` interface is behavioral. A factory returning the right payment gateway client is creational. A decorator adding retry around that client is structural. Interviews fail when candidates apply the wrong family to the problem."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: who talks to whom, and who decides"
+    },
+    {
+      "type": "paragraph",
+      "text": "Almost every behavioral pattern is one of four control-flow moves. **Encapsulate a request** so it can be stored, queued, or undone — that is `Command` and `Memento`. **Encapsulate an algorithm** so it can be swapped without touching the caller — that is `Strategy`, `State`, and `Template Method`. **Decouple sender from receiver** so neither knows the other concretely — that is `Observer`, `Mediator`, `Chain of Responsibility`, and `Visitor` in its double-dispatch form. **Encapsulate traversal or interpretation** so collection internals do not leak — that is `Iterator`. The trade-off is identical in all four cases: you replace a direct call or conditional with a registration, delegation, or hand-off step. That step is what gives you extension without modification, and it is also what makes the flow harder to trace in a debugger. Choose it when the variation is real and recurring, not hypothetical."
+    },
+    {
+      "type": "mermaid",
+      "title": "Behavioral control-flow map",
+      "caption": "Four ways control moves: delegation, notification, chaining, and encapsulation.",
+      "code": "flowchart TD\n    Client --> Context\n    Context --> AlgoA[Strategy A]\n    Context --> AlgoB[Strategy B]\n    Publisher --> ObsA[Observer A]\n    Publisher --> ObsB[Observer B]\n    Sender --> H1[Handler 1]\n    H1 --> H2[Handler 2]\n    H2 --> H3[Handler 3]\n    Invoker --> Cmd[Command]\n    Cmd --> Receiver"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the diagram as three runtime decisions, not class structure. The `Client` to `Context` to `Strategy` path means the caller picks the algorithm once and the context runs it without knowing which one — the decision is made **before** execution and can change per call. The `Publisher` to `Observer` fan-out means one state change triggers many reactions, and the publisher never enumerates them — the decision of who reacts is made **by subscription**, not by the sender. The `Handler` chain means no single object owns the request; each link either handles it or forwards it — the decision is made **incrementally** down the line. The `Invoker` to `Command` to `Receiver` path means the request itself is an object that can sit in a queue, a log, or an undo stack — the decision of **when** to run is separated from **what** to run. If you can point at which of these four is happening in a design review, you understand the pattern."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The catalog in one pass"
+    },
+    {
+      "type": "table",
+      "caption": "All ten behavioral patterns reduced to the problem each one owns.",
+      "headers": [
+        "Pattern",
+        "Problem it owns",
+        "Core move"
+      ],
+      "rows": [
+        [
+          "Chain of Responsibility",
+          "Multiple objects might handle a request, sender should not pick",
+          "Link handlers; each either handles or forwards"
+        ],
+        [
+          "Command",
+          "Requests must be queued, logged, retried, or undone",
+          "Turn invocation into an object with execute and undo"
+        ],
+        [
+          "Iterator",
+          "Traverse a collection without exposing storage",
+          "Separate cursor state from the collection"
+        ],
+        [
+          "Mediator",
+          "Many-to-many chatter between peers is unmanageable",
+          "Force all communication through one hub"
+        ],
+        [
+          "Memento",
+          "Restore prior state without breaking encapsulation",
+          "Snapshot opaque state; caretaker holds it"
+        ],
+        [
+          "Observer",
+          "One state change must update many dependents",
+          "Publisher notifies subscribed listeners"
+        ],
+        [
+          "State",
+          "Behavior must change as internal status changes",
+          "Delegate to a state object; transition swaps it"
+        ],
+        [
+          "Strategy",
+          "Multiple interchangeable algorithms for one task",
+          "Inject algorithm behind a common interface"
+        ],
+        [
+          "Template Method",
+          "Steps vary but overall sequence is fixed",
+          "Base class defines skeleton; subclasses fill hooks"
+        ],
+        [
+          "Visitor",
+          "Add operations to stable types without editing them",
+          "Double dispatch: element accepts visitor"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What you gain and what you pay, per move.",
+      "headers": [
+        "You gain",
+        "You pay",
+        "When the price is worth it"
+      ],
+      "rows": [
+        [
+          "Open-closed extension: add handlers, strategies, observers without editing callers",
+          "Class explosion: one concept becomes 5-10 small classes",
+          "When you add variants monthly, not once"
+        ],
+        [
+          "Runtime flexibility: swap, queue, undo, replay behavior",
+          "Indirection cost: stack traces and control flow get harder to follow",
+          "When behavior must change at runtime or survive restarts"
+        ],
+        [
+          "Loose coupling: senders do not depend on receivers concretely",
+          "Ordering and lifecycle risk: who fires first, who unsubscribes, who owns memory",
+          "When fan-out is large or subscriber set is dynamic"
+        ],
+        [
+          "Testability of each piece in isolation",
+          "Testability loss of the whole: emergent sequences are hard to assert",
+          "When unit boundaries matter more than end-to-end determinism"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The mistake is treating indirection as free. It is not. A `Strategy` with two implementations that never change is worse than an `if` — you doubled the files, split the logic across them, and forced the next reader to jump between them to understand a branch that fit on one screen. An `Observer` with three permanent listeners is worse than three direct calls — you added subscription management, notification order ambiguity, and re-entrancy risk for zero decoupling benefit. The senior signal is restraint: introduce the pattern at the seam where variation is proven, keep the interface narrow enough that adding a variant means adding one class and zero edits, and delete the abstraction if only one variant ever ships. Flexibility you never use is just obscurity."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Behavioral patterns fail at runtime, not at compile time, which is why they are dangerous when misapplied. The compiler is happy; the system deadlocks, leaks, replays twice, or notifies in the wrong order. `Observer` is the classic offender. A listener that mutates the subject during notification triggers re-entrant broadcasts, and if unsubscribe happens mid-iteration you get skipped listeners or concurrent modification failures. The symptom is non-deterministic UI or event behavior: works in tests with two listeners, flakes under load with twenty. `Chain of Responsibility` fails by silent drops — no handler claims the request and nobody logs it, so the symptom is a missing side effect with no error. `Command` fails by partial undo — `execute` succeeded across two systems but `undo` only reverses one, leaving inconsistent state after a retry. `State` fails by illegal transitions — an event arrives in a state that never expected it, the object ignores it, and the workflow stalls with no exception. `Mediator` fails by becoming a god object: every new interaction adds a method to the hub until it owns business logic that belongs in the participants, and every change risks every flow. `Memento` fails by memory — unbounded history snapshots retained by a caretaker that never evicts, visible as steadily growing heap tied to user session length."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Stale or duplicate reactions: observer fired twice after retry, or fired with old payload because notification carried mutable state by reference.",
+        "Lost requests: chain ends with no default handler and no metric, so dropped work is invisible until a customer reports it.",
+        "Undo asymmetry: redo stack diverges after a new command because history was not cleared, producing state no test covers.",
+        "State stall: logs show repeated events with no transition — the machine is in a terminal or unhandled state.",
+        "Mediator bottleneck: latency concentrates in one hub method and every feature flag touches the same file, causing merge conflicts and slow reviews."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes it concrete"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two patterns carry 80% of interview weight, so learn them cold. `Strategy` kills conditional sprawl. `Observer` kills manual fan-out. The code below is deliberately minimal — the point is the shape of the dependency, not the domain. Notice in both cases the caller depends on an interface, never on the concrete behavior, and the concrete behavior never calls back into the caller except through a narrow contract. That one-way knowledge is the entire benefit. If your implementation lets strategies reach into context internals, or lets observers mutate the publisher arbitrarily, you have reintroduced the coupling you claimed to remove."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "StrategyDemo.java",
+      "code": "interface DiscountStrategy {\n    long apply(long amountCents);\n}\n\nfinal class NoDiscount implements DiscountStrategy {\n    public long apply(long amountCents) { return amountCents; }\n}\n\nfinal class FlatPercentOff implements DiscountStrategy {\n    private final int percent;\n    FlatPercentOff(int percent) { this.percent = percent; }\n    public long apply(long amountCents) {\n        return amountCents * (100L - percent) / 100L;\n    }\n}\n\nfinal class PriceCalculator {\n    private final DiscountStrategy strategy;\n    PriceCalculator(DiscountStrategy strategy) { this.strategy = strategy; }\n    long total(long amountCents) { return strategy.apply(amountCents); }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this beats `if (type == FLAT) ... else if ...` is not aesthetics, it is change cost. Adding a new discount means adding one class and passing it in — `PriceCalculator` is never edited, never retested, never re-merged. The trade-off you must name: you now have N files instead of N branches, and construction moves to the composition site. If only two strategies will ever exist, keep the conditional. If marketing invents a new promotion every quarter, the interface pays for itself because each promotion can be reviewed, tested, and rolled out in isolation. In an interview, say that sentence explicitly — it proves you understand when abstraction earns its keep."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ObserverDemo.java",
+      "code": "import java.util.*;\n\ninterface PriceListener {\n    void onPrice(String symbol, long priceCents);\n}\n\nfinal class Ticker {\n    private final List<PriceListener> listeners = new ArrayList<>();\n    void subscribe(PriceListener l) { listeners.add(l); }\n    void unsubscribe(PriceListener l) { listeners.remove(l); }\n    void publish(String symbol, long priceCents) {\n        // Snapshot: a listener may unsubscribe during notification.\n        for (PriceListener l : List.copyOf(listeners)) {\n            l.onPrice(symbol, priceCents);\n        }\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "The three lines that matter are the snapshot copy in `publish`. Beginners iterate the live list and blow up the moment a listener unsubscribes or subscribes mid-broadcast. Production code also needs two decisions the snippet omits for brevity: push versus pull, and threading. Push — sending `symbol` and `price` — is simpler but forces every listener to accept your payload shape. Pull — sending only an event and letting listeners query — keeps the publisher stable but risks stale reads if state changes again before the listener queries. Threading is the harder trade-off: notifying synchronously preserves order but a slow listener blocks everyone; notifying asynchronously isolates latency but destroys ordering guarantees. Name this in the interview before the interviewer asks. It is the difference between junior recitation and senior judgment."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name and distinguish",
+          "text": "Expect: explain Strategy versus State versus Template Method in one minute each. The grader wants the discriminator, not the definition. Strategy is chosen by the client and never transitions on its own. State transitions itself on events. Template Method fixes the skeleton in a base class while Strategy composes the whole algorithm. Say the discriminator first."
+        },
+        {
+          "title": "Refactor the conditional",
+          "text": "Expect a method with a growing switch on type, channel, or plan. Do not leap to pattern names. First extract each branch to a common interface, inject it, and show the caller shrinking to one line. Then label it Strategy or Command as appropriate. Interviewers reward the mechanical refactoring over vocabulary."
+        },
+        {
+          "title": "Design the event flow",
+          "text": "Design notification, cache invalidation, or UI refresh. Start with direct calls, show why fan-out breaks — every new consumer edits the producer — then introduce Observer with explicit subscribe, unsubscribe, and ordering policy. State your threading and re-entrancy choice. That choice is the senior signal."
+        },
+        {
+          "title": "Walk the chain or the history",
+          "text": "Expect middleware pipelines, approval flows, or undo. For chains, define the handler contract, the forward-or-handle rule, and the terminal default that prevents silent drops. For undo, define Command with execute and undo plus a bounded history stack. Mention what happens on partial failure."
+        },
+        {
+          "title": "Defend the added classes",
+          "text": "The follow-up is always: is this over-engineering? Answer with a concrete threshold. Two stable variants favor conditionals. Three or more changing variants, runtime swapping, or independent testing favor the pattern. If you cannot name the threshold, you do not understand the trade-off."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Strategy and State are the same because the diagrams look alike. They are not. Strategy is client-selected and static per call; State is event-driven and transitions internally. If nothing ever calls `setState` from inside, it is Strategy.",
+        "Observer and publish-subscribe messaging are the same. Observer is in-process method calls with shared memory and ordering hazards; a message broker adds durability, routing, and process boundaries. Conflating them hides the failure modes.",
+        "Command is just a callback. A callback is a function pointer; a Command carries state, can be persisted, queued, retried, and undone. If you never store or reverse it, a plain function is simpler.",
+        "Template Method and Strategy are interchangeable. Template Method uses inheritance and fixes the skeleton; Strategy uses composition and swaps the whole algorithm. Prefer composition when steps vary independently.",
+        "More patterns means better design. Each behavioral pattern adds a registration point, a lifecycle, and an ordering question. Unused flexibility is a liability — it slows debugging and review.",
+        "Visitor is for traversal. Traversal is Iterator. Visitor is for adding operations to a stable type hierarchy without editing every class. If the hierarchy churns, Visitor punishes you because every new element type breaks every visitor."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Selection rules you can apply under time pressure.",
+      "headers": [
+        "Use it when",
+        "Avoid it when",
+        "Use this instead"
+      ],
+      "rows": [
+        [
+          "Algorithm varies per customer, plan, or channel and changes often",
+          "Two branches that have not changed in a year",
+          "Plain conditional or enum dispatch"
+        ],
+        [
+          "Multiple consumers must react to one state change",
+          "One permanent consumer",
+          "Direct call"
+        ],
+        [
+          "Requests need queueing, audit, retry, or undo",
+          "Fire-and-forget single call",
+          "Direct method call"
+        ],
+        [
+          "Peers chat in every direction and dependencies form a mesh",
+          "Two objects coordinating",
+          "Constructor-injected collaborator"
+        ],
+        [
+          "Workflow stage genuinely changes allowed behavior",
+          "Status flag only affects one branch",
+          "Boolean or enum check"
+        ],
+        [
+          "Operation must run across stable types without editing them",
+          "Type hierarchy changes frequently",
+          "Polymorphic method on the types themselves"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Behavioral patterns externalize decision and communication logic — swapping, notifying, chaining, or recording it — so new behavior can be added without editing existing callers, at the cost of extra classes and harder-to-trace runtime flow.** Say that, then prove it with Strategy versus `if-else` and Observer with snapshot iteration and an ordering policy."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:56:46.879Z",
+    "problems": []
+  }
+}

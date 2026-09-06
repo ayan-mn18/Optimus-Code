@@ -1,0 +1,272 @@
+{
+  "slug": "storage-and-retrieval",
+  "title": "Storage and Retrieval",
+  "summary": "Storage is how bytes are laid down for durability, retrieval is how you find them without scanning everything. Nail the access pattern first, then the trade-off is always write cost vs read cost vs space.",
+  "kind": "HLD",
+  "problemSlug": "storage-and-retrieval-92-184",
+  "topic": "Databases",
+  "difficulty": "Easy",
+  "coverEmoji": "💾",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "Storage-Engines",
+    "Indexing"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Memory (Encoding, Storage, Retrieval) - Noba Project",
+      "url": "https://nobaproject.com/modules/memory-encoding-storage-retrieval",
+      "source": "nobaproject.com",
+      "kind": "article"
+    },
+    {
+      "title": "Memory Stages: Encoding Storage and Retrieval - Simply Psychology",
+      "url": "https://www.simplypsychology.org/memory.html",
+      "source": "simplypsychology.org",
+      "kind": "article"
+    },
+    {
+      "title": "Memory: Neurobiological mechanisms and assessment - PMC - NIH",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8611531/",
+      "source": "pmc.ncbi.nlm.nih.gov",
+      "kind": "article"
+    },
+    {
+      "title": "How We Make Memories (Encoding, Storage and Retrieval Explained)",
+      "url": "https://www.youtube.com/watch?v=c3efThm4hP8",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Storage and retrieval are **not one problem**. Storage asks: how do I lay bytes down so they survive crashes and stay compact? Retrieval asks: how do I find one record out of billions **without scanning**? Every database decision is a trade-off between **write cheap, read fast, and store small — pick two**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Storage is the durable layout of records on disk and memory: pages, segments, sort order, compression, and the write-ahead log that makes crashes survivable. It decides write amplification (how many bytes you physically write per logical write), space amplification (how much extra disk you burn for versions, fragmentation, and indexes), and crash behavior. If you hand-wave this as \"persist to disk,\" you will miss why two databases with the same SQL can have 10x different write throughput and recovery time."
+    },
+    {
+      "type": "paragraph",
+      "text": "Retrieval is the read path that turns a predicate — `GET key`, `WHERE user_id = ?`, `WHERE ts BETWEEN a AND b` — into a bounded set of disk seeks and page reads. Without help, every read is `O(N)`: scan the whole table. With help — primary-key order, secondary index, partition pruning, block cache — a point lookup becomes `O(log N)` page reads or even `O(1)` cache hits, and a range scan touches only the partitions and files that can match. The trade-off: **every structure that makes retrieval fast makes storage bigger and writes slower**, because you must maintain it on every insert, update, and delete."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: write path and read path"
+    },
+    {
+      "type": "paragraph",
+      "text": "Think in two separate paths that only meet in persistent files. The write path is optimized for durability and sequential throughput: acknowledge fast, batch later. The client writes to a write-ahead log first so a crash loses nothing acknowledged, then to an in-memory structure — a B-tree buffer pool page or an LSM memtable. That in-memory write is what the client feels as latency, typically sub-millisecond. Flushing, merging, compacting, and splitting pages happen in the background. That is why writes look fast until compaction or checkpointing falls behind, then latency spikes and you learn the background work was never free."
+    },
+    {
+      "type": "mermaid",
+      "title": "Write path vs read path",
+      "caption": "Writes go through WAL and memory before disk files. Reads check cheapest locations first and use indexes to avoid scanning.",
+      "code": "flowchart TD\n  W[Client Write] --> WAL[Write-Ahead Log]\n  WAL --> MEM[MemTable / Buffer Pool]\n  MEM --> ACK[Acknowledge to Client]\n  MEM --> FLUSH[Flush / Checkpoint]\n  FLUSH --> FILES[Sorted Files / B-Tree Pages]\n  FILES --> MERGE[Compaction / Page Split-Merge]\n  R[Client Read] --> CACHE{Block Cache?}\n  CACHE -->|hit| RET[Return]\n  CACHE -->|miss| MEMQ[Check MemTable / Buffer]\n  MEMQ --> IDX[Index / Bloom Filter / Partition Pruning]\n  IDX --> FILES\n  FILES --> RET"
+    },
+    {
+      "type": "paragraph",
+      "text": "The read path is optimized for **skipping work**. Ideal order: 1) block/row cache, 2) in-memory deltas, 3) index to locate candidate pages, 4) read only those pages. A Bloom filter or partition manifest answers \"definitely not here\" without I/O. A primary-key B-tree walks down `log N` pages to the leaf. An LSM tree checks memtable, then L0 to Ln newest to oldest, merging versions. Why this order matters: disk seeks are 10,000x slower than memory hits, so a design that forces even one extra random read per query collapses at high QPS. The trade-off is explicit: caches and Bloom filters cost RAM for read speed, indexes cost write time and disk for seek avoidance, denormalization costs storage duplication for join avoidance."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "No layout wins everywhere. Each row is write cost vs read cost vs space.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "B-tree pages (update-in-place)",
+          "Fast point lookups and ordered range scans; no background merge storms; good for read-heavy OLTP",
+          "Random writes fragment pages and cause write amplification on splits; hot pages become lock contention"
+        ],
+        [
+          "LSM tree (append + merge)",
+          "Very high ingest rate with sequential writes; cheap inserts; good compression on merge",
+          "Reads may check multiple levels; compaction burns CPU and I/O and causes latency spikes; space amplification until merge"
+        ],
+        [
+          "Heap + secondary indexes",
+          "Flexible queries on many columns; fast writes to heap",
+          "Every secondary lookup is two hops: index then heap fetch; updates must maintain every index; vacuum and fragmentation overhead"
+        ],
+        [
+          "Row store vs columnar store",
+          "Row store wins point reads and OLTP writes; columnar wins analytic scans by reading only needed columns with heavy compression",
+          "Columnar is terrible for single-row updates; row store scans irrelevant columns and wastes I/O on analytics"
+        ],
+        [
+          "More indexes vs fewer indexes",
+          "Each well-chosen index turns a full scan into a few page reads; covering indexes avoid heap fetch entirely",
+          "Each index adds write amplification, storage, and vacuum cost; optimizer can pick the wrong one and add planning jitter"
+        ],
+        [
+          "Normalization vs denormalization",
+          "Normalization avoids duplication and update anomalies; small writes",
+          "Joins at read time; denormalization makes reads single-fetch but forces multi-place updates and risks inconsistency"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The rule I enforce: **no index without a named query**. An index is not \"performance,\" it is a prepaid read subsidy funded by every future write and every byte of disk. If you cannot point to the exact `WHERE` clause, sort order, and selectivity it serves, do not create it. That is why interviewers push you on access patterns first — the correct storage choice falls out of whether your workload is 95% point lookups by key, 80% recent time-range scans, or full-table analytics. Guess the pattern wrong and you optimize the wrong side of the write-vs-read trade-off."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Storage failures look like slowness, not errors. The classic is the missing-index full scan: data grows from 10k to 50M rows, a `WHERE email = ?` or `LIKE '%term%'` that was instant starts scanning gigabytes, p99 climbs from 20ms to 4 seconds, connection pool saturates, and the whole service queues behind one bad query plan. You will see it as rising disk read IOPS with low cache hit ratio, `seq_scan` counters exploding, and replicas lagging because long-running reads hold snapshots and block vacuum. The fix is not a bigger disk — it is bounding the read with an index, partition key, or search structure that matches the predicate."
+    },
+    {
+      "type": "paragraph",
+      "text": "Write-side failures look like stalls and bloat. Too many secondary indexes turns a 2ms insert into a 40ms transaction that updates five trees; bulk load that should do 20k rows/sec does 800. Unvacuumed updates or uncompacted LSM levels leave dead versions everywhere, so a table with 10GB of live rows occupies 80GB and every scan reads garbage. Hot partitions — all writes hashing to one key range or time bucket — create one huge file or page while others sit empty, so one node hits I/O limits while the cluster looks idle. Symptom checklist: WAL growth outpacing checkpoints, compaction debt rising, page-split rate spiking, dead-tuple ratio climbing, and p99 writes fine except for periodic 2-second freezes. Trade-off named again: you bought read flexibility or ingest speed and paid in background maintenance you did not provision."
+    },
+    {
+      "type": "list",
+      "items": [
+        "p99 reads suddenly 50-100x with high disk IOPS and `cache_hit_ratio < 0.95` on point lookups: you are scanning, not seeking. Check query plan for `Seq Scan` or wrong index.",
+        "Writes fast then freeze for seconds, WAL disk fills, compaction queue grows: LSM compaction or B-tree checkpoint cannot keep up with ingest. Throttle writes, add I/O headroom, or reduce index count.",
+        "Table size 5-8x live data size and range scans degrade weekly: dead versions not reclaimed. Look for long transactions blocking vacuum, or `tombstone` buildup with no merge.",
+        "One partition or node at 90% CPU/IOPS while others idle: hot key or time-range partition. You chose a partition key with low cardinality or monotonic inserts without sharding.",
+        "Replica lag grows only during analytics: long OLAP scans contend with OLTP reads and hold resources. Trade-off violated — you mixed two retrieval patterns on one layout without isolation."
+      ]
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "schema.sql",
+      "code": "CREATE TABLE users (\n  user_id   BIGINT PRIMARY KEY,  -- clustered: point GET is O(log N) page walk\n  email     TEXT NOT NULL,\n  country   TEXT NOT NULL,\n  created_at TIMESTAMPTZ NOT NULL\n);\n\n-- Serves: SELECT * FROM users WHERE email = ?\n-- Cost: one extra tree to maintain on every INSERT/UPDATE of email.\nCREATE UNIQUE INDEX idx_users_email ON users(email);\n\n-- Serves: recent signups by country, newest first, without sorting.\n-- Why composite order matters: equality col first, range/sort col second.\nCREATE INDEX idx_users_country_created ON users(country, created_at DESC);\n\n-- Anti-pattern: this can never use a B-tree efficiently.\n-- SELECT * FROM users WHERE email LIKE '%gmail%'; -- leading wildcard => full scan\n-- Fix the retrieval mechanism, not the hardware: trigram/GIN index or external search index."
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the SQL above as a contract about reads, not just schema. The primary key says your dominant retrieval is `GET user_id` and it will stay bounded as data grows. `idx_users_email` says you have a second high-selectivity point lookup you are willing to pay for on every write — unique checks are especially expensive because inserts must probe before writing. `idx_users_country_created` says you need ordered range scans that return in index order with no sort step, which is why column order is `country` then `created_at DESC` and not the reverse. The commented-out `LIKE '%...%'` is the interview trap: no B-tree saves a leading wildcard, so claiming \"add an index\" exposes that you do not know how retrieval actually prunes pages. Name the mechanism every time: seek, scan, or separate search structure."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Force the access patterns out first",
+          "text": "Do not discuss engine choice until you list reads vs writes, QPS per pattern, point vs range vs full-scan, and latency targets. Say: \"If reads are by key I want clustered order; if reads are by time range I want time partitioning; if reads are ad-hoc filters I need to bound which ones must be fast.\" Interviewers score this higher than naming engines."
+        },
+        {
+          "title": "Size the data and the growth",
+          "text": "Estimate total bytes, row count, index overhead (assume 1.5-3x with indexes), retention, and 12-month growth. This decides single node vs partitioned, and whether background merge cost matters. State the trade-off: keeping all history in the hot store buys simple retrieval and pays everyday storage and scan cost."
+        },
+        {
+          "title": "Pick layout from workload, not fashion",
+          "text": "OLTP point lookups and small writes -> row store with B-tree. High-ingest event log with key lookups -> LSM. Large scans over few columns -> columnar. Justify with write amplification vs read amplification numbers, even rough ones, not brand names."
+        },
+        {
+          "title": "Design indexes to bound every hot read",
+          "text": "For each top-5 query, show which index serves it, column order, and whether it is covering. Explicitly reject indexes for cold queries: \"That admin filter scans monthly, it does not get an index because the write tax hits 10M inserts a day.\" That sentence wins points."
+        },
+        {
+          "title": "Prove failure modes and observability",
+          "text": "Close with: how you detect a full scan (slow query log, plan counters), how you survive hot partitions (hash + time composite key, split), and how deletes/updates are reclaimed (vacuum/compaction lag alerts, tombstone TTL). Easy-level candidates skip this; hired candidates do not."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "\"Indexes always make things faster\" — they make *selected reads* faster and *all writes* slower. Five indexes can cut ingest by 5-10x and double disk. Measure write amplification, do not assume.",
+        "\"Storage is just disk\" — layout decides performance. Same rows as heap, B-tree, LSM, or columnar give completely different p99 for the same query because page locality and merge cost differ.",
+        "\"A primary key is just uniqueness\" — in most engines it is the physical clustering order. Choosing `PRIMARY KEY (uuid)` vs `(user_id, created_at)` decides which scans are sequential and which are random I/O.",
+        "\"Caching fixes storage design\" — cache only helps repeat reads with locality. A full scan over 500GB with a 10GB cache still hits disk; a missing index cannot be cached away.",
+        "\"Delete frees space immediately\" — updates and deletes usually leave dead versions or tombstones until vacuum/compaction. Space and read speed recover later, not on commit, and long transactions delay it further.",
+        "\"One database handles OLTP and OLAP equally\" — point-lookup layout and scan layout pull opposite ways on page format and compression. Mixing them without isolation gives you bad writes *and* bad scans."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Match the storage and retrieval mechanism to the dominant read shape.",
+      "headers": [
+        "Pattern",
+        "Use when",
+        "Avoid when"
+      ],
+      "rows": [
+        [
+          "B-tree clustered by key",
+          "Dominant reads are point GETs and short ordered ranges; updates are small and frequent",
+          "Ingest is append-only at 100k+ rows/sec sustained; random inserts will fragment and stall"
+        ],
+        [
+          "LSM with leveled merge",
+          "Write-heavy event, log, or time-series ingest with key lookups; you can tolerate compaction work",
+          "Workload needs low-latency consistent range scans over old data without tuning compaction debt"
+        ],
+        [
+          "Secondary B-tree index",
+          "High-selectivity filter (`=`, `IN`, prefix `LIKE 'abc%'`) on a hot query; sort can come from index order",
+          "Low-selectivity flag (`status`, boolean) or leading-wildcard search; you will pay write tax for no pruning"
+        ],
+        [
+          "Partition by time or hash",
+          "Reads prune to recent window or single tenant; retention drops whole partitions cheaply",
+          "Queries routinely cross all partitions with no prune key; you turn one scan into N parallel scans"
+        ],
+        [
+          "Columnar + compression",
+          "Analytics scan billions of rows but touch 2-3 columns with aggregations",
+          "Single-row transactional reads/writes; row reconstruction cost dominates and updates are painful"
+        ],
+        [
+          "External search index",
+          "Full-text, fuzzy, faceted retrieval with ranking (`CONTAINS`, `%term%`, autocomplete)",
+          "Exact predicates already served by B-tree; dual-write consistency and lag add failure modes you do not need"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "\"Storage lays bytes for durability and write throughput, retrieval uses ordering, partitioning, and indexes to bound reads to a few pages — so I design from the top queries down, and every index I add I justify by the scan it eliminates versus the write and space tax it imposes.\""
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:22:54.981Z",
+    "problems": []
+  }
+}

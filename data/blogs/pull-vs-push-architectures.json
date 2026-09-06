@@ -1,0 +1,294 @@
+{
+  "slug": "pull-vs-push-architectures",
+  "title": "Pull vs Push Architectures",
+  "summary": "Pull keeps servers stateless by making clients pay in delay and wasted polls. Push buys freshness by making servers pay in connection state, delivery tracking, and failure modes. Choose who suffers.",
+  "kind": "HLD",
+  "problemSlug": "pull-vs-push-architectures-91-202",
+  "topic": "System Design Tradeoffs",
+  "difficulty": "Medium",
+  "coverEmoji": "🔄",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "System Design Tradeoffs",
+    "Push vs Pull",
+    "WebSockets"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Push vs Pull API Architecture - DEV Community",
+      "url": "https://dev.to/anubhavitis/push-vs-pull-api-architecture-1djo",
+      "source": "dev.to",
+      "kind": "article"
+    },
+    {
+      "title": "Pull vs Push API Architecture - System Design - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/pull-vs-push-api-architecture-system-design/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Thoughts on Push vs Pull Architectures | by Jeff Poole - Medium",
+      "url": "https://medium.com/@_JeffPoole/thoughts-on-push-vs-pull-architectures-666f1eab20c2",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Easily explained: Differences between Push and Pull APIs - adenin Blog",
+      "url": "https://blog.adenin.com/push-vs-pull-api/",
+      "source": "blog.adenin.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Pull means the client owns freshness. Push means the server owns freshness.** Every other difference — latency, cost, complexity, failure mode — falls out of that ownership shift. Default to pull. You must earn push by proving the delay or wasted work of polling actually hurts."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "In **pull**, the client initiates every transfer. It asks `do you have anything new since X?` and the server answers from current state and forgets the interaction. The server holds no per-client cursor, no open socket, no memory of who asked last. HTTP REST reads, short polling on an interval, and long-polling where the server holds the request open for 20-30 seconds are all pull: the client is still the one that started it, and if the client goes away nothing leaks except a timed-out request."
+    },
+    {
+      "type": "paragraph",
+      "text": "In **push**, the server initiates the transfer over a channel the client previously subscribed to. WebSockets, Server-Sent Events, HTTP streaming, Webhooks, mobile push gateways, and fan-out through a broker like Kafka or Redis Pub/Sub are all push: once subscribed, the client gets bytes without asking again. That requires the server — or something next to it — to remember *who subscribed to what, on which connection, and what has been delivered*. That subscription registry is the entire cost center of push."
+    },
+    {
+      "type": "paragraph",
+      "text": "The distinction is not about speed or protocol. It is about **where state lives and who pays when nothing changed**. With pull, 10,000 idle clients polling every 10 seconds cost you ~1,000 QPS of `nothing new` responses, but zero memory between requests. With push, 10,000 idle clients cost you 10,000 open connections plus heartbeat, reconnect, and backlog logic, but zero QPS while idle. Pick your poison: pay per check, or pay per subscriber. There is no design that pays neither."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Pull is stateless request-response plus a client-side clock. The client stores a high-water mark — `since_id`, `last_seen_ts`, ETag — and advances it on each response. Correctness comes from the mark, not the interval. Shorten the interval and you trade QPS for freshness linearly. Long-polling bends this slightly: the server delays the response until an event arrives or a timeout fires, which cuts empty responses but still ties up one thread or async slot per waiting client. You have not eliminated polling; you have just made each poll expensive to hold."
+    },
+    {
+      "type": "mermaid",
+      "title": "Pull vs push control flow",
+      "caption": "Pull pays per check. Push pays per subscriber.",
+      "code": "flowchart TD\n  A[Client timer fires] --> B[GET /updates?since=ts]\n  B --> C{Server: anything new?}\n  C -->|No| D[200 empty]\n  C -->|Yes| E[200 with data + new cursor]\n  F[Server event occurs] --> G[Lookup subscription registry]\n  G --> H[Fan-out on open socket / webhook POST]\n  H --> I[Client receives without asking]"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Short poll `GET /feed?since=X` every N seconds:** simplest, stateless, cacheable. Freshness is at worst `N` plus jitter. Cost scales with clients × frequency, not events.",
+        "**Long-poll `GET /wait?timeout=30s`:** server parks the request until data or timeout. Cuts empty traffic 10-50x but holds connections and breaks badly behind default load-balancer timeouts.",
+        "**Server-Sent Events / chunked HTTP:** one long-lived `GET` where the server writes `data:` frames. Unidirectional, auto-reconnects, works through plain HTTP. Ideal for tickers and logs.",
+        "**WebSocket / persistent bidirectional:** full-duplex frame socket after an HTTP upgrade. Required when the client also streams up frequently — chat typing, multiplayer, collaborative editing.",
+        "**Webhooks / broker push:** server calls *you* with `POST /events` per occurrence, or publishes to a topic you consume. Decouples producer from consumer but forces you to solve retries, ordering, and dedup."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Push only works if three pieces exist beyond the socket: a **registry** of what each connection wants, a **delivery log** so a reconnecting client can catch up without loss or duplicates, and a **liveness detector** so dead connections are reaped. Miss any one and you get the classic push bugs: subscribed but silent, reconnect storms that replay hours of history, or ghost connections that consume file descriptors forever. That is why push designs almost always drag in a broker, a presence service, and per-message IDs — not because engineers love infrastructure, but because at-least-once delivery over an unreliable network cannot be done with a bare socket."
+    },
+    {
+      "type": "table",
+      "caption": "Same workload, opposite cost center. Pick which bill you want.",
+      "headers": [
+        "Dimension",
+        "Pull",
+        "Push"
+      ],
+      "rows": [
+        [
+          "Freshness",
+          "Bounded by poll interval. 1s freshness = 1s poll storm. You buy latency with QPS.",
+          "Near-instant on a healthy connection. You buy latency with held state."
+        ],
+        [
+          "Idle cost",
+          "High QPS, near-zero memory. 98% of polls can be empty and you still pay CPU, TLS, and logs.",
+          "Near-zero QPS, high memory and sockets. 1M idle sockets is a connection-tracking and heartbeat problem."
+        ],
+        [
+          "Server state",
+          "Stateless. Any replica can answer any poll. Horizontal scale is trivial.",
+          "Stateful. You need sticky routing or a shared registry plus pub/sub to reach the right connection."
+        ],
+        [
+          "Client complexity",
+          "Simple: timer + cursor + backoff. Works everywhere, retries are idempotent reads.",
+          "Hard: reconnect, resync, dedup, ordering, backpressure. Every client becomes a state machine."
+        ],
+        [
+          "Caching",
+          "Excellent. `GET` with ETag or `since` is CDN and reverse-proxy friendly.",
+          "Poor. Each stream is personalized and bypasses HTTP caches entirely."
+        ],
+        [
+          "Failure blast radius",
+          "Isolated. One slow poll does not affect others.",
+          "Correlated. One hot publisher or one broken fan-out node delays every subscriber at once."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Pull fails by **overload and staleness**. The symptom is a sawtooth: p99 poll latency climbs, the database read replica saturates with identical `nothing changed` queries, clients time out and retry more aggressively, which adds more load — a retry storm. You will see it as rising `5xx` on a trivial read endpoint and a cache hit ratio that collapses because every poll carries a distinct `since` timestamp. The second pull failure is silent staleness: a client with a stuck cursor or a clock skew replays the same window forever, and nobody notices because `200 empty` looks healthy."
+    },
+    {
+      "type": "paragraph",
+      "text": "Push fails by **state leak and redelivery**. The symptom is different: file-descriptor exhaustion, heartbeat timeouts, and a fan-out lag that grows without a corresponding QPS spike. Dead phones hold ghost subscriptions, a deploy drops 200k sockets at once and they all reconnect in the same second, and your broker replays backlog to clients that already saw it. You will see it as `fanout_lag_seconds` climbing, duplicate webhook deliveries spiking, and consumers complaining about out-of-order events. Worse, push loses data quietly: if you fire-and-forget on an open socket with no ack and no sequence numbers, a single TCP reset deletes events with no error on either side."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`poll_QPS >> event_QPS` by 50x or more → you are burning fleet to return empty arrays. Move to long-poll, SSE, or a coarser interval with jitter.",
+        "`fanout_lag` growing while CPU is flat → your bottleneck is per-subscriber delivery or a hot partition, not compute. Shard by topic, add backpressure, drop to sampled updates.",
+        "Reconnect spikes after every deploy → you lack connection draining, jittered backoff, and a resume cursor. Clients must send `last_event_id` and the server must retain a bounded replay buffer.",
+        "Duplicate side effects from webhooks → you treated delivery as exactly-once. It is at-least-once. Enforce idempotency keys and return `200` before doing work, not after.",
+        "One slow consumer stalls everyone → you used a single shared buffer with head-of-line blocking. Isolate queues per subscriber class and shed load by degrading freshness, not by queuing forever."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Push without a cursor is data loss",
+      "text": "If the client cannot say *resume from sequence 8421* and the server cannot replay from 8422, you do not have a push system. You have UDP with extra steps. Every serious push design needs monotonic IDs plus a short retention window — otherwise a 5-second network blip becomes permanent silent loss."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code where it clarifies"
+    },
+    {
+      "type": "paragraph",
+      "text": "The difference is five lines of client logic versus a server-side registry. Pull is a loop with a cursor and exponential backoff plus jitter. Push is a subscription table with heartbeats and replay. If you cannot sketch both, you do not understand the trade-off. Notice where retries are safe: re-issuing a pull `GET` is harmless; re-delivering a push `POST` must be idempotent."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "pull_vs_push.py",
+      "code": "import time, random\n\n# PULL: client owns the clock. Server stays stateless.\n# Trade-off: simple, but QPS scales with clients, not events.\ndef pull_loop(fetch, cursor=None):\n    backoff = 1.0\n    while True:\n        items, cursor = fetch(since=cursor)  # idempotent GET\n        if items:\n            backoff = 1.0\n            process(items)\n        else:\n            time.sleep(backoff + random.uniform(0, 0.5))\n            backoff = min(backoff * 2, 30.0)  # jittered backoff sheds load\n\n# PUSH: server owns delivery. Must track subscriptions + resume point.\n# Trade-off: instant, but server holds state per subscriber.\nsubscriptions: dict[str, dict] = {}  # conn_id -> {filter, last_id, alive_ts}\nRETAIN = 1000  # bounded replay buffer; older than this = resync from snapshot\nlog: list[tuple[int, object]] = []\n\ndef on_subscribe(conn_id, filter_, last_seen_id):\n    subscriptions[conn_id] = {\"filter\": filter_, \"last_id\": last_seen_id, \"alive_ts\": time.time()}\n    replay(conn_id, since=last_seen_id)  # catch-up or snapshot if too far behind\n\ndef on_event(event, seq):\n    log.append((seq, event))\n    del log[:-RETAIN]  # bound memory: trade completeness for survival\n    for cid, sub in list(subscriptions.items()):\n        if matches(sub[\"filter\"], event):\n            deliver_at_least_once(cid, seq, event)  # receiver must dedup by seq"
+    },
+    {
+      "type": "paragraph",
+      "text": "In configuration terms the same split appears. Pull scales by caching and rate-limiting the readers: short TTLs, `Cache-Control: max-age=5, stale-while-revalidate`, and per-key limits that return `429` with `Retry-After`. Push scales by protecting the fan-out tier: connection draining on deploy, per-topic shards, max-subscribers-per-node, and a dead-letter queue for webhooks that fail after N retries with exponential backoff. If your design review does not name the backpressure policy — drop oldest, conflate to latest value, or disconnect the slowest 1% — the push tier will eventually hold unbounded backlog and OOM."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with pull, quantify the waste",
+          "text": "Say: 1M clients polling every 5s is 200k RPS of mostly-empty reads. If events are rare — order status, build completion, new comment — that ratio kills pull. Show the math before proposing sockets. Interviewers reward arithmetic over buzzwords."
+        },
+        {
+          "title": "Name the freshness SLA explicitly",
+          "text": "Ask: is 30 seconds stale acceptable? If yes, pull with caching wins and the discussion is over. If the requirement is sub-second — chat, live score, collaborative cursor — pull cannot meet it without absurd QPS, so push is justified. Tie the choice to a number."
+        },
+        {
+          "title": "Draw the state you are adding",
+          "text": "When you switch to push, draw the registry, the replay log, and the heartbeat path. Explain sticky vs broadcast: either route events to the node holding the socket, or publish to every node and let each filter locally. The former is efficient but needs discovery; the latter is simple but wastes cross-node traffic."
+        },
+        {
+          "title": "Solve reconnect and ordering on the whiteboard",
+          "text": "Propose sequence IDs, a bounded replay buffer, and idempotent consumers. State the delivery semantic out loud: at-least-once with dedup. Anyone promising exactly-once over push without a transaction log is hand-waving — call it out."
+        },
+        {
+          "title": "Close with a hybrid, not a religion",
+          "text": "Strong answers end hybrid: push for the signal, pull for recovery. Example: send a lightweight invalidation over SSE or WebSocket, then let the client `GET` the full payload. You get push freshness with pull debuggability, cacheability, and safe retries. That is what most production notification and feed systems actually do."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Push is always faster.** No — it is earlier, not faster. First-byte latency after an event is lower, but throughput per connection is often worse due to framing, heartbeats, and head-of-line blocking. Bulk sync still belongs on pull.",
+        "**Polling is amateur.** Short polling with ETags, deltas, and backoff serves staggering scale precisely because it is stateless and CDN-friendly. Dismissing it signals inexperience, not sophistication.",
+        "**WebSockets remove the need for polling.** They remove the timer but add presence, sharding, draining, and replay. You traded client simplicity for server state — name that trade or lose points.",
+        "**Webhooks are fire-and-forget.** They are at-least-once distributed writes over the public internet. Without retries, HMAC signatures, idempotency keys, and a dead-letter queue, billing or provisioning events will silently vanish.",
+        "**Long-polling is a cheap push.** It holds a server slot per waiter for up to 30s, breaks under default proxy timeouts, and still reconnects in a thundering herd. Treat it as a bridge for clients that cannot hold sockets, not as free real-time."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "If the row does not match, do not force the pattern.",
+      "headers": [
+        "Use case",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Feed, search, product pages, config fetch",
+          "Pull",
+          "Reads dominate, staleness of seconds is fine, and CDN caching absorbs the fleet. Stateless scale beats freshness."
+        ],
+        [
+          "Chat, multiplayer, live collaboration, tickers",
+          "Push (socket / SSE)",
+          "Sub-second freshness is the product. Poll QPS to match it would melt the API tier."
+        ],
+        [
+          "Server-to-server event triggers (payment succeeded, build done)",
+          "Push via webhooks + pull for payload",
+          "Push the tiny notification, pull the authoritative object. Retries stay safe and idempotent."
+        ],
+        [
+          "Mobile alerts to offline devices",
+          "Push via gateway, pull on open",
+          "You cannot poll while asleep. Push wakes the device; the app then pulls full state to repair gaps."
+        ],
+        [
+          "Rare events to a huge idle audience",
+          "Push or long-poll",
+          "Poll waste approaches 100%. Holding 1M idle sockets is cheaper than answering 200k empty QPS forever."
+        ],
+        [
+          "Regulated or auditable reads",
+          "Pull",
+          "Every pull is a logged, replayable, cacheable request. Push streams are harder to audit and version."
+        ]
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Use pull unless proven otherwise; switch to push only when a freshness SLA forces you to trade stateless scale for per-subscriber state — and then ship push-as-invalidation plus pull-for-recovery, with cursors, replay, and idempotent delivery.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:32:15.729Z",
+    "problems": []
+  }
+}

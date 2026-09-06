@@ -1,0 +1,379 @@
+{
+  "slug": "http-methods-and-status-codes",
+  "title": "HTTP methods and Status Codes",
+  "summary": "HTTP methods declare intent and status codes declare outcome. Get idempotency, safety, and the 2xx/4xx/5xx contract right and caches, retries, and clients behave without reading your body.",
+  "kind": "HLD",
+  "problemSlug": "http-methods-and-status-codes-93-185",
+  "topic": "Application Programming Interface (API)",
+  "difficulty": "Easy",
+  "coverEmoji": "🌐",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "API",
+    "HTTP",
+    "REST"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "List of HTTP status codes - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/List_of_HTTP_status_codes",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "HTTP Status Codes for CRUD APIs: A 2026 Practitioner Guide | Moesif Blog",
+      "url": "https://www.moesif.com/blog/technical/api-design/Which-HTTP-Status-Code-To-Use-For-Every-CRUD-App/",
+      "source": "moesif.com",
+      "kind": "article"
+    },
+    {
+      "title": "HTTP response status codes - MDN Web Docs - Mozilla",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status",
+      "source": "developer.mozilla.org",
+      "kind": "article"
+    },
+    {
+      "title": "HTTP Status Codes explained",
+      "url": "https://http.dev/status",
+      "source": "http.dev",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Methods are **intent**, status codes are **outcome**. Clients, proxies, caches, load balancers, and retry loops act on that pair *without reading your body*. If you return `200 OK` with `{\"error\": \"not found\"}` inside, you lied at the protocol layer and every layer above you will misbehave."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "An HTTP interaction is a verb plus a result. The **method** (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS`) tells the server and every intermediary what kind of operation the client wants and what guarantees to assume about safety and repeatability. The **status code** is a three-digit number where the first digit is the contract — `1xx` keep waiting, `2xx` it worked, `3xx` look elsewhere, `4xx` you sent garbage, `5xx` I failed on a valid request — and the next two digits narrow the reason. The reason phrase (`Not Found`, `Internal Server Error`) is for humans. The number is for machines. That distinction is the whole game in high-level design: you are designing a machine-readable contract, not a message."
+    },
+    {
+      "type": "paragraph",
+      "text": "For API design this means two separate promises. The method promises semantics: is this read-only, is repeating it safe, can a cache store it, can a retry replay it? The status promises responsibility: who must change behavior to make progress? `4xx` means resending the identical request is pointless — the client must fix auth, input, or addressing. `5xx` means the identical request may succeed later — the client should back off and retry. Conflate those and you get retry storms on bad input, poisoned caches, and clients that have to parse JSON to decide what happened. A clean API can be understood from method + path + status alone."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Methods are the intent contract"
+    },
+    {
+      "type": "table",
+      "caption": "The methods you will actually defend in a design review.",
+      "headers": [
+        "Method",
+        "Safe?",
+        "Idempotent?",
+        "Use for"
+      ],
+      "rows": [
+        [
+          "GET",
+          "Yes",
+          "Yes",
+          "Read one resource or list. No side effects. Cacheable by default."
+        ],
+        [
+          "HEAD",
+          "Yes",
+          "Yes",
+          "Same as GET but headers only. Health checks, existence probes, size checks."
+        ],
+        [
+          "OPTIONS",
+          "Yes",
+          "Yes",
+          "Discovery: CORS preflight, what methods this endpoint allows."
+        ],
+        [
+          "POST",
+          "No",
+          "No",
+          "Create subordinate resource, trigger action, append. Server assigns identity."
+        ],
+        [
+          "PUT",
+          "No",
+          "Yes",
+          "Full replace at a client-chosen URL. Create-or-replace with same outcome on retry."
+        ],
+        [
+          "PATCH",
+          "No",
+          "No*",
+          "Partial update. Repeat may not be identical unless made conditional."
+        ],
+        [
+          "DELETE",
+          "No",
+          "Yes",
+          "Remove resource. Second delete returns 404 or 204, state does not change further."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Two properties do all the heavy lifting: **safe** means no state change, so intermediaries can cache, prefetch, and replay it freely. **Idempotent** means repeating the request N times has the same server-side effect as doing it once, so it is retryable over an unreliable network. That is *why* `GET`, `PUT`, and `DELETE` are retry-friendly and `POST` is not. The trade-off is expressiveness versus safety: `POST` can do anything, which is exactly why caches ignore it and retry logic must treat it as dangerous. If you tunnel deletes through `POST /deleteUser` for convenience, you throw away idempotency signals, cache correctness, and automatic redirect handling. Choose the boring standard method. The ecosystem rewards you for it and punishes cleverness."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How a request becomes a status"
+    },
+    {
+      "type": "mermaid",
+      "title": "From method to status",
+      "caption": "Each hop acts on method + status, not the body.",
+      "code": "flowchart TD\n  C[Client sends Method + Path + Headers] --> G[Gateway: rate limit, auth, routing]\n  G --> S[Service: validate, authorize, execute]\n  S --> O{Outcome}\n  O -->|Success| OK[2xx + representation + cache directives]\n  O -->|Moved| RD[3xx + Location header]\n  O -->|Client fault| CE[4xx + machine-readable error code]\n  O -->|Server fault| SE[5xx + Retry-After if transient]\n  CE --> FIX[Client fixes request, no blind retry]\n  SE --> RETRY[Client backs off and retries if idempotent]\n  OK --> CACHE[Cache stores only safe methods]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The path through the system is deliberately layered. The edge — CDN, load balancer, gateway — enforces coarse policy before your code runs: is the caller over quota, is the token missing, is the route valid? Those become `429`, `401`, `404` without touching business logic. Your service then decides the finer split: validation failure is `400`, well-formed but semantically rejected is `422`, authenticated but forbidden is `403`, missing row is `404`, version conflict is `409` or `412`. Only if the request was valid and you failed anyway do you earn a `5xx`. The reason this layering matters is observability and control: edges can meter and shed `4xx` cheaply, while `5xx` must page someone. If your service returns `200` for every error, you blind every dashboard, autoscaler, and cache between you and the client."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Status codes: the five classes"
+    },
+    {
+      "type": "table",
+      "caption": "You need ~15 codes cold. Everything else is lookup.",
+      "headers": [
+        "Class",
+        "Meaning",
+        "Codes to know"
+      ],
+      "rows": [
+        [
+          "2xx Success",
+          "Request did what was asked",
+          "`200` read/update OK, `201` created + `Location`, `202` accepted async, `204` success with no body"
+        ],
+        [
+          "3xx Redirection",
+          "Act elsewhere",
+          "`301` permanent move, `302/303` temporary + GET, `304` not modified, `307/308` preserve method"
+        ],
+        [
+          "4xx Client error",
+          "Fix the request, do not blind-retry",
+          "`400` bad syntax, `401` unauthenticated, `403` forbidden, `404` absent, `409` conflict, `422` semantic error, `429` throttled"
+        ],
+        [
+          "5xx Server error",
+          "Valid request, server failed",
+          "`500` unexpected, `502` bad gateway, `503` unavailable + `Retry-After`, `504` gateway timeout"
+        ],
+        [
+          "1xx Informational",
+          "Plumbing, not API logic",
+          "`100` continue large upload, `101` switch to websocket, `103` early hints for preload"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not memorise 70 codes. Memorise the class contract plus the dozen that control client behavior differently. `201` versus `200` tells a client whether to follow `Location` to the new resource. `204` tells it there is deliberately no body to parse. `304` saves a full re-download. `401` triggers a token refresh, `403` does not — retrying a `403` with the same token is a loop. `404` versus `410` is intent: temporarily missing versus deliberately gone forever. `429` and `503` carry `Retry-After` and mean *back off*; `500` means *something broke, retry cautiously*. The specific number inside the class is an optimisation. Getting the first digit wrong is a correctness bug."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs: why this design helps and hurts"
+    },
+    {
+      "type": "table",
+      "caption": "Every precise choice costs something.",
+      "headers": [
+        "Choice",
+        "Benefit",
+        "Cost"
+      ],
+      "rows": [
+        [
+          "Precise statuses + `application/problem+json` body",
+          "Clients branch without string-matching; caches and monitors work automatically",
+          "You must define and maintain a stable error schema and document every code per endpoint"
+        ],
+        [
+          "Always `200` with error in body",
+          "One code path for naive clients; easy to prototype",
+          "Breaks caching, retries, CDNs, search indexing, and alerting. Every consumer hand-rolls logic. Do not do this."
+        ],
+        [
+          "PUT for create with client ID",
+          "Natural idempotency: retries safe, no duplicates",
+          "Client must generate unique IDs and handle create-vs-replace semantics"
+        ],
+        [
+          "POST for create with server ID",
+          "Simple client, server owns identity and validation",
+          "Not idempotent by default; needs idempotency keys to allow safe retry"
+        ],
+        [
+          "Fine-grained codes (404 vs 410, 401 vs 403, 429 vs 503)",
+          "Correct retry, auth refresh, and cache eviction without docs-diving",
+          "More surface to get wrong; requires discipline in gateway vs service ownership"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is **lying with `200`**. A login failure returns `200` with `{\"status\": \"fail\"}`, a maintenance page returns `200` with HTML saying *down for maintenance*. The symptom you see: caches store the error for hours, uptime monitors report green while users cannot log in, and search engines index your outage text. The fix is blunt — error text with `200` is always wrong. The second failure is **auth confusion**: returning `403` when the token expired, or `401` when the user is simply not allowed. Symptom: mobile clients spin refreshing tokens forever on a `403`, or show a login screen for a permission problem that login will never fix. `401` means *who are you — authenticate*; `403` means *I know who you are — answer is no*. The third is **redirect and retry misuse**: a permanent move served as `302` keeps traffic and ranking on the dead URL forever, and a `POST` redirect via `301` gets silently rewritten to `GET` by old clients, dropping the body. Use `308` when method and body must survive. The fourth is **throttling without signals**: rejecting over-quota traffic with `403` or `500` instead of `429` plus `Retry-After`. Symptom: well-behaved SDKs cannot back off, so they hammer you harder and turn a quota event into an outage."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Symptom: cache serves stale error page → you returned `200` or `301` where `4xx/5xx/307` belonged, or forgot `Cache-Control: no-store` on errors.",
+        "Symptom: duplicate orders/users on retry → creation was `POST` with no idempotency key; should have been `PUT` or `POST` + `Idempotency-Key`.",
+        "Symptom: background jobs retry validation errors forever → you returned `500` for bad input; must be `400/422` so queues dead-letter instead of retrying.",
+        "Symptom: clients poll an async job with GET and get `200` with half-baked data → should be `202 Accepted` on submit, then `200` when done or `303` to result URL.",
+        "Symptom: large uploads fail after 30s of bytes → you skipped `100 Continue` / signed-URL pattern and force clients to send bodies you will reject."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Example: what correct looks like"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "api.py",
+      "code": "from flask import Flask, request, jsonify, make_response\napp = Flask(__name__)\nORDERS = {}\n\n@app.post(\"/orders\")\n def create_order():\n    data = request.get_json(silent=True) or {}\n    if \"sku\" not in data:\n        # 400: client must fix payload. Include machine-readable code.\n        return jsonify({\"type\": \"missing-field\", \"field\": \"sku\"}), 400\n    key = request.headers.get(\"Idempotency-Key\")\n    if key and key in ORDERS:\n        return jsonify(ORDERS[key]), 200  # replayed POST: no duplicate\n    oid = f\"ord_{len(ORDERS)+1}\"\n    ORDERS[key or oid] = {\"id\": oid, **data}\n    resp = make_response(jsonify(ORDERS[key or oid]), 201)\n    resp.headers[\"Location\"] = f\"/orders/{oid}\"  # 201 must say where\n    return resp\n\n@app.get(\"/orders/<oid>\")\n def get_order(oid):\n    order = next((o for o in ORDERS.values() if o[\"id\"] == oid), None)\n    if order is None:\n        return jsonify({\"type\": \"not-found\", \"id\": oid}), 404\n    return jsonify(order), 200\n\n@app.delete(\"/orders/<oid>\")\n def delete_order(oid):\n    target = next((k for k, o in ORDERS.items() if o[\"id\"] == oid), None)\n    if target is None:\n        return \"\", 404  # repeatable: deleting absent resource is still 404/204\n    del ORDERS[target]\n    return \"\", 204  # success, deliberately no body"
+    },
+    {
+      "type": "paragraph",
+      "text": "Note what the code is buying. `201` plus `Location` means the client does not guess the new URL. `204` on delete means the client does not try to parse a body that is not there. `400` with a stable `type` field means the caller can branch programmatically instead of matching English text. The `Idempotency-Key` check is the trade-off made explicit: `POST` is convenient for server-assigned IDs, but you pay for safety by storing keys and returning the original result on replay. Without that, every timeout becomes a potential duplicate charge — the most expensive HTTP bug there is. Keep error shapes identical across endpoints. If `400` looks different on every route, consumers will ignore your precision and treat everything as generic failure."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "client_retry.py",
+      "code": "import time, requests\n\nRETRYABLE = {502, 503, 504}\n# Never blind-retry 400/401/403/404/409/422: resending changes nothing.\n\ndef get_order(url, tries=3):\n    for i in range(tries):\n        r = requests.get(url, timeout=5)\n        if r.status_code == 200:\n            return r.json()\n        if r.status_code == 404:\n            return None  # definitive: absent\n        if r.status_code == 429 or r.status_code == 503:\n            wait = int(r.headers.get(\"Retry-After\", 2 ** i))\n            time.sleep(wait)\n            continue\n        if r.status_code in RETRYABLE:\n            time.sleep(2 ** i)\n            continue\n        r.raise_for_status()  # 4xx: fix request, do not loop\n    raise TimeoutError(\"server still failing\")"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design a CRUD API for X",
+          "text": "They expect resource naming, then method + status per operation: `POST → 201 + Location`, `GET → 200/404`, `PUT/PATCH → 200/404/409`, `DELETE → 204/404`. Say the code before they ask."
+        },
+        {
+          "title": "How does the client know to retry?",
+          "text": "Answer with the class split: retry `502/503/504` and `429` with backoff and `Retry-After`; never retry `400/401/403/404/422`. Mention idempotency keys for `POST`."
+        },
+        {
+          "title": "How do you handle async work?",
+          "text": "Return `202 Accepted` with a status URL, poll with `GET`, finish with `200` or redirect with `303 See Other`. Do not hold the connection open."
+        },
+        {
+          "title": "What about caching and versioning?",
+          "text": "Tie `GET` safety to `ETag`/`304` and `Cache-Control`. Argue that version in URL vs header is secondary — status correctness matters more."
+        },
+        {
+          "title": "Walk a failure end to end",
+          "text": "Pick expired token (`401` → refresh → replay), forbidden (`403` → stop), throttled (`429` → back off), deploy window (`503` → shed). Show you assign responsibility correctly."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`200` with an error body is simpler — it just pushes branching into every client, breaks intermediaries, and blinds monitoring. Simpler for you, harder for everyone else.",
+        "`401` and `403` are interchangeable — `401` means missing/bad authentication and should carry `WWW-Authenticate`; `403` means authenticated but not permitted. Clients refresh on the first and stop on the second.",
+        "`POST`, `PUT`, and `PATCH` are all updates — `PUT` is full replacement at a known URL, `PATCH` is a partial diff, `POST` is create-or-act. Using them randomly destroys retry safety.",
+        "`DELETE` returns `200` with the deleted object — prefer `204` with no body, or `200` only if you have a reason to return the tombstone. Pick one and be consistent.",
+        "`404` means the server is broken — no, `404` is a successful answer to a bad address. Reserve `5xx` for when a valid request failed on your side.",
+        "`301` and `308` are the same — `301/302` historically allow POST-to-GET rewriting; `307/308` preserve method and body. For API redirects that must keep `POST`, you want `307/308`."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Match the tool to the interaction, not habit.",
+      "headers": [
+        "Situation",
+        "Use this",
+        "Avoid this"
+      ],
+      "rows": [
+        [
+          "Read or search",
+          "`GET 200/404`, `HEAD` for existence, `304` with ETag",
+          "`POST` for reads — uncacheable and unauditable"
+        ],
+        [
+          "Create, server IDs",
+          "`POST → 201 + Location`, support `Idempotency-Key`",
+          "Bare `POST` with no replay protection on payments/orders"
+        ],
+        [
+          "Create/replace, client IDs",
+          "`PUT → 201/200`, conditional `If-None-Match` to avoid clobber",
+          "`PATCH` for full replace; semantics confuse retries"
+        ],
+        [
+          "Partial update",
+          "`PATCH → 200`, `409/412` on version conflict",
+          "`PUT` with half an object — wipes fields you did not send"
+        ],
+        [
+          "Delete",
+          "`DELETE → 204`, `404` if already gone",
+          "`GET` or `POST` deletes — cacheable or replay-unsafe"
+        ],
+        [
+          "Long job",
+          "`202 + Location: /jobs/x`, poll, `303` to result",
+          "Blocking 60s request that times out through gateways"
+        ],
+        [
+          "Quota / maintenance",
+          "`429` / `503` with `Retry-After`",
+          "`403` or `200`-with-message that clients cannot back off on"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Methods declare **intent and retryability**, status codes declare **outcome and responsibility** — `2xx` use it, `3xx` follow it, `4xx` fix the request, `5xx` back off and retry — and everything else is keeping that contract honest."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:48:28.524Z",
+    "problems": []
+  }
+}

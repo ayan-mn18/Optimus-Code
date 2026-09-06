@@ -1,0 +1,318 @@
+{
+  "slug": "database-replica-architectures",
+  "title": "Database Replica Architectures",
+  "summary": "Single-primary with sync and async replicas is the default answer. Why each replica exists, what consistency it gives, and how failover and lag will hurt you.",
+  "kind": "HLD",
+  "problemSlug": "database-replica-architectures-92-205",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "🔁",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "Replication"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Replication Trade-offs | by Daft Punk | Jun, 2026 | Medium",
+      "url": "https://medium.com/@DaftPunk322/replication-trade-offs-cc93533b8e9a",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Database Replication, and Why is it Important? | Aerospike",
+      "url": "https://aerospike.com/blog/what-is-database-replication/",
+      "source": "aerospike.com",
+      "kind": "article"
+    },
+    {
+      "title": "Data replication explained: types, examples & use cases - Redis",
+      "url": "https://redis.io/blog/what-is-data-replication/",
+      "source": "redis.io",
+      "kind": "article"
+    },
+    {
+      "title": "What is Database Replication? 3 Main Types - Qlik",
+      "url": "https://www.qlik.com/us/data-replication/database-replication",
+      "source": "qlik.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Replicas do not make your database faster or safer by default. Every replica is a bet: you trade write latency and operational complexity for read throughput and survival when a node dies.** If you cannot name what each replica protects against — durability loss, regional outage, or read overload — do not add it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What replica architectures actually are"
+    },
+    {
+      "type": "paragraph",
+      "text": "A replica architecture is the placement and update contract for physical copies of one logical database. One node accepts writes — call it primary or leader. Zero or more secondaries replay the primary's write-ahead log and serve some combination of reads, failover, backup, and analytics. The architecture is defined by three decisions: how many writers are allowed, when a write is declared durable, and where reads are allowed to go. Get those three right and everything else — lag monitoring, promotion, connection routing — follows. Get them vague and you will build a system that loses writes on failover or serves stale data to the one user who cannot tolerate it. Default to single-primary unless you have a proven multi-region write-contention problem, because single-primary is the only shape where ordering is trivial: log order on the primary is truth."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The three physical shapes you will defend"
+    },
+    {
+      "type": "paragraph",
+      "text": "Single-primary with replicas is the sane default: one writer, N replaying followers. It gives you total write order for free and isolates failure to promotion logic. Multi-primary lets two or more nodes accept writes to the same data and then resolve conflicts asynchronously. It lowers cross-region write latency but forces you to accept conflict resolution — last-writer-wins, vector clocks, or application merges — which means lost updates are a design feature, not a bug. Leaderless or quorum replication spreads writes to W of N nodes and reads from R of N nodes with R + W > N for overlap. It survives node loss without promotion but pushes complexity into every read: quorum latency, read-repair, and anti-entropy. **Opinion: pick single-primary for 95% of systems.** Multi-primary is only justified when writers in different regions cannot tolerate a cross-region round trip on the write path, and you can prove the conflict rate is near zero or mergeable."
+    },
+    {
+      "type": "mermaid",
+      "title": "Single-primary with mixed replicas",
+      "caption": "Writes go to one place. Reads fan out. Durability depends on which ack you wait for.",
+      "code": "graph LR\n  W[Writers] --> P[Primary]\n  P -->|sync WAL| S[Sync Standby]\n  P -->|async WAL| A1[Async Replica 1]\n  P -->|async WAL| A2[Async Replica 2]\n  R[Readers] --> LB[Read Router]\n  LB --> A1\n  LB --> A2\n  LB --> P"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The replication mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Replication is log shipping, not SQL copying. The primary appends every mutation to a durable write-ahead log with a monotonically increasing log sequence number. Replicas open a streaming connection and replay that log in order. Physical replication ships byte-level block changes: exact, fast, but primary and replica must run the same engine version and you cannot filter tables. Logical replication decodes the log into row-level inserts, updates, and deletes: slower and more CPU-intensive, but version-tolerant and filterable, which is why it powers cross-version upgrades and selective regional copies. A write is not done until its ack policy is satisfied. Synchronous means the primary waits for at least one replica to persist the log before acknowledging the client. Asynchronous means the primary acknowledges after local persist and streams in the background. Semi-synchronous waits for one replica with a timeout, then degrades to async. **Why this matters:** the ack policy is your durability contract. Sync buys zero data loss at the cost of write latency coupled to your slowest sync replica. Async buys low latency at the cost of a defined loss window on failover."
+    },
+    {
+      "type": "table",
+      "caption": "Ack policy is the durability versus latency trade-off. There is no third option.",
+      "headers": [
+        "Mode",
+        "Write path",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Synchronous",
+          "Primary persists + at least 1 replica persists, then ack",
+          "Zero data loss on single-node failure, replica is immediately promotable",
+          "Write p99 tied to cross-node RTT + replica disk; stalled replica stalls writes"
+        ],
+        [
+          "Semi-synchronous",
+          "Wait for 1 replica up to timeout, then ack anyway",
+          "Common-case durability without permanent stall; bounded wait",
+          "Unbounded loss window after timeout; behavior changes under pressure, hardest to reason about"
+        ],
+        [
+          "Asynchronous",
+          "Primary persists locally, ack, stream later",
+          "Lowest write latency, decoupled replicas, cheap cross-region copies",
+          "Last seconds of writes lost if primary dies; replicas lag by variable amount"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Consistency: what the application actually observes"
+    },
+    {
+      "type": "paragraph",
+      "text": "Once you have async replicas, you no longer have one database. You have a primary that knows the present and replicas that know slightly different pasts. Applications see this as stale reads, read-your-write violations, and monotonic-read violations where paging backwards in time returns older rows after newer ones. You fix this in the routing layer, not the database. The only consistent read is a primary read. Every replica read is eventually consistent with a lag distribution you must measure in milliseconds and in log bytes, not in vague terms like slight delay. If a request wrote and then must read its own write — checkout, password change, permission grant — pin that request to the primary or pin it to a replica whose replayed log sequence is at or past the write's sequence. **Trade-off:** pinning to primary is simple and always correct but concentrates load exactly when write traffic spikes. Tracking log positions per session is precise and preserves replica offload but requires plumbing the write's sequence number through your session or token, which most teams skip until their first stale-read incident."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Strong reads from primary:** linearizable for single-key operations routed to primary. Cost is primary CPU and no read scale-out.",
+        "**Bounded staleness from replica with lag check:** allow replica only if `replica_lsn >= write_lsn` or `now - replay_time < 200ms`. Cost is occasional fallback to primary.",
+        "**Session stickiness after write:** route user to primary for N seconds after their last write. Cost is hot users hammering primary and sticky logic in the router.",
+        "**Monotonic reads per session:** remember last-read LSN per session, never route to a replica behind it. Cost is state in the router and retries when no replica qualifies.",
+        "**Eventual reads for everything else:** feeds, counts, search, analytics. Cost is user-visible staleness you must explicitly accept in the product spec."
+      ]
+    },
+    {
+      "type": "mermaid",
+      "title": "Failover without split brain",
+      "caption": "Promotion is easy. Fencing the old primary is the part that prevents two writers.",
+      "code": "flowchart TD\n  A[Primary Healthy] --> B[Health Check Fails]\n  B --> C{Fence Old Primary}\n  C -->|Yes| D[Promote Most Advanced Replica]\n  C -->|No| E[Split Brain Risk]\n  D --> F[Repoint Writes and Rebuild Old As Replica]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Replicas fail in boring, predictable ways that look like application bugs. The most common is replication lag under load: a large backfill, a missing index on the replica replay path, or a long-running analytics query blocking replay causes the replica to fall minutes behind. Users see phantom success — order placed but invisible, comment posted but missing — and support sees duplicate submissions because users retry. Second is failover data loss with async replication: the primary dies with 800ms of unshipped log, you promote the most advanced async replica, and those writes never existed. The symptom is permanent inconsistency between external systems: payment recorded in the gateway but no row in your database. Third is cascading overload after promotion: reads that used three replicas now hit one surviving primary, connection pools saturate, latency climbs, health checks flap, and your orchestrator kills the new primary too. Fourth is split brain from unfenced promotion: the old primary was not dead, just partitioned, it kept accepting writes, and you now have two diverging histories that cannot be merged without dropping one side."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Lag spike -> stale reads and retry storms:** dashboard shows `replay_lag_bytes` climbing and replica `now - replay_timestamp` jumping from 100ms to 40s. Fix is replica query kill, replay parallelism, or shedding replica reads to primary.",
+        "**Disk or WAL retention exhaustion -> replica needs full rebuild:** primary deletes WAL segments the lagging replica never fetched. Replica falls off and requires base backup. Symptom is replica stuck in recovery and ever-growing rebuild time.",
+        "**Sync replica stall -> write latency cliff:** one sync standby pauses for GC or network blip and every write waits. Symptom is primary write p99 jumping from 8ms to 2s with no CPU change. Fix is timeout-based semi-sync or a second sync standby with quorum.",
+        "**Silent divergence -> different row counts on primary and replica:** caused by non-deterministic functions, unsafe triggers, or logical-replication filters applied inconsistently. Symptom is checksum mismatch. Only fix is rebuild and removal of non-determinism.",
+        "**Failover flapping -> writes bounce between nodes:** health check too sensitive plus automatic promotion with no fencing. Symptom is duplicate-key errors and lost sequences. Fix is longer failure detection, fencing via STONITH or consensus lease, and manual promotion for async setups."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Monitor lag in two units",
+      "text": "Time lag lies when traffic pauses — zero seconds can hide millions of unreplayed bytes. Byte lag lies when traffic spikes — large bytes can be seconds old. **Alert on both:** `replay_lag_seconds > 2s` and `replay_lag_bytes > 64MB`, and route reads away from any replica breaching either. If you only graph one, you will miss the exact outage that pages you."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Read routing: why replicas exist at all"
+    },
+    {
+      "type": "paragraph",
+      "text": "The honest reason to add async replicas is to isolate failure domains for reads, not to make reads globally fast. A read replica absorbs heavy, delay-tolerant work — dashboards, search hydration, export jobs — so it cannot starve transactional writes of I/O and connections on the primary. Cross-region replicas add a second reason: serving geographically local reads without a 150ms round trip to the primary region, at the cost of accepting seconds of staleness. Chain replication (primary -> replica A -> replica B) reduces primary fan-out but couples availability: if A stalls, B starves. Star topology (all replicas stream from primary) isolates replicas but burns primary network and connection slots. **Opinion:** start with two async replicas in the primary region for read isolation plus one sync standby for durability, all in star topology. Add cross-region async replicas only when measured primary-region read latency from remote users actually violates a product requirement. Each hop you add multiplies lag variance and rebuild pain."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "read_router.py",
+      "code": "MAX_STALE_S = 1.0\n\ndef pick_read_node(session, primary, replicas, last_write_lsn):\n    # Strong path: user just wrote and must see it. Pay primary cost.\n    if session.needs_read_your_write:\n        return primary\n    # Bounded path: only use a replica that has replayed past the write.\n    # Trade-off: extra metadata plumbing saves primary CPU.\n    candidates = [\n        r for r in replicas\n        if r.is_healthy and r.replayed_lsn >= last_write_lsn\n        and r.replay_delay_s() < MAX_STALE_S\n    ]\n    if not candidates:\n        # Fail closed to correctness, fail open to overload.\n        # Emit metric: replica_fallback_to_primary_total\n        return primary\n    # Least-connections spreads load; lag filter above guarantees recency.\n    return min(candidates, key=lambda r: r.open_connections)"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Failover and promotion"
+    },
+    {
+      "type": "paragraph",
+      "text": "Failover is a write-availability procedure with a built-in data-loss decision. With synchronous replication, promotion is safe: pick the sync standby, verify it has the last committed log, fence the old primary so it cannot accept writes, then repoint the write endpoint. Downtime is detection time plus promotion plus DNS or proxy switchover, typically tens of seconds. With asynchronous replication, promotion is lossy by definition: you promote the replica with the highest replayed log sequence, accept that everything after that sequence on the dead primary is gone, and reconcile externally — refund, replay from outbox, or manual repair. Automatic failover with async replication optimizes for uptime and guarantees occasional silent loss. Manual failover optimizes for human judgment about whether to wait for the old primary to return. **Why fencing is non-negotiable:** without revoking the old primary's write lease, blocking its disk, or reconfiguring the proxy to reject it, a network partition leaves two primaries. When the partition heals you do not have lag — you have forked history."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Detect with quorum, not a single watcher",
+          "text": "Require 2 of 3 health checkers to declare the primary dead for 10-15 seconds. Single-watcher detection causes flapping and false promotions."
+        },
+        {
+          "title": "Fence the old primary before anything else",
+          "text": "Revoke its write endpoint, kill its connections, or shut its traffic at the proxy. If fencing fails, stop — do not promote."
+        },
+        {
+          "title": "Select the most advanced eligible replica",
+          "text": "Compare replayed log sequence numbers, not wall-clock freshness. Skip replicas with corrupted state or excessive lag if a fresher one exists."
+        },
+        {
+          "title": "Promote and repoint atomically",
+          "text": "Promote the replica to primary, then flip one logical write endpoint — proxy or service discovery record — so writers move together. Never let writers discover primaries independently."
+        },
+        {
+          "title": "Rebuild the old primary as a replica",
+          "text": "Wipe and re-base it from the new primary. Do not rejoin it with its old diverging log unless you enjoy split-brain reconciliation."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Async auto-failover loses acknowledged writes",
+      "text": "This is the answer interviewers want. **If you ack on primary alone, any write in the last replication delay window vanishes on failover.** Do not promise zero data loss with async replicas. Promise bounded detection time plus a documented reconciliation path — idempotency keys, outbox replay, or operator approval before promotion."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Sizing and operating math"
+    },
+    {
+      "type": "paragraph",
+      "text": "Size replicas from measured numbers, not rules of thumb. Count read throughput first: if primary-region reads are 12k qps and one replica sustains 5k qps at 60% CPU with replay keeping up, you need three replicas for headroom, not one. Then size for failure: N+1 so loss of one replica still leaves enough capacity without collapsing onto the primary. Then size the write-loss window: if async shipping averages 200ms with p99 of 1.5s, your failover loss window is 1.5s of writes — multiply by write rate to state expected lost rows per incident. Keep sync standbys to one or two in the same region; every additional sync ack participant raises write p99 and doubles the chance a single slow node stalls all writes. Cross-region replicas should always be async with dedicated lag dashboards per region, because inter-region RTT variance makes sync across regions a latency disaster except for very low-throughput metadata."
+    },
+    {
+      "type": "table",
+      "caption": "Replica decisions stated as bets. Say the cost out loud.",
+      "headers": [
+        "Signal",
+        "Use replicas",
+        "Do not use replicas"
+      ],
+      "rows": [
+        [
+          "Read-heavy, delay-tolerant load choking primary I/O",
+          "Add 2+ async replicas, route dashboards and exports there",
+          "Keep adding indexes on primary and hoping"
+        ],
+        [
+          "Single-AZ outage must not stop writes",
+          "One sync standby in another AZ, automatic promotion with fencing",
+          "Single node with frequent snapshots — restores take too long"
+        ],
+        [
+          "Global reads need low latency",
+          "Async cross-region replicas with explicit staleness SLA per endpoint",
+          "Multi-primary for geo reads — writes do not need it"
+        ],
+        [
+          "Write-heavy with strict ordering and low loss tolerance",
+          "Single primary, sync standby, primary-only reads for critical paths",
+          "Sharding or multi-primary prematurely — ordering pain first"
+        ],
+        [
+          "Tiny dataset, low traffic, small team",
+          "Managed single node with backups and tested restore",
+          "Three replicas you cannot operate, monitor, or fail over safely"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with single-primary, sync plus async",
+          "text": "Draw one primary, one sync standby in a second zone for durability, two async replicas for reads. State the ack rule and the read rule in one breath: writes ack on primary plus sync, critical reads from primary, tolerant reads from lag-checked replicas."
+        },
+        {
+          "title": "Quantify the trade-off before adding nodes",
+          "text": "Give numbers: sync adds one RTT to write p99, async loss window equals p99 shipping delay times write rate. Interviewers promote candidates who convert architecture into latency and loss math."
+        },
+        {
+          "title": "Handle the read-your-write follow-up",
+          "text": "Show session pinning or LSN-gated routing with fallback to primary. Explain why naive round-robin across replicas breaks checkout and auth flows."
+        },
+        {
+          "title": "Handle the failover follow-up",
+          "text": "Walk detection, fencing, promotion, repointing. Say explicitly that async promotion loses data and how you reconcile — idempotency keys and outbox, not hope."
+        },
+        {
+          "title": "Close with what you would not do",
+          "text": "Reject multi-primary and cross-region sync unless the interviewer forces cross-region writes. Name the cost: conflict resolution and write latency coupled to WAN. Restraint reads as seniority. "
+        }
+      ]
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Replicas make everything highly available:** only promotable, lag-bounded replicas with tested fencing improve write availability. A lagging analytics replica with no promotion path adds load and pager noise, not uptime.",
+        "**Async means no data loss if you have enough replicas:** number of replicas is irrelevant. If none of them received the last log segment before the primary died, that data is gone regardless of replica count.",
+        "**Sync means slow everywhere:** sync only couples writes to the sync standby set, typically one node in the same region. Async replicas can lag arbitrarily without affecting write latency.",
+        "**Failover is instantaneous with a load balancer:** detection plus fencing plus promotion plus endpoint propagation takes tens of seconds at best. Connections in flight fail and must retry idempotently.",
+        "**Eventual consistency means a fixed 1-second delay:** lag is a distribution driven by write rate, long transactions, and replica load. It ranges from milliseconds to minutes within a single day.",
+        "**Multi-primary doubles throughput:** it usually lowers effective throughput because conflict detection, retries, and merge logic consume the gains while producing occasional lost updates."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Use single-primary with one sync standby for durability and lag-checked async replicas for read isolation, route critical reads to primary, and accept that async failover trades a bounded loss window for lower write latency.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:27:00.559Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,297 @@
+{
+  "slug": "communication-short-poll-long-poll-web-sockets-sse",
+  "title": "Communication (Short poll/Long poll/ Web sockets/ SSE)",
+  "summary": "Short poll, long poll, SSE, and WebSockets are four ways to fake server push over a client-initiated channel. Pick by direction, frequency, and connection cost.",
+  "kind": "HLD",
+  "problemSlug": "communication-short-polllong-poll-web-sockets-sse-90-301",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "📡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Realtime",
+    "WebSockets"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Server Push Doesn't Exist: Polling, SSE, WebSockets - Formation.dev",
+      "url": "https://formation.dev/blog/server-push-websockets-sse-polling",
+      "source": "formation.dev",
+      "kind": "article"
+    },
+    {
+      "title": "Long Polling vs WebSockets: What's best for realtime at scale?",
+      "url": "https://ably.com/blog/websockets-vs-long-polling",
+      "source": "ably.com",
+      "kind": "article"
+    },
+    {
+      "title": "Long/Short Polling, WebSockets, and SSE Explained + Next.js code",
+      "url": "https://dev.to/brinobruno/real-time-web-communication-longshort-polling-websockets-and-sse-explained-nextjs-code-1l43",
+      "source": "dev.to",
+      "kind": "article"
+    },
+    {
+      "title": "What are Long-Polling, Websockets, Server-Sent Events (SSE) and ...",
+      "url": "https://stackoverflow.com/questions/11077857/what-are-long-polling-websockets-server-sent-events-sse-and-comet",
+      "source": "stackoverflow.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "There is no unsolicited server-to-browser TCP connection. **The client always opens the path; the choice is only how long you hold it and who is allowed to talk on it.** Get that and every trade-off becomes obvious: polling pays per check, long polling pays per wait, SSE pays once for a one-way stream, WebSockets pays once for a two-way socket."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "All four patterns solve the same problem: the browser sits behind NAT and a stateful firewall, so the server cannot dial it back. The browser must make an outbound HTTP request or handshake to a reachable endpoint, and that established flow is then reused to deliver server-originated application messages. What differs is lifetime and direction. Short polling issues a new request every N seconds and gets an immediate answer, empty or not. Long polling issues a request the server deliberately holds open until an event arrives or a timeout fires, then the client re-issues. Server-Sent Events holds one long-lived GET open as a UTF-8 event stream where only the server speaks. WebSockets upgrades one HTTP request into a persistent framed TCP channel where both sides speak at will."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Short polling:** discrete `GET /state` every interval. Stateless, cacheable, trivially load-balanced. Cost scales with check rate, not event rate.",
+        "**Long polling:** `GET /wait?since=X` held 20-45 seconds. Server answers early on event, late on timeout. Fewer empty responses than short polling, but still request churn.",
+        "**SSE:** `GET /stream` with `Content-Type: text/event-stream`. One response that never ends. Server writes `event:` / `data:` frames; browser reconnects with `Last-Event-ID`.",
+        "**WebSockets:** `GET` with `Upgrade: websocket`, then binary or text frames in both directions with ~2-14 bytes overhead per frame. No request semantics after handshake."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Direction decides first",
+      "text": "If the client rarely speaks, do not pay for bidirectional. **Server-to-client only with infrequent client writes is SSE territory.** WebSockets earns its complexity only when client-to-server messages are frequent, small, and latency-sensitive — typing indicators, game input, collaborative edits. Choosing WebSockets for a price ticker or build status is over-engineering with real operational cost."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Think in channel lifetimes, not just latency. Short polling creates and destroys a full HTTP exchange per check, including TLS and header cost if connections are not reused. Long polling stretches each exchange to cover a wait window, trading held server threads or async slots for fewer round trips. SSE amortises handshake cost over hours by keeping one response body open and flushing chunks. WebSockets removes HTTP semantics entirely after the upgrade and multiplexes application messages as frames. That is why scaling behavior diverges: the first two stress request rate and load-balancer churn, the last two stress concurrent open connections, memory per socket, and routing of publishes to the machine holding the socket."
+    },
+    {
+      "type": "mermaid",
+      "title": "Four lifetimes on client-initiated paths",
+      "caption": "Same initiator, different hold time and direction.",
+      "code": "flowchart TD\n    C[Client initiates outbound]\n    S[Server reachable endpoint]\n    P1[Short poll loop]\n    P2[Long poll hold]\n    P3[SSE stream]\n    P4[WebSocket frames]\n    C --> P1 --> S\n    C --> P2 --> S\n    C --> P3 --> S\n    C --> P4 --> S"
+    },
+    {
+      "type": "paragraph",
+      "text": "The practical consequence is reconnection behavior. Polling clients already loop, so recovery is natural but thundering: every client retries on its own timer. SSE has built-in reconnection with an event ID cursor, which makes at-least-once replay straightforward if your server keeps a short backlog buffer. WebSockets has no built-in reconnect, no cursor, and no subscription concept — you must add heartbeats, backoff, resync, and ordering yourself. That missing layer is where most teams underestimate the work. The protocol gives you a pipe; delivery semantics are your job."
+    },
+    {
+      "type": "mermaid",
+      "title": "Why persistent channels force a bus",
+      "caption": "Sockets pin clients to machines; events must find the machine.",
+      "code": "flowchart LR\n    A[Client A] --> S1[Server 1 holds socket A]\n    B[Client B] --> S2[Server 2 holds socket B]\n    S1 --> BUS[PubSub bus]\n    BUS --> S1\n    S2 --> BUS\n    BUS --> S2\n    PUB[Publisher] --> BUS"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Head-to-head on what breaks at scale.",
+      "headers": [
+        "Dimension",
+        "Short poll",
+        "Long poll",
+        "SSE",
+        "WebSockets"
+      ],
+      "rows": [
+        [
+          "Direction",
+          "Client asks, server answers",
+          "Client asks, server delays answer",
+          "Server only, client uses separate requests to write",
+          "Full duplex, either side anytime"
+        ],
+        [
+          "Latency to event",
+          "Up to poll interval, average interval/2",
+          "Near immediate while held, plus re-hold gap",
+          "Near immediate on open stream",
+          "Near immediate both ways"
+        ],
+        [
+          "Wire overhead",
+          "Worst: full headers + TLS per check, mostly empty 200s or 304s",
+          "Better: fewer responses, but headers + new handshake per event/timeout",
+          "Best for one-way: one handshake, tiny `data:` framing",
+          "Best for two-way: 2-14 byte frames, no headers per message"
+        ],
+        [
+          "Server state",
+          "Stateless, any replica can answer",
+          "Held request per waiter: async slot, timer, wakeup",
+          "Open response per subscriber: buffer, flush, heartbeat",
+          "Open socket per client: read loop, write queue, heartbeat"
+        ],
+        [
+          "Scaling pain",
+          "Request QPS and DB read amplification",
+          "Herd on timeout + sticky wakeup routing",
+          "Concurrent connections + proxy buffering + fan-out",
+          "Concurrent connections + sticky routing + cross-node publish + stateful ops"
+        ],
+        [
+          "Firewall / ops fit",
+          "Works everywhere",
+          "Works everywhere, needs timeout tuning",
+          "Needs flush through proxies, HTTP/2 limits multiplexing",
+          "Needs upgrade allowed, sticky LB, larger FD and memory budget"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the table as cost placement. Short polling pushes cost to request rate and your storage read path — cheap to operate, expensive at frequency. Long polling moves cost to held capacity and wakeup logic — fewer empty bytes, but you now manage timeouts, duplicate in-flight waits, and lost wakeups. SSE and WebSockets move cost to connection count and routing — minimal bytes per event, maximal operational state. That is the core trade-off to state in a design review: **per-message overhead versus per-connection state.** There is no option with neither. Pick the cost your event rate and team can afford."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Short polling fails as a self-inflicted DDoS. Symptom: `GET /status` QPS tracks client count divided by interval, not event rate. At 100k clients polling every 2 seconds you need 50k RPS to deliver maybe 10 real events per second. Caches and read replicas saturate, p99 climbs, and mobile batteries drain. You will see it as high 200 rate with tiny bodies, elevated LB request count, and a database hot key on the status row. The fix is never a bigger database first — it is a longer interval with `ETag` / `If-None-Match` and 304s, jittered timers, or switching to a held channel."
+    },
+    {
+      "type": "paragraph",
+      "text": "Long polling fails on timeout synchronisation and missed wakeups. Symptom: sawtooth connection churn where thousands of clients time out together every 30 seconds, reconnect together, and hammer the front end. Worse, two overlapping waits from one client reorder responses, and a server that fires-and-forgets a wakeup loses the event if the client already timed out. You will see it as periodic reconnect storms, duplicate deliveries, and gaps users describe as skipped updates. Mitigation is unglamorous: randomised hold timeouts, single in-flight wait per client with a monotonic cursor like `?since=seq`, and server-side backlog replay instead of assuming delivery."
+    },
+    {
+      "type": "paragraph",
+      "text": "SSE fails at the proxy and at fan-out. Symptom: stream works locally, stalls in staging. A buffering reverse proxy or CDN holds your flushed chunks until its buffer fills, so events arrive in bursts minutes late. Browsers also cap streams per origin, and HTTP/1.1 limits you to roughly six concurrent streams. You will see it as growing `Time To First Byte` that never ends, idle TCP connections piling on origins, and one slow consumer backpressuring a shared broadcast loop. Fix with `X-Accel-Buffering: no`, explicit flush, heartbeat comments every 15-25 seconds, per-connection write queues with drop-or-disconnect policy, and a pub/sub fan-out so any node can reach the holder."
+    },
+    {
+      "type": "paragraph",
+      "text": "WebSockets fails on stickiness, state, and silent death. Symptom: messages sent from Server B never reach a socket held by Server A after a deploy or scale event, or half-open sockets accumulate until file descriptors exhaust. Rolling restarts drop thousands of sockets at once and every client reconnects with no cursor, causing a thundering resync against cold caches. You will see it as `ESTABLISHED` count diverging from active users, rising memory per node, close-code 1006 spikes, and cross-AZ publish lag. The cure is architectural: externalise presence and cursor state to a fast store, route publishes through a bus, require sticky routing or connection migration, enforce ping/pong plus idle kill, and design reconnect to send `last_seq` and receive a bounded replay."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code where it clarifies"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "sse_server.py",
+      "code": "from flask import Response\n\ndef sse_stream(user_id, backlog):\n    # Why SSE: one held GET, tiny framing, replayable cursor.\n    # Trade-off: you own flush, heartbeat, and backlog.\n    def gen():\n        yield f\"retry: 3000\\n\\n\"\n        last_id = int(request.headers.get(\"Last-Event-ID\", \"0\"))\n        for seq, payload in backlog.since(last_id):  # bounded replay\n            yield f\"id: {seq}\\ndata: {payload}\\n\\n\"\n        sub = bus.subscribe(user_id)\n        try:\n            for seq, payload in sub.listen():\n                yield f\"id: {seq}\\ndata: {payload}\\n\\n\"\n                # flush happens per yield; proxy must not buffer\n        finally:\n            bus.unsubscribe(sub)\n    return Response(gen(), mimetype=\"text/event-stream\",\n        headers={\"X-Accel-Buffering\": \"no\", \"Cache-Control\": \"no-cache\"})"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "ws_fanout.py",
+      "code": "# Why a bus: socket is pinned to one process; publisher is usually elsewhere.\n# Trade-off: per-message efficiency for cross-node routing state.\nimport asyncio\n\nSEEN = {}  # conn_id -> last_seq, externalise to Redis in production\n\nasync def handle_socket(ws, user_id):\n    conn_id = id(ws)\n    await ws.send(f\"hello {SEEN.get(conn_id, 0)}\")\n    pub = await bus.subscribe(user_id)  # all app nodes publish here\n    try:\n        sender = asyncio.create_task(forward(ws, pub, conn_id))\n        async for msg in ws:  # client -> server path, absent in SSE\n            await handle_client_write(ws, msg)  # validate, auth, seq\n        await sender\n    finally:\n        await bus.unsubscribe(pub)\n\nasync def forward(ws, pub, conn_id):\n    async for seq, payload in pub.listen():\n        if seq <= SEEN.get(conn_id, 0):\n            continue  # dedupe on reconnect replay\n        try:\n            await asyncio.wait_for(ws.send(payload), timeout=5)\n            SEEN[conn_id] = seq\n        except Exception:\n            break  # slow consumer: drop and close, do not block bus"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "State the constraint first",
+          "text": "Say the server cannot open inbound to the browser, so every option is client-initiated with different hold time. This frames you as someone who understands networks, not just APIs."
+        },
+        {
+          "title": "Ask direction and rate before naming tech",
+          "text": "Is traffic one-way or two-way? Events per second per client, and total concurrent viewers? A ticker at 1 msg/sec to 500k watchers points away from polling; a payment status check every 2 sec for 30 sec points toward polling or long poll."
+        },
+        {
+          "title": "Pick one and price it",
+          "text": "Do the arithmetic aloud: clients / interval = RPS for short poll; concurrent holders = memory and FDs for SSE or sockets. Name the bottleneck: LB request rate versus open-connection capacity versus fan-out bandwidth."
+        },
+        {
+          "title": "Draw the scaled path",
+          "text": "Sketch client to LB to app holder to pub/sub bus to publisher. Explain stickiness for sockets, flush and heartbeat for SSE, cursor replay for reconnects. Interviewers promote on this diagram, not on the acronym."
+        },
+        {
+          "title": "Close with fallback and failure",
+          "text": "Name your degraded mode: WebSockets with SSE fallback with long-poll fallback, plus jittered backoff, `Last-Event-ID` or `since=seq` replay, and load-shedding for slow consumers. That is a senior answer."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**\"Server push opens a connection to the browser.\"** No. The browser opens it. The server only decides when to write. Saying otherwise signals you have never debugged NAT or corporate egress.",
+        "**\"WebSockets has delivery guarantees.\"** It has a persistent pipe, not exactly-once delivery. No reconnect, no cursor, no ordering across reconnects unless you build it.",
+        "**\"Long polling is realtime without cost.\"** It cuts empty responses but keeps handshake churn and adds held-request state plus timeout herds. At high fan-out it behaves like badly tuned polling.",
+        "**\"SSE is bidirectional if you POST back.\"** That is two channels glued together, not duplex. It works, but you now operate two lifecycles and two failure modes — often worse than one socket.",
+        "**\"Comet is a fifth option.\"** It is the historical umbrella term for held-HTTP tricks before WebSockets and SSE were standardised. Name it as history, then design with the four modern primitives."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, when to avoid it"
+    },
+    {
+      "type": "table",
+      "caption": "Default choices by traffic shape.",
+      "headers": [
+        "Pattern",
+        "Use when",
+        "Avoid when"
+      ],
+      "rows": [
+        [
+          "Short poll",
+          "Rare checks, tolerant delay, tiny audience — build status, payment confirm for seconds, cacheable state with ETag",
+          "High frequency or large audience — you pay per check, batteries and DB pay with you"
+        ],
+        [
+          "Long poll",
+          "Medium frequency, need promptness without sockets — chat fallback, legacy networks that block upgrade",
+          " Massive fan-out or strict ordering — timeout storms and duplicate in-flights will dominate"
+        ],
+        [
+          "SSE",
+          "One-way broadcast to many — tickers, feeds, notifications, logs; you want auto-reconnect plus replay",
+          "Frequent client writes or binary frames — separate POST channel doubles complexity; use sockets"
+        ],
+        [
+          "WebSockets",
+          "Frequent two-way low-latency — chat, presence, multiplayer, collab editing; client speaks as often as server",
+          "Mostly one-way or through hostile proxies — you inherit sticky routing, presence store, and bus ops for no benefit"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Say it in one sentence",
+      "text": "**Poll when checks are rare, hold with long poll to cut empties, stream with SSE for one-way broadcast, socket with WebSockets only when both sides talk often — and always add a cursor, a heartbeat, and a bus so reconnects and cross-node publishes survive.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:21:29.342Z",
+    "problems": []
+  }
+}

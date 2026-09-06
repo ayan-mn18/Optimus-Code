@@ -1,0 +1,314 @@
+{
+  "slug": "tcp-vs-udp",
+  "title": "TCP vs UDP",
+  "summary": "TCP buys a reliable ordered byte stream with latency and state; UDP buys minimal delay and control and forces you to handle loss yourself.",
+  "kind": "HLD",
+  "problemSlug": "tcp-vs-udp-91-183",
+  "topic": "System Design Tradeoffs",
+  "difficulty": "Medium",
+  "coverEmoji": "🔌",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "System Design Tradeoffs",
+    "Networking",
+    "TCP",
+    "UDP"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "ELI5: The difference between TCP vs UDP : r/explainlikeimfive - Reddit",
+      "url": "https://www.reddit.com/r/explainlikeimfive/comments/66i0ta/eli5_the_difference_between_tcp_vs_udp/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "TCP vs. UDP - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/computer-networks/differences-between-tcp-and-udp/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "TCP vs UDP Comparison - YouTube",
+      "url": "https://www.youtube.com/watch?v=uwoD5YsGACg",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Introduction to TCP and UDP - NetworkLessons.com",
+      "url": "https://networklessons.com/network-fundamentals/introduction-to-tcp-and-udp",
+      "source": "networklessons.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**TCP trades latency, memory, and tail risk for correctness. UDP trades correctness for latency, control, and scale.** There is no faster reliable protocol — only a choice about *where* reliability lives: inside the transport, or inside your application. Get this backwards and you either retransmit data nobody needs anymore or drop data nobody can reconstruct."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What TCP and UDP actually are"
+    },
+    {
+      "type": "paragraph",
+      "text": "Both are Transport Layer protocols riding on top of IP. IP gives you best-effort routing from host to host. TCP and UDP add ports so multiple applications can share one host, plus a checksum so corrupt bits get caught. That is where the similarity ends. **TCP** exposes a *connection-oriented, reliable, ordered byte stream* between two endpoints. Your application writes bytes; TCP decides how to segment, pace, retransmit, and reassemble them. **UDP** exposes a *connectionless, unreliable datagram* service. Your application hands it one self-contained message; UDP adds an 8-byte header and fires it. No session, no ordering, no retry, no notion of a stream. The trade-off is explicit: TCP spends round trips and per-connection state to hide the network from you. UDP spends nothing and exposes the network to you."
+    },
+    {
+      "type": "paragraph",
+      "text": "Think of the abstraction contract, not the acronym. With TCP, `read()` returns the next bytes *in order*, with no gaps, no duplicates visible to you, or the connection breaks and you get an error. Message boundaries are erased — a 10KB write can arrive as ten 1KB reads. That is why HTTP, database replication, file transfer, and anything where a single missing byte invalidates everything sits on TCP. With UDP, each `recvfrom()` returns either one complete datagram exactly as sent or nothing at all. Boundaries are preserved, order is not, delivery is not. That is why real-time voice, live video, gaming position updates, DNS lookups, and service discovery prefer UDP: a late packet is worse than a lost packet, and the application would rather skip it than stall everything waiting for it."
+    },
+    {
+      "type": "paragraph",
+      "text": "Connection has a concrete meaning here. TCP maintains state on both ends: sequence numbers, acknowledgment numbers, send and receive windows, retransmission timers, congestion window. That state is created by a handshake and torn down explicitly, and it costs RAM, file descriptors, and load-balancer table entries. UDP maintains zero transport state. The server does not know you exist until a datagram arrives, and forgets you immediately after. That statelessness is why one UDP socket can serve 100,000 clients with no handshake storm, and also why UDP gives you no protection against spoofing, flooding, or congestion collapse unless you build it yourself. Stateless scales; stateful corrects. Pick one."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How TCP works — and why it costs"
+    },
+    {
+      "type": "mermaid",
+      "title": "TCP lifecycle",
+      "caption": "Handshake, transfer with ACK clocking, and retransmission on timeout.",
+      "code": "flowchart TD\n  C[Client closed] -->|SYN seq=x| S1[Server listen]\n  S1 -->|SYN-ACK seq=y ack=x_plus_1| C1[Client syn received]\n  C1 -->|ACK ack=y_plus_1| S2[Established both sides]\n  S2 --> D[Split stream into segments]\n  D --> E{ACK before RTO}\n  E -->|yes| F[Slide window send more]\n  E -->|no| G[Retransmit shrink cwnd]\n  G --> D\n  F --> D"
+    },
+    {
+      "type": "paragraph",
+      "text": "TCP reliability rests on three mechanisms, all paid for in delay. First, **sequencing and acknowledgment**. Every byte gets a sequence number. The receiver advertises what it has contiguously received; anything with a gap is buffered, not delivered. The sender starts a retransmission timer per segment. No ACK before the timeout means resend, even if the original is merely delayed and will arrive twice. The trade-off: you eliminate corruption and reordering bugs in application code, but you introduce *head-of-line blocking* — one lost segment freezes every byte behind it, even if those later bytes already arrived. Second, **flow control**. The receiver advertises a window (`rwnd`) saying how much buffer it has. The sender never exceeds it. This prevents a fast sender from crushing a slow receiver, at the cost of throughput coupled to the slowest consumer and to the round-trip time that carries window updates."
+    },
+    {
+      "type": "paragraph",
+      "text": "Third, **congestion control**. TCP assumes loss means congestion and backs off. Slow start probes capacity, congestion avoidance grows the window additively and cuts it multiplicatively on loss, fast retransmit resends on triple duplicate ACKs. Modern variants add selective acknowledgments and explicit congestion notification, but the philosophy is unchanged: the network is a shared resource, so a TCP flow voluntarily slows down for the common good. That is noble and often wrong for your product. On a lossy wireless link or a long fat intercontinental path, TCP interprets random loss as congestion and collapses throughput even though capacity is idle. You gain fairness and self-clocking stability. You lose the ability to blast at a fixed rate when you know better than the transport. Any time someone says TCP is slow, they mean these three loops added at least a handshake plus ACK-clocked pacing plus backoff to what could have been one datagram."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How UDP works — by doing almost nothing"
+    },
+    {
+      "type": "mermaid",
+      "title": "UDP path",
+      "caption": "One datagram in, zero session state, silent drop on failure.",
+      "code": "flowchart LR\n  A[App datagram] --> B[Add 8B UDP header]\n  B --> C[IP send no handshake]\n  C --> D[Receiver socket buffer]\n  D --> E{Checksum ok and buffer free}\n  E -->|yes| G[Deliver one message]\n  E -->|no| F[Drop silently]"
+    },
+    {
+      "type": "paragraph",
+      "text": "A UDP header is 8 bytes: source port, destination port, length, checksum. No sequence number, no acknowledgment number, no window, no options for timestamps or selective ACKs. The kernel does three things: multiplex by port, optionally verify the checksum, queue the datagram for the application. If the queue is full, the packet is discarded with no signal to the sender. If it is corrupted, same. If it is duplicated by the network, you get two copies. If it arrives out of order, you see the disorder. There is deliberately no handshake, so first-payload latency is zero round trips versus one to two for TCP session plus TLS. The trade-off cuts both ways: you get minimal per-packet overhead, no connection memory, natural support for broadcast and multicast, and full control over pacing and redundancy. You also inherit every hard problem — loss detection, ordering, congestion response, fragmentation handling, authentication — and must solve only the subset your workload actually needs."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, without romance"
+    },
+    {
+      "type": "table",
+      "caption": "TCP vs UDP across the dimensions that change a design.",
+      "headers": [
+        "Dimension",
+        "TCP",
+        "UDP"
+      ],
+      "rows": [
+        [
+          "Delivery",
+          "Reliable, ordered, no gaps or connection fails",
+          "Best effort, gaps and reordering visible to app"
+        ],
+        [
+          "Granularity",
+          "Byte stream, message boundaries lost",
+          "Datagram, boundaries preserved, size limited by MTU"
+        ],
+        [
+          "Setup",
+          "Handshake before data, 1 RTT idle plus TLS",
+          "Zero setup, first byte carries payload"
+        ],
+        [
+          "Overhead",
+          "20 to 60 byte header plus ACK traffic plus timers",
+          "8 byte header, no ACKs unless app adds them"
+        ],
+        [
+          "Flow and congestion",
+          "Built in via rwnd and cwnd, backs off on loss",
+          "None, app decides send rate and backoff"
+        ],
+        [
+          "Multicast and broadcast",
+          "No, point to point only",
+          "Yes, one send reaches many"
+        ],
+        [
+          "Head-of-line blocking",
+          "Yes, loss stalls stream",
+          "No, loss affects only that datagram"
+        ],
+        [
+          "Server state",
+          "Per-connection sockets and buffers",
+          "Stateless, one socket serves many senders"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that table as cost accounting. Choose TCP when the cost of a missing byte exceeds the cost of waiting: file sync, payments, configuration distribution, request-response APIs over the open internet. TCPs retransmission and congestion response are exactly the behavior you would reimplement badly. Choose UDP when the cost of waiting exceeds the cost of losing: live media where a 200ms stall is user-visible but a 20ms glitch is not, gaming where the next position update obsoletes the lost one, telemetry where sampling beats completeness, name resolution where a 50-byte query cannot justify a handshake. The expensive middle — bulk transfer that must be both fast and complete on lossy long-haul links, or web traffic that must not stall on one lost object — is why modern stacks cheat: they keep UDPs wire behavior and rebuild a smarter reliability layer on top, tuned for that workload instead of accepting TCPs one-size-fits-all backoff."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How each fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "TCP fails by stalling and exhausting. The classic symptom is rising `p99` latency while `p50` looks fine, plus throughput that collapses under modest loss. One dropped segment on a high-bandwidth transoceanic path halves the congestion window; recovery takes many round trips, so a 1% loss rate can cut goodput by 80%. Connections also pile up: slow receivers hold windows closed, idle keep-alives hold sockets open, SYN floods fill backlog queues, load balancers run out of connection-table memory during retries. You will see it as `retransmits`, `zero-window`, `TIME_WAIT` socket exhaustion, and upstream timeouts cascading because a single slow TCP dependency holds worker threads hostage. The worst variant is incast in datacenters — hundreds of workers reply over TCP at once, buffers overflow, everyone retransmits in lockstep, and the job that should take 100ms takes seconds. Reliability mechanisms become the outage."
+    },
+    {
+      "type": "paragraph",
+      "text": "UDP fails by vanishing and by amplifying. The classic symptom is silent quality degradation with green health checks: frozen video frames, robotic audio, teleporting game entities, DNS timeouts that look like application slowness, metrics gaps nobody alerts on because absence is not an error. Because there is no backpressure, a misconfigured sender can saturate a link and starve every TCP flow sharing it — UDP has no conscience. Because there is no handshake, UDP is trivially spoofable, which enables reflection attacks where a tiny forged request triggers a large response toward a victim. You will see it as bimodal loss under load, asymmetric behavior where small packets pass and large fragmented datagrams die at middleboxes, and NAT bindings expiring because idle UDP mappings time out in tens of seconds while TCP mappings live for hours. If TCPs failure mode is everyone waits, UDPs failure mode is nobody notices until the user does."
+    },
+    {
+      "type": "list",
+      "items": [
+        "TCP symptom: `curl` hangs on large responses but small ones pass — MTU or window clamping plus loss-triggered backoff.",
+        "TCP symptom: connection count climbs after a deploy and never falls — downstream stalls holding sockets in `ESTABLISHED` or `CLOSE_WAIT`.",
+        "TCP symptom: throughput halves every few minutes on wireless or inter-region links — loss misread as congestion.",
+        "UDP symptom: 2% loss is fine on wired but 15% on Wi-Fi with jitter — no retransmit, codec concealment exhausted.",
+        "UDP symptom: works in the lab, dies behind carrier NAT — fragmented datagrams filtered, or mapping expired between heartbeats.",
+        "Either symptom: single-digit packet loss plus full retransmit of entire messages — you reimplemented reliability at the wrong granularity."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What the difference looks like in code"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "tcp_vs_udp.py",
+      "code": "import socket\n\n# TCP: stream. No message boundaries. Must frame yourself.\n# Server blocks until bytes arrive in order; loss is hidden as delay.\nsrv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\nsrv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\nsrv.bind((\"0.0.0.0\", 9000))\nsrv.listen(128)  # backlog = how many pending handshakes you tolerate\nconn, addr = srv.accept()  # 3-way handshake already done by kernel\nbuf = b\"\"\nwhile len(buf) < 4:\n    chunk = conn.recv(4 - len(buf))  # may return 1 byte; loop is mandatory\n    if not chunk:\n        raise ConnectionError(\"peer went away mid-stream\")\n    buf += chunk\n\n# UDP: datagram. Boundaries preserved. Loss visible immediately.\n# One socket, no accept, no backlog. Each recv is one message or nothing.\nudp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\nudp.bind((\"0.0.0.0\", 9001))\nudp.settimeout(0.05)  # 50ms: stale game state is useless, drop it\ntry:\n    data, addr = udp.recvfrom(1400)  # keep under MTU to avoid IP fragmentation\n    # data is a complete application message or we would not be here\n    pass\nexcept socket.timeout:\n    pass  # loss is normal: extrapolate, conceal, or skip — never block the loop"
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "filename": "tune.sh",
+      "code": "# TCP tolerates loss badly by default. If you must run bulk TCP\n# over long fat pipes, raise windows and enable selective ACK.\n# Trade-off: more kernel memory per connection for higher goodput.\nsysctl -w net.ipv4.tcp_window_scaling=1\nsysctl -w net.ipv4.tcp_sack=1\nsysctl -w net.core.rmem_max=16777216\nsysctl -w net.core.wmem_max=16777216\nsysctl -w net.ipv4.tcp_rmem=\"4096 87380 16777216\"\n\n# UDP has no congestion control. Pace yourself or you will\n# crush competing TCP flows and get policed by the network.\n# Example: 5 Mbps video in 1200B datagrams ~= 520 pps.\n# token-bucket it in userspace; do not blast line rate.\n# tc qdisc add dev eth0 root tbf rate 5mbit burst 32kbit latency 50ms"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "State the contract first",
+          "text": "Say in one breath: TCP is an ordered reliable byte stream with handshake, retransmission, flow and congestion control. UDP is an unordered unreliable datagram with no handshake. Interviewers promote candidates who lead with guarantees, not acronyms."
+        },
+        {
+          "title": "Map the workload to loss vs delay",
+          "text": "Ask whether a late byte is still useful. File, RPC, ledger: late is useful, pick TCP. Live frame, next game tick, periodic heartbeat: late is garbage, pick UDP and handle gaps in the codec or state reconciler. Name the trade-off out loud."
+        },
+        {
+          "title": "Do the handshake math",
+          "text": "Short DNS-like query over TCP plus TLS costs multiple round trips before first useful byte; over UDP it costs half a round trip. At 100ms RTT that is the difference between 50ms and 400ms. For high fan-out microservice chatter, that handshake tax and connection memory dominate the design."
+        },
+        {
+          "title": "Name the failure you are accepting",
+          "text": "If you pick TCP, own head-of-line blocking and incast collapse, and say how you mitigate: deadlines, circuit breakers, separate connections per priority, bounded queues. If you pick UDP, own silent loss and unfairness, and say how you mitigate: sequence numbers, NACKs, forward error correction, pacing, rate caps."
+        },
+        {
+          "title": "Close with the modern synthesis",
+          "text": "Strong answers mention that the industry stopped treating this as binary: keep UDPs wire properties and rebuild selective reliability above it, tuned per use case. That framing turns a textbook question into a systems discussion."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`TCP is always slower` — false as stated. On a clean low-loss link TCP bulk throughput matches line rate; the window scales. TCP is slower at *first byte* and under *loss*, where handshake plus backoff dominate. Measure, do not sloganize.",
+        "`UDP is always faster` — only if you ignore the work you moved. Add app-level ACKs, retries, and ordering and you rebuilt a worse TCP with none of the kernel tuning. Speed comes from *needing less*, not from the header size.",
+        "`UDP guarantees delivery of each datagram, just not order` — backwards. UDP guarantees neither. It checksums and multiplexes; anything else is your code.",
+        "`TCP preserves message boundaries` — it erases them. If your parser assumes one `send` equals one `recv`, it will corrupt under fragmentation. Frame with length prefixes or delimiters.",
+        "`TCP is built out of UDP` — no. Both sit directly on IP as separate protocol numbers. QUIC is built on UDP; TCP is not.",
+        "`Broadcast needs TCP` — impossible. Reliability requires knowing every receiver and its state. One-to-many dissemination is fundamentally a UDP or overlay-multicast shape, with repair handled by gossip or FEC."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use which — the honest table"
+    },
+    {
+      "type": "table",
+      "caption": "Default picks and the exceptions you must justify.",
+      "headers": [
+        "Workload",
+        "Default",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Web APIs, payments, file transfer, DB replication",
+          "TCP",
+          "One missing byte invalidates the result; wait is cheaper than corruption"
+        ],
+        [
+          "DNS, DHCP, SNMP polls, heartbeats",
+          "UDP",
+          "Tiny idempotent query; retry in app beats handshake cost"
+        ],
+        [
+          "Live voice and video conferencing",
+          "UDP",
+          "Stale media has negative value; conceal loss, never stall"
+        ],
+        [
+          "Multiplayer movement, live telemetry",
+          "UDP",
+          "Next update obsoletes the lost one; reconcile state, not packets"
+        ],
+        [
+          "Bulk transfer over lossy long-haul",
+          "Tuned TCP or UDP with selective repair",
+          "Stock TCP backoff collapses; you need BBR-style probing or FEC plus NACKs"
+        ],
+        [
+          "One-to-many push, discovery",
+          "UDP multicast or broadcast",
+          "TCP cannot fan out without per-receiver state and ACK implosion"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The senior answer is rarely pure. DNS starts on UDP and falls back to TCP when the response exceeds path MTU or needs privacy. Real-time media runs over UDP but pairs it with a control channel for loss reports and rate adaptation. Large platforms move web traffic to a UDP-based transport with stream-level retransmission so one lost packet stalls only its own stream instead of the whole connection. The pattern is consistent: use UDP when you can define a weaker, workload-specific notion of reliability — idempotent retry, loss concealment, forward error correction, latest-state-wins — and use TCP when you cannot and want the kernel to enforce the strongest notion for you. If you cannot articulate which notion your feature needs, you have not finished the design. Saying just pick one for speed is how you inherit an outage neither protocol caused and both predicted."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "**Use TCP when correctness requires every byte in order and you will pay latency and connection state for it; use UDP when timeliness beats completeness and you will implement exactly the reliability you need — and nothing more — above it.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:29:30.903Z",
+    "problems": []
+  }
+}

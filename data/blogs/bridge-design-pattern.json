@@ -1,0 +1,273 @@
+{
+  "slug": "bridge-design-pattern",
+  "title": "Bridge Design Pattern",
+  "summary": "Bridge splits two orthogonal dimensions into separate hierarchies linked by composition, turning M x N subclasses into M + N classes that vary independently.",
+  "kind": "LLD",
+  "problemSlug": "bridge-design-pattern-37-77",
+  "topic": "Structural Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": " f309",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Structural-Pattern",
+    "Bridge",
+    "Composition"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Bridge - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/bridge",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Bridge pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Bridge_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Bridge pattern without bullsh*t - Medium",
+      "url": "https://medium.com/@iamprovidence/bridge-pattern-without-bullsh-t-38d7d851ed4d",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Bridge Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/bridge-design-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Bridge is not about abstraction in the Java sense. It is about **refusing to model two independent axes of change with inheritance**. Whenever you see `BlueCircle`, `RedSquare`, `WindowsButton`, `MacButton` — that Cartesian product is the smell. Bridge replaces it with **composition across hierarchies**: `Abstraction` holds a `Implementor` and delegates. You go from **M x N classes to M + N**, and you buy the ability to add either side without touching the other. The trade-off: you pay with indirection and interface-design risk."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Bridge actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bridge decouples an **abstraction** — the high-level control logic your client talks to — from its **implementation** — the low-level primitive operations that actually do the work — so both can vary independently. Concretely: an abstract class or interface `Abstraction` stores a reference to a second interface `Implementor`, and every high-level operation `operation()` is implemented as orchestration + delegation to `implementor.operationImp()`. The two hierarchies evolve separately. You subclass `Abstraction` to add new *kinds of control* (a new `Shape`, a new `Remote`, a new `Message` type). You subclass `Implementor` to add new *ways of executing* (a new `Renderer`, a new `DeviceDriver`, a new `Sender`). Neither side recompiles or re-tests when the other side grows. That runtime binding is the entire point: inheritance binds at compile time, Bridge binds at construction time. Why choose this over plain polymorphism? Because you have **two reasons to subclass that change for different reasons and at different rates**. One hierarchy cannot absorb both without exploding."
+    },
+    {
+      "type": "paragraph",
+      "text": "Forget the GoF names for a second — they mislead. `Abstraction` here does not mean `abstract class`. It means *policy*: what to do, in what order, with what validation, retry, or formatting. `Implementation` does not mean *concrete class*. It means *mechanism*: how a primitive step is executed on a specific platform, protocol, or rendering engine. A GUI dialog (abstraction) calling `drawPixel()` on `WindowsAPI` vs `LinuxAPI` (implementations) is the canonical mental model. A `Circle.draw()` that calls `renderer.renderCircle(radius)` instead of containing raster-vs-vector code is the textbook instance. If your `Abstraction` does real work instead of delegating, you do not have a Bridge — you have a leaky wrapper. If your `Implementor` exposes high-level concepts like `drawDashboard()`, you inverted the dependency and fused the hierarchies again."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "mermaid",
+      "title": "Bridge structure",
+      "caption": "Two hierarchies, one composition link.",
+      "code": "classDiagram\n  class Shape {\n    +Renderer renderer\n    +Shape(Renderer renderer)\n    +draw()\n    +resize(factor)\n  }\n  class Circle {\n    -radius : float\n    +draw()\n  }\n  class Square {\n    -side : float\n    +draw()\n  }\n  class Renderer {\n    <<interface>>\n    +renderCircle(radius) void\n    +renderSquare(side) void\n  }\n  class VectorRenderer {\n    +renderCircle(radius) void\n    +renderSquare(side) void\n  }\n  class RasterRenderer {\n    +renderCircle(radius) void\n    +renderSquare(side) void\n  }\n  Shape <|-- Circle\n  Shape <|-- Square\n  Shape o-- Renderer\n  Renderer <|.. VectorRenderer\n  Renderer <|.. RasterRenderer"
+    },
+    {
+      "type": "paragraph",
+      "text": "The flow is deliberately boring, and that is why it works. The client owns a `Shape`, not a `Renderer`. It calls `shape.draw()`. `Circle.draw()` does shape-specific logic — normalise radius, apply transform, check visibility — then delegates primitive work: `renderer.renderCircle(radius)`. It never branches on `if renderer is Raster`. The `Renderer` interface exposes only the narrow primitives the abstraction needs, nothing platform-specific. To add `Triangle`, you add one class `Triangle extends Shape` and call existing `renderTriangle()` or compose from lines — zero changes to `VectorRenderer` and `RasterRenderer` except the new primitive if truly new. To add `SVGRenderer`, you implement `Renderer` once and every `Shape` immediately works on it. Why this shape? Because **extension becomes additive, not multiplicative**. Inheritance version needs `VectorCircle`, `RasterCircle`, `VectorSquare`, `RasterSquare`, then three more classes for every new shape and N more for every new renderer. Bridge needs one per new concept. The cost is explicit: you must design the `Implementor` interface to be stable across platforms, and every call now crosses an indirection."
+    },
+    {
+      "type": "mermaid",
+      "title": "Delegation at runtime",
+      "caption": "Abstraction orchestrates, Implementor executes.",
+      "code": "flowchart LR\n  Client[Client code] --> Draw[Shape.draw]\n  Draw --> Prep[Shape logic: transform, validate, cache]\n  Prep --> Deleg[renderer.renderCircle radius]\n  Deleg --> Vec[VectorRenderer]\n  Deleg --> Ras[RasterRenderer]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The math forces the decision. With `S` abstractions and `P` implementations, naive inheritance costs `S x P` classes. Two shapes and two colors is 4 classes — tolerable. Five message types (`Text`, `Image`, `Video`, `File`, `Poll`) across four senders (`Email`, `SMS`, `Push`, `WhatsApp`) is 20 classes, and every new sender forces edits across 5 files. Bridge costs `S + P + 1` interfaces: 5 + 4 + 2 interfaces = 11 types, and adding a sender is one new class. That is why Bridge only pays off when **both dimensions actually grow**. If one side is fixed — one renderer forever, one OS forever — you built a Pimpl with extra ceremony for no benefit. Be honest in the interview: Bridge is justified by *observed variation on both axes*, not hypothetical flexibility. Name the trade-off out loud: fewer classes today versus cheaper growth tomorrow."
+    },
+    {
+      "type": "table",
+      "caption": "Bridge trade-offs, no sugar-coating.",
+      "headers": [
+        "Force",
+        "What Bridge buys you",
+        "What it costs you"
+      ],
+      "rows": [
+        [
+          "Extensibility",
+          "Add abstraction or implementation independently; Open-Closed holds on both sides",
+          "You must foresee the split; wrong split means refactoring two hierarchies"
+        ],
+        [
+          "Class count",
+          "Linear growth M+N instead of M*N",
+          "More interfaces and constructors up front; harder to navigate for tiny systems"
+        ],
+        [
+          "Runtime flexibility",
+          "Swap Implementor at runtime via constructor or setter; test with fakes easily",
+          "Indirection on every call; identity and lifecycle of Implementor must be managed"
+        ],
+        [
+          "Coupling",
+          "Client depends only on Abstraction; platform details hidden",
+          "Abstraction and Implementor are still coupled through the Implementor interface — change it and everything breaks"
+        ],
+        [
+          "Comprehension",
+          "Each hierarchy has single reason to change; small focused classes",
+          "New readers chase delegation across two files to understand one behavior"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bridge fails in exactly three ways, and each has a distinct symptom. First, **leaky abstraction**: `Circle` starts checking `if (renderer instanceof RasterRenderer)` to tweak line width. Symptom you see in review and in prod: platform `if`-chains reappear inside the abstraction, and adding a new renderer requires touching every shape — you rebuilt the M x N problem with extra steps. Fix is discipline: any platform conditional must move *inside* the Implementor or up into a strategy the abstraction owns explicitly. Second, **fat or unstable Implementor interface**: `Renderer` grows `renderCircle`, `renderCircleFast`, `renderCircleWithShadow`, `beginFrame`, `endFrame`, `setDPI`. Symptom: every new renderer is 300 lines of boilerplate, half the methods throw `UnsupportedOperationException`, and changing the interface triggers a rebuild of both hierarchies. This is the dominant real-world failure. The interface was designed from one platform, not from what abstractions genuinely need. Fix: keep primitives minimal and stable, push optional features into separate interfaces or capability queries. Third, **wrong granularity**: bridging at too low a level (per-pixel calls in a hot loop) turns indirection into measurable latency and allocation pressure. Symptom: profiler shows virtual dispatch + object hopping dominating a tight loop, or chatty cross-process calls because the Bridge boundary became a network boundary."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Symptom: adding one platform touches N abstraction files. Diagnosis: leak — abstraction branches on concrete Implementor type. Kill the `instanceof`, widen or narrow the interface.",
+        "Symptom: new Implementor requires stubbing 10 methods it does not need. Diagnosis: fat interface. Split into `Renderer` + `ShadowRenderer` or `FramedRenderer` capability interfaces.",
+        "Symptom: constructor takes 5 collaborators and client code manually wires `new Circle(new RasterRenderer(new GPUContext()))` everywhere. Diagnosis: missing factory or DI binding. Bridge needs a composition root; without it wiring rots.",
+        "Symptom: behavior differs subtly per combination and no test covers the matrix. Diagnosis: you bought combinatorial freedom but only test one diagonal. Test abstractions against a fake Implementor that records calls, and test each Implementor once against contract tests.",
+        "Symptom: Bridge boundary in hot path costs throughput. Diagnosis: granularity too fine. Batch primitives — `renderBatch(circles)` — or collapse the Bridge where profiling proves it hurts. Indirection is not free."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The subtlest failure is **over-bridging**: introducing Bridge for dimensions that never vary independently. You get two hierarchies, double the files, and every bug fix touches two places because the split was artificial — color was just a field, not a hierarchy. Rule I use: do not Bridge until you can name two concrete additions, one per side, that are plausible in the next year. `We will add Triangle and SVG export` justifies Shape-Renderer. `Maybe someday a new color` does not — that is a parameter, not a hierarchy. The trade-off every time: flexibility you use versus complexity you always pay."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "BridgeDemo.java",
+      "code": "interface Renderer {\n    void renderCircle(float radius);\n    void renderSquare(float side);\n}\n\nfinal class VectorRenderer implements Renderer {\n    public void renderCircle(float radius) {\n        System.out.println(\"vector circle r=\" + radius);\n    }\n    public void renderSquare(float side) {\n        System.out.println(\"vector square s=\" + side);\n    }\n}\n\nfinal class RasterRenderer implements Renderer {\n    public void renderCircle(float radius) {\n        System.out.println(\"raster circle r=\" + radius);\n    }\n    public void renderSquare(float side) {\n        System.out.println(\"raster square s=\" + side);\n    }\n}\n\nabstract class Shape {\n    protected final Renderer renderer;\n    protected Shape(Renderer renderer) {\n        if (renderer == null) throw new IllegalArgumentException(\"renderer required\");\n        this.renderer = renderer;\n    }\n    abstract void draw();\n}\n\nfinal class Circle extends Shape {\n    private final float radius;\n    Circle(float radius, Renderer renderer) {\n        super(renderer);\n        this.radius = radius;\n    }\n    @Override void draw() {\n        // Abstraction-side logic stays here: culling, transforms.\n        if (radius <= 0) return;\n        renderer.renderCircle(radius); // delegation: the bridge\n    }\n}\n\nfinal class Client {\n    public static void main(String[] args) {\n        Shape v = new Circle(2.0f, new VectorRenderer());\n        Shape r = new Circle(2.0f, new RasterRenderer());\n        v.draw();\n        r.draw(); // same abstraction, swapped implementation at runtime\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the code for what it forbids, not just what it allows. `Shape` takes `Renderer` in the constructor and stores it `final` — composition is mandatory, not optional, and swapping is explicit construction, not hidden `new RasterRenderer()` inside `Circle`. `Renderer` exposes primitives (`renderCircle`), not high-level workflows (`drawScene`), which keeps the interface stable when new shapes arrive. `Circle.draw()` validates and then delegates; it never knows which renderer it holds. Why this layout? Because the interview follow-up is always `add Triangle` or `add SVGRenderer`, and this layout makes each answer one class. The trade-off is visible too: to add `renderTriangle` you must touch the `Renderer` interface plus every existing renderer — Bridge isolates growth *within* the agreed primitives, it does not make interface evolution free."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Spot the Cartesian product",
+          "text": "Interviewer gives `Notification` x `Sender` or `View` x `OS` or `Shape` x `Renderer` and waits. Say it first: these are two axes changing for different reasons. Draw the M x N grid, then erase it with M + N. You get credit for naming the explosion before coding."
+        },
+        {
+          "title": "Name both hierarchies and the delegation contract",
+          "text": "State: Abstraction = TextMessage, VideoMessage. Implementor = EmailSender, SMSSender. Contract: `Message.send()` formats, then calls `sender.deliver(payload)`. Write the two interfaces before any concrete class. Interviewers fail candidates who start with concretes."
+        },
+        {
+          "title": "Code the bridge, not the subclasses",
+          "text": "Show constructor injection of Implementor into Abstraction, one concrete per side, and one client line that swaps implementations at runtime. That is the whole demonstration. Do not write all six combinations."
+        },
+        {
+          "title": "Defend the interface",
+          "text": "Expect: why is `deliver()` shaped this way? Answer with stability argument: minimal primitives, no sender-specific flags leaking up, capability split if needed. Offer the fake-implementor test plan."
+        },
+        {
+          "title": "Handle the follow-ups",
+          "text": "Add new abstraction, add new implementation, swap at runtime, contrast with Adapter and Strategy. For Adapter: it fixes an incompatible interface after the fact; Bridge is designed up front to separate axes. For Strategy: it swaps one algorithm; Bridge structures two whole hierarchies where the abstraction itself has refined variants."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Say this to stand out",
+      "text": "If they ask `why not just inheritance?`, answer: **inheritance binds both axes at compile time, so growth multiplies; Bridge binds at construction time, so growth adds**. Then prove it: count the classes before and after adding one shape and one renderer in each design."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail candidates"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Bridge is the same as Adapter. No. *Adapter makes incompatible interfaces work together after the fact*; Bridge is a deliberate up-front split into two hierarchies. Adapter wraps one class; Bridge structures many.",
+        "Bridge is the same as Strategy. No. *Strategy swaps a single algorithm behind one interface*. Bridge has refined abstractions on one side (Circle vs Square have different state and logic) plus independent implementations on the other. Strategy is one dimension; Bridge is two.",
+        "Bridge means any use of composition. No. *Delegating to a helper is not Bridge*. Bridge requires two parallel hierarchies that both get extended by subclassing. If only one side grows, it is just dependency injection.",
+        "Abstraction means abstract class. No. *Abstraction means high-level policy*, which can be an interface or a concrete class holding the Implementor. Implementor is likewise just the low-level mechanism interface.",
+        "More layers always help. No. *If one axis is fixed, Bridge doubles files for zero gain*. A color that is just data should be an enum field or a Strategy, not a hierarchy. Bridge earns its keep only when both sides genuinely vary."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use Bridge for two growing axes; use something simpler otherwise.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Use instead / note"
+      ],
+      "rows": [
+        [
+          "Views x platforms, Messages x senders, Shapes x renderers, Remotes x devices",
+          "Use Bridge",
+          "Design minimal Implementor primitives first; trade-off is interface-design effort for linear growth"
+        ],
+        [
+          "One side fixed forever (single DB, single OS)",
+          "Do not use",
+          "Plain polymorphism or Pimpl-style delegation; Bridge is ceremony without payoff"
+        ],
+        [
+          "Variation is data, not behavior (color value, label, threshold)",
+          "Do not use",
+          "Field, enum, or configuration; hierarchy per value is over-engineering"
+        ],
+        [
+          "Single swappable algorithm with no refined abstractions",
+          "Do not use",
+          "Strategy; Bridge needs refined Abstraction variants, not just one context"
+        ],
+        [
+          "Need to retrofit incompatible third-party class",
+          "Do not use",
+          "Adapter (or Adapter + Bridge if both problems exist); Bridge does not fix mismatched APIs"
+        ],
+        [
+          "Hot-loop primitives where virtual dispatch shows in profile",
+          "Use with care",
+          "Batch the Implementor calls or collapse the boundary; indirection has a runtime cost"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "My decision rule in design reviews is blunt: **two hierarchies, two rates of change, one stable narrow contract — or no Bridge**. If you cannot sketch the `Implementor` interface in five methods or fewer and keep it unchanged while adding two items per side, your split is wrong. Either the primitives are too high-level (leaking policy down) or too low-level (chatty and slow). Redesign the contract before writing concretes. And always provide the composition root — a factory or DI module that maps config to `new ConcreteAbstraction(new ConcreteImplementor())` — because a Bridge without obvious wiring becomes a maze where every client hand-rolls combinations. The pattern succeeds when a junior can add a new renderer without reading the shape code. If they cannot, you built documentation, not decoupling."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "**Bridge replaces inheritance across two orthogonal dimensions with composition between two hierarchies, so each side grows additively and implementations swap at runtime — at the cost of an extra indirection and a stable interface you must design carefully.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:02:16.245Z",
+    "problems": []
+  }
+}

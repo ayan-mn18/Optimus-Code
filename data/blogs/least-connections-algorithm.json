@@ -1,0 +1,254 @@
+{
+  "slug": "least-connections-algorithm",
+  "title": "Least Connections Algorithm",
+  "summary": "Least Connections routes to the server with fewest in-flight requests — a cheap, real-time proxy for load that beats round-robin on uneven work, at the cost of shared mutable state.",
+  "kind": "HLD",
+  "problemSlug": "least-connections-algorithm-90-198",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "⚖️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Load Balancing"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "How to Build Least Connections Algorithm - OneUptime",
+      "url": "https://oneuptime.com/blog/post/2026-01-30-least-connections-algorithm/view",
+      "source": "oneuptime.com",
+      "kind": "article"
+    },
+    {
+      "title": "Network Load Balancing: Round Robin vs Least Connections",
+      "url": "https://www.geeksforgeeks.org/computer-networks/network-load-balancing-round-robin-vs-least-connections/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Is the term \"least connections\" in load balancing algorithms misused?",
+      "url": "https://www.reddit.com/r/networking/comments/1iu997i/is_the_term_least_connections_in_load_balancing/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Least Connection - F5",
+      "url": "https://www.f5.com/glossary/least-connection",
+      "source": "f5.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Least Connections does not try to be fair. It tries to be **empty-seeking**: send the next request where the least work is already waiting. Active connection count is not perfect load, it is just the cheapest load signal a load balancer can maintain without asking the servers anything. You pay for that adaptivity with **state** — the balancer must track every in-flight request correctly — and every production failure of this algorithm traces back to that state being wrong, late, or contended."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "Least Connections is a **dynamic** balancing policy: on each arrival, pick the healthy backend with the minimum `active_count`. `active_count` is incremented when the balancer assigns a request to a server and decremented when that request completes, fails, or times out. That is the entire algorithm. No prediction, no sampling window, no central queue. The reason it works is that in most request-response systems queueing delay dominates service time under load, so the server with the shortest queue will usually complete the next request fastest. The trade-off is explicit: you get automatic reaction to slow servers, stragglers, and heterogeneous hardware, but you lose the statelessness that makes Round Robin trivially scalable and trivially correct. Every routing decision now depends on mutable counters that must be visible to all routing threads."
+    },
+    {
+      "type": "paragraph",
+      "text": "Contrast this with Round Robin, which is **blind rotation**: request `n` goes to server `n mod N`. Round Robin is correct even if the balancer crashes and restarts, because there is almost nothing to remember except an index. It distributes *arrivals* evenly, not *load* evenly. That distinction only matters when work is uneven — variable response sizes, slow database queries mixed with cache hits, long-lived WebSockets mixed with short API calls, or servers with different CPU and memory. When every request costs the same and every server is identical, Least Connections is pure overhead with zero benefit. When costs vary by 10x or servers differ, Round Robin systematically piles work onto the slowest node because it keeps feeding it at the same rate while it drains slower. Least Connections backs off automatically because that slow node accumulates a higher active count. That is why you choose it: not for fairness, for **drain-rate awareness**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The balancer maintains a table: `server -> active_inflight`. On request arrival it filters to healthy servers, selects the minimum, increments that server's counter, then forwards. On response, error, or timeout it decrements. The critical design choice is **where the counter lives**. Almost every implementation counts at the balancer, not by asking the server, because asking adds a round trip to the hottest path and fails exactly when the server is overloaded. Counting locally is an approximation: it measures what the balancer *sent*, not what the server is still *executing*. That approximation is good enough and fast enough, which is the trade-off you are accepting. The decrement path is where correctness lives. If you forget to decrement on client disconnect, balancer timeout, retry, or backend reset, the counter leaks upward forever and a healthy server looks permanently busy until it is starved."
+    },
+    {
+      "type": "mermaid",
+      "title": "Least connections routing loop",
+      "caption": "Balancer tracks in-flight counts, picks minimum, increments on dispatch and decrements on completion.",
+      "code": "flowchart TD\n    Client[Client request arrives] --> LB[Balancer: read active table]\n    LB --> Filter{Filter to healthy backends}\n    Filter --> Pick[Pick server with min active_count]\n    Pick --> S1[Server A: 14 active]\n    Pick --> S2[Server B: 3 active]\n    Pick --> S3[Server C: 8 active]\n    S2 --> Fwd[Forward to B, active_B = 4]\n    Fwd --> Done[On response or timeout: active_B = 3]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two details separate a toy from a production implementation. First, **tie-breaking and concurrency**. With `N` routing threads, two threads can read the same minimum and both slam the same server before either increments. You need either an atomic increment-and-pick, a single-threaded picker, or power-of-two-choices sampling to avoid that race. Second, **health gating must happen before minimum selection**, not after. Picking the least-loaded server and *then* discovering it is failing means every new request briefly piles onto a dead node because its counter is low — nothing is completing, but nothing new is counted either if probes are broken. Correct order is: exclude unhealthy and draining nodes, then take the minimum of what remains. The trade-off: a strictly correct atomic picker becomes a contention bottleneck at high request rates, so high-throughput balancers deliberately accept slightly stale counts to stay lock-free."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Weighted least connections"
+    },
+    {
+      "type": "paragraph",
+      "text": "Pure least connections assumes equal capacity. When servers differ — 4-core vs 16-core, old vs new instance type, local SSD vs remote disk — you want **weighted** least connections: pick the server minimizing `active_count / weight`. Weight encodes capacity. A server with weight 4 can hold four times the in-flight work of weight 1 before it looks equally loaded. Why this formula and not `active - weight` or round-robin weights? Because division normalizes utilization, so the decision means *pick lowest utilization*, which is the quantity that actually predicts queueing. Trade-off: weights are static config trying to describe dynamic capacity. Set them wrong and you have built a permanent skew machine. Prefer auto-weights from CPU or explicit draining over hand-tuned constants whenever you can."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of least connections",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Adapts to slow servers and uneven request cost",
+          "Must maintain accurate per-server counters",
+          "Adaptivity requires state; state requires correct increment/decrement on every edge case"
+        ],
+        [
+          "No server cooperation needed",
+          "Counter is only a proxy for real load",
+          "A server can have few connections but be CPU-saturated by one heavy request"
+        ],
+        [
+          "Simple to reason about and operate",
+          "Picker is a shared hotspot under concurrency",
+          "Atomic min-selection serializes routing threads; stale reads fix throughput but cause herding"
+        ],
+        [
+          "Handles heterogeneity with weights",
+          "Weights go stale as capacity shifts",
+          "Autoscaling, noisy neighbors, and deploys change true capacity faster than config changes"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Least Connections fails when the count stops meaning load. That happens four ways, and each has a distinct symptom you can alert on. The interview signal here is not reciting a list, it is connecting **broken counter -> visible traffic shape**. If you can say *if decrement leaks, this server goes dark while dashboards show it idle*, you pass. The underlying trade-off in every failure is the same: the balancer chose local speed over global truth, so any divergence between its table and reality compounds until traffic visibly skews."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Counter leak on timeout or client abort.** Decrement is missed when the client disconnects first or the balancer times out while the backend still runs. Symptom: one server's active count climbs monotonically and it receives progressively *less* traffic until it looks dead, while others absorb the load. Fix: decrement on every terminal transition, not just on clean response.",
+        "**Herding onto a newly recovered server.** A server returning to service reports zero active while others sit at hundreds, so every picker instantly selects it. Symptom: latency spike and immediate re-failure of just-recovered nodes after every deploy or restart. Fix: slow-start, ramp weights, or randomized choice among the bottom-k least loaded.",
+        "**Long-lived connections poison the signal.** WebSockets, streaming, or keep-alive multiplexed sessions hold a connection open for hours with near-zero cost. Symptom: new short requests avoid the servers holding idle long connections, creating persistent imbalance even though CPU is free. Fix: count *in-flight requests*, not TCP connections, or track the two separately.",
+        "**Stale view across multiple balancers.** With several balancer replicas each holding a local table, each thinks the others' traffic does not exist. Symptom: synchronized picks, oscillation, and poor tail latency that vanishes in single-balancer tests. Fix: consistent hashing for affinity, shared counter store, or power-of-two-choices to decorrelate picks.",
+        "**Heavy-request collapse.** Ten video transcodes on server A count the same as ten cache hits on server B. Symptom: least-loaded by count is actually most-loaded by CPU, and p99 explodes while connection graphs look balanced. Fix: move to least-response-time, outstanding-request weights by cost class, or separate pools by workload."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The nastiest of these is herding, because Least Connections *creates* it by design. The policy is greedy: everyone agrees on who is least loaded at the same instant. Under bursty arrivals that unanimity becomes a thundering herd. Production systems blunt the greed deliberately: pick two servers at random and take the lesser of the two, jitter ties, or add a small penalty proportional to recently assigned requests. Each of those sacrifices perfect minimality for stability. That is the correct trade: a balancer that picks the second-best server 10% of the time but never herds will outperform a theoretically optimal picker that collapses a cold server every five minutes. Name that trade-off explicitly in design discussion."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "least_connections.py",
+      "code": "import random\nimport threading\n\nclass LeastConnections:\n    def __init__(self, backends: list[str]):\n        self._lock = threading.Lock()\n        self._active: dict[str, int] = {b: 0 for b in backends}\n        self._healthy: set[str] = set(backends)\n\n    def pick(self) -> str:\n        # Power-of-two-choices: decorrelates concurrent pickers.\n        # Trade-off: sometimes picks second-best to avoid herd + lock hold time.\n        with self._lock:\n            candidates = [b for b in self._active if b in self._healthy]\n            if not candidates:\n                raise RuntimeError(\"no healthy backends\")\n            a, b = random.sample(candidates, min(2, len(candidates)))\n            chosen = a if self._active[a] <= self._active[b] else b\n            self._active[chosen] += 1\n            return chosen\n\n    def release(self, backend: str) -> None:\n        # Must be called on EVERY terminal path: response, error, timeout, abort.\n        with self._lock:\n            self._active[backend] = max(0, self._active.get(backend, 0) - 1)\n\n    def set_healthy(self, backend: str, healthy: bool) -> None:\n        with self._lock:\n            if healthy:\n                self._healthy.add(backend)\n            else:\n                self._healthy.discard(backend)"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet shows why the lock scope matters. Increment happens inside the same critical section as selection, otherwise two threads read the same minimum and double-assign. `release` is idempotent-clamped and must be wired to timeouts and disconnects, not just success paths, or the table drifts. The power-of-two-choices sampling looks like a compromise — and it is. Full scan for the global minimum is `O(N)` and maximally herdy; sampling two is `O(1)` and provably close to optimal while breaking unanimity. High-scale balancers accept that small optimality loss because the alternative is holding a lock across a full scan on every request, which caps throughput exactly where you need it most."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with workload shape, not algorithm name",
+          "text": "Say: if requests are uniform and servers identical, Round Robin wins on simplicity. If request cost varies or servers are heterogeneous, active count predicts queueing delay and Least Connections wins. Interviewers reward this conditional answer over reciting a definition."
+        },
+        {
+          "title": "Draw the counter lifecycle",
+          "text": "Sketch client to balancer to server, label increment on dispatch and decrement on response, timeout, and client abort. Explicitly call out the leak case. This is where most candidates lose points — they describe picking but forget releasing."
+        },
+        {
+          "title": "Handle concurrency and scale",
+          "text": "Explain the race between pick and increment, then offer mitigations: atomic update, sharded pickers, stale reads, or power-of-two-choices. State the trade-off: strict correctness serializes the hot path, so production systems tolerate slightly stale minima."
+        },
+        {
+          "title": "Extend to weights and health",
+          "text": "Introduce `active / weight` for unequal capacity and insist health filtering happens before selection. Add slow-start for recovered nodes. This shows you have operated the algorithm, not just read about it."
+        },
+        {
+          "title": "Know when to abandon it",
+          "text": "Close by naming workloads where connection count lies: multiplexed keep-alive, WebSockets, or CPU-heavy requests with low concurrency. Propose the replacement: least response time, load-aware routing with server feedback, or separate pools by request class."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Connections equals requests.** False whenever keep-alive, pooling, or multiplexing is in use. One TCP connection can carry thousands of requests or one idle WebSocket. Always clarify whether you count transport connections or in-flight application requests — they diverge sharply.",
+        "**Least connections means equal utilization.** Only if weights match true capacity and request costs are comparable. A low connection count on a saturated CPU is still saturated. The counter measures queue length, not work.",
+        "**It automatically handles different server sizes.** Only the weighted variant does, and only if weights are correct. Unweighted least connections across mixed hardware systematically overloads small servers because equal counts mean unequal strain.",
+        "**It needs server-side agents.** No. The standard design counts at the balancer precisely to avoid extra hops and failure modes. Server-reported load enables smarter policies like peak-EWMA or queue-aware routing, but that is a different algorithm with different costs."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it — and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Selection guide for system design",
+      "headers": [
+        "Scenario",
+        "Use least connections?",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Variable request latency, identical servers",
+          "Yes",
+          "Active count tracks drain rate; automatically backs off slow nodes"
+        ],
+        [
+          "Mixed server capacities",
+          "Yes, weighted",
+          "Divide by weight to compare utilization, not raw counts"
+        ],
+        [
+          "Long-lived sessions plus short API calls on one pool",
+          "No — split pools or count requests",
+          "Idle long connections skew counts away from real CPU load"
+        ],
+        [
+          "Multiplexed single connection per server",
+          "No as defined — count outstanding requests",
+          "TCP count is constant; request count is the only meaningful signal"
+        ],
+        [
+          "Truly uniform fast requests at extreme rate",
+          "No — use Round Robin",
+          "Stateless rotation has higher throughput and zero herd risk for no adaptivity benefit"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Route to the healthy server with fewest in-flight requests because that minimizes expected queueing, using weights for unequal capacity — and guard the counters, tie-breaks, and slow-start, because every outage of this algorithm is stale or leaked state.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:14:50.815Z",
+    "problems": []
+  }
+}

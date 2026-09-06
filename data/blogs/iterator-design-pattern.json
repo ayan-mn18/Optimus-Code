@@ -1,0 +1,300 @@
+{
+  "slug": "iterator-design-pattern",
+  "title": "Iterator Design Pattern",
+  "summary": "Iterator extracts traversal state into its own object so collections store data and iterators decide order.",
+  "kind": "LLD",
+  "problemSlug": "iterator-design-pattern-36-76",
+  "topic": "Behavioral Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": " f501",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Behavioral",
+    "Iterator"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Iterator - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/iterator",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Iterator Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/iterator-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Iterator Design Pattern in Java. Introduction | by Kalana De Silva",
+      "url": "https://medium.com/@kalanamalshan98/iterator-design-pattern-in-java-e058d7285f33",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "The Iterator Pattern Explained and Implemented in Java | Geekific",
+      "url": "https://www.youtube.com/watch?v=QCWJWfuAfJc",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A collection should answer **what it holds**, never **in what order you see it**. Iterator moves position, order, and termination into a separate cursor object. That separation is the entire pattern — get it, and every variation is obvious. Miss it, and you will keep stuffing traversal logic into storage classes until they rot."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Iterator actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Iterator is a behavioral contract for sequential access: a client asks for the next element until there is none, without knowing whether the backing store is an array, a linked structure, a tree, a paged file, or a network stream. The aggregate exposes only a factory method such as `iterator()` or `createIterator()`. The returned object owns two responsibilities: knowing whether traversal is finished, and producing the next element while advancing its own private state. Nothing else. The reason this narrow interface survives across languages is that it decouples two rates of change that should never be coupled: storage layout changes because of performance and capacity, traversal order changes because of product behavior. When both live in one class, every new order — depth-first today, breadth-first tomorrow, filtered or snapshot the week after — forces you to edit, retest, and risk breaking storage. When they are split, you add a new iterator class and leave the collection untouched. The trade-off is explicit from the start: you buy Open-Closed traversal at the price of more small classes."
+    },
+    {
+      "type": "paragraph",
+      "text": "The minimal contract is `hasNext()` plus `next()`, with `remove()` or `reset()` only when the domain justifies mutation through the cursor. `hasNext()` must be idempotent and cheap — calling it twice must not skip an element. `next()` must either return the next element and advance, or fail loudly when exhausted; silently returning null or wrapping around is a contract violation that poisons every `while` loop built on top. A correct iterator owns its position independently of the collection. That is why two iterators over the same list can sit at different indexes, why one can be filtering evens while another yields everything, and why destroying an iterator must never destroy the collection. If your iterator cannot support two live instances over one aggregate, you did not build an iterator — you built a shared index variable with a fancy name."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: separate cursor from storage"
+    },
+    {
+      "type": "paragraph",
+      "text": "The mechanism has four roles and one strict direction of dependency. The client depends only on the `Iterator` abstraction and the `Aggregate` factory. The concrete aggregate knows how to build an iterator suited to its internals, but it never exposes those internals. The concrete iterator holds a reference — or a snapshot, or a stack, or a page token — sufficient to compute the next element without asking the client for help. The reason the aggregate creates the iterator, rather than the client constructing it directly, is encapsulation: only the tree knows that depth-first needs an explicit stack, only the paged store knows the continuation token format. The client just says `give me elements in this order` and loops. You pay for this indirection with an extra allocation per traversal and a virtual call per element, which is negligible for object graphs and very deliberate for high-throughput scans — name that cost when you choose this shape."
+    },
+    {
+      "type": "mermaid",
+      "title": "Iterator structure",
+      "caption": "Aggregate creates iterators; client depends only on abstractions.",
+      "code": "classDiagram\n  class Aggregate {\n    <<interface>>\n    +createIterator() Iterator\n  }\n  class ConcreteAggregate {\n    -items : List\n    +createIterator() Iterator\n    +add(item) void\n  }\n  class Iterator {\n    <<interface>>\n    +hasNext() bool\n    +next() T\n  }\n  class ConcreteIterator {\n    -position : int\n    -source : ConcreteAggregate\n    +hasNext() bool\n    +next() T\n  }\n  class Client {\n    +traverse() void\n  }\n  Aggregate <|.. ConcreteAggregate\n  Iterator <|.. ConcreteIterator\n  ConcreteAggregate --> ConcreteIterator : creates\n  Client --> Aggregate\n  Client --> Iterator"
+    },
+    {
+      "type": "paragraph",
+      "text": "The critical detail is where state lives. Position, remaining count, traversal stack, filter predicate state, and snapshot version all belong inside the iterator instance, never in the collection and never in static fields. That placement is what makes concurrent traversals independent: iterator A advancing its index does not move iterator B. For linear structures the state is trivial — an index and a reference to the backing array. For trees it is a stack or queue seeded with the root. For external sources it is a buffer plus an offset plus a token for the next page. The reason beginners get this wrong is they store `currentIndex` on the collection itself, which works for one loop and collapses the moment nested loops or two threads traverse together. If you can answer where would a second iterator keep its state without interfering with the first, your design is correct. If you cannot, it is broken regardless of whether the happy-path demo passes."
+    },
+    {
+      "type": "mermaid",
+      "title": "Traversal protocol",
+      "caption": "hasNext guards every next call; termination is explicit.",
+      "code": "flowchart TD\n  Start([Client obtains iterator]) --> Check{hasNext?}\n  Check -->|true| Next[next returns element]\n  Next --> Advance[iterator advances internal cursor]\n  Advance --> Check\n  Check -->|false| Done([Terminate loop])"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What Iterator buys and what it charges.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why the trade is usually worth it"
+      ],
+      "rows": [
+        [
+          "Uniform traversal over different stores",
+          "Extra class per traversal variant",
+          "Client code stops branching on concrete types; new orders do not edit old code"
+        ],
+        [
+          "Multiple independent cursors on one collection",
+          "Per-iterator state and allocation",
+          "Nested loops and parallel readers work; shared-index designs silently corrupt"
+        ],
+        [
+          "Lazy evaluation and early exit",
+          "Harder reasoning about timing and failures",
+          "You can stop after 10 of 10M items without materializing the rest"
+        ],
+        [
+          "Single Responsibility: storage vs order",
+          "Indirection cost per element",
+          "Storage can change layout without rewriting every loop; one virtual call is cheap versus a rewrite"
+        ],
+        [
+          "Filter, transform, compose via decorators",
+          "Stacked wrappers obscure stack traces",
+          "A filtering iterator reuses any base iterator instead of forking the collection"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The dominant cost is class proliferation, and you should say so out loud. A tree with depth-first, breadth-first, in-order, and snapshot variants is four iterator classes, each with its own cursor discipline to test. That is intentional: the alternative is four traversal methods bloating the tree with stacks, queues, and visited sets it has no business owning. The deeper reason to accept the proliferation is risk isolation. A bug in breadth-first order lives in one small class with one stack discipline; a bug in a 600-line collection with traversal mixed into insertion and deletion can corrupt storage itself. The second cost is performance honesty. Iterator adds allocation plus a call per element, which does not matter for domain objects but does matter for tight numeric scans over primitive arrays — there, exposing an index loop or a bulk `forEach` avoids boxing and branch overhead. Choose Iterator for flexibility and uniformity; deliberately bypass it when profiling proves the per-element overhead dominates."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic production failure is concurrent modification during traversal. One thread iterates a playlist while another adds or removes a track. With a live-view iterator over the mutable list, the symptom is either skipped elements, duplicated elements, `IndexOutOfBoundsException`, or an explicit fail-fast `ConcurrentModificationException` depending on implementation. The reason is that the iterator captured a reference to mutable state plus a position that is only valid for the layout at creation time. Fail-fast detection — storing an expected modification count and comparing on every `next()` — converts silent corruption into a loud exception, which is better but still a crash. Snapshot iterators copy references at creation and therefore iterate stale but consistent data; copy-on-write variants do the same at higher memory cost. The trade-off you must name is freshness versus safety: live iterators see writes but can break, snapshots never break but can lie about the present."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Fail-fast explosion under load:** symptom is intermittent `ConcurrentModificationException` in logs during iteration plus mutation. Cause is a live iterator without external synchronization. Fix is snapshot, copy-on-write, or explicit locking around the whole loop — not catching the exception.",
+        "**Stale snapshot silently serving old data:** symptom is a user removes an item yet the in-progress export still contains it. Cause is snapshot semantics the caller did not expect. Fix is documenting snapshot vs live in the factory method name, like `snapshotIterator()` versus `liveIterator()`.",
+        "**Leaking resource in lazy iterators:** symptom is exhausted connection pools or open file handles after partial traversal. Cause is an iterator over a cursor, stream, or paged API that only releases on full exhaustion. Fix is `AutoCloseable` iterators plus try-with-resources, or a `close()` the client must call on early exit.",
+        "**Non-idempotent `hasNext()` skipping elements:** symptom is every other element missing. Cause is `hasNext()` advancing the cursor or prefetching without caching. Fix is prefetch-once-and-cache discipline: `hasNext()` fills a one-element buffer, `next()` drains it.",
+        "**Shared mutable cursor:** symptom is nested loops producing wrong results or two threads interfering. Cause is position stored on the collection instead of the iterator. Fix is moving all traversal state into the iterator instance."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The second family of failures comes from lazy iterators that hold expensive resources. An iterator over database pages, S3 listings, or a socket stream looks like an in-memory list to the caller, which is exactly the danger: the caller `breaks` after five elements and never releases the underlying cursor. In production you see connection starvation, file-descriptor growth, or rising tail latency as pages are fetched one round-trip at a time inside what looked like a simple `for` loop. The reason Iterator hides latency is also why it must expose lifecycle. If iteration can touch IO, make the iterator closeable, prefetch in pages rather than one row per `next()`, and surface IO failures through the traversal contract instead of swallowing them. The trade-off is transparency versus convenience: a pure in-memory iterator needs no cleanup, an IO-backed one that pretends otherwise will leak. Say which kind you built in the interface name and docs."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Decide modification semantics up front",
+      "text": "Every interviewer will ask what happens if the collection changes mid-iteration. Never answer it depends. Pick one: **fail-fast**, **weakly consistent**, or **snapshot**, and justify it. Fail-fast is cheapest to build and loudest to debug. Snapshot costs memory but gives repeatable reads. Weakly consistent never throws but may skip or repeat. Naming the choice is what passes the round."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes it concrete"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "BookCollection.java",
+      "code": "import java.util.*;\n\ninterface SimpleIterator<T> {\n    boolean hasNext();\n    T next();\n}\n\ninterface BookAggregate {\n    SimpleIterator<String> iterator();\n}\n\n// Concrete aggregate hides ArrayList; client never sees it.\nfinal class Library implements BookAggregate {\n    private final List<String> books = new ArrayList<>();\n    private int modCount = 0;\n\n    void addBook(String title) {\n        books.add(title);\n        modCount++;\n    }\n\n    @Override\n    public SimpleIterator<String> iterator() {\n        // Snapshot: consistent view, immune to later adds.\n        // Trade-off: O(n) copy at creation for O(1) safe traversal.\n        return new SnapshotBookIterator(List.copyOf(books));\n    }\n\n    public SimpleIterator<String> liveIterator() {\n        return new LiveBookIterator(this);\n    }\n\n    private static final class SnapshotBookIterator implements SimpleIterator<String> {\n        private final List<String> snapshot;\n        private int pos = 0;\n        SnapshotBookIterator(List<String> snapshot) { this.snapshot = snapshot; }\n        @Override public boolean hasNext() { return pos < snapshot.size(); }\n        @Override public String next() {\n            if (!hasNext()) throw new NoSuchElementException(\"exhausted\");\n            return snapshot.get(pos++);\n        }\n    }\n\n    // Live view with fail-fast detection.\n    private static final class LiveBookIterator implements SimpleIterator<String> {\n        private final Library source;\n        private final int expectedMod;\n        private int pos = 0;\n        LiveBookIterator(Library source) {\n            this.source = source;\n            this.expectedMod = source.modCount;\n        }\n        private void checkModified() {\n            if (expectedMod != source.modCount)\n                throw new ConcurrentModificationException(\"library mutated during traversal\");\n        }\n        @Override public boolean hasNext() { checkModified(); return pos < source.books.size(); }\n        @Override public String next() {\n            checkModified();\n            if (!hasNext()) throw new NoSuchElementException(\"exhausted\");\n            return source.books.get(pos++);\n        }\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This example makes two deliberate choices worth defending. First, the iterators are `private static` nested classes created only through the aggregate factory. The reason is that only `Library` knows whether a snapshot copy or a live index is valid; letting clients construct iterators directly would leak the `ArrayList` representation and freeze future storage changes. Second, both modification policies are exposed as separate factory methods instead of one ambiguous `iterator()`. The snapshot version pays an upfront copy so long exports never throw and never see partial writes; the live version pays nothing upfront but throws loudly on mutation so corruption never goes silent. That naming is the design: callers choose freshness or stability at the call site. If you need lazy filtering later, you wrap either iterator in a decorator without touching `Library` at all."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "TreeIterators.java",
+      "code": "import java.util.*;\n\nfinal class TreeNode<T> {\n    T value; TreeNode<T> left, right;\n    TreeNode(T v) { this.value = v; }\n}\n\n// Same tree, two orders, zero changes to TreeNode.\nfinal class DepthFirstIterator<T> implements SimpleIterator<T> {\n    private final Deque<TreeNode<T>> stack = new ArrayDeque<>();\n    DepthFirstIterator(TreeNode<T> root) { if (root != null) stack.push(root); }\n    @Override public boolean hasNext() { return !stack.isEmpty(); }\n    @Override public T next() {\n        if (!hasNext()) throw new NoSuchElementException(\"exhausted\");\n        TreeNode<T> n = stack.pop();\n        if (n.right != null) stack.push(n.right);\n        if (n.left != null) stack.push(n.left);\n        return n.value;\n    }\n}\n\nfinal class BreadthFirstIterator<T> implements SimpleIterator<T> {\n    private final Queue<TreeNode<T>> queue = new ArrayDeque<>();\n    BreadthFirstIterator(TreeNode<T> root) { if (root != null) queue.add(root); }\n    @Override public boolean hasNext() { return !queue.isEmpty(); }\n    @Override public T next() {\n        if (!hasNext()) throw new NoSuchElementException(\"exhausted\");\n        TreeNode<T> n = queue.remove();\n        if (n.left != null) queue.add(n.left);\n        if (n.right != null) queue.add(n.right);\n        return n.value;\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "The tree example is the proof that the pattern earns its keep. `TreeNode` holds only value plus children — no stacks, no queues, no visited flags, no traversal methods. Depth-first needs a LIFO stack, breadth-first needs a FIFO queue, yet both implement the same two-method interface, so the same client loop works unchanged for either order. The trade-off is that each iterator allocates its own auxiliary structure proportional to the frontier size: depth-first holds O(height), breadth-first holds O(width), which for a wide tree is dramatically larger. That cost belongs in the iterator precisely because it varies by order; stuffing both a stack and a queue into every node would tax all trees for traversals most never use. When the interviewer asks for a third order — say filtered leaves only — you add a third class and touch nothing existing."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the smell, not the definition",
+          "text": "Say: this collection will need more than one traversal order, or its storage will change. Therefore traversal state must leave the collection. Interviewers score the trigger recognition higher than reciting the UML."
+        },
+        {
+          "title": "Draw the four roles and the factory edge",
+          "text": "Sketch Aggregate, ConcreteAggregate, Iterator, ConcreteIterator. Emphasize that the client depends only on abstractions and that only the aggregate constructs its iterators. This one arrow is what protects encapsulation."
+        },
+        {
+          "title": "State cursor placement and hasNext discipline",
+          "text": "Declare that position lives in the iterator instance, that hasNext is idempotent, and that next throws when exhausted. Then show two live iterators traversing independently — that demo kills the shared-index mistake instantly."
+        },
+        {
+          "title": "Answer the mutation question before it is asked",
+          "text": "Proactively choose fail-fast, snapshot, or weakly consistent and name the cost. Say what the symptom looks like in production. Candidates who wait to be asked sound like they never shipped one."
+        },
+        {
+          "title": "Extend live to prove Open-Closed",
+          "text": "Offer a filtering or reverse or paged iterator as a decorator over the base one, without editing the collection. That five-minute extension is what separates a Medium pass from a strong hire signal."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Iterator is just a for-loop helper** — No. A loop is syntax; Iterator is a separation of responsibilities that lets storage and order evolve independently and lets multiple cursors coexist.",
+        "**One iterator per collection is enough** — Wrong. The power is N iterators per collection with different orders and positions. If your design allows only one active cursor, you built a global index.",
+        "**`hasNext()` may advance state** — Never. Advancing in `hasNext()` double-steps when clients poll defensively. Prefetch and cache; advance only in `next()`.",
+        "**Iterators should expose indexes or internals for speed** — That defeats the purpose. Exposing the backing array lets callers bypass the contract and couples them to a layout you will want to change. Keep the narrow interface.",
+        "**External iteration is always better than internal `forEach`** — Each wins somewhere. External cursors allow early exit, composition, and multiple simultaneous traversals. Internal iteration allows simpler exception handling and easier parallelization. Know when to switch."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The nested-loop test",
+      "text": "If your iterator stores position on the collection, nested loops break: the inner loop resets the outer loop's index. The fix is always the same — **state goes in the iterator instance**. Mention this test unprompted; it signals you have debugged this before."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to avoid it"
+    },
+    {
+      "type": "table",
+      "caption": "Decision guide: Iterator is default for object traversal, not for everything.",
+      "headers": [
+        "Use it when",
+        "Avoid it when",
+        "Instead do this"
+      ],
+      "rows": [
+        [
+          "Clients must traverse without knowing storage",
+          "Collection is a trivial fixed array scanned once",
+          "Expose a simple indexed loop; the abstraction adds nothing"
+        ],
+        [
+          "Multiple orders over one structure are coming",
+          "Per-element virtual-call overhead is proven hot",
+          "Use bulk access, primitive cursors, or internal forEach"
+        ],
+        [
+          "Multiple simultaneous or nested traversals needed",
+          "Traversal must be transactional with storage mutation",
+          "Couple the operation to the store with an explicit scan-and-apply method"
+        ],
+        [
+          "Lazy, paged, or infinite sequences with early exit",
+          "Iteration spans IO without a cleanup contract",
+          "Do not expose bare Iterator; expose CloseableIterator or Stream with lifecycle"
+        ],
+        [
+          "You want filter/map composition over any source",
+          "Language already provides native iteration idiom",
+          "Implement the native interface instead of inventing a parallel one"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The decision rule is blunt: reach for Iterator when order varies independently of storage, or when callers must remain ignorant of storage. That covers trees with pluggable traversals, composite UI hierarchies, paged service listings, and any library type consumed by code you do not control. Avoid it when the traversal is single, performance-critical, and inseparable from storage internals — a tight image-processing kernel over a byte buffer does not need four iterator classes and a factory. Also avoid exposing a bare iterator over resources that require cleanup unless you also expose the cleanup; a naked `hasNext`/`next` over a database cursor is a leak waiting for an early `break`. The trade-off to voice in the room is flexibility and uniformity against allocation, indirection, and lifecycle complexity — and you choose per traversal, not per codebase."
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Iterator puts traversal position and order in a separate cursor object created by the collection, so clients loop uniformly, multiple orders coexist, and storage can change without rewriting callers — at the cost of extra classes and explicit modification semantics.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:57:50.581Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,309 @@
+{
+  "slug": "weighted-round-robin",
+  "title": "Weighted Round Robin",
+  "summary": "Weighted Round Robin enforces static proportional fairness across unequal backends — how classical, interleaved, and smooth variants work, what they cost, and when they silently fail.",
+  "kind": "HLD",
+  "problemSlug": "weighted-round-robin-90-198",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "⚖️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Load Balancing",
+    "Scheduling"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Weighted round robin - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Weighted_round_robin",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Round Robin vs Weighted Round Robin Explained - YouTube",
+      "url": "https://www.youtube.com/shorts/-rBOAGxsf54",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is Weighted Round Robin (WRR)? - ITU Online IT Training",
+      "url": "https://www.ituonline.com/tech-definitions/what-is-weighted-round-robin-wrr/",
+      "source": "ituonline.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Round Robin Load Balancing? Definition & FAQs",
+      "url": "https://www.vmware.com/topics/round-robin-load-balancing",
+      "source": "vmware.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Weighted Round Robin buys **proportional fairness with zero runtime knowledge of load**. You pre-declare capacity as integers and the balancer enforces `share_i = w_i / sum(w)` blindly. That is the entire power and the entire lie: it works exactly as long as weights still describe reality, and it fails silently the moment they do not. Choose it when capacity ratios are stable and requests are roughly interchangeable; reject it when load is dynamic or cost per request varies wildly."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Weighted Round Robin (WRR) is a deterministic scheduler over `N` backends, queues, or tasks where each target `i` owns a positive integer weight `w_i`. Over one full cycle of `S = sum(w_i)` selections, target `i` is selected exactly `w_i` times. Plain round robin is the degenerate case where every `w_i = 1`. There is no probing, no latency tracking, no queue-depth check, and no least-connections counter in the decision path. The selector keeps only a position pointer plus a few integers, looks up the next entry in a precomputed sequence, and forwards. That statelessness is why it survives at packet schedulers, userspace proxies, DNS rotation, and partition assignment: the per-pick cost is `O(1)`, the memory is `O(S)` at worst and `O(N)` with a deficit counter, and behavior is perfectly reproducible from the weight vector alone."
+    },
+    {
+      "type": "paragraph",
+      "text": "The contract is long-term ratio, not short-term smoothness and not equal latency. If backends `A,B,C` carry weights `3,2,1`, then over any multiple of `6` consecutive picks `A` gets `50%`, `B` gets `33%`, and `C` gets `17%` — nothing more is promised. Weights are integers deliberately: integers let you express ratios like `15:10:5` as `3:2:1` without floating point, expand them into a repeatable slot table, or drive a deficit accumulator without rounding drift. The trade-off is quantization: you cannot express `1.15x` capacity without scaling all weights up, and scaling them up inflates the cycle length `S` and the scheduling table. Pick the smallest integers that preserve the ratio you actually measured, not the raw megahertz numbers from a spec sheet."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: two ways to spend the same weights"
+    },
+    {
+      "type": "paragraph",
+      "text": "Classical WRR spends each weight in one burst. The pointer walks `i = 0..N-1` and, when it lands on `i`, emits up to `w_i` requests back-to-back before moving on, skipping empty queues. With weights `5,1,1` the wire order is `A A A A A B C`, then repeat. Implementation is trivial — a nested loop and a counter — which is why firmware and simple balancers love it. The trade-off is burstiness: `A` absorbs five arrivals in a row, so its queue depth spikes, its `p99` climbs, and connection reuse skews, even though the 7-request average is exactly right. If every unit of work has identical cost and backends are deeply buffered, you will never notice. If requests block, hold connections, or trigger GC pauses, that burst is the dominant latency effect and classical WRR is the wrong variant."
+    },
+    {
+      "type": "mermaid",
+      "title": "WRR selection loop",
+      "caption": "Deterministic selector: position advances regardless of backend health unless a separate checker removes the node.",
+      "code": "flowchart TD\n  R[New request arrives] --> S[Selector holds position p]\n  S --> L[Lookup slot p in weighted sequence]\n  L --> A[Backend A selected 3 of 6 slots]\n  L --> B[Backend B selected 2 of 6 slots]\n  L --> C[Backend C selected 1 of 6 slots]\n  A --> F[Forward request]\n  B --> F\n  C --> F\n  F --> N[Advance p = next slot]\n  N --> S"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interleaved and smooth WRR spend the same weights spread across the cycle to fix that burst. Interleaved WRR splits one cycle into `max(w_i)` rounds and lets target `i` emit at most once per round for its first `w_i` rounds, turning `5,1,1` into something like `A A B A C A A` depending on the exact interleave. Smooth WRR goes further with a deficit accumulator: on each pick, add `w_i` to every target's `current_i`, select the largest, then subtract `S` from the winner. The sequence for `3,2,1` becomes `A B A C B A` — every prefix stays close to the target ratio, and no backend ever takes more than one consecutive hit unless its weight exceeds half the total. The trade-off is a few more integer operations and slightly harder reasoning about exact order, in exchange for dramatically lower burst queueing. This is why any request path with variable service time should default to the smooth form: same long-term fairness, far better short-term pacing, for essentially zero extra state."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "smooth_wrr.py",
+      "code": "class SmoothWRR:\n    def __init__(self, weights: dict[str, int]):\n        assert all(w > 0 for w in weights.values())\n        self.weights = weights\n        self.current = {k: 0 for k in weights}\n        self.total = sum(weights.values())\n\n    def pick(self) -> str:\n        # WHY deficit, not a precomputed table: O(N) per pick,\n        # O(N) state, no expansion of S slots, naturally interleaved.\n        best = None\n        for node, w in self.weights.items():\n            self.current[node] += w\n            if best is None or self.current[node] > self.current[best]:\n                best = node\n        self.current[best] -= self.total\n        return best\n\n# weights 3,2,1 -> A B A C B A | A B A C B A ...\n# classical table would emit A A A B B C -> bursty for A.\nbal = SmoothWRR({\"A\": 3, \"B\": 2, \"C\": 1})\nprint([bal.pick() for _ in range(12)])"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Worked example: weights 3, 2, 1"
+    },
+    {
+      "type": "paragraph",
+      "text": "Take three backends with measured throughput ratio `3:2:1` and six incoming requests. Classical WRR emits `A A A B B C`: correct over the cycle, but `A` faces three back-to-back arrivals while `C` idles, then `C` takes a lone request after a gap. Smooth WRR emits `A B A C B A`: after any two picks the distribution is already near-proportional, connection pools warm evenly, and a slow `C` never becomes the head-of-line blocker for a burst queued behind it. Both satisfy the `3/6, 2/6, 1/6` contract; only the second controls the variance inside the cycle. The interview point to state explicitly: **fairness is a property of the full cycle, smoothness is a property of every prefix**, and tail latency cares about prefixes. If the interviewer asks why the smooth variant exists, that sentence plus the two sequences is the complete answer."
+    },
+    {
+      "type": "table",
+      "caption": "Three ways to honor the same weight vector, with different burst behavior.",
+      "headers": [
+        "Variant",
+        "How it picks",
+        "Wire pattern for 3,2,1",
+        "Price paid"
+      ],
+      "rows": [
+        [
+          "Classical WRR",
+          "Serve up to w_i consecutively per visit",
+          "`A A A B B C`",
+          "Bursts; trivial code, minimal state"
+        ],
+        [
+          "Interleaved / round-based",
+          "max(w) rounds, at most one pick per round per target",
+          "`A B A C A B` (rotation-dependent)",
+          "Needs round counter; still lumpy at edges"
+        ],
+        [
+          "Smooth / deficit",
+          "Add w_i to accumulator, pick max, subtract total",
+          "`A B A C B A`",
+          "O(N) adds per pick; best prefix fairness"
+        ],
+        [
+          "Shuffled / GCD-compressed",
+          "Precompute S slots, shuffle deterministically",
+          "Permuted but ratio-exact",
+          "O(S) table; reshuffle on weight change"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What WRR gives you and what it charges in return.",
+      "headers": [
+        "Property",
+        "Upside",
+        "Downside"
+      ],
+      "rows": [
+        [
+          "Decision cost",
+          "O(1) table lookup or O(N) adds; no cross-node coordination",
+          "No adaptivity — decision ignores actual queue depth and latency"
+        ],
+        [
+          "State",
+          "Pointer plus N integers; trivially replicable across balancer replicas",
+          "Replicas each enforce ratio independently, so global ratio drifts under uneven ingress"
+        ],
+        [
+          "Fairness model",
+          "Exact proportional share over each cycle when requests cost the same",
+          "Counts requests, not cost — one heavy request equals one light request"
+        ],
+        [
+          "Heterogeneity",
+          "Handles static size differences (CPU, RAM, link rate) without probing",
+          "Weights go stale on deploy skew, noisy neighbors, warmup, or autoscaling"
+        ],
+        [
+          "Failure handling",
+          "Deterministic and testable; easy to reason about capacity math",
+          "Blind to health — keeps sending w_i share to a dying node until something else removes it"
+        ],
+        [
+          "Ordering / stickiness",
+          "No affinity required; any request can go anywhere",
+          "Breaks anything needing session locality unless you layer hashing on top"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pattern across every row is the same trade-off: **predictability versus responsiveness**. WRR replaces measurement with declaration. You gain a balancer that never thunders, never oscillates, never needs consensus, and behaves identically in test and production — which is exactly what you want in front of stateless, homogeneous-cost workers with known sizes. You pay by accepting open-loop control: if a weight is wrong, if a request is 100x heavier than average, or if a backend degrades mid-cycle, WRR will keep executing the plan with total confidence. Experienced designers therefore never deploy bare WRR on a variable workload; they pair it with active health removal, concurrency caps, or deadlines, and let WRR decide only among the currently healthy subset. The weights set the prior, the health path supplies the feedback."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The first failure mode is stale weights meeting unequal request cost. Weights are usually set once from core counts or a load test, then a new build changes the cost profile, one pool gets a slower disk class, or traffic shifts from cache hits to cache misses. WRR keeps delivering the configured ratio because counting requests is all it knows. The symptom is unmistakable once you look for it: CPU or queue depth diverges across pools while the balancer's own counters look perfectly fair. `A` sits at `85%` CPU with growing queueing delay, `C` sits at `30%` idle, and the dashboard shows `3:2:1` dispatch exactly as configured. The fix is not a better sequence — it is fresh weights, weight by measured goodput rather than static size, or graduation to least-loaded routing. Any design review should ask how often weights are re-derived and from what signal."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure mode is burst plus blindness. Classical WRR hammers one backend with `w_i` consecutive picks, and if that backend starts failing slowly — elevated `p99`, connection exhaustion, partial packet loss — WRR keeps feeding it its full share because there is no feedback edge from response to selector. The symptom is correlated timeouts in stripes: every cycle, a clump of requests lands on the sick node, times out together, retries together, and amplifies the spike on the next cycle. With multiple balancer replicas the effect multiplies, since each replica independently replays the same deterministic pattern. Mitigation is layered, not clever sequencing: shrink the burst with smooth WRR, cap per-backend in-flight with a bulkhead, shed or hedge stragglers, and evict unhealthy nodes from the rotation via active plus passive health checks. If health removal is slow, WRR's determinism turns a single sick host into a system-wide latency floor."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Balancer reports exact ratio but backend latencies fan out — stale weights or unequal cost per request.",
+        "Striped timeouts aligned to cycle length — bursty classical sequence hitting a degraded node.",
+        "One pool saturates after a deploy while others idle — binary or config skew changed real capacity, weights did not follow.",
+        "Adding a larger host yields less than its weight in throughput — bottleneck moved to downstream store, connection limits, or warmup, not dispatch.",
+        "Uneven split across balancer replicas despite identical weights — independent deterministic selectors fed by uneven ingress or inconsistent membership views."
+      ]
+    },
+    {
+      "type": "code",
+      "language": "yaml",
+      "filename": "lb-weights.yaml",
+      "code": "# WHY static weights must be paired with dynamic membership.\n# WRR decides AMONG listed nodes; a separate checker decides WHO is listed.\nbackends:\n  - address: 10.0.1.11\n    weight: 3   # measured ~3x goodput of .13 on current workload\n  - address: 10.0.1.12\n    weight: 2\n  - address: 10.0.1.13\n    weight: 1   # small instance class, keep share low\npolicy: smooth_weighted_round_robin\nhealth:\n  active_interval_ms: 1000      # slow nodes must EXIT rotation fast\n  passive_eject_on_consecutive_5xx: 3\n  max_inflight_per_backend: 200 # bulkhead: stops WRR feeding a stalled node\n  # Trade-off: aggressive ejection risks flapping; conservative\n  # ejection turns WRR into a timeout amplifier. Tune eject, not weights."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from unequal capacity",
+          "text": "State the setup: N backends with known, stable size ratio. Write share_i = w_i / sum(w). Say why plain round robin overfeeds the small host and underuses the large one, with a 3:2:1 numeric split over 6 or 12 requests."
+        },
+        {
+          "title": "Write the selector, then fix the burst",
+          "text": "Sketch classical WRR in five lines, show the A A A B B C burst, then volunteer the smooth accumulator version. Interviewers promote candidates who critique their own first answer without prompting."
+        },
+        {
+          "title": "Name the complexity and state",
+          "text": "Classical is O(1) per pick with a pointer; smooth is O(N) adds with N counters. No coordination between balancer replicas. Say what happens on weight change: table rebuild or accumulator reset, plus connection-pool rebalancing cost."
+        },
+        {
+          "title": "Break it on purpose",
+          "text": "Introduce a slow backend, variable request cost, and stale weights. Show WRR keeps sending the configured share. Propose the layered fix: health-based ejection, in-flight caps, deadlines or hedging — WRR selects among survivors, it does not detect survivors."
+        },
+        {
+          "title": "Place it against alternatives",
+          "text": "Close by scoping: WRR when costs are uniform and capacities static; least-connections or least-load when costs vary; consistent hashing when affinity matters; latency-aware or power-of-two-choices when you can afford probing. One sentence per alternative with its trade-off."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**WRR adapts to load.** It does not. It replays a precomputed ratio. Any adaptivity comes from health checks, autoscaling, or weight updates outside the selector.",
+        "**Higher weight means faster.** Weight controls share of picks, not speed. A weight-3 node that is wedged still receives 3x the traffic of a weight-1 healthy node until ejected.",
+        "**WRR balances load, so utilization equalizes.** It equalizes pick counts proportionally, not utilization. If cost per request differs, utilization diverges by design.",
+        "**Classical and smooth WRR are interchangeable.** Same cycle average, very different prefix behavior. Classical bursts; smooth paces. Tail latency distinguishes them.",
+        "**Weights should match CPU cores.** Only if throughput scales linearly with cores on your workload. Measure goodput under realistic traffic, then reduce to smallest integers preserving the ratio.",
+        "**Adding weights fixes a sick host.** It hides it. Reducing a sick host's weight while leaving it in rotation still sends it proportional misery. Eject first, reweight second."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Scope WRR to stable, uniform-cost, affinity-free dispatch.",
+      "headers": [
+        "Use WRR when",
+        "Avoid WRR when",
+        "Use instead"
+      ],
+      "rows": [
+        [
+          "Stateless workers with stable size ratio and uniform request cost",
+          "Request cost varies 10x (scans vs point reads, cache hit vs miss)",
+          "Least in-flight / least latency, or cost-aware sharding"
+        ],
+        [
+          "Packet or task queues with equal-size units and deep buffers",
+          "Backends degrade gradually and need fast feedback",
+          "Active + passive health ejection with dynamic load signals"
+        ],
+        [
+          "You need deterministic, testable, coordination-free dispatch across replicas",
+          "You need session affinity or cache locality",
+          "Consistent hashing or sticky routing with bounded load"
+        ],
+        [
+          "DNS or config-driven traffic shaping across pools or regions",
+          "Capacity changes every minute via autoscaling or spot turnover",
+          "Autoscaled membership with dynamic weights or power-of-two-choices"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Weighted Round Robin gives each backend `w_i / sum(w)` of picks with `O(1)` stateless dispatch, so use the smooth variant for stable, uniform-cost pools — and pair it with health ejection and in-flight caps because it cannot detect a wrong weight or a sick host on its own.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:14:31.850Z",
+    "problems": []
+  }
+}

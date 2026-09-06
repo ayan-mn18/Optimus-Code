@@ -1,0 +1,299 @@
+{
+  "slug": "anomaly-detection",
+  "title": "Anomaly Detection",
+  "summary": "Anomaly detection at scale is a throughput, latency, and false-positive problem, not a model problem. This guide covers detection types, scoring trade-offs, and a streaming architecture that survives drift and alert storms.",
+  "kind": "HLD",
+  "problemSlug": "anomaly-detection-90-299",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": " f6a8",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Anomaly-Detection"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Differential Privacy for Anomaly Detection: Analyzing the Trade-off ...",
+      "url": "https://arxiv.org/html/2404.06144v1",
+      "source": "arxiv.org",
+      "kind": "article"
+    },
+    {
+      "title": "What Is Anomaly Detection? | IBM",
+      "url": "https://www.ibm.com/think/topics/anomaly-detection",
+      "source": "ibm.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Anomaly Detection? - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/computer-networks/what-is-anomaly-detection/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "A Comprehensive Introduction to Anomaly Detection - DataCamp",
+      "url": "https://www.datacamp.com/tutorial/introduction-to-anomaly-detection",
+      "source": "datacamp.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "At scale, **anomaly detection is triage under load**. Anyone can fit a model on a CSV. The distributed problem is this: score **millions of signals per second with second-level delay** without drowning operators in false positives when normal itself keeps moving. Every design choice is **detection delay vs. compute cost vs. alert precision**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Anomaly detection decides whether a new observation is unlikely enough under a model of normal to deserve attention. That is it. No magic. You maintain a compact description of expected behavior — a mean and variance, a forecast band, a density boundary, a reconstruction error — then you measure deviation and compare it to a threshold. The threshold is part of the system, not an afterthought, because it sets your paging rate. Change the threshold and you change staffing, not just math."
+    },
+    {
+      "type": "paragraph",
+      "text": "Three shapes cover almost everything you will be asked to detect. **Point anomalies** are single values out of range: CPU at 99% when the host normally sits at 20%, a $9,000 charge on a $40-average card. **Contextual anomalies** are normal values at the wrong time or place: high traffic at 3am, a login from a new country. Same value, different context, different verdict — which is why you must carry time, device, or user as features, not just the raw metric. **Collective anomalies** are individually boring points that are wrong together: a slow ramp in p99 latency plus a slow rise in retries that precedes an outage. If you only score points in isolation you will miss the third class entirely."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: signal to alert"
+    },
+    {
+      "type": "mermaid",
+      "title": "Anomaly detection pipeline",
+      "caption": "Streaming path scores inline; batch path retrains and backfills thresholds.",
+      "code": "flowchart LR\n  S[Ingest signals] --> R[Rollup and features]\n  R --> SC[Score point]\n  SC --> TH{Over threshold?}\n  TH -- No --> DROP[Drop]\n  TH -- Yes --> DEDUP[Deduplicate and group]\n  DEDUP --> ALERT[Emit alert]\n  B[Batch retrain] --> SC"
+    },
+    {
+      "type": "paragraph",
+      "text": "Follow the data. Ingestion partitions the firehose by entity — `host_id`, `service`, `account_id` — because almost every useful baseline is per-entity, not global. Rollup turns raw events into comparable features over fixed windows: rate, mean, p95, error ratio, distinct count. Scoring compares the feature vector against the current normal model and emits a number, not a verdict: z-score, distance, residual, reconstruction error. Thresholding turns that number into a binary decision, and grouping turns a thousand binary decisions into one page. Skip grouping and a single bad deploy pages you 40,000 times. That grouping stage is what keeps the system operable."
+    },
+    {
+      "type": "paragraph",
+      "text": "Two control loops run at different speeds, and confusing them is the classic failure. The **fast loop** scores inline in milliseconds using a model loaded in memory — fixed weights, fixed bands, no training. The **slow loop** retrains hourly or daily on recent history, validates against labeled incidents, then pushes new parameters and thresholds. The trade-off is **freshness vs. stability**: retrain too often and a gradual leak becomes the new normal; retrain too rarely and weekly seasonality looks like an attack every Monday morning. Keep training offline and scoring stateless-ish online."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Scoring families and their real trade-offs"
+    },
+    {
+      "type": "table",
+      "caption": "Pick by data shape and operating cost, not by benchmark accuracy.",
+      "headers": [
+        "Method",
+        "How it decides",
+        "Strength",
+        "Price you pay"
+      ],
+      "rows": [
+        [
+          "Statistical bands: z-score, EWMA, Holt-Winters",
+          "Deviation from rolling mean or forecast exceeds N sigma",
+          "Microsecond scoring, trivial to shard, easy to explain on call",
+          "Dies on multimodal or bursty data; needs per-entity tuning or it spams"
+        ],
+        [
+          "Isolation Forest",
+          "Random partitions isolate outliers in few splits",
+          "Good general point-outlier filter on tabular features, no distance math",
+          "Batch-oriented; hard to update incrementally, weak on sequences and context"
+        ],
+        [
+          "Density / distance: LOF, kNN",
+          "Point sits in sparse neighborhood vs. peers",
+          "Catches local outliers a global threshold misses",
+          "Ongoing neighbor search is expensive; painful to shard without approximation"
+        ],
+        [
+          "Forecast residual: ARIMA, Prophet-style, LSTM",
+          "Actual minus predicted exceeds band",
+          "Only way to handle strong seasonality and trend honestly",
+          "Training and inference cost is 10-100x bands; forecast errors become false alerts"
+        ],
+        [
+          "Reconstruction: autoencoder, PCA",
+          "High rebuild error means off-manifold",
+          "Handles high-dimensional correlated signals like traces and sensor arrays",
+          "Opaque scores, needs GPU for training, drifts silently when inputs shift"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "My opinion, stated plainly: **start with adaptive statistical bands per entity, add forecast residuals only for seasonal golden signals, and reach for learned models only when you have labels to prove the bands are insufficient.** Bands win because they are cheap enough to run on every host and simple enough that the person holding the pager can reason about them at 2am. The trade-off is tuning burden vs. compute burden. Bands shift tuning work to you. Neural models shift compute and debugging work to the platform. Most teams underestimate the second cost by an order of magnitude."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Scaling it: partition, pre-aggregate, score locally"
+    },
+    {
+      "type": "paragraph",
+      "text": "Scale comes from one decision: **partition by the entity you baseline on, and never do a cross-partition join in the hot path.** If you score per host, key the stream by `host_id` so all history for that host lands on the same worker and its rolling state stays in local memory. Pre-aggregate at the edge or in the first streaming stage — 1-second raw to 10-second or 1-minute features — because scoring 60x fewer points with slightly coarser resolution beats falling behind and scoring nothing. The trade-off is **resolution vs. survival**: you lose sub-minute spikes to keep end-to-end delay under seconds."
+    },
+    {
+      "type": "mermaid",
+      "title": "Distributed scoring topology",
+      "caption": "Keyed streaming workers hold per-entity state; model store pushes parameters out of band.",
+      "code": "graph TD\n  E[Agents and logs] --> K[Partitioned log]\n  K --> F[Stream workers keyed by entity]\n  F --> STATE[(Local window state)]\n  M[Offline trainer] --> MS[(Model and threshold store)]\n  MS --> F\n  F --> G[Grouping and suppression]\n  G --> P[Paging and tickets]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The topology above exists for one reason: to keep per-event work O(1) with no remote lookup. Stream workers load the current model version into memory at startup and refresh it on a timer, so scoring never blocks on a database. Window state lives in an embedded store with changelog replication for failover. The offline trainer reads the same log, fits new parameters, evaluates precision and recall against acknowledged incidents, and only promotes if both move the right way. The trade-off is **consistency vs. availability of scoring**: during a model push different workers briefly disagree, and that is correct — you accept transient skew to avoid stopping the pipeline."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The most expensive failure is an **alert storm after a deploy or a threshold push**. Symptom: thousands of alerts with nearly identical scores fire within one window, grouping collapses, and operators mute the channel — which then hides the real second failure underneath. Cause is almost always a global threshold applied to heterogeneous entities or a model version applied without canary. Fix it with per-cohort thresholds, per-entity normalization before comparison, and a grouping key on `deploy_id` or `model_version` so correlated blasts collapse to one incident. The trade-off is **recall vs. operator trust**: aggressive dedup risks merging distinct incidents, but without it the system trains humans to ignore it."
+    },
+    {
+      "type": "paragraph",
+      "text": "The quiet failure is **normal drift absorbing the anomaly**. Symptom: no pages for weeks, then someone notices p99 has doubled and the bands just followed it up. Rolling means with short windows and autoencoders retrained on unfiltered recent data both do this — they learn the leak. You detect it only by tracking score distributions and baseline parameters themselves: if the mean of normal moves faster than your retrain review allows, freeze promotion and require human sign-off. Keep a holdout of known-good history and a small labeled set of past incidents; if retraining degrades recall on that set, block the push. The trade-off is **adaptivity vs. memory**: longer memory resists drift but reacts slowly to legitimate shifts like new traffic shape."
+    },
+    {
+      "type": "paragraph",
+      "text": "The scalability failure is **key skew and state blowup**. Symptom: one stream worker runs hot, checkpoint size grows unboundedly, end-to-end delay climbs from seconds to minutes while CPU looks fine elsewhere. Cause: a hot entity — a load balancer VIP, a noisy service — or unbounded cardinality from unclean keys like raw URLs or container IDs. Fix with two-level keys, splitting hot keys across sub-partitions with partial aggregates, and strict key cardinality limits with a spillover bucket for the long tail. Expire window state aggressively. The trade-off is **accuracy for the tail vs. health of the whole**: the spillover bucket gets a cruder model so the pipeline stays alive."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Delay climbing + worker skew = hot key, not slow model. Look at partition lag by key before touching code.",
+        "Paging rate spiking with flat error rate = threshold or model push, not an outage. Correlate alerts with `model_version`.",
+        "Scores drifting toward zero over days = baseline learning the fault. Chart the baseline mean itself, not just the alert count.",
+        "One entity spamming = missing per-entity normalization. Global thresholds always fail on mixed fleets.",
+        "Retrain improving offline AUC but worsening pages = label mismatch. Your training labels do not match what operators consider actionable."
+      ]
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "adaptive_detector.py",
+      "code": "from collections import deque\n\nclass AdaptiveBand:\n    \"\"\"Per-entity EWMA band with cooldown suppression.\n    O(1) per point, no remote state. Trade-off: lags on step\n    changes to avoid flapping on noise.\"\"\"\n    def __init__(self, alpha=0.15, k=4.0, min_var=1e-6, cooldown=20):\n        self.alpha = alpha\n        self.k = k  # sigma multiplier: higher = fewer pages, more misses\n        self.mean = None\n        self.var = None\n        self.min_var = min_var\n        self.cooldown = cooldown\n        self.quiet_for = cooldown  # allow immediate first alert\n\n    def score(self, x: float) -> tuple[float, bool]:\n        if self.mean is None:\n            self.mean, self.var = x, self.min_var\n            return 0.0, False\n        resid = x - self.mean\n        std = max(self.var ** 0.5, self.min_var ** 0.5)\n        z = resid / std\n        is_anomaly = z > self.k and self.quiet_for >= self.cooldown\n        # Update baseline SLOWLY so a sustained fault does not\n        # become normal within one window. That lag is intentional.\n        lr = self.alpha if not is_anomaly else self.alpha * 0.1\n        self.mean += lr * resid\n        self.var = (1 - lr) * self.var + lr * resid * resid\n        self.quiet_for = 0 if is_anomaly else self.quiet_for + 1\n        return z, is_anomaly"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet shows the two details that matter in every production detector: asymmetric update and suppression. When a point looks anomalous the baseline barely moves, so a real sustained shift keeps alarming instead of being absorbed after three points. The cooldown counter enforces one alert per incident instead of one per sample. Tune `k` for precision and `alpha` for adaptivity — raising `k` trades missed slow-burn issues for fewer night pages, lowering `alpha` trades slow reaction to real change for resistance to drift. Run one instance of this per entity key, keyed in the stream processor, and you have the core of a system that handles millions of series."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Scope the signal and the paging contract",
+          "text": "Ask what you score, at what rate, and what a false page costs. Metrics, logs, or transactions changes everything. Nail down delay target, entities per second, and retention before drawing boxes."
+        },
+        {
+          "title": "Draw ingestion and keying first",
+          "text": "Show producers, a partitioned log, and stream workers keyed by scoring entity. Say explicitly: no cross-key lookups in the hot path. This is where scalability is won or lost."
+        },
+        {
+          "title": "Defend your scoring choice with numbers",
+          "text": "Propose adaptive bands for everything, forecast residuals for the 5% of seasonal signals. Give per-event cost and state size per entity. Interviewers promote candidates who quantify."
+        },
+        {
+          "title": "Design thresholding and grouping, not just scoring",
+          "text": "Explain hysteresis, cooldown, and grouping by entity plus deploy or zone. Show how 10,000 raw anomalies become 3 incidents. Most candidates skip this and fail."
+        },
+        {
+          "title": "Close with drift, evaluation, and privacy",
+          "text": "Explain retrain gating on labeled incidents, monitoring score distributions, and why adding noise for privacy widens bands and costs explainability. Name the trade-off: stricter privacy means vaguer reasons for each alert."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`Higher model accuracy equals fewer pages.` No. Pages are set by threshold, grouping, and base rate. A 99% accurate detector on 10M events per day still produces thousands of false alarms.",
+        "`One global model works for the fleet.` It does not. Latency, error rate, and spend have different shapes per service and per hour. Global models average away the signal you need.",
+        "`Unsupervised means no labels needed ever.` You need labels to set thresholds, gate retrains, and measure anything. Unsupervised only means you start without them.",
+        "`Real-time means scoring raw events.` It means scoring fast enough to act. Pre-aggregated 10-second features with 5-second delay beats raw-event scoring that lags by minutes.",
+        "`Explainability is free once you have a score.` A bare score explains nothing. You need contributing feature, expected band, and similar past incidents attached to every alert, and privacy noise degrades exactly that."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Match the method to the operating budget, not the hype.",
+      "headers": [
+        "Situation",
+        "Use",
+        "Avoid",
+        "Why"
+      ],
+      "rows": [
+        [
+          "High-rate infra metrics, per-host scoring",
+          "Per-entity EWMA / forecast bands in stream workers",
+          "kNN or autoencoder inline",
+          "Bands are O(1) and shardable; neighbor search cannot keep up"
+        ],
+        [
+          "Seasonal business metrics with history",
+          "Forecast residual with holiday and weekly terms",
+          "Fixed static thresholds",
+          "Static lines page every peak season; forecast carries context"
+        ],
+        [
+          "Low-rate fraud or abuse with labels",
+          "Supervised classifier plus rule layer, batch + stream",
+          "Pure unsupervised bands",
+          "Labels exist, so ignoring them throws away your best signal"
+        ],
+        [
+          "High-dimensional traces, no labels",
+          "Offline autoencoder for triage, bands for paging",
+          "Paging directly on reconstruction error",
+          "Reconstruction scores are unstable for paging but good for investigation"
+        ],
+        [
+          "Strict privacy or regulated data",
+          "Noisy aggregates, on-device scoring, coarse explanations",
+          "Per-user raw models with exact feature attributions",
+          "Noise and aggregation protect rows but blur which feature caused the flag"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "A final note on the privacy trade-off, since it appears in current work on explainable detection: adding calibrated noise to training data or to explanations protects individuals but directly widens your bands and scrambles feature attributions. Expect measurably worse recall and vaguer reasons — the top contributing feature flips more often under noise, especially for neighbor-based methods. Say this explicitly in the interview: **privacy is paid for in detection delay and murkier explanations**, so put strict handling only on the identified slices that need it and keep aggregate infrastructure signals in the clear."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "Say: **Key the stream by scoring entity, score inline with adaptive per-entity bands, retrain offline with gated promotion, and turn raw hits into incidents with cooldown and grouping — because at scale the binding constraint is paging precision under drift, not model cleverness.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:17:06.647Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,296 @@
+{
+  "slug": "cap-theorem",
+  "title": "CAP Theorem",
+  "summary": "CAP is not pick-two-of-three. Partitions are mandatory, so the real choice is CP vs AP during a partition — and latency vs consistency the rest of the time.",
+  "kind": "HLD",
+  "problemSlug": "cap-theorem-90-182",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Easy",
+  "coverEmoji": "⚖️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "CAP-Theorem",
+    "Distributed-Systems",
+    "Scalability"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What Is the CAP Theorem? | IBM",
+      "url": "https://www.ibm.com/think/topics/cap-theorem",
+      "source": "ibm.com",
+      "kind": "article"
+    },
+    {
+      "title": "CAP Theorem Simplified - YouTube",
+      "url": "https://www.youtube.com/watch?v=BHqjEjzAicA",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "CAP theorem - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/CAP_theorem",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "In a real network **partitions will happen**, so `P` is not optional. CAP is really this: **when replicas cannot talk to each other, do you fail the request to stay correct (CP) or accept the request and risk divergence (AP)?** Everything else is commentary on that choice."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What CAP actually says"
+    },
+    {
+      "type": "paragraph",
+      "text": "Strip away the folk version of \"pick two of three\" because it misleads. A distributed store replicates data on multiple nodes so it survives machine failure and scales throughput. As soon as you have more than one copy, two hard facts collide. First, the network between replicas can drop, delay, or reorder messages for seconds, minutes, or longer — that is a partition. Second, clients can contact any replica at any time and expect something useful back. CAP formalises what you can promise when those two facts collide. **Consistency** here means linearizability: once a write is acknowledged, every later read from any replica returns that value or a newer one, never stale data. **Availability** means every request to a non-crashed node gets a non-error response — it does not mean fast, and it does not mean correct, just an answer. **Partition tolerance** means the system keeps enforcing its promised behavior even when replicas cannot communicate. The trade-off: you cannot promise single-copy semantics *and* always-answer semantics while the link is down."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why `P` is mandatory is the part juniors miss. You do not get to design a distributed system that assumes a perfect network. Switches fail, deploys blackhole traffic, a cloud availability zone loses connectivity, GC pauses make a healthy node look dead. If your design says \"we are CA, we just won't partition,\" you have designed a single-node system with extra steps. As soon as data lives on two machines with independent failure modes, partition tolerance is a requirement, not a feature. That collapses CAP to a binary decision under partition: **reject work on the minority side and preserve a single truth, or accept work everywhere and repair divergence later.** The first buys you correctness at the cost of unavailability. The second buys you uptime at the cost of conflicts, stale reads, and application-level reconciliation. There is no third option that keeps both, because information cannot travel across a link that does not work."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: a partition forces the choice"
+    },
+    {
+      "type": "paragraph",
+      "text": "Think of the write path in normal operation. A client writes to replica `A`. `A` forwards the update to replica `B`, waits for acknowledgment according to its replication rule, then acknowledges the client. Reads can go to either replica because both converge quickly. Latency is the round trip plus replication delay, and correctness comes from coordination. Now cut the link between `A` and `B`. A write arrives at `A`. `A` cannot reach `B`, so it cannot make the two copies agree. It has exactly two moves. Move one: refuse or block — return an error, time out, elect a leader and discover you are not it. The system stays consistent because no divergent state is created, but the client on the wrong side of the partition gets no service. Move two: accept locally and gossip later — acknowledge the write, queue it for anti-entropy, let `B` accept conflicting writes too. Both sides stay responsive, but they have now forked and someone must merge. That fork-and-merge cost is why AP systems need vector clocks, last-writer-wins rules, or CRDTs. You are not choosing abstract letters; you are choosing where pain lands — on availability dashboards or on data-repair logic."
+    },
+    {
+      "type": "mermaid",
+      "title": "Write under partition",
+      "caption": "The only decision CAP describes: block or diverge.",
+      "code": "flowchart TD\n  W[Client write arrives at replica A] --> P{Can A reach quorum?}\n  P -->|Yes| R[Replicate synchronously] --> OK[Acknowledge write]\n  P -->|No| D{Design choice}\n  D -->|CP| F[Reject or block request] --> C[Stay consistent, lose availability]\n  D -->|AP| L[Accept locally, queue for repair] --> A[Stay available, diverge]"
+    },
+    {
+      "type": "mermaid",
+      "title": "Normal vs partitioned replication",
+      "caption": "Coordination works until the link does not.",
+      "code": "graph LR\n  C1[Client] --> A1[Replica A]\n  A1 <-->|sync link| B1[Replica B]\n  C2[Client X] --> A2[Replica A]\n  C3[Client Y] --> B2[Replica B]\n  A2 -.partition.-> B2"
+    },
+    {
+      "type": "paragraph",
+      "text": "Make it concrete with two copies of an account balance at `100`. No coordinator, each node can accept deposits and withdrawals and is supposed to forward them. Network splits. One customer withdraws `100` on the left side, another withdraws `100` on the right side. If you chose consistency, at least one side must refuse — perhaps because it cannot contact a leader or quorum — so the balance never goes negative but one customer walks away angry and the error rate spikes. If you chose availability, both withdrawals succeed locally, each replica now believes the balance is `0`, and when the link heals you discover you are at `-100` with no physical way to undo cash already handed out. The trade-off is visceral: **CP converts a network fault into a user-visible outage; AP converts a network fault into a data-repair problem that outlives the outage.** Pick which bill you would rather pay. Financial ledgers, locks, and leader election almost always pay the first bill. Carts, feeds, session state, and DNS-like data usually pay the second."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The honest trade-off"
+    },
+    {
+      "type": "table",
+      "caption": "CP vs AP when partitioned. There is no free row.",
+      "headers": [
+        "Choice under partition",
+        "What you keep",
+        "What you lose",
+        "Typical mechanism"
+      ],
+      "rows": [
+        [
+          "CP: block or error",
+          "Single-copy semantics, no divergence, simpler app logic",
+          "Availability on minority side, higher tail latency, outage during partitions",
+          "Leader + quorum, synchronous replication, fencing"
+        ],
+        [
+          "AP: accept locally",
+          "Every non-crashed node answers, low latency, survives zone loss",
+          "Stale reads, conflicting writes, complex merge and repair",
+          "Async replication, hinted handoff, vector clocks / CRDTs / LWW"
+        ],
+        [
+          "CA (myth at scale)",
+          "Looks perfect in a demo with no partition",
+          "Does not exist once data is on two failure domains",
+          "Single node or tightly coupled rack — do not claim this for a region-spanning store"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "CP failure looks like an availability incident even though the database is \"healthy.\" Symptom: a minority partition or lost quorum starts returning errors or blocking until timeout. You will see elevated `500s`, leader-election storms, clients retrying and amplifying the load, and latency graphs that cliff at your timeout value. A classic trigger is losing 2 of 5 consensus voters during a rolling deploy plus one slow disk — suddenly no leader, no writes. Operators feel it as pages for \"no quorum\" while CPU and disk look fine. The fix is not bigger machines; it is more voters spread across failure domains, shorter failure-detector tuning balanced against flapping, and a client path that degrades gracefully to read-only or cached responses. The trade-off you accepted: correctness preserved, but the system would rather be down than wrong."
+    },
+    {
+      "type": "paragraph",
+      "text": "AP failure looks like a correctness incident days after the network healed. Symptom: stale reads, resurrected deleted items, duplicate deliveries, counters that do not add up, or two users both claiming the last seat. You will see conflict metrics spike in repair queues, `Last-Write-Wins` silently discarding updates, and support tickets that say \"but I already paid.\" A classic trigger is a 90-second cross-zone split where both sides accepted orders for the same inventory, then anti-entropy merged them into an oversell. Nothing paged during the split — that is the point — and the damage surfaces at reconciliation time. The fix is application design: idempotency keys, commutative updates, explicit merge functions, and UX that admits uncertainty like \"pending sync.\" The trade-off you accepted: always open for business, but the business must know how to unscramble the books."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "What to monitor for each side",
+      "text": "For CP watch **quorum health, leader changes, and client error rate** — unavailability is the signal. For AP watch **replica lag, hint backlog, conflict rate, and read-repair volume** — divergence is the signal. If you run AP and only alert on uptime, you will miss the failure entirely."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Real systems do not pick letters, they tune knobs"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers who accept \"Cassandra is AP, ZooKeeper is CP\" and stop there are testing trivia. Strong answers talk about tunables. Quorum replication lets you slide: with `N` replicas, require `W` acknowledgments on write and `R` on read. If `W + R > N` you get read-your-write behavior in the happy path because quorums overlap — you bought stronger consistency with higher write latency. If `W = 1` you bought speed and availability with staleness. Leader-based stores make the same point differently: synchronous commit to a majority is CP-leaning and slow; async follower replication is fast and lossy under failover. Modern stores also add bounded staleness, monotonic reads, and session guarantees that are far more useful than the blunt CAP label. My opinionated default: start with quorum overlap for anything involving money, inventory, or permissions, and start with `W = 1` plus idempotent merges for anything where a stale answer is merely annoying. Name the latency cost explicitly — strong consistency is a latency tax paid on every write, not just during partitions."
+    },
+    {
+      "type": "table",
+      "caption": "Knobs that move you along the C-A spectrum without changing products.",
+      "headers": [
+        "Knob",
+        "Toward consistency",
+        "Toward availability / latency",
+        "Price you pay"
+      ],
+      "rows": [
+        [
+          "Write acknowledgment",
+          "`W = quorum / all`, sync to majority",
+          "`W = 1`, async background replication",
+          "Tail latency vs durability and staleness"
+        ],
+        [
+          "Read path",
+          "Quorum / leader read, read-repair",
+          "Any-replica read, cached read",
+          "Latency and load vs chance of stale data"
+        ],
+        [
+          "Failover",
+          "Fence old leader, wait for quorum",
+          "Promote any replica, accept split brain",
+          "Downtime vs conflict repair"
+        ],
+        [
+          "Conflict policy",
+          "Reject concurrent writes",
+          "Accept and merge with CRDT / LWW",
+          "Error handling vs data loss or surprise merges"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cap_choice.py",
+      "code": "class Replica:\n    def __init__(self, name):\n        self.name = name\n        self.value = 100  # account balance\n        self.can_reach_quorum = True\n        self.pending = []\n\n    def write_cp(self, delta):\n        # CP: refuse when partitioned. Trade-off: stay correct, lose availability.\n        if not self.can_reach_quorum:\n            raise TimeoutError(f\"{self.name}: no quorum, rejecting write\")\n        self.value += delta\n        return self.value\n\n    def write_ap(self, delta):\n        # AP: accept locally, repair later. Trade-off: stay available, risk divergence.\n        self.value += delta\n        if not self.can_reach_quorum:\n            self.pending.append(delta)  # replay via anti-entropy later\n        return self.value\n\n    def merge(self, other: \"Replica\"):\n        # Naive reconciliation: sum pending deltas. Real systems need\n        # idempotency keys or CRDTs, otherwise replay double-applies.\n        for d in other.pending:\n            self.value += d\n        other.pending.clear()\n\na, b = Replica(\"A\"), Replica(\"B\")\na.can_reach_quorum = b.can_reach_quorum = False\n# Partitioned: CP raises, AP forks.\ntry:\n    a.write_cp(-100)\nexcept TimeoutError as e:\n    print(e)\na.write_ap(-100)\nb.write_ap(-100)\nprint(a.value, b.value)  # 0, 0 locally — combined -100 oversell after merge"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They ask you to design a like counter, cart, or feed",
+          "text": "Do not open with CAP. Open with requirements: does a stale count cost money or just ego? Then state your pick: AP with async replication and LWW or counters, because losing a like is cheap but being down is expensive."
+        },
+        {
+          "title": "Then they add a constraint: inventory, seats, or payments",
+          "text": "This is the pivot. Say it explicitly: this sub-problem switches to CP — single leader or quorum write, conditional decrement, reject on partition. Split the system: AP for browse, CP for commit. Interviewers reward heterogeneous answers."
+        },
+        {
+          "title": "They probe: what happens when the zones split?",
+          "text": "Walk the write path replica by replica. Show the blocked CP write with error budget impact, and the forked AP write with repair queue growth. Draw the quorum math `W + R > N` and say what `N=3, W=2, R=2` costs in latency."
+        },
+        {
+          "title": "They ask about repair",
+          "text": "For AP, describe anti-entropy, read-repair, idempotency keys, and who wins a conflict and why. For CP, describe leader election, fencing tokens, and how clients fail over without double-applying. Vague hand-waving here fails."
+        },
+        {
+          "title": "They close with scale and cost",
+          "text": "Land it: CP costs you machines for quorums across zones plus latency on every write; AP costs you engineering time for merge logic plus storage for versions. Recommend one default per workload and justify it in one sentence."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**\"We are CA, we have consistency and availability.\"** No. Once data spans failure domains you are partition-tolerant by necessity. CA only describes a single-node database pretending to be distributed.",
+        "**\"Availability means low latency or five nines.\"** No. CAP availability just means a non-crashed node answers rather than errors. A system that always answers in 5 seconds with stale data is CAP-available and operationally useless.",
+        "**\"Consistency means eventual consistency.\"** Opposite. CAP consistency means linearizability — every read sees the latest acknowledged write. Eventual consistency is what AP systems offer *instead* of CAP consistency.",
+        "**\"Partitions are rare so we can ignore P.\"** Partitions are routine: deploys, config pushes, slow GC, congested links. Design for them, or your first zone blip becomes your first outage post-mortem.",
+        "**\"AP means no consistency at all.\"** No. AP systems offer weaker but precise guarantees — monotonic reads, read-your-writes within a session, causal order, CRDT convergence. Name which one you rely on.",
+        "**\"CAP covers all trade-offs.\"** No. Even with no partition you still trade consistency for latency on every write. That is PACELC: if Partitioned pick A/C, Else pick Latency/Consistency. Bring it up and you stand out."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to pick which side"
+    },
+    {
+      "type": "table",
+      "caption": "Choose by cost of being wrong vs cost of being down.",
+      "headers": [
+        "Workload",
+        "Pick",
+        "Why",
+        "Do not pick the other side because"
+      ],
+      "rows": [
+        [
+          "Leader election, locks, config, permissions",
+          "CP (consensus, quorum writes)",
+          "Split brain causes corruption or security holes",
+          "Dual leaders issuing conflicting leases is unrecoverable"
+        ],
+        [
+          "Ledger, inventory decrement, seat reservation",
+          "CP (conditional write, fencing)",
+          "Oversell or double-spend is real money lost",
+          "Merging two successful sales of the last item pleases nobody"
+        ],
+        [
+          "Shopping cart, likes, view counts, feed",
+          "AP (async replication, CRDT / counters)",
+          "Staleness is invisible, downtime is not",
+          "Blocking likes on quorum would trade revenue for precision nobody needed"
+        ],
+        [
+          "Session state, presence, metrics ingest",
+          "AP (local accept, TTL, best-effort merge)",
+          "Data is ephemeral and self-healing",
+          "Strong consistency would add latency to data that expires in minutes"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The senior follow-up is PACELC, and you should raise it before they do. CAP only constrains you during a partition, which might be 0.1% of requests. The other 99.9% of the time you still pay for strong consistency in added round trips: leader confirmation, cross-zone quorum, read-repair. That is why many teams run quorum reads and writes even when healthy — they are buying recency with latency. My rule: if the business can tolerate a few seconds of staleness, take the latency win and run leader-plus-async-followers with session guarantees. If a stale read triggers a refund, chargeback, or safety issue, pay the quorum tax on every operation and show the p99 math to prove you budgeted for it. Either way, state the tax out loud. Designs that hide the latency cost are how p99s explode six months later."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "\"Since partitions are unavoidable we must be partition-tolerant, so for this workload I choose **CP/AP** because the cost of **unavailability/divergence** outweighs the cost of **repair/downtime**, enforced with **quorum/async replication** and repaired via **election/idempotent merge**.\""
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:08:08.871Z",
+    "problems": []
+  }
+}

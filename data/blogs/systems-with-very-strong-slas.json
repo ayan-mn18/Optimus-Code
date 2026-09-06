@@ -1,0 +1,281 @@
+{
+  "slug": "systems-with-very-strong-slas",
+  "title": "Systems with very strong SLAs",
+  "summary": "Very strong SLAs are UX contracts backed by error budgets. This guide shows what 99.9%+ really costs, how to design for it without lying, and how to talk about it in HLD.",
+  "kind": "HLD",
+  "problemSlug": "systems-with-very-strong-slas-148-323",
+  "topic": "User Empathy, User Experience, Future Proofing & Realistic Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🛡️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "hld",
+    "reliability",
+    "sla",
+    "user-empathy"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is an SLA? The Key to Better Business Relationships - Sirion",
+      "url": "https://www.sirion.ai/library/contracts/service-level-agreement-sla/",
+      "source": "sirion.ai",
+      "kind": "article"
+    },
+    {
+      "title": "What Is an SLA (service level agreement)? - IBM",
+      "url": "https://www.ibm.com/think/topics/service-level-agreement",
+      "source": "ibm.com",
+      "kind": "article"
+    },
+    {
+      "title": "SLA (Service Level Agreement): Guaranteed Quality Metrics Explained",
+      "url": "https://www.youtube.com/watch?v=gPxg4DLGlKA",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is an SLA? Service level agreement explained - Atlassian",
+      "url": "https://www.atlassian.com/itsm/service-request-management/slas",
+      "source": "atlassian.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A very strong SLA is not an uptime number. It is a **promise about user pain, priced in engineering freedom**. If you promise `99.99%`, you get `52 minutes` of failure per year — and every deploy, dependency, and database choice must fit inside that budget. No budget, no promise."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What \"very strong SLA\" actually means"
+    },
+    {
+      "type": "paragraph",
+      "text": "Be precise or fail. An **SLI** is what you measure — for example, proportion of `HTTP 2xx` responses under `300ms` as seen by the load balancer. An **SLO** is the target on that SLI — for example, `99.95%` over a `30-day` rolling window. An **SLA** is the SLO plus consequences: credits, penalties, termination rights. Interviewers dock you when you blur these, because only the SLA forces trade-offs. The math is brutal: `99.9%` allows `43m` downtime per month, `99.95%` allows `21m`, `99.99%` allows `4.3m`, `99.999%` allows `26s`. That is why the jump from three nines to four nines is not incremental — it is a different architecture. You chose the extra nine because a specific user workflow cannot tolerate the outage, not because nines sound impressive."
+    },
+    {
+      "type": "paragraph",
+      "text": "Strong SLAs are a **user empathy** problem before they are an infrastructure problem. Nobody experiences “availability.” They experience *“I could not pay,” “my ride did not come,” “my deploy blocked the release.”* A serious design starts from that pain: which requests count as failed from the user’s chair, during which hours, on which clients? A checkout that returns `200 OK` in `8 seconds` is a failure even if your dashboard is green. That is why you define SLIs at the edge — load balancer, mobile client probe, synthetic checkout — not as CPU or pod health. The trade-off: edge-measured SLIs are honest but harder to meet, because they include network, DNS, CDN, and client tails you do not control. Internal metrics look better and lie more."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: error budgets turn a contract into policy"
+    },
+    {
+      "type": "paragraph",
+      "text": "The only mechanism that makes a strong SLA survivable is the **error budget**. If your SLO is `99.95%` over 30 days, your budget is `0.05%` of requests — about `21 minutes` of full outage, or many more minutes of partial brownout. You spend that budget on deploys, experiments, and dependency blips. When the budget is healthy, you ship fast. When burn rate spikes, you freeze non-critical deploys, shed low-priority load, and page. This is WHY reviewers love error budgets: without them an SLA is a wish, and every team argues about whether to ship or stabilize. With them the rule is mechanical. The trade-off is velocity: a team that actually honors the budget will deliberately slow itself down for days after an incident, which product managers hate and users need."
+    },
+    {
+      "type": "mermaid",
+      "title": "Error budget control loop",
+      "caption": "SLA enforcement as a feedback loop, not a dashboard.",
+      "code": "flowchart TD\n  U[User Request] --> LB[Global Load Balancer]\n  LB --> A[Region A Active]\n  LB --> B[Region B Active]\n  A --> SLI[SLI Collector]\n  B --> SLI\n  SLI --> EB{Budget Remaining}\n  EB -->|Healthy| SHIP[Ship Features]\n  EB -->|Fast Burn| FREEZE[Freeze Deploys Shed Load]\n  FREEZE --> MIT[Mitigate and Repair]\n  SHIP --> U"
+    },
+    {
+      "type": "paragraph",
+      "text": "The second half of the mechanism is **composite availability math**, and this is where most designs quietly lie. Availabilities multiply. If your critical path needs DNS at `99.99%` *and* LB at `99.99%` *and* app at `99.95%` *and* database at `99.95%` *and* a fraud check at `99.9%`, your user-facing availability is roughly `99.99 x 99.99 x 99.95 x 99.95 x 99.9 = ~99.69%` — worse than any single component. You cannot promise `99.95%` to users while synchronously calling a `99.9%` dependency on every request. The fix is structural: remove dependencies from the critical path, cache, degrade gracefully, make calls asynchronous, or demand a stronger contract and verify it. The trade-off: every dependency you cut for reliability is functionality you must degrade, duplicate, or reimplement. Strong SLAs force you to say no to product."
+    },
+    {
+      "type": "table",
+      "caption": "What each extra nine really buys you — and bills you.",
+      "headers": [
+        "Design choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Single AZ + managed DB",
+          "Simple ops, fast iteration",
+          "Caps at ~99.9%. One AZ event blows the month"
+        ],
+        [
+          "Multi-AZ active-passive",
+          "Survives AZ loss, credible 99.95%",
+          "2-3x cost, failover testing, split-brain risk"
+        ],
+        [
+          "Multi-region active-active",
+          "Survives region loss, path to 99.99%",
+          "Data replication lag, conflict resolution, huge cost and complexity"
+        ],
+        [
+          "Sync call to weak dependency",
+          "Full features, simple code",
+          "Your SLA becomes their SLA. You inherit every outage"
+        ],
+        [
+          "Degraded mode + cache + async",
+          "Holds SLA during partial failure",
+          "Stale data, queues to operate, UX must explain degradation"
+        ],
+        [
+          "Fast deploys, no gates",
+          "High velocity",
+          "Burns error budget on bad pushes; violates strong SLA in weeks"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you must build differently at 99.95%+"
+    },
+    {
+      "type": "paragraph",
+      "text": "Above `99.9%` you cannot bolt reliability on. You must eliminate single points, bound tails, and practice failure. That means stateless app tier across at least three zones, managed data store with automated failover you have actually triggered in game days, idempotent writes so retries are safe, timeouts plus hedged budgets on every RPC so one slow dependency does not collapse the request, and load shedding that drops non-critical traffic before critical traffic misses latency SLOs. WHY this shape? Because at `21 minutes` per month, you have no time for human diagnosis. Recovery must be automatic or pre-drilled. The trade-off is operational load: retries, hedging, and shedding add code paths that themselves fail, and multi-zone replication adds p99 latency. You are trading average-case simplicity for worst-case survival."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Isolate the critical path.** Draw one sequence diagram for the SLA-covered workflow only. Everything not on it gets moved off the synchronous path.",
+        "**Set timeouts, retries with jitter, circuit breakers, and deadlines.** A retry without a budget is a retry storm. Cap it.",
+        "**Make writes idempotent with keys.** If clients cannot safely retry, your measured availability will always be lower than your server availability.",
+        "**Serve stale or degraded, explicitly.** Cached prices, read-only mode, queue-for-later beats a hard error — but only if the UX says what happened.",
+        "**Pre-provision and autoscale on signals, not on outage.** At four nines you cannot wait 5 minutes for new capacity.",
+        "**Test the failover you brag about.** Untested multi-AZ is single-AZ with extra billing."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure mode one is **correlated dependency collapse**. Each service claims `99.95%`, the design review multiplies optimistically, then a single cloud AZ, DNS, or auth provider takes down all replicas at once. Symptom: everything looks green per-service but user success rate falls off a cliff for 15 minutes, and your status page says operational because probes hit the healthy region while real users are pinned to the sick one. You diagnose it by measuring SLI at the edge per region, per AZ, per client version — not by averaging globally. The fix is not more nines on paper, it is fewer shared fate dependencies: cell-based isolation, regional failover that actually drains, and graceful degradation when the shared service is gone. Trade-off named: isolation costs utilization; cells run hotter and emptier."
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure mode two is **slow burn and alert fatigue**. Strong SLAs rarely die in one big outage; they bleed out in elevated p99 latency, 0.3% error spikes on a single endpoint, or a poison deploy that burns budget over 6 hours while fast-burn alerts stay silent. Symptom: burn-rate charts look flat for days, then you breach with no page ever firing, and the team argues about whether the SLO window should just be reset. The antidote is multi-window burn alerts — a fast window for pages and a slow window for tickets — plus a freeze rule tied to budget, not to gut feel. The trade-off: sensitive burn alerts page more, and teams will beg to tune them down. If you tune them down, you have downgraded your SLA without telling the customer."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The symptom that means you lied",
+      "text": "If your internal dashboard shows `99.99%` but support tickets and client-side retries spike, your SLI is measured in the wrong place. **Move the probe to where the user feels pain** — edge LB, synthetic login-to-checkout, mobile success beacons — and watch the extra nine disappear. That gap is the design work."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The math you should do live"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "sla_math.py",
+      "code": "MIN_PER_MONTH = 30 * 24 * 60  # 43200\n\ndef allowed_downtime(slo: float) -> float:\n    # slo as 0.999, 0.9995, 0.9999\n    return (1 - slo) * MIN_PER_MONTH\n\nfor slo in [0.999, 0.9995, 0.9999, 0.99999]:\n    print(slo, f\"{allowed_downtime(slo):.1f} min/mo\")\n\ndef composite(*avails: float) -> float:\n    # serial dependencies multiply\n    result = 1.0\n    for a in avails:\n        result *= a\n    return result\n\n# App 99.95% + DB 99.95% + fraud 99.9% = ?\nprint(\"composite:\", composite(0.9999, 0.9995, 0.9995, 0.999))\n# -> ~0.9969, i.e. WORSE than 99.9 despite good parts"
+    },
+    {
+      "type": "paragraph",
+      "text": "Run this in the interview. It takes 30 seconds and kills hand-waving. Show that `99.99%` is `4.3 minutes` per month — one bad deploy wipes it. Then show the composite line: three decent services in series cannot deliver four nines. That forces the realistic conversation: either we take the fraud check off the critical path with async review and cached risk scores, or we renegotiate the SLA for that workflow to `99.9%`. Interviewers are testing whether you will do this subtraction honestly. Juniors promise the number and sketch boxes. Seniors cut scope, add degradation, and price the remainder. The trade-off you are naming: stronger SLA means narrower scope — fewer workflows covered, with explicit exclusions for client network and planned maintenance."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Future-proofing without gold-plating"
+    },
+    {
+      "type": "paragraph",
+      "text": "Future-proofing for strong SLAs does not mean building multi-region on day one. It means leaving seams so you can get there without a rewrite: stateless services behind a global load balancer hostname, request IDs and idempotency keys from the start, data model with region and cell affinity fields even if you run single-region today, async events for every side effect so you can later move work out of band, and per-tenant or per-workflow SLI tags so you can tighten the SLA for one premium flow without tightening it for everything. WHY seams over capacity: capacity is cheap to add later, coupling is not. A synchronous monolith that calls five services inline cannot be made four-nines by adding machines. A modular system with clear degradation points can. The trade-off: seams add upfront interface cost and slightly slower early velocity to preserve late velocity — say that out loud."
+    },
+    {
+      "type": "paragraph",
+      "text": "Realistic design also means pricing the SLA. Multi-AZ roughly doubles data and replication cost, multi-region triples it plus egress, and the on-call burden of true 24/7 response with 5-minute acknowledgement requires follow-the-sun or paid rotations. If the business will not fund that, do not promise it. Propose tiered realism instead: `99.99%` for read-your-balance, `99.9%` for transfer-submit with queued retry and transparent status, best-effort for reports. That is user empathy in practice — telling a user their money movement is queued and safe beats pretending it never fails and then losing it. The trade-off every time: broader SLA scope costs exponentially more; narrower, well-chosen coverage is kinder to users and to the team."
+    },
+    {
+      "type": "table",
+      "caption": "When a very strong SLA is honest — and when it is malpractice.",
+      "headers": [
+        "Promise it when",
+        "Do NOT promise it when"
+      ],
+      "rows": [
+        [
+          "Failure blocks money, safety, or trust — checkout, auth, emergency routing",
+          "Failure is annoyance — feeds, recommendations, internal dashboards"
+        ],
+        [
+          "You control the critical path and measure at the edge",
+          "You depend synchronously on a third party with a weaker SLA"
+        ],
+        [
+          "Business funds redundancy + on-call + game days",
+          "Team is small, single AZ, deploys straight to prod"
+        ],
+        [
+          "You can degrade gracefully — read-only, stale, queued",
+          "Only modes are success or hard error; no partial story"
+        ],
+        [
+          "Scope is narrow: one workflow, clear exclusions",
+          "Asked to cover everything for every client and network"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Scope the pain, not the boxes",
+          "text": "Ask: which workflow carries the SLA? What counts as failure — error, timeout, wrong data? Over what window? What is excluded? If they say 99.99% for everything, push back and tier it."
+        },
+        {
+          "title": "Do the budget math on the board",
+          "text": "Convert nines to minutes. Compute composite availability of their dependency chain. Use it to justify removing something from the critical path."
+        },
+        {
+          "title": "Draw the failure domains",
+          "text": "Show zones, regions, data replication, and blast radius. Name shared fate explicitly — DNS, auth, single primary DB — and how you isolate it."
+        },
+        {
+          "title": "Show the degradation story",
+          "text": "Walk one dependency failure end-to-end: what the user sees, what is stale vs blocked, how retries and idempotency keep it safe. This is the empathy answer."
+        },
+        {
+          "title": "Close with cost and evolution",
+          "text": "Price it: 2-3x infra, slower feature velocity when budget burns, on-call cost. Offer staged path — 99.9% now with seams for 99.95% later — instead of fantasy day-one nines."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**More nines are always better.** No. Each nine past 99.9% roughly doubles cost and halves velocity. Promise only what user harm justifies.",
+        "**Redundancy equals availability.** No. Replicas sharing one control plane, one AZ, or one bad config roll fail together. Independence matters more than count.",
+        "**Uptime equals user success.** No. A 200 OK after 10s or with stale balance is a breach from the user side. Measure latency-bounded success at the edge.",
+        "**SLA is an ops problem.** No. It constrains product scope, UX copy for degraded states, and deploy policy. If design review skips those, the SLA is fiction.",
+        "** Error budget means no incidents.** No. It means a *priced* number of incidents. A team that never burns budget over-provisioned and under-shipped.",
+        "**Cloud SLA transfers to you.** No. A provider credit does not restore your user trust, and their 99.99% per service still multiplies down in your chain."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "“I would scope the SLA to one critical workflow, measure latency-bounded success at the edge, fit every dependency inside a `21-minute` monthly error budget with degradation and idempotent retries, and price the redundancy — otherwise I would renegotiate to fewer nines.”"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:20:39.568Z",
+    "problems": []
+  }
+}

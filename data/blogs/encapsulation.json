@@ -1,0 +1,266 @@
+{
+  "slug": "encapsulation",
+  "title": "Encapsulation",
+  "summary": "Encapsulation is a controlled access boundary: bundle state with its operations, hide the representation, and enforce invariants at the boundary.",
+  "kind": "LLD",
+  "problemSlug": "encapsulation-29-65",
+  "topic": "Object oriented Programming (OOPS)",
+  "difficulty": "Medium",
+  "coverEmoji": " f512",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "OOPS",
+    "Encapsulation",
+    "Design Principles"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Encapsulation in Programming: A Beginner's Guide - Stackify",
+      "url": "https://stackify.com/oop-concept-for-beginners-what-is-encapsulation/",
+      "source": "stackify.com",
+      "kind": "article"
+    },
+    {
+      "title": "Trade-offs in Encapsulation Efficiency and Drug Release - ResearchGate",
+      "url": "https://www.researchgate.net/publication/386055279_Trade-offs_in_Encapsulation_Efficiency_and_Drug_Release_A_Multi-Objective_Optimization_Approach",
+      "source": "researchgate.net",
+      "kind": "article"
+    },
+    {
+      "title": "Encapsulation (computer programming) - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Encapsulation_(computer_programming)",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "ELI5: Encapsulation : r/explainlikeimfive - Reddit",
+      "url": "https://www.reddit.com/r/explainlikeimfive/comments/osbdke/eli5_encapsulation/",
+      "source": "reddit.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Encapsulation is not \"make fields private.\" It is: choose an invariant, then make it unbreakable from outside.** If a caller can put your object into a state your methods never intended, you do not have encapsulation — you have a naming convention. Everything else is detail."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "Encapsulation is the bundling of state with the operations that are allowed to change it, plus a compiler- or runtime-enforced boundary that blocks every other path to that state. The boundary is the point. Without it you have cohesion — related code sitting together — but any caller can still reach in and mutate fields directly, bypass validation, duplicate logic, and silently break assumptions. With it you have a contract: the public methods promise what states are possible, and the private representation is free to change as long as the promise holds. That is why encapsulation is a prerequisite for maintainability. It localises the blast radius of a change to one class instead of every caller that touched a field."
+    },
+    {
+      "type": "paragraph",
+      "text": "Be precise with three terms interviewers deliberately conflate. **Encapsulation** is the bundling plus the boundary. **Information hiding** is the decision about *what* to hide — the representation, the in-progress states, the helper methods, the performance tricks. **Abstraction** is the *simplified model* you expose instead — `withdraw(amount)` instead of `balance -= amount; appendToLedger(); notifyRisk();`. Encapsulation is the mechanism, information hiding is the policy, abstraction is the resulting interface. If you say \"abstraction hides details so encapsulation...\" you have already lost the plot. Say instead: \"I hide the balance representation so I can change it from `long cents` to `Money` without touching callers; the public abstraction stays stable.\""
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The mechanism has three parts and all three must exist. First, **private state** that is unreachable by default — fields, internal caches, flags, collections that must never be aliased. Second, **a narrow public surface** that is the only way in — constructors, mutators, and queries that each do one job. Third, **guard logic at entry** — validation, normalisation, and invariant restoration on every mutation, with failure signalled explicitly rather than by leaving a half-updated object. Construction is part of the boundary too: a constructor that accepts an invalid combination and stores it has already failed. The trade-off is immediate: every guard you add makes the class safer to reuse but slower to write and harder to extend for a case you did not foresee."
+    },
+    {
+      "type": "mermaid",
+      "title": "Encapsulation boundary",
+      "caption": "All mutation flows through validation; private state is never directly reachable.",
+      "code": "flowchart TD\n  Client[Client code] --> API[Public methods]\n  API --> Guard[Validation + invariant check]\n  Guard --> State[(Private state)]\n  State -.->|blocked| Client\n  Guard -->|reject| Error[Exception / Result]"
+    },
+    {
+      "type": "paragraph",
+      "text": "In most languages the boundary is built from access control plus discipline. `private` blocks direct field access; `protected` and package-visible widen the circle and therefore widen the risk. Getters and setters are **not** encapsulation by themselves — a `getBalance` / `setBalance` pair with no check is a public field with extra typing. A real accessor either derives a value without exposing the store (`getBalance()` returns a copy or an immutable view), or it enforces a rule on the way in (`withdraw` rejects overdrafts, negative amounts, and frozen accounts in one place). Immutability is the strongest form: if the state cannot change after construction, the boundary only needs to be correct once. The trade-off: immutable objects eliminate temporal coupling but force you to model every change as a new object, which costs allocation and forces callers to handle the return value."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Encapsulation is a bet: you pay construction cost now to avoid distributed repair cost later.",
+      "headers": [
+        "Tighter boundary gives you",
+        "It costs you",
+        "So what"
+      ],
+      "rows": [
+        [
+          "Invariant enforced in one place",
+          "Every valid mutation must go through your methods, even uncommon ones",
+          "Good when correctness matters more than caller convenience; bad for exploratory prototyping"
+        ],
+        [
+          "Freedom to change representation",
+          "You must design a stable contract up front and version it",
+          "You can move from `double` to `long cents` to `Money` silently — but only if you resisted leaking the type early"
+        ],
+        [
+          "Local reasoning and testability",
+          "More code per class: validation, defensive copies, explicit errors",
+          "Unit tests become meaningful because inputs map to defined outcomes; the price is boilerplate that looks pointless until the first bug it catches"
+        ],
+        [
+          "Reduced coupling between callers",
+          "Reduced visibility for debugging and frameworks",
+          "Callers stop depending on internals, but serializers, ORMs, and debuggers now need sanctioned escape hatches like builders or factories"
+        ],
+        [
+          "Safer concurrency boundaries",
+          "You still need a locking or immutability strategy inside the boundary",
+          "A private field does not make a class thread-safe; it only gives you one place to add the lock correctly instead of ten places to forget it"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The judgment an interviewer wants: strong boundaries move complexity **inward**. The class gets harder to write and easier to use. Weak boundaries do the opposite — the class looks simple because every caller carries a fragment of its logic: null checks, range checks, ordering assumptions. That distributed logic is what makes large codebases unchangeable. The honest cost of the strong version is rigidity. When a new requirement does not fit the contract — partial updates, bulk loads, migration scripts — callers will beg you to \"just expose the field for this one case.\" Each exception permanently weakens the invariant, so budget for extension points like builders, domain methods, or explicit internal-access tiers instead of opening the field."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Encapsulation failures do not throw at the boundary. They surface far away, as corrupted state that passed every local check. That distance between cause and symptom is the diagnostic signature. When you see data that \"should be impossible\" — negative balances, orders with no line items, users in two mutually exclusive states — assume a bypassed or incomplete boundary, then trace how the state was constructed, not just how it was last mutated."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Leaked mutable reference.** You return the internal `List<Transaction>` directly. Caller sorts it, clears it, or holds it across a mutation. Symptom: intermittent `ConcurrentModificationException`, missing history, or balances that change with no corresponding operation in logs.",
+        "**Setter without invariant.** You expose `setStatus()` and `setBalance()` independently so an account can be `CLOSED` with a non-zero balance, or `FROZEN` and still withdraw. Symptom: downstream invariants collapse — reports disagree, reconciliation jobs flag rows the application swore were valid.",
+        "**Half-constructed object.** Constructor stores whatever it is given and a separate `init()` or `validate()` is optional. Symptom: nulls and out-of-range values deep in business logic; every method starts with defensive `if` blocks because no one trusts the object they received.",
+        "**Representation leaked into the contract.** You exposed `double balance` or epoch millis directly, then callers started doing arithmetic on it. Symptom: rounding errors spread across services and you cannot fix the type without a coordinated migration of every caller.",
+        "**Framework bypass.** Serialization, reflection, or object-mapping tools write directly to private fields, skipping constructors. Symptom: objects exist in production that no constructor could have produced; bugs reproduce from database rows but never from API calls."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The fix is never \"add more private.\" It is close the specific hole: return defensive copies or immutable views, replace paired setters with a single domain operation that transitions atomically, make invalid states unrepresentable by construction, and give frameworks a dedicated creation path — a factory or builder that still runs validation — instead of letting them poke fields. If you cannot name the invariant that was violated, you have not found the bug yet; keep tracing."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that gets it right"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "BankAccount.java",
+      "code": "public final class BankAccount {\n    private long balanceCents; // never exposed, never double\n    private Status status;\n\n    public BankAccount(long openingBalanceCents) {\n        if (openingBalanceCents < 0) throw new IllegalArgumentException(\"negative opening balance\");\n        this.balanceCents = openingBalanceCents;\n        this.status = Status.ACTIVE;\n    }\n\n    public synchronized void withdraw(long amountCents) {\n        if (amountCents <= 0) throw new IllegalArgumentException(\"amount must be positive\");\n        if (status != Status.ACTIVE) throw new IllegalStateException(\"not active: \" + status);\n        if (amountCents > balanceCents) throw new IllegalStateException(\"insufficient funds\");\n        balanceCents -= amountCents; // single mutation point\n    }\n\n    public synchronized void close() {\n        if (balanceCents != 0) throw new IllegalStateException(\"drain before close\");\n        status = Status.CLOSED;\n    }\n\n    public synchronized long getBalanceCents() {\n        return balanceCents; // primitive: safe copy by value\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape matters: there is **no** `setBalance` and **no** `setStatus`. The only ways to change state are `withdraw`, `deposit` (omitted for brevity), and `close`, each of which restores the invariant before returning. The representation is `long cents`, so floating-point drift is impossible and callers cannot introduce it because they never touch the field. Synchronization lives inside the boundary for the same reason — one lock, one place, no caller coordination. The trade-off is visible: bulk migration or overdraft logic does not fit, so you will need to add an explicit domain method for it rather than cracking the class open. That friction is intentional; it forces the new rule to be named, validated, and tested in one place."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design a class with an invariant",
+          "text": "Expect `ParkingLot`, `Elevator`, `Wallet`, `ShoppingCart`, `RateLimiter`. State the invariant first out loud: \"spots occupied never exceeds capacity; a ticket maps to exactly one occupied spot.\" Then place every mutation behind a method that preserves it. Interviewers score the invariant statement more than the code."
+        },
+        {
+          "title": "Defend against an anemic model",
+          "text": "They will show getters and setters for everything and ask what is wrong. Answer: behavior lives in callers, validation is duplicated or absent, and two setters can be called in an order that breaks the object. Refactor by replacing setter pairs with a domain operation like `checkout()` or `transferTo()`."
+        },
+        {
+          "title": "Handle the leaking-collection follow-up",
+          "text": "The classic probe: \"your `getTransactions()` returns a list — what breaks?\" Say: caller mutates internal state, iterates while you mutate, caches a stale view. Fix with an unmodifiable copy, and explain the cost: copy per call versus risk of aliasing. Mention iterators and lazy views as middle ground."
+        },
+        {
+          "title": "Survive the framework question",
+          "text": "\"How does this work with serialization or an ORM?\" Do not say you will make fields public. Offer a private constructor plus a validated factory, or a builder that runs the same checks as the public methods. You keep one validation path even when the caller is infrastructure, not business code."
+        },
+        {
+          "title": "Connect it to concurrency",
+          "text": "Medium-level trap: \"is your class thread-safe?\" Correct answer: encapsulation alone says nothing about threads; it only gives you the single place where a lock or immutability decision belongs. Show the lock inside the methods or make the class immutable, and state why caller-side locking would have been scattered and wrong."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**\"Private fields equal encapsulation.\"** No. A class with private fields and unconstrained getters and setters for each one has the same coupling as public fields, with more keystrokes.",
+        "**\"More getters means more encapsulation.\"** The opposite. Every accessor widens the contract you must support forever. Expose behavior (`reserveSpot()`), not state (`getSpots(); setOccupied()`).",
+        "**\"Encapsulation is only an OOP idea.\"** The principle — bundle data with its legal operations and restrict other access — appears in modules, closures, and abstract data types. OOP just gives it class-level syntax.",
+        "**\"Hiding means no one can see anything.\"** Hiding means no one *depends* on the representation. Observability, debugging, and persistence still need sanctioned views; the difference is those views do not allow uncontrolled mutation.",
+        "**\"Validation belongs in the service layer.\"** Service-level checks do not survive a second caller. If two services, a job, and a migration can all construct the object, the rule must live in the object or it will drift across all four."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Strong boundaries by default; open them only deliberately and narrowly.",
+      "headers": [
+        "Use strong encapsulation when",
+        "Break it open when",
+        "Why"
+      ],
+      "rows": [
+        [
+          "An invariant must hold across operations (money, capacity, lifecycle state)",
+          "The type is a pure carrier with no rules (DTO, message, config snapshot)",
+          "No invariant means no boundary to defend; getters and builders are cheaper and clearer"
+        ],
+        [
+          "Multiple callers or teams will reuse the class",
+          "Code is a short-lived script or prototype with one caller",
+          "Shared code pays back the boilerplate; throwaway code pays only the cost"
+        ],
+        [
+          "Representation is likely to change (precision, timezone, collection type)",
+          "Representation *is* the contract (a coordinate pair, a byte buffer layout)",
+          "Hiding a stable primitive buys nothing and blocks legitimate performance access"
+        ],
+        [
+          "Concurrency or persistence interacts with the object",
+          "You need bulk, reflective, or framework-driven construction",
+          "Then provide a narrow, validated side door — builder, factory, internal scope — not a permanently open field"
+        ],
+        [
+          "You need to reason about correctness by reading one file",
+          "Debuggability demands inspection of internals",
+          "Expose read-only snapshots, logs, or diagnostic views rather than mutable handles to live state"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**\"Encapsulation means the object owns its invariant: state is private, every change goes through a method that validates and restores that invariant, so I can change the representation without changing callers.\"** Then point at the invariant in your design — that sentence plus a named invariant passes the question."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:51:05.740Z",
+    "problems": []
+  }
+}

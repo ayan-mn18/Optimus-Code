@@ -1,0 +1,293 @@
+{
+  "slug": "user-empathy",
+  "title": "User Empathy",
+  "summary": "User empathy in HLD means converting observed user constraints into explicit architecture budgets — and defending the trade-off.",
+  "kind": "HLD",
+  "problemSlug": "user-empathy-148-324",
+  "topic": "User Empathy, User Experience, Future Proofing & Realistic Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🧠",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "User Empathy",
+    "UX",
+    "Future-Proofing"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Empathy Mapping: The First Step in Design Thinking - NN/G",
+      "url": "https://www.nngroup.com/articles/empathy-mapping/",
+      "source": "nngroup.com",
+      "kind": "article"
+    },
+    {
+      "title": "User Empathy - HelloPM",
+      "url": "https://hellopm.co/word/user-empathy/",
+      "source": "hellopm.co",
+      "kind": "article"
+    },
+    {
+      "title": "Empathy Map – Why and How to Use It - IxDF",
+      "url": "https://ixdf.org/literature/article/empathy-map-why-and-how-to-use-it",
+      "source": "ixdf.org",
+      "kind": "article"
+    },
+    {
+      "title": "How to Use Empathy Maps - YouTube",
+      "url": "https://www.youtube.com/watch?v=Tz0dpeqcO60",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "In system design, empathy is not kindness. It is **constraint discovery**. If you cannot point to a specific latency budget, payload limit, offline behavior, or accessibility guarantee that changed because of a real user limitation, you did not do empathy — you did decoration. The design that wins is the one that is **realistic for the worst user you must serve, not pleasant for the best user you imagine**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "User empathy in high-level design is the discipline of making invisible users load-bearing in your architecture. A product manager observes that a user hesitates, retries, abandons, or works around your system. You translate that observation into a non-functional requirement with a number attached: **p95 interaction under 800ms on a 3G connection, first useful paint under 2.5s on a 2GB RAM Android device, full core flow usable with a screen reader and with zero connectivity for 30 minutes**. Without the number, empathy is hand-waving. With the number, it forces choices about caching, payload shape, pagination, polling versus push, sync versus async, and where you place compute. That translation — from human friction to architectural budget — is the entire job."
+    },
+    {
+      "type": "paragraph",
+      "text": "This is different from feature empathy. Feature empathy asks what button the user wants. Architectural empathy asks what the user **cannot tolerate** and what the user **cannot do**. The first leads to more screens. The second leads to fewer round trips, smaller bundles, idempotent retries, forgiving input parsing, and explicit degradation paths. In an HLD interview, the interviewer does not care if you say you care about users. They care whether you let a concrete limitation overrule your preferred technology. If a low-end device and a flaky network do not change your API design, your empathy had no effect and you should not mention it."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Four quadrants without mysticism"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Says:** what users state when asked. Treat as unreliable signal. Users report intentions, not behavior. Use it to generate hypotheses, never to set budgets.",
+        "**Thinks:** what occupies them but stays unsaid — confusion, embarrassment about not understanding, fear of losing data or money. You infer this from hesitation, backtracking, and abandonment, not from asking directly.",
+        "**Does:** what you can observe and measure. Refreshes repeatedly, opens the same screen three times, copies an ID into notes because your app forgets it, abandons at the payment step. This is the only quadrant you can turn directly into requirements.",
+        "**Feels:** the emotional cost of failure. Anxiety on a money transfer, impatience on search, resignation on a government form. High-anxiety flows demand synchrony, confirmation, and reversibility in the architecture — not just friendlier copy."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The reason teams map these four together is not ritual. It is to stop the loudest opinion from winning. When says and does disagree — and they almost always do — **does wins**. A user who says your flow is fine but retries four times and pastes data into a separate app is telling you your state management, your latency, or your trust model is broken. The map exists to make that contradiction visible so you cannot ignore it when you draw boxes and arrows. Build it collaboratively because a single designer or engineer will explain away the contradiction. A group forced to write it down cannot."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from observation to architecture"
+    },
+    {
+      "type": "paragraph",
+      "text": "Empathy only matters if there is a mechanical path from a field note to a system property. Otherwise it evaporates before the first scaling question. The path is short: cluster raw behavior into a repeated friction, restate that friction as a measurable constraint, then let that constraint veto at least one convenient design. If nothing gets vetoed, the loop did not run. Most candidates describe step one and skip steps two and three, which is why their empathy section sounds like a preamble instead of engineering."
+    },
+    {
+      "type": "mermaid",
+      "title": "Empathy to architecture loop",
+      "caption": "Each loop must end in a numbered budget or an explicit degradation rule.",
+      "code": "flowchart TD\n  A[Raw observations: logs, interviews, support tickets] --> B[Empathy map: Says Thinks Does Feels]\n  B --> C[Clustered friction: repeated retry, abandon, workaround]\n  C --> D[Measurable constraint: latency, payload, offline, access]\n  D --> E[Architectural decision: cache, pagination, queue, sync]\n  E --> F[Degradation rule: what happens when budget is missed]\n  F --> A"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk it concretely. You observe that users on slow connections tap submit twice because there is no feedback for four seconds, creating duplicate orders. The cluster is **no trust during wait**. The constraint becomes: acknowledge intent in under 300ms even if fulfillment takes 10 seconds, and make submission idempotent by construction. The architectural consequence is an **async submission with client-generated idempotency keys, an outbox on the client, and a pending state in the API** — not a faster synchronous endpoint. The degradation rule is explicit: if the confirmation channel is down, the user still sees a durable pending receipt they can reference. That is empathy compiled into queues, keys, and states. Anything less specific is just sympathy."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every empathetic choice bills you somewhere else. Name the bill.",
+      "headers": [
+        "Empathy-driven choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Optimistic UI + idempotent writes for high-anxiety actions",
+          "User trusts the system during slow backends; duplicate taps become harmless",
+          "Client and server complexity: key generation, deduplication store, reconciliation jobs, harder testing"
+        ],
+        [
+          "Aggressive pagination, compression, and edge caching for low-end devices",
+          "Usable product on constrained networks and memory; lower abandonment",
+          "More requests to orchestrate, cache invalidation pain, stale-data edge cases to explain in UI"
+        ],
+        [
+          "Full offline core flow with local queue and conflict resolution",
+          "Continuity through tunnels, rural coverage, airplane mode",
+          "Sync protocol, version vectors or last-writer rules, support burden when merges surprise users"
+        ],
+        [
+          "Accessible-first interaction: keyboard, screen reader, low-vision contrast",
+          "Wider reachable population and legal defensibility; often simpler flows for everyone",
+          "Design velocity slows; custom components must be rebuilt accessibly; automated tests miss half the problems"
+        ],
+        [
+          "Explicit degradation and human-readable failure states",
+          "Fewer support tickets and fewer catastrophic retries during partial outages",
+          "You must design, build, and maintain paths you hope never run — pure overhead until the outage"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pattern is consistent: empathy moves cost from the user to the builder. That is the correct trade, but do not pretend it is free. Offline support is the clearest example. You buy user continuity with a distributed systems problem — conflicts — that you did not have before. Take that trade only for the flows where abandonment or data loss is unacceptable: compose, pay, book, file. For browse-only surfaces, a clear offline message plus cached reads is enough. **Future-proofing is choosing which of these bills you are willing to pay before you are forced to**, and refusing to pay the others until evidence demands it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The most common failure is **privileged-user design**: the system works on the hardware and network its builders use and collapses everywhere else. Symptoms are unmistakable if you look at segmented metrics instead of global averages. Global p95 looks fine while p95 on low-memory devices is 4x worse. Crash-free rate is 99.5% overall and 96% on the cheapest supported phone. Support tickets cluster around timeout, white screen, and lost draft. Retry storms spike every time latency crosses two seconds because the client has no pending state and the user hammers submit. None of this shows up in a demo on office wifi. It shows up in abandonment funnels sliced by device tier, network class, and geography — which is exactly the slicing teams skip."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Funnel abandonment that correlates with payload size or round-trip count, not with screen position — your API chattiness is the UX bug.",
+        "Duplicate writes after slow responses — missing idempotency and missing instant acknowledgement.",
+        "Blank or frozen screens on back-navigation or offline return — no cached shell, no queued intent, no defined empty and error states.",
+        "Accessibility audit failures that map 1:1 to support calls from older users — custom controls without roles, focus traps, timeout modals that cannot be extended.",
+        "Future-proofing failures: a v1 schema with no versioning, no extensible fields, and synchronous cross-service calls that turn one slow dependency into a global outage."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure is fantasy future-proofing: building for imaginary users instead of realistic ones. You add plugins, themes, multi-region active-active, and a generic rule engine because someday someone might need it. The symptom is different but equally measurable: velocity collapses, onboarding time for new engineers doubles, and every simple change touches five abstractions. Real future-proofing is boring. It is **versioned APIs, backward-compatible schema evolution, idempotency from day one, event hooks where workflows will diverge, and capacity headroom with a known scaling lever**. Everything else is speculation tax. If you cannot name the user behavior that will force the extension within twelve months, do not build the extension."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The sparse-map rule",
+      "text": "A thin empathy map is a finding, not a failure. If the **Does** and **Feels** quadrants are empty, you do not have empathy — you have assumptions. Say so explicitly: **we lack behavioral data for low-end devices and assisted-technology users, so I will cap payload at 200KB and require keyboard traversal as a guardrail until research fills the gap**. Interviewers reward that honesty far more than confident invention."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Making it concrete: from persona constraint to budget"
+    },
+    {
+      "type": "paragraph",
+      "text": "Engineers ignore empathy documents. They respect budgets enforced in code and review. Convert each critical constraint into a checkable limit: maximum payload, maximum round trips for a core task, p95 acknowledgement time, offline duration supported, assistive-technology path required. Review designs against those numbers the way you review correctness. The snippet below is deliberately crude — its value is forcing the conversation before architecture diagrams lock in convenient but exclusionary choices."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "empathy_budgets.py",
+      "code": "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass UserConstraint:\n    name: str\n    network: str          # e.g. slow-3g, intermittent\n    device_ram_gb: float\n    must_work_offline_min: int\n    max_tolerated_wait_s: float\n    assistive_tech: bool\n\n@dataclass(frozen=True)\nclass ArchitectureBudget:\n    max_p95_ack_ms: int\n    max_payload_kb: int\n    max_round_trips_per_task: int\n    idempotency_required: bool\n    offline_queue_required: bool\n\ndef derive_budget(c: UserConstraint) -> ArchitectureBudget:\n    # WHY: wait tolerance + network fragility veto synchronous design.\n    # Trade-off: async + idempotency adds server complexity to buy user trust.\n    slow = c.network in (\"slow-3g\", \"intermittent\")\n    anxious = c.max_tolerated_wait_s <= 2.0\n    return ArchitectureBudget(\n        max_p95_ack_ms=300 if (slow or anxious) else 1000,\n        max_payload_kb=200 if c.device_ram_gb <= 2.0 else 800,\n        max_round_trips_per_task=2 if slow else 5,\n        idempotency_required=anxious or slow,\n        offline_queue_required=c.must_work_offline_min > 0,\n    )\n\nCORE_USERS = [\n    UserConstraint(\"rural-commuter\", \"intermittent\", 2.0, 30, 1.5, False),\n    UserConstraint(\"screen-reader-shopper\", \"slow-3g\", 4.0, 0, 2.0, True),\n]\n\nfor u in CORE_USERS:\n    print(u.name, derive_budget(u))"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the function as policy, not prediction. A commuter with intermittent connectivity and 1.5 seconds of patience forces acknowledgement in 300ms, at most two round trips, mandatory idempotency, and a queued offline path. That rules out a chatty REST flow with three sequential lookups and a synchronous payment call. You now need batched reads, a single submit intent endpoint, and a pending receipt. The screen-reader constraint forces a second veto: every core action must be reachable and operable without pointer timing, which kills drag-only interactions and auto-dismissing confirmations. Two rows in a table just reshaped your API, your client state machine, and your test plan. That is what realistic design looks like."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name your worst mandatory user in 30 seconds",
+          "text": "Do not list five personas. Pick the one whose limits will break your design: lowest device, worst network, highest anxiety flow. State their device, network, patience, and access needs as numbers. This signals you design from constraints, not averages."
+        },
+        {
+          "title": "Convert one friction into one budget",
+          "text": "Take duplicate submits, draft loss, or search abandonment and turn it into a limit: ack time, payload cap, round-trip cap. Write it down. Interviewers score the conversion, not the empathy vocabulary. No number means no credit."
+        },
+        {
+          "title": "Let the budget veto something you liked",
+          "text": "Explicitly kill a convenient choice: no synchronous orchestration across three services, no 2MB first page, no pointer-only gesture. Explain WHY the veto protects the stated user and WHAT you pay in complexity. That trade-off sentence is where medium candidates become strong."
+        },
+        {
+          "title": "Show realistic future-proofing, not a platform",
+          "text": "Propose versioned APIs, idempotency keys, backward-compatible events, and one explicit extension seam for the most likely divergence. Then stop. Say what you are deliberately NOT building and what signal would change that decision. Restraint reads as seniority."
+        },
+        {
+          "title": "Define the degradation contract",
+          "text": "For each core flow, state what the user sees and can still do when the budget is missed: pending receipt, queued draft, cached shell, human-readable retry. If you cannot describe degraded behavior, your happy path is the only path — and the interviewer knows it will fail."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Time allocation matters. Spend at most three minutes on the map itself, then move to budgets and vetoes. Candidates who linger on quadrants sound like they are stalling on architecture. The strongest move is to tie empathy to scale and failure: my acknowledgement budget forces async processing, which forces a queue, which gives me natural backpressure and retry isolation during traffic spikes. You just turned a UX concern into a scalability and resilience argument. That linkage is what HLD interviewers are listening for, because it proves user experience and system properties are the same design, not two sections."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Empathy equals asking users what to build.** Users are reliable reporters of pain and unreliable designers of systems. Watch what they retry, abandon, and work around; do not poll them on architecture.",
+        "**The average user is the design target.** Averages hide the users who cost you the most. Design core flows for the constrained edge — slow network, small memory, assistive technology — and let the average benefit automatically.",
+        "**Future-proofing means maximal generality.** Generality without a forcing function is debt, not insurance. Versioning, compatibility, and one seam beat a framework. Build the seam, not the city.",
+        "**Accessibility and offline are v2 concerns.** Retrofitting either reshapes APIs and state machines. If you defer them, you rebuild. Name them in v1 scope even if the v1 implementation is minimal.",
+        "**A sparse map means skip empathy.** The opposite: sparsity is the most useful output. It tells you which guardrail budgets to set conservatively and which research to run first, instead of designing on invented confidence.",
+        "**Delight compensates for unreliability.** It does not. No animation or copy fixes duplicate charges, lost drafts, or unreadable errors. Trust comes from idempotency, durability, and clear degraded states — then polish."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to stop"
+    },
+    {
+      "type": "table",
+      "caption": "Empathy is a lens, not a license to overbuild.",
+      "headers": [
+        "Let empathy drive the design when",
+        "Do not let it drive when"
+      ],
+      "rows": [
+        [
+          "Core flow carries money, identity, health, or irrecoverable work — anxiety is high and failure is expensive",
+          "Browse-only or internal tooling with tolerant experts — a clear error plus retry is sufficient"
+        ],
+        [
+          "Behavioral evidence shows retries, abandonment, or workarounds correlated with latency, payload, or connectivity",
+          "Only attitudinal data exists (satisfaction scores, feature requests) with no behavioral cluster to anchor a budget"
+        ],
+        [
+          "Constraint is stable and shared: a large segment on low-end devices or poor networks for the next year",
+          "Constraint is anecdotal or transient: one ticket, one device, one outage — set a guardrail, do not re-architect"
+        ],
+        [
+          "Extension seam has a named trigger: new payment method, new locale, new regulation with a date attached",
+          "Extension is speculative: might need multi-tenancy, might need plugins, might go global — note it, do not build it"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The senior line to hold is this: be expansive in observation, ruthless in commitment. Collect broadly across says, thinks, does, and feels so you are not blindsided. Commit narrowly — to two or three budgets and one seam — so you ship something maintainable. Revisit the map when segmented metrics move, not when opinions change. That rhythm keeps the design realistic today and adaptable tomorrow without paying speculation tax on every sprint. Future-proofing is not predicting the future; it is refusing to close doors that real users are already pushing on."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**User empathy means I design core flows for the most constrained real user, turn their limits into numbered budgets that veto convenient choices, and future-proof only with versioning and one seam tied to observed behavior.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:22:26.223Z",
+    "problems": []
+  }
+}

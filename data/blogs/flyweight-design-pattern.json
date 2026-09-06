@@ -1,0 +1,287 @@
+{
+  "slug": "flyweight-design-pattern",
+  "title": "Flyweight design Pattern",
+  "summary": "Flyweight cuts memory by splitting shared intrinsic state from per-use extrinsic state and reusing one immutable object per variant through a factory cache.",
+  "kind": "LLD",
+  "problemSlug": "flyweight-design-pattern-37-77",
+  "topic": "Structural Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": " ",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Structural-Patterns",
+    "Flyweight",
+    "Memory-Optimization"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Flyweight - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/flyweight",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Flyweight pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Flyweight_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Flyweight Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/flyweight-design-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "The Flyweight Pattern Explained and Implemented in Java | Geekific",
+      "url": "https://www.youtube.com/watch?v=qscOsQV-K14",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Flyweight is not caching for speed. It is **identity removal for survival**: when you have 1,000,000 objects with 3 real variants, you keep 3 sharable cores and push everything that differs to the caller. You trade object identity and a lookup on every access for an order-of-magnitude cut in heap. If distinct variants are not few, the pattern does nothing."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Flyweight applies when instance count explodes but value diversity does not. Think forest rendering with 500,000 trees of 4 species, a shooter with 200,000 bullets of 3 calibers, a text layout with 100,000 glyphs of 120 character-and-font combinations. Without intervention each instance carries its full field set, so memory grows as `count * objectSize`. The heavy fields repeat verbatim across instances: species mesh and texture, bullet sprite and impact behavior, glyph outline and metrics. Flyweight breaks the object in two. The repeatable part, called intrinsic state, lives once inside a shared, immutable flyweight. The per-occurrence part, called extrinsic state, lives outside, owned by a lightweight context or passed as arguments on each call. A factory guarantees sharing: request a variant by key, get back the same instance every time. Correctness now depends on discipline, not structure. The shared core must never hold mutable per-use data, and every operation that needs per-use data must receive it explicitly."
+    },
+    {
+      "type": "paragraph",
+      "text": "This split is why Flyweight is structural and not creational. The factory is plumbing; the change in shape is the point. Before, a `Tree` owned `x, y, speciesName, leafTexture, barkMesh, shadeModel`. After, `TreeType` owns only `speciesName, leafTexture, barkMesh, shadeModel` and exposes `draw(canvas, x, y, height)`, while `Tree` is reduced to `x, y, height, TreeType ref`. The same holds for particles: color and sprite move inward to the shared object, position and velocity move outward to arrays or context records. You chose this because heap is the bottleneck and allocation rate plus garbage collection pauses are killing throughput. The trade-off is explicit: you save `N * sizeof(intrinsic)` bytes but you pay a map lookup at creation, an extra indirection at use, and you lose the ability to use `==` or per-instance mutation to mean anything. If you need per-object lifecycle, locking, or identity, do not apply it."
+    },
+    {
+      "type": "table",
+      "caption": "Intrinsic vs extrinsic split with concrete field assignments.",
+      "headers": [
+        "Domain",
+        "Intrinsic (shared, immutable)",
+        "Extrinsic (per-use, supplied by caller)"
+      ],
+      "rows": [
+        [
+          "Forest / game map",
+          "species name, mesh, texture, shader params",
+          "x, y, height, growth stage, health"
+        ],
+        [
+          "Particles / bullets",
+          "sprite, color palette, collision radius, damage curve",
+          "position vector, velocity, lifetime remaining"
+        ],
+        [
+          "Text editor",
+          "character code, font outline, kerning table",
+          "page position, selection highlight, background"
+        ],
+        [
+          "Book catalog UI",
+          "cover template, publisher style, layout metrics",
+          "title string, price, stock count, row index"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are four roles and one rule. `Flyweight` defines operations that take extrinsic state as parameters. `ConcreteFlyweight` stores intrinsic state and implements those operations without retaining the extrinsic values. `FlyweightFactory` owns the pool keyed by intrinsic variant and returns the canonical instance, creating it only on miss. `Context` or client code stores extrinsic state and a reference to the flyweight, combining them at call time. The rule: never store extrinsic inside the flyweight, never mutate intrinsic after publication. Creation goes through `get(key)`, never `new`. Use goes through `flyweight.operation(extrinsic)`, never `flyweight.getExtrinsic()`. That is the entire enforcement mechanism. You pick a factory-backed pool over ad-hoc interning because you want one place to control key canonicalization, eviction policy, and concurrency. The trade-off is centralization: every creation path now depends on the factory, which becomes a contention point and a lifetime manager. That is acceptable when variant count is small and stable, painful when variant keys are unbounded."
+    },
+    {
+      "type": "mermaid",
+      "title": "Flyweight structure",
+      "caption": "Factory returns the same instance per intrinsic key; context supplies extrinsic state per call.",
+      "code": "classDiagram\n  class Flyweight {\n    <<interface>>\n    +render(x int, y int, extraState string)\n  }\n  class ConcreteFlyweight {\n    -speciesName string\n    -meshData string\n    -texture string\n    +render(x int, y int, extraState string)\n  }\n  class FlyweightFactory {\n    -pool map\n    +getFlyweight(key string) Flyweight\n  }\n  class Context {\n    -x int\n    -y int\n    -height int\n    -flyweight Flyweight\n    +draw()\n  }\n  class Client {\n    +buildForest()\n  }\n  Flyweight <|.. ConcreteFlyweight\n  FlyweightFactory --> ConcreteFlyweight : creates and caches\n  Context --> Flyweight : delegates with extrinsic\n  Client --> FlyweightFactory : requests by key\n  Client --> Context : stores extrinsic"
+    },
+    {
+      "type": "paragraph",
+      "text": "Immutability of the shared core is non-negotiable, and that is a deliberate design choice with a cost. If `TreeType` is immutable and safely published, thousands of threads and frames can read it without locks, which is exactly what a renderer or layout pass needs. The price is that every variant change becomes a new key and a new pool entry, and key design determines correctness. Use a value key derived from the full intrinsic tuple, not an object reference or a lossy abbreviation. Normalize case, whitespace, and equivalent textures before hashing or you will silently duplicate the objects you meant to share. Retrieval is a hash lookup, so creation latency becomes less predictable than plain allocation. You accept that jitter because the alternative is heap exhaustion and full garbage collection stalls, which are worse by orders of magnitude. Measure pool hit rate in review: below ~95% sharing, you built complexity for no saving."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What you gain and what you pay for with Flyweight.",
+      "headers": [
+        "Decision",
+        "Gain",
+        "Cost you must accept"
+      ],
+      "rows": [
+        [
+          "Share one instance per intrinsic variant",
+          "Heap drops from O(N * fullSize) to O(variants * intrinsicSize + N * refSize)",
+          "Extra indirection and factory lookup on every create and use"
+        ],
+        [
+          "Make flyweights immutable",
+          "Lock-free reads, safe cross-thread reuse",
+          "No in-place tweak; variant change means new key plus possible pool growth"
+        ],
+        [
+          "Externalize extrinsic state",
+          "Tiny contexts; cache-friendly scans over position arrays",
+          "Caller must thread state correctly through every call; API gets uglier"
+        ],
+        [
+          "Central factory pool",
+          "Single deduplication point, measurable hit rate",
+          "Contention hotspot; lifetime and eviction policy become your problem"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Choose Flyweight when profiling shows many long-lived objects with low variant entropy and the intrinsic payload dominates size. A 2 KB texture shared across 100,000 trees saves ~200 MB for the price of a `ConcurrentHashMap` lookup; that is a winning exchange. Reject it when objects are few, short-lived, or mostly distinct. Then the pool adds latency, retains memory longer than needed, and obscures ownership for zero benefit. The most honest test is arithmetic, not intuition: estimate `N`, `sizeof(intrinsic)`, `variantCount`, and lookup cost under your concurrency level. If `N / variantCount < 20` or intrinsic fields are small primitives, a plain object or a record plus a collection is simpler and faster. Simplicity is a performance feature when memory is not the constraint."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Flyweight failures do not look like pattern failures. They look like leaks, visual glitches, and tail latency that appears only at scale. The classic failure is extrinsic leakage into the shared object: someone adds a `currentX` field to the flyweight for convenience, and suddenly all trees render at the last drawn position or bullets share damage state across frames. The second failure is key explosion. Keys built from unnormalized or unbounded data such as raw user strings, full file paths, or per-frame timestamps create a new pool entry per request, turning the cache into a leak that the collector cannot reclaim because the factory holds strong references. The third is concurrency collapse: a synchronized factory on a hot rendering path serializes all creation and shows up as p99 spikes under load. The symptom you would see depends on which one you built: wrong shared rendering across entities points to leaked extrinsic state, steadily climbing old-gen heap with high pool size points to key explosion, flat throughput with high lock wait on the factory points to contention."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Shared-state corruption: all instances of a variant change together after one update. Cause is a mutable field or setter left on the flyweight. Fix is to make the class final with only final fields and no setters.",
+        "Unbounded pool growth: heap keeps rising despite reuse. Cause is high-cardinality keys or missing eviction. Fix is key normalization plus weak references or an LRU bound with a measured eviction policy.",
+        "Factory contention: creation stalls under parallel load. Cause is coarse locking around get-or-create. Fix is `ConcurrentHashMap.computeIfAbsent` with cheap key construction, or pre-warming known variants.",
+        "Stale extrinsic bugs: correct object, wrong position or style. Cause is caller passing mismatched extrinsic records after refactoring signatures. Fix is to bundle extrinsic into a single value object instead of loose primitives.",
+        "Premature sharing: slower code with no memory win. Cause is applying the pattern where variant count approaches N. Fix is to delete the factory and revert to plain values."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes it concrete"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read this forest example as the canonical shape. `TreeType` is the flyweight and holds only what repeats per species. `TreeFactory` is the deduplication point. `Tree` is the context and holds only what varies per planting. Notice the operation signature: `draw` receives coordinates and size on every call and retains nothing. That signature is the pattern. If you find yourself storing `x` inside `TreeType` to shorten the call, you have reintroduced the original problem. You chose `ConcurrentHashMap` here because creation happens on multiple threads during chunk loading; the trade-off is slightly higher per-lookup cost versus a plain map plus external locking, in exchange for safe lock-free reads of already-published types."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "TreeFlyweight.java",
+      "code": "import java.util.Map;\nimport java.util.concurrent.ConcurrentHashMap;\n\n// Flyweight: only intrinsic (shared) state. Immutable by construction.\nfinal class TreeType {\n    private final String species;\n    private final String texture;\n    private final String mesh;\n\n    TreeType(String species, String texture, String mesh) {\n        this.species = species;\n        this.texture = texture;\n        this.mesh = mesh;\n    }\n\n    // Extrinsic state (x, y, height) is passed in, never stored.\n    void draw(Canvas canvas, int x, int y, int height) {\n        canvas.drawMesh(mesh, texture, x, y, height);\n    }\n\n    String key() { return species + \"|\" + texture + \"|\" + mesh; }\n}\n\n// Factory: the single place where sharing is enforced.\nfinal class TreeFactory {\n    private final Map<String, TreeType> pool = new ConcurrentHashMap<>();\n\n    TreeType get(String species, String texture, String mesh) {\n        String key = species + \"|\" + texture + \"|\" + mesh;\n        // Trade-off: lookup cost per creation in exchange for O(1) types.\n        return pool.computeIfAbsent(key, k -> new TreeType(species, texture, mesh));\n    }\n\n    int variantCount() { return pool.size(); }\n}\n\n// Context: tiny object holding extrinsic state + a reference.\nfinal class Tree {\n    private final int x, y, height;\n    private final TreeType type;\n\n    Tree(int x, int y, int height, TreeType type) {\n        this.x = x; this.y = y; this.height = height; this.type = type;\n    }\n\n    void draw(Canvas canvas) {\n        type.draw(canvas, x, y, height);\n    }\n}\n\ninterface Canvas {\n    void drawMesh(String mesh, String texture, int x, int y, int height);\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "To justify this in review, walk through the numbers and the lifecycle. With 4 species and 300,000 plantings, the pool holds 4 `TreeType` instances regardless of forest size, while 300,000 small `Tree` records hold three integers plus one reference. Memory is dominated by extrinsic arrays, which scan linearly and stay friendly to the processor cache. Creation cost is one key concatenation plus one concurrent map lookup; rendering cost is one virtual call plus parameter passing. Neither the factory nor the flyweight knows about frame state, selection, or growth animation — that data stays in the context or in parallel arrays owned by the simulation. If a new species arrives, you add one pool entry. If a tree moves, you mutate only its context. That separation is what lets reuse stay safe while per-instance behavior keeps changing every tick."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the split before drawing anything",
+          "text": "State which fields are intrinsic and which are extrinsic for the given domain, and why. Interviewers fail candidates who jump to a factory without justifying the partition. Say the memory math out loud."
+        },
+        {
+          "title": "Draw factory plus context, not just a cache",
+          "text": "Show the pool keyed by intrinsic tuple, the immutable flyweight, and the context that combines reference plus extrinsic at call time. Emphasize that operations take extrinsic as arguments."
+        },
+        {
+          "title": "Defend immutability and key design",
+          "text": "Explain how you prevent extrinsic leakage, how keys are normalized, and what happens on hash collision or equivalent variants. This is where senior-level signal comes from."
+        },
+        {
+          "title": "Handle concurrency and lifecycle",
+          "text": "Answer whether creation is multi-threaded, whether reads dominate, and how entries are evicted. Propose pre-warming for known variants and bounded pools for open-ended keys."
+        },
+        {
+          "title": "Quantify and offer the simpler alternative",
+          "text": "Give the heap estimate with and without sharing and state when you would not use the pattern. Volunteering the rejection criteria shows judgment and closes the design discussion."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose marks"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Flyweight is just a cache: no. A cache memoizes computation for speed and permits eviction without semantic change. Flyweight changes object structure to remove duplication; evicting a live variant breaks sharing and forces recreation.",
+        "It means pooling everything: no. Pooling identical-behavior workers is object pool. Flyweight pools identical *data cores* while per-use data stays outside. Pooling mutable instances and handing them out reintroduces aliasing bugs.",
+        "It always saves memory: no. If variant count is close to instance count, the map overhead plus key strings cost more than plain objects. Always compute sharing ratio first.",
+        "Extrinsic state can live in the flyweight temporarily: no. That single convenience field destroys thread safety and causes cross-instance bleed. Extrinsic flows through parameters or a separate context object.",
+        "String interning is the whole pattern: no. Interning is one application of the idea to immutable strings. Flyweight generalizes to any immutable intrinsic bundle with factory-controlled identity."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Selection guide: apply only when duplication dominates and variants stay few.",
+      "headers": [
+        "Situation",
+        "Use Flyweight",
+        "Avoid it"
+      ],
+      "rows": [
+        [
+          "Object counts vs variants",
+          "Hundreds of thousands of instances, tens of variants; measured sharing ratio above 20:1",
+          "Few hundred instances or variant count grows with N"
+        ],
+        [
+          "State profile",
+          "Large immutable intrinsic payload (textures, glyphs, meshes, descriptors)",
+          "Mostly unique small fields; intrinsic part is trivial"
+        ],
+        [
+          "Access pattern",
+          "Read-heavy reuse across threads; extrinsic supplied per call",
+          "Frequent per-instance mutation or per-object locking required"
+        ],
+        [
+          "Lifecycle",
+          "Variants known upfront or bounded; pool size stable",
+          "Unbounded user-driven keys with no eviction story"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "Keep one immutable instance per distinct intrinsic variant behind a factory, store only per-occurrence data outside, and pass it in on every operation — accept lookup and indirection cost to turn N copies of heavy shared data into one."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:03:35.571Z",
+    "problems": []
+  }
+}

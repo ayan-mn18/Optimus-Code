@@ -1,0 +1,263 @@
+{
+  "slug": "dry-principle",
+  "title": "DRY Principle",
+  "summary": "DRY is not about duplicate lines, it is about duplicate knowledge. One authoritative source for every rule, or you will drift and break.",
+  "kind": "LLD",
+  "problemSlug": "dry-principle-30-66",
+  "topic": "Design Principles",
+  "difficulty": "Easy",
+  "coverEmoji": "🔁",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Design Principles",
+    "DRY"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Don't repeat yourself - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Don%27t_repeat_yourself",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "DRY Principle in Software Development - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/software-engineering/dont-repeat-yourselfdry-in-software-development/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding the DRY Principle: Don't Repeat Knowledge - LinkedIn",
+      "url": "https://www.linkedin.com/posts/vaughnvernon_dry-is-often-confused-as-dont-repeat-code-activity-7355097010053525506-yN32",
+      "source": "linkedin.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**DRY means every piece of system knowledge lives in exactly one place that owns it.** Not every duplicate line — every duplicate *decision*. If a tax rule, validation check, or state transition exists in two places, they will diverge. The trade-off from the start: centralization buys you consistency but sells you coupling. Get that exchange right and DRY helps. Get it wrong and you built a dependency magnet."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What DRY actually means"
+    },
+    {
+      "type": "paragraph",
+      "text": "DRY stands for **Don't Repeat Yourself**, but the name lies. What you must not repeat is **knowledge**: business rules, invariants, derivations, schema shapes, protocol assumptions, anything where a change in the world forces a change in the code. Two identical `for` loops that iterate for unrelated reasons are not a DRY violation. Two copies of `if age >= 18` that both encode *who counts as an adult* are, even if the syntax differs. The test is brutal and precise: if the product owner changes one requirement, how many code locations must you edit to stay correct? If the answer is more than one, you repeated knowledge. If fixing one site and forgetting the other leaves the system silently inconsistent, you failed DRY where it actually counts."
+    },
+    {
+      "type": "paragraph",
+      "text": "An **authoritative representation** is the one module, function, table, or config that gets to define that fact, and everything else references it instead of restating it. That means callers do not re-implement the check, they call `Policy.isAdult(user)`. Services do not each parse the date format, they use `DateCodec`. Database constraints do not duplicate application validation logic by accident — either the application owns it and the database mirrors it deliberately, or the database owns it and the application surfaces the error. The reason this matters for low-level design is control of change propagation: a modification to one element should not force shotgun edits across logically unrelated elements, and logically related elements should change together, predictably, because they all read from the same source."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from duplication to single source"
+    },
+    {
+      "type": "paragraph",
+      "text": "Duplication almost never starts as laziness. It starts as speed: you validate an email in signup, then paste the regex into checkout because shipping matters more than structure. Then support reports that `+` addresses fail in one flow but pass in the other. The fix is not just extracting a method. It is deciding **who owns email validity** for the whole system, giving that owner a name and a boundary, and routing all callers through it. That ownership decision is why DRY is a design principle, not a lint rule. You are choosing a dependency direction. Every deduplication creates a shared dependency, and shared dependencies are harder to change than isolated copies. You do it when the knowledge is stable and truly shared. You refuse when the two uses only look similar today and will evolve apart tomorrow."
+    },
+    {
+      "type": "mermaid",
+      "title": "Duplication vs single source",
+      "caption": "Duplicated knowledge forces multi-site updates and guarantees drift.",
+      "code": "flowchart TD\n  REQ[Requirement changes] --> D1[Copy A updated]\n  REQ --> D2[Copy B updated]\n  REQ --> D3[Copy C forgotten]\n  D3 --> BUG[Silent inconsistency]\n  REQ2[Requirement changes] --> OWNER[Single Owner module]\n  OWNER --> U1[Caller 1 correct]\n  OWNER --> U2[Caller 2 correct]\n  OWNER --> U3[Caller 3 correct]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the diagram as a maintenance story. On the left, every business change fans out into N edits, and correctness depends on human memory. Someone will miss a site under deadline, and the system will not crash — it will disagree with itself, which is worse. On the right, the change lands once in the owner, and all callers inherit it. That is the payoff: atomic change. The price, which the diagram hides, is that the owner is now a coupling point. If you got the boundary wrong and two callers actually needed different rules, that single owner becomes a battlefield of `if` flags and optional parameters. That is over-DRY, and it fails differently but just as painfully."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "DRY buys consistency by spending coupling. Know both sides before you extract.",
+      "headers": [
+        "If you deduplicate",
+        "You gain",
+        "You pay"
+      ],
+      "rows": [
+        [
+          "Extract shared validation or calculation",
+          "One fix corrects every caller; behavior cannot silently diverge between flows",
+          "Every caller now depends on the shared module; a bad change breaks everyone at once"
+        ],
+        [
+          "Centralize config and constants",
+          "Environment, timeout, retry, and format assumptions stay coherent across services",
+          "The config owner becomes a change bottleneck and a blast-radius amplifier"
+        ],
+        [
+          "Build a generic abstraction for similar code",
+          "Less surface area to read and test when the cases are truly identical",
+          "You couple unrelated use cases; future divergence forces branching inside the abstraction"
+        ],
+        [
+          "Leave duplication in place",
+          "Each copy can evolve independently with zero coordination cost",
+          "Each business change needs N coordinated edits; missing one creates silent data corruption"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pattern across all four rows is the same trade-off: **consistency versus independence**. Junior engineers treat duplication as always bad and abstraction as always good. Senior engineers ask which kind of change is more likely. If the rule changes for everyone at once — tax rate, password policy, money rounding — centralize aggressively, because divergence is a defect. If the two copies serve different actors with different roadmaps — admin search versus customer search, mobile checkout versus web checkout — duplication is cheaper than the wrong abstraction. The tell is the change trigger: one stakeholder and one reason to change means one module. Two stakeholders who can disagree means two modules, even if the code looks identical today."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "DRY failures do not page you at 3 AM with a stack trace. They page you with *wrong answers that look right*. The classic case is validation drift: the frontend allows a coupon, the backend rejects it, the batch job applies a third interpretation, and finance reconciles a mismatch weeks later. No exception, no crash, just three definitions of valid. The opposite failure — aggressive over-DRY — pages you differently: a shared `processOrder()` with six boolean flags where a one-line change for refunds breaks express delivery, because two lifecycles were forced through one funnel to save twenty lines. Both are DRY failures. The first repeated knowledge that should have been centralized. The second centralized behavior that should have stayed separate. In an LLD review, always name which failure mode you are guarding against and why you chose that risk."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Drifted validation:** signup accepts `user+tag@domain.com` but invitation flow rejects it. Symptom is support tickets about inconsistent errors, not crashes. Root cause is a copied regex with no owner.",
+        "**Divergent money math:** cart totals round half-up, invoicing rounds half-even. Symptom is penny mismatches in reconciliation reports. Root cause is two `round()` helpers encoding the same financial rule differently.",
+        "**Schema split-brain:** application allows 140 characters, database column allows 255, search index tokenizes differently. Symptom is truncated display or unsearchable records. Root cause is the length rule restated in three layers with no single source.",
+        "**Flag-infested util:** `formatDate(date, isAdmin, useUTC, forExport)` with nested branches. Symptom is every new caller adds another flag and existing callers regress. Root cause is premature abstraction over knowledge that was never actually shared.",
+        "**Copy-paste config:** timeout of 30s hardcoded in five clients. Symptom is cascading retries after one dependency slows down, fixed in four places but missed in the fifth. Root cause is a tunable that was treated as a literal."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code: duplication versus single source"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "before_dry.py",
+      "code": "def signup(email: str) -> bool:\n    if email.count(\"@\") != 1:\n        return False\n    local, domain = email.split(\"@\")\n    if not local or \".\" not in domain:\n        return False\n    # ... create user\n    return True\n\ndef invite_member(email: str) -> bool:\n    # Same rule, restated. Will drift on the next product change.\n    if email.count(\"@\") != 1:\n        return False\n    local, domain = email.split(\"@\")\n    if len(local) < 2 or \".\" not in domain:\n        return False\n    # ... send invite\n    return True"
+    },
+    {
+      "type": "paragraph",
+      "text": "The two functions above look harmless because the duplication is small. That is exactly why it survives review. But they encode the same business decision — *what counts as an acceptable email for this product* — in two places with subtly different thresholds. When the product team decides to allow single-character local parts or international domains, someone will update signup and forget invites, or vice versa. The fix is not to deduplicate characters, it is to name the owner. Create an `EmailPolicy` that owns the rule, test the rule once at the boundary, and make both flows delegate. Now a change has one landing site, and the two flows cannot disagree without an explicit, reviewable decision to diverge."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "after_dry.py",
+      "code": "class EmailPolicy:\n    @staticmethod\n    def is_acceptable(email: str) -> bool:\n        # Single authoritative representation of the product rule.\n        if email.count(\"@\") != 1:\n            return False\n        local, domain = email.split(\"@\")\n        return bool(local) and \".\" in domain and \" \" not in email\n\ndef signup(email: str) -> bool:\n    if not EmailPolicy.is_acceptable(email):\n        return False\n    # ... create user\n    return True\n\ndef invite_member(email: str) -> bool:\n    if not EmailPolicy.is_acceptable(email):\n        return False\n    # ... send invite\n    return True\n\n# If invites ever need a STRICTER rule, do not add a flag here.\n# Create InviteEmailPolicy explicitly so divergence is visible."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "You will be given duplicated behavior",
+          "text": "Design parking lot pricing, library fines, or order discounts. Two vehicle types or two user roles share 80% of the logic. The interviewer watches whether you paste the calculation or extract a `PricingStrategy` with one place for the shared rule."
+        },
+        {
+          "title": "Name the knowledge, not the lines",
+          "text": "Say out loud: the repeated thing is the late-fee formula, not the loop syntax. That sentence separates candidates who memorized the acronym from candidates who can own a domain model. Interviewers score that distinction immediately."
+        },
+        {
+          "title": "Propose the owner and the dependency",
+          "text": "Draw who owns what. `FeeCalculator` owns the formula, `BorrowTransaction` calls it. Justify the direction: callers depend on the stable rule, the rule knows nothing about callers. That is the whole LLD move."
+        },
+        {
+          "title": "Defend against over-abstraction",
+          "text": "Expect the pushback: what if student and faculty fines diverge next quarter? Answer with the trade-off: keep one calculator while the formula is identical, split into two strategies the moment the change triggers differ. Duplication that preserves independence beats abstraction that forces false coupling."
+        },
+        {
+          "title": "Show the change scenario",
+          "text": "Close by walking a change through your design: if the daily rate doubles, I edit one method and these three callers inherit it, and this is the test that proves it. Interviewers remember change stories far better than class diagrams."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**DRY means no duplicate lines:** False. Identical syntax with different meaning should stay duplicated. Deleting the duplication couples two concepts that happen to look alike today and will embarrass you when they diverge.",
+        "**More reuse is always better:** False. Each reuse edge is a dependency. A util used by forty callers is a single point of breakage. Reuse stable, well-understood knowledge; isolate volatile, contested behavior.",
+        "**DRY and performance are enemies:** Usually false in LLD. Calling a shared method costs nothing meaningful. Duplicating logic for speed without measurement just buys you two slow, inconsistent paths instead of one fast one.",
+        "**Comments and docs are exempt:** False. A rule stated in code and restated differently in a wiki will drift first in the wiki. Generate docs from code or link to the owner; do not restate thresholds and formats by hand.",
+        "**WET is always wrong:** False. Intentional, small-scale duplication between bounded contexts is often correct. Two services that must deploy independently should each own their view of a rule rather than share a library that forces lockstep releases."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Apply DRY to shared knowledge, not to coincidental similarity.",
+      "headers": [
+        "Situation",
+        "Do this",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Same business rule used in 3+ flows (validation, pricing, eligibility)",
+          "Extract to a named policy, calculator, or codec and route all callers through it",
+          "Change becomes atomic; tests cover the rule once at the boundary"
+        ],
+        [
+          "Magic values repeated (timeouts, limits, formats, currency codes)",
+          "Promote to named constants or config owned by one module",
+          "Prevents drift and makes tuning a one-line, reviewable diff"
+        ],
+        [
+          "Two blocks look identical but serve different stakeholders",
+          "Leave them duplicated and add a comment linking them",
+          "Avoids false coupling; each side can evolve without negotiating with the other"
+        ],
+        [
+          "Shared helper keeps growing flags and branches",
+          "Split it; duplication of 10 lines is cheaper than a 6-flag god function",
+          "Branching inside a shared abstraction is hidden duplication with higher blast radius"
+        ],
+        [
+          "Cross-service or cross-team boundary",
+          "Duplicate the contract shape or version it explicitly rather than sharing code",
+          "Independent deployability beats line-count savings across ownership boundaries"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Use this as your decision rule under pressure: centralize when the change trigger is singular, split when the change triggers can disagree. Ask who can request a change to this rule and whether that person speaks for all callers. If yes, you have genuine shared knowledge and DRY applies — build the single owner without guilt. If two different product managers can pull the copies in opposite directions, you have coincidental similarity and DRY does not apply yet. Write the duplication deliberately, note the link, and wait for the third occurrence. Three honest copies with the same change history are evidence. Two similar blocks on day one are just a guess."
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**\"DRY means each business rule has one owning module, so a requirement change edits one place — I centralize stable shared rules and deliberately duplicate code that only looks similar but has different owners.\"**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:55:20.261Z",
+    "problems": []
+  }
+}

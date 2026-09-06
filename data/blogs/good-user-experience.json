@@ -1,0 +1,289 @@
+{
+  "slug": "good-user-experience",
+  "title": "Good User Experience",
+  "summary": "Good UX in HLD is system behavior under constraints: latency budgets, explicit states, safe retries, and contracts that stay stable as you evolve.",
+  "kind": "HLD",
+  "problemSlug": "good-user-experience-148-322",
+  "topic": "User Empathy, User Experience, Future Proofing & Realistic Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🧭",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "UX",
+    "System-Design",
+    "Reliability"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is User Experience (UX) Design? — updated 2026 - Page 2",
+      "url": "https://ixdf.org/literature/topics/ux-design",
+      "source": "ixdf.org",
+      "kind": "article"
+    },
+    {
+      "title": "What Is User Experience (and What Is It Not)? - Nielsen Norman Group",
+      "url": "https://www.nngroup.com/articles/what-is-user-experience/",
+      "source": "nngroup.com",
+      "kind": "article"
+    },
+    {
+      "title": "In your most simple terms, what makes a “good” user experience? - Reddit",
+      "url": "https://www.reddit.com/r/userexperience/comments/jvytr0/in_your_most_simple_terms_what_makes_a_good_user/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is User Experience (UX)? | IBM",
+      "url": "https://www.ibm.com/think/topics/user-experience",
+      "source": "ibm.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "In system design, **good UX is not visuals. It is what the system does when it is slow, empty, wrong, or changing.** If your HLD cannot answer loading, empty, error, retry, and versioning behavior for every core interaction, you do not have a UX story — you have mockups."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What good UX means when you're the system designer"
+    },
+    {
+      "type": "paragraph",
+      "text": "Good user experience at the HLD level is the predictable, fast, and forgiving behavior of a distributed system from the user's point of view. It covers four guarantees: the user can figure out what to do next, the system responds within a human-tolerable budget, failures are explained and recoverable, and tomorrow's change does not break yesterday's client. You own this because no UI layer can fix a 4-second p95, an ambiguous failure, a destructive retry, or a breaking schema change. Interviewers grade this directly: they want to hear you translate product actions like search, checkout, post, or play into latency budgets, state machines, and contracts, then defend the trade-off you made to hit them."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Comprehensible:** every screen and API outcome maps to one user action. No silent failures, no dead ends, no `Something went wrong` without a next step.",
+        "**Responsive:** interaction feedback in ~200ms, readable content in ~1s, full result in ~2s. If the backend cannot meet that, the architecture must mask it with cache, skeleton, or partial render.",
+        "**Forgiving:** errors are typed, retries are safe, destructive actions are reversible or confirmed. The user can act twice without causing damage.",
+        "**Stable:** old clients keep working. You version APIs, grow schemas additively, and gate behavior so rollout does not equal breakage."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: where UX lives in your architecture"
+    },
+    {
+      "type": "paragraph",
+      "text": "UX is produced by five control points you already draw in every HLD: edge delivery, API deadlines, read/write paths, client state handling, and evolution policy. Edge decides time-to-first-byte and whether repeat views feel instant. API deadlines decide whether slowness cascades or gets cut off with a degraded but useful response. Read paths decide relevance and ranking quality; write paths decide whether taps feel instant or fragile. Client state handling decides what the user sees during the 90% of time the system is neither fully done nor fully failed. Evolution policy decides whether v2 improves life or forces an update. Design these and you designed UX. Skip them and no component diagram saves you."
+    },
+    {
+      "type": "mermaid",
+      "title": "UX control points in a request lifecycle",
+      "caption": "Each hop is a UX decision, not just an infrastructure box.",
+      "code": "flowchart TD\n  A[User action] --> B[Edge cache and CDN]\n  B --> C[API with deadline]\n  C --> D[Read or write path]\n  D --> E[Render loading empty error]\n  E --> F[Confirm retry or degrade]\n  F --> A"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the flow as a set of promises. Edge promises repeat visits do not refetch the world. The API promises it will not wait forever for a slow dependency — it times out, sheds load, and returns something renderable. The read path promises relevance plus provenance: why am I seeing this, and how fresh is it. The write path promises exactly-once effect from the user's view even if the network retries. Render promises there is no blank screen and no stuck spinner: loading has a skeleton, empty has guidance, error has cause plus recovery. That loop is why UX work in HLD is mostly timeouts, caches, queues, idempotency keys, pagination cursors, and error taxonomies — not colors."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Latency, feedback, and state as UX controls"
+    },
+    {
+      "type": "paragraph",
+      "text": "Humans perceive causality below about 200ms. Past that they need acknowledgement. So split every slow operation into accept plus reconcile: return a request ID immediately, process asynchronously, then push, poll, or refresh to completion. Use optimistic UI only where rollback is cheap and the conflict rate is low — likes, votes, drafts — never for money movement or seat allocation where a rollback destroys trust. For reads, prefer server-driven pagination with opaque cursors over offset, because offset breaks under inserts and produces duplicates and skips the user can see. Cache personalized shells separately from shared content so a cache miss does not blank the whole page. The rule is brutal and simple: **never make the user wait for work they did not ask to wait for.** Prefetch, parallelize fanout, and degrade low-value sections independently."
+    },
+    {
+      "type": "table",
+      "caption": "Core UX decisions and what each one costs you.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Skeleton + partial render vs full-page spinner",
+          "Perceived speed; users act in 1s even if tail data takes 3s",
+          "Client complexity, per-section error handling, layout-shift risk if sizes not fixed"
+        ],
+        [
+          "Optimistic write + rollback vs wait for commit",
+          "Instant feel for high-frequency actions",
+          "Conflict resolution, undo logic, and user confusion if rollback is frequent"
+        ],
+        [
+          "Server timeout + degraded response vs wait for all dependencies",
+          "Bounded p95 and fewer cascades; something always renders",
+          "You must define degraded: what is omitted, labeled stale, or retried later"
+        ],
+        [
+          "Idempotency keys + exactly-once effect vs naive retry",
+          "Safe double-tap and safe auto-retry on timeouts",
+          "Key storage, deduplication window, and client must send stable keys"
+        ],
+        [
+          "Opaque cursor pagination vs offset",
+          "Stable lists under concurrent writes; no visible duplicates",
+          "Cannot jump to page 47; harder to implement total counts honestly"
+        ],
+        [
+          "Strict API versioning + additive schema vs breaking fixes",
+          "Old apps keep working; rollout decoupled from release",
+          "Version maintenance, translation layer, and slower cleanup of bad fields"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The trap to avoid",
+      "text": "Future-proofing is not adding fields you *might* need. It is **making change cheap**: additive schemas, opaque IDs and cursors, feature flags, and versioned contracts. Every speculative abstraction you add now is latency, storage, and confusion you pay on every request."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "UX failures in production rarely look like crashes. They look like hesitation, repetition, and abandonment. Users tap again because nothing acknowledged the first tap. They abandon a flow because the error blamed them instead of naming the cause and the fix. They see stale or duplicated content and stop trusting ranking. They update the app because v2 broke v1 instead of coexisting. Behind each symptom is an architectural omission: no deadline and no degraded path, no idempotency on a non-idempotent endpoint, offset pagination on a mutating feed, or a renamed field without a version gate. If you cannot map a user complaint to a missing timeout, key, cursor, or contract rule, you will fix UI copy while the system keeps hurting people."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Double charge / double post on retry:** symptom is duplicate orders. Cause is `POST /pay` without an idempotency key and a client that retries on timeout. Fix is client-generated key held server-side for 24-72h.",
+        "**Infinite spinner on partial outage:** symptom is blank feed when recommendations are slow. Cause is waiting for all fanout branches. Fix is per-dependency deadlines with independent degradation and stale labeling.",
+        "**Jumping list with duplicates:** symptom is same item twice after pull-to-refresh. Cause is offset pagination on a live dataset. Fix is stable sort key plus opaque cursor.",
+        "**`Something went wrong` dead end:** symptom is support tickets with no action ID. Cause is untyped errors. Fix is machine-readable `code`, human `message`, `retryable` flag, and `traceId`.",
+        "**Forced update backlash:** symptom is 1-star reviews after backend deploy. Cause is breaking rename or required new field. Fix is additive change plus versioned contract and server-driven gating.",
+        "**Layout jump and accidental taps:** symptom is clicks on wrong item. Cause is skeletons without reserved size and late image loads. Fix is fixed aspect boxes, width/height hints, and prioritized above-the-fold fetch."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete contracts that force good UX"
+    },
+    {
+      "type": "paragraph",
+      "text": "Good intentions do not survive on-call. Contracts do. Write the error envelope, pagination shape, and client deadlines down before you argue about databases. The envelope forces backend engineers to classify failures instead of throwing 500s. The pagination shape forces stable ordering. The client policy forces bounded waits and safe retries. Reviewers can then test UX without running the UI: send a duplicate key, kill a dependency, insert rows during pagination, roll out v2 to a v1 client. If those four experiments behave, the UX is real. If they do not, it was slides."
+    },
+    {
+      "type": "code",
+      "language": "json",
+      "filename": "api-contract.json",
+      "code": "{\n  \"data\": null,\n  \"error\": {\n    \"code\": \"PAYMENT_DECLINED\",\n    \"message\": \"Card declined. Try another method. No charge was made.\",\n    \"retryable\": false,\n    \"traceId\": \"req_9f3a2c1e\",\n    \"nextAction\": \"UPDATE_PAYMENT_METHOD\"\n  },\n  \"meta\": {\n    \"cursor\": \"opaque_WzE3MDAsIDEwMF0=\",\n    \"stale\": false,\n    \"servedFrom\": \"cache-eu-west\"\n  }\n}"
+    },
+    {
+      "type": "code",
+      "language": "typescript",
+      "filename": "feed-client.ts",
+      "code": "const DEADLINE_MS = 1500;\nasync function loadFeed(cursor?: string) {\n  renderSkeleton({ fixedHeights: true }); // no layout shift\n  const ctrl = new AbortController();\n  const t = setTimeout(() => ctrl.abort(), DEADLINE_MS);\n  try {\n    const res = await fetch(`/v1/feed?cursor=${cursor ?? \"\"}`, {\n      signal: ctrl.signal,\n      headers: { \"Idempotency-Key\": getOrCreateKey(\"feed\") }\n    });\n    const body = await res.json();\n    if (body.meta?.stale) showStaleBadge();\n    renderItems(body, { stableKeys: true }); // cursor, not index\n  } catch (e) {\n    renderRetry({ cause: toTypedError(e), actionId: true });\n  } finally {\n    clearTimeout(t);\n  }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "The contract does three jobs. First, `code` plus `retryable` plus `nextAction` tells the client whether to retry, what button to show, and what not to retry — the difference between a recoverable timeout and a declined card. Second, `traceId` turns a screenshot into a debuggable incident. Third, `cursor` plus `stale` lets the UI be honest: this list is stable and this section is cached, so the user trusts what they see. Client code mirrors it: fixed-height skeletons prevent mis-taps, a 1.5s deadline prevents a hung screen, stable keys prevent list jumps. The trade-off is explicit code paths for loading, empty, stale, and error on every section — more work now, far fewer abandonments and duplicates later."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Future-proofing without gold-plating"
+    },
+    {
+      "type": "paragraph",
+      "text": "Realistic design means you plan for two certainties — clients will lag and requirements will grow — without building for ten hypotheticals. Keep IDs opaque so you can change their internal format. Keep sort keys stable so pagination survives sharding changes. Grow JSON additively and never rename or change types in place; add `v2` or a new field and deprecate. Gate new behavior server-side so you can roll back without an app release. Prefer configuration over redeploy for copy, limits, and ranking weights that product will tune weekly. What you defer is equally important: no plugin framework before three use cases, no multi-region active-active before you can name the consistency UX for conflicts, no generic notification platform before you have nailed one channel's retry and preference model. Future-proofing earns its keep when v2 ships and v1 users notice nothing."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Anchor on one critical journey",
+          "text": "Pick checkout, post, search, or play. Say: happy path is X steps, budget is Y ms p95, failure modes are A/B/C. Everything else is secondary."
+        },
+        {
+          "title": "Name your states out loud",
+          "text": "For that journey list loading, empty, partial, error, and conflict handling. Draw who returns what when a dependency misses its deadline."
+        },
+        {
+          "title": "Commit to safety properties",
+          "text": "State idempotency keys for writes, cursor stability for reads, and exactly what retryable means. Interviewers promote you here."
+        },
+        {
+          "title": "Show degradation, not just scale",
+          "text": "Explain what renders when recommendations, ads, or reviews are down. Bounded deadline plus labeled stale beats a spinner every time."
+        },
+        {
+          "title": "Close with evolution",
+          "text": "End with versioning and rollout: additive schema, v1/v2 coexistence, flag-gated behavior, and how you retire v1 without forcing an update."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**UX equals UI polish:** polish without budgets and error paths is decoration. In HLD, UX is timeouts, states, and contracts.",
+        "**Faster means lower average latency:** users feel the tail. Optimize p95/p99 and time-to-first-useful-pixels, not the mean.",
+        "**Optimistic UI is always better:** only when conflicts are rare and undo is clear. For money and inventory it creates distrust.",
+        "**More features future-proofs:** each speculative field and service is permanent maintenance. Extensibility beats prediction.",
+        "**Accessibility and localization are follow-ups:** they change schema and layout now — text expansion, screen-reader labels, time zones, right-to-left. Deferring them forces rewrites.",
+        "**Empty and error are edge cases:** in production they are common: new users, no results, offline, expired tokens. Design them first."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "Where to spend UX effort and where to deliberately hold back.",
+      "headers": [
+        "Signal",
+        "Invest heavily",
+        "Defer or simplify"
+      ],
+      "rows": [
+        [
+          "High-frequency core action (feed scroll, search, pay)",
+          "Budget, skeleton, idempotency, typed errors, analytics on abandonment",
+          "Do not add animations or prefetch-all; fix tail latency first"
+        ],
+        [
+          "Destructive or monetary write",
+          "Confirmation, reversibility window, duplicate prevention, audit trail",
+          "Do not use optimistic commit; wait for authority"
+        ],
+        [
+          "New user / empty history",
+          "Guided empty state, samples, import path, single clear next action",
+          "Do not show blank dashboard or dump advanced filters"
+        ],
+        [
+          "Low-fidelity MVP to validate demand",
+          "One happy path with honest loading and error states",
+          "Do not build theming, multi-region, or plugin system yet"
+        ],
+        [
+          "Evolving API with mobile lag",
+          "Versioning, additive fields, server-driven flags, compat tests",
+          "Do not rename fields or require latest client to function"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **Good UX is a system that responds within budget, shows the right state for loading, empty, stale, and error, makes retries safe, and evolves without breaking old clients — and I will point to the timeout, cursor, idempotency key, and contract version that enforces each one.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:19:28.098Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,272 @@
+{
+  "slug": "thread-executors",
+  "title": "Thread Executors",
+  "summary": "Thread Executors decouple task submission from thread lifecycle via a bounded pool, queue, and rejection policy — and every interview question is about sizing those three correctly.",
+  "kind": "LLD",
+  "problemSlug": "thread-executors-43-83",
+  "topic": "Concurrency in Java",
+  "difficulty": "Medium",
+  "coverEmoji": "⚙️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Java"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Thread Executors | codeWithAryan - Code With Aryan",
+      "url": "https://codewitharyan.com/tech-blogs/thread-executors",
+      "source": "codewitharyan.com",
+      "kind": "article"
+    },
+    {
+      "title": "Executors (Java Platform SE 8 ) - Oracle Help Center",
+      "url": "https://docs.oracle.com/javase/8/docs/api/java/util/concurrent/Executors.html",
+      "source": "docs.oracle.com",
+      "kind": "article"
+    },
+    {
+      "title": "Java Threads and Executors - Medium",
+      "url": "https://medium.com/@gabriellamedas/java-threads-and-executors-48963d26e878",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "An `Executor` is not a thread manager. It is a **load-shedding decision**: when tasks arrive faster than threads can finish them, do you queue, grow, or reject? Every constructor argument is your answer to that question, and every production outage is what happens when you answered it by default."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A Java `Executor` accepts a `Runnable` or `Callable` and decides how, when, and on which thread it runs. `ExecutorService` adds lifecycle — `submit`, `Future`, `shutdown`, `awaitTermination` — and `ThreadPoolExecutor` is the only implementation you should reason about directly. It owns `N` worker threads, one `BlockingQueue`, and three sizing knobs: `corePoolSize`, `maximumPoolSize`, and `keepAliveTime`. The factory class `Executors` just pre-fills those knobs with opinions, most of them bad for servers. `newFixedThreadPool` is a fixed worker count with an unbounded queue. `newCachedThreadPool` is an unbounded worker count with a synchronous handoff queue. `newSingleThreadExecutor` is a single worker with an unbounded queue and a guarantee of ordering. `newScheduledThreadPool` adds time-based triggering on top of a delayed queue. If you cannot state the queue type and bound for each factory, you do not understand executors. The trade-off is brutal and deliberate: convenience factories hide the queue, and the queue is where backpressure lives or dies."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this separation exists is mechanical, not philosophical. Creating a raw `Thread` per request costs roughly a megabyte of stack plus OS scheduling overhead and unbounded creation under load, which means latency spikes turn into creation storms that kill the host. Destroying and recreating threads also throws away warm caches and forces constant context switching. An executor breaks that coupling: submission is cheap and non-blocking for the caller, execution is bounded by reusable workers, and overflow has an explicit policy instead of an `OutOfMemoryError` surprise. The cost you pay is indirection — you lose direct control over which thread runs what, you must handle asynchronous failures through `Future` rather than `try-catch` around the call, and you must shut the pool down or the JVM will not exit. That is the core trade-off: **bounded resource use and throughput in exchange for explicit lifecycle and error plumbing.** Skip the plumbing and you get thread leaks and silent task drops."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: pool, queue, workers"
+    },
+    {
+      "type": "paragraph",
+      "text": "`ThreadPoolExecutor.execute()` follows one rigid order, and interviews hinge on you reciting it without hesitation. First, if fewer than `corePoolSize` threads exist, start a new worker immediately even if other workers are idle — core threads are eager. Second, if core is full, push the task onto the queue without creating a thread. Third, if the queue is full and fewer than `maximumPoolSize` threads exist, create a non-core thread. Fourth, if queue is full and max is reached, invoke the `RejectedExecutionHandler`. This order is why queue choice dominates behavior. With an unbounded `LinkedBlockingQueue`, step three never fires — max is decorative, the pool never grows past core, and overload manifests as unbounded memory growth. With a `SynchronousQueue` (zero capacity), step two never holds anything — every task forces a new thread up to max, and overload manifests as thread explosion then rejection. With a bounded `ArrayBlockingQueue`, you get the only sane server behavior: queue a little to absorb bursts, grow threads to absorb sustained load, reject when both are saturated. The trade-off per choice is memory risk versus thread risk versus explicit failure, and you must pick which failure mode you can observe and handle."
+    },
+    {
+      "type": "mermaid",
+      "title": "Task path through ThreadPoolExecutor",
+      "caption": "Core-first, queue-second, grow-third, reject-last. Queue bound decides which branch actually runs.",
+      "code": "flowchart TD\n    S[submit execute] --> D{workers < core?}\n    D -->|yes| W1[create core worker]\n    D -->|no| Q{queue has space?}\n    Q -->|yes| QQ[enqueue task]\n    QQ --> W2[existing worker takes task]\n    Q -->|no| M{workers < max?}\n    M -->|yes| W3[create extra worker]\n    M -->|no| R[RejectedExecutionHandler]\n    W1 --> F[run -> Future result]\n    W2 --> F\n    W3 --> F"
+    },
+    {
+      "type": "paragraph",
+      "text": "Sizing is not guesswork, it is arithmetic over blocking behavior. CPU-bound tasks want `threads ≈ cores + 1` because extra threads add only context-switch cost with no waiting to hide — the trade-off is utilization versus thrash. IO-bound or downstream-RPC tasks want more threads because each thread spends most of its life parked waiting on a socket; the standard estimate is `threads ≈ cores * (1 + wait-time / compute-time)`, capped by downstream connection limits and file-descriptor budget. `keepAliveTime` exists only to reclaim non-core threads after bursts — set it to 30-60 seconds for request servers so idle growth decays, set it to zero only if thread creation cost is irrelevant. Core threads by default never time out unless you call `allowCoreThreadTimeOut(true)`, which is why a fixed pool holds memory and threads forever even at 3 AM. Name your threads with a `ThreadFactory` that sets daemon status and an `UncaughtExceptionHandler`; otherwise a production thread dump is anonymous `pool-3-thread-17` noise and you cannot attribute a stuck task to its pool. Observability is not optional decoration — it is how you distinguish queue backup from thread starvation."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every executor choice trades one scarce resource for another. There is no universally correct pool, only a pool whose failure mode you prefer and can monitor. Interviewers listen for that framing: state what you gain, state what you surrender, state what metric exposes the cost. The factories optimize for demo brevity, not for backpressure, which is why senior answers always rewrite them as explicit `ThreadPoolExecutor` constructions with bounded queues and named factories."
+    },
+    {
+      "type": "table",
+      "caption": "Executor options and what each one costs you.",
+      "headers": [
+        "Option",
+        "What you gain",
+        "What you surrender",
+        "When it bites"
+      ],
+      "rows": [
+        [
+          "Raw `new Thread` per task",
+          "Zero framework, immediate start, trivial to reason about",
+          "Unbounded creation cost, no queue, no rejection, no reuse",
+          "Traffic spike forks thousands of threads; host OOMs or scheduler collapses"
+        ],
+        [
+          "`newFixedThreadPool` + unbounded queue",
+          "Bounded threads, simple ordering per submission",
+          "Unbounded queue memory; `maximumPoolSize` is fiction; no backpressure signal",
+          "Slow downstream makes queue grow forever; GC thrash then OOM with no rejection log"
+        ],
+        [
+          "`newCachedThreadPool` + SynchronousQueue",
+          "Low latency for bursty short tasks, idle threads reclaimed in 60s",
+          "Unbounded thread count; creation storm under sustained overload",
+          "Sustained load creates thousands of threads; FD exhaustion and context-switch collapse"
+        ],
+        [
+          "Explicit `ThreadPoolExecutor` + bounded `ArrayBlockingQueue`",
+          "Explicit backpressure: queue burst, grow to max, then reject observably",
+          "You must pick sizes and a rejection policy; callers must handle `RejectedExecutionException`",
+          "Mis-sized bound rejects healthy traffic; correct behavior but needs tuning and dashboards"
+        ],
+        [
+          "`ForkJoinPool` / parallel streams",
+          "Work-stealing shines for divisible CPU-bound recursion",
+          "Shared common pool; one blocking task stalls unrelated work; hard to isolate",
+          "Blocking IO inside a fork-join task starves the pool; whole service stalls on one slow call"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure one is queue-as-memory-leak. A fixed pool with an unbounded queue in front of a slow dependency looks healthy — thread count flat, CPU low — while heap climbs monotonically and `getQueue().size()` climbs into the millions. The symptom is rising old-gen GC pauses and eventually `OutOfMemoryError: Java heap space` with hundreds of megabytes retained by queued `FutureTask` objects holding request payloads. Thread dumps show all workers parked in socket read; heap dumps show the queue retaining the world. The fix is not a bigger heap, it is a bounded queue plus a rejection policy that pushes pressure back to the caller where it can be retried, shed, or degraded. Trade-off named: you exchange silent memory death for loud, countable rejections — always choose loud."
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure two is lifecycle and saturation blindness. `shutdown()` stops accepting new tasks but lets queued tasks drain; `shutdownNow()` interrupts workers and returns the unstarted list; neither is automatic — a forgotten pool with non-daemon threads keeps the JVM alive after `main` returns, which is why containers hang on deploy. `submit()` swallows exceptions into the `Future` — if you never call `Future.get()`, failures vanish silently and queues fill with poison tasks that always fail. `execute()` with no `Future` routes throwables to the uncaught handler and kills that worker, which the pool quietly replaces, masking a crash loop. Saturation without metrics looks like p99 latency cliff: throughput flat, queue depth spiking, `RejectedExecutionException` in logs if you are lucky, client timeouts if you are not. Instrument `getActiveCount()`, `getQueue().size()`, completed-task count, and rejection count; alert on queue depth, not just CPU. Trade-off named: structured concurrency demands structured observation — reuse without metrics is just a slower way to fail."
+    },
+    {
+      "type": "mermaid",
+      "title": "Executor lifecycle you must shut down",
+      "caption": "Forgetting shutdown leaves non-daemon workers alive and the JVM hanging.",
+      "code": "stateDiagram-v2\n    [*] --> RUNNING: new pool\n    RUNNING --> SHUTDOWN: shutdown\n    RUNNING --> STOP: shutdownNow\n    SHUTDOWN --> TIDYING: queue drains\n    STOP --> TIDYING: workers interrupted\n    TIDYING --> TERMINATED: all workers exit\n    TERMINATED --> [*]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that does not lie"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "BoundedPool.java",
+      "code": "ThreadFactory named = new ThreadFactory() {\n    private final AtomicInteger seq = new AtomicInteger(0);\n    @Override public Thread newThread(Runnable r) {\n        Thread t = new Thread(r, \"order-worker-\" + seq.incrementAndGet());\n        t.setDaemon(false); // non-daemon: forces explicit shutdown\n        t.setUncaughtExceptionHandler((th, ex) -> log.error(\"worker died: \" + th.getName(), ex));\n        return t;\n    }\n};\n\n// WHY bounded: 8 core threads absorb baseline, burst to 32,\n// queue 500 absorbs spikes, CallerRunsPolicy throttles submitters.\nExecutorService pool = new ThreadPoolExecutor(\n    8, 32,\n    30L, TimeUnit.SECONDS,\n    new ArrayBlockingQueue<>(500),\n    named,\n    new ThreadPoolExecutor.CallerRunsPolicy()); // tradeoff: slows producer instead of dropping\n\ntry {\n    pool.execute(() -> handle(request));\n} catch (RejectedExecutionException e) {\n    // Only happens if CallerRunsPolicy is replaced with AbortPolicy.\n    metrics.rejected().increment();\n    throw new ServiceOverloadedException(e);\n}\n\n// Shutdown is part of construction. No shutdown hook = thread leak.\npool.shutdown();\ntry {\n    if (!pool.awaitTermination(30, TimeUnit.SECONDS)) {\n        List<Runnable> dropped = pool.shutdownNow();\n        log.warn(\"forced shutdown, dropped=\" + dropped.size());\n    }\n} catch (InterruptedException ie) {\n    pool.shutdownNow();\n    Thread.currentThread().interrupt();\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that construction as a capacity contract. Core of 8 matches steady-state CPU plus a margin; max of 32 bounds thread cost under sustained IO wait; queue of 500 bounds memory to roughly 500 request payloads instead of infinity. `CallerRunsPolicy` is the opinionated choice here: when full, the submitting thread runs the task itself, which naturally throttles inbound throughput at the cost of added latency on that caller — backpressure without data loss. `AbortPolicy` would instead throw immediately, which is better when the caller has a fast fallback or retry budget and you never want a request thread blocked. `DiscardPolicy` is almost never correct for user traffic because it drops silently. The shutdown block matters as much as sizing: `awaitTermination` gives in-flight work a deadline, `shutdownNow` draws a hard line, and restoring the interrupt flag preserves cancellation semantics for the outer code. Any answer without this block is incomplete."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ResultsAndSchedule.java",
+      "code": "ExecutorService pool = Executors.newFixedThreadPool(8); // demo only: unbounded queue\ntry {\n    Future<Order> f = pool.submit(() -> fetchOrder(id)); // Callable returns value\n    try {\n        Order o = f.get(500, TimeUnit.MILLISECONDS); // tradeoff: timeout bounds wait, risks false failure\n        render(o);\n    } catch (TimeoutException te) {\n        f.cancel(true); // interrupt if running; task must honor interrupts\n        renderDegraded(id);\n    } catch (ExecutionException ee) {\n        log.error(\"task failed\", ee.getCause()); // unwrap: cause is the real bug\n    }\n} finally {\n    pool.shutdown();\n}\n\n// Periodic work belongs on a scheduler, not a sleep loop.\nScheduledExecutorService cron = Executors.newScheduledThreadPool(1);\ncron.scheduleAtFixedRate(() -> evictStaleSessions(), 0, 60, TimeUnit.SECONDS);\n// scheduleAtFixedRate drifts under long tasks; scheduleWithFixedDelay waits between runs."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Write a bounded pool from scratch",
+          "text": "They ask for `newFixedThreadPool(4)` behavior and watch whether you default to an unbounded `LinkedBlockingQueue`. Pass by writing `new ThreadPoolExecutor` explicitly with an `ArrayBlockingQueue`, a named `ThreadFactory`, and a stated rejection policy — then justify each number from cores and blocking ratio."
+        },
+        {
+          "title": "Submit, Future, and lost exceptions",
+          "text": "They submit a task that throws and ask what the caller sees. Answer: nothing until `Future.get()`, which wraps it in `ExecutionException`. No `get` means silent failure. Show `get(timeout)` plus `cancel(true)` and explain the trade-off between bounded waiting and premature timeout."
+        },
+        {
+          "title": "Graceful shutdown under deploy",
+          "text": "They ask what happens to queued tasks on restart. Walk `shutdown` versus `shutdownNow`, `awaitTermination` with a deadline, and restoring interrupts. Missing this signals you have never operated a service."
+        },
+        {
+          "title": "Size the pool for the workload",
+          "text": "They give CPU-bound image resize versus IO-bound fan-out to downstream services. Answer `cores+1` for the former, measured wait-to-compute ratio capped by downstream limits for the latter. Refuse to guess without metrics — that refusal is the senior signal."
+        },
+        {
+          "title": "Rate limiter / scheduler / parallel fetch follow-up",
+          "text": "They extend to periodic cleanup with `ScheduledExecutorService` or parallel downstream calls with timeouts and fallbacks. Distinguish `scheduleAtFixedRate` (fixed cadence, overlapping risk) from `scheduleWithFixedDelay` (gap between completions, no overlap) and explain why blocking work must never run on the common `ForkJoinPool`."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "More threads mean more throughput — false past cores for CPU work; extra threads add only context switches while shared locks and downstream limits cap gains.",
+        "Fixed pool bounds everything — false; the default fixed pool bounds threads but leaves the queue unbounded, so overload becomes heap exhaustion instead of rejection.",
+        "Cached pool is safe because it reuses threads — false under sustained load; reuse helps bursts, but saturation creates unbounded threads until the host collapses.",
+        "`submit` throws task exceptions to the caller — false; exceptions are captured in the `Future` and surface only on `get()` as `ExecutionException`, otherwise they disappear.",
+        "Shutdown is optional because daemon threads exit — false by default; pool threads are non-daemon and keep the JVM alive, so every pool needs an explicit shutdown path.",
+        "`Future.get()` without a timeout is fine internally — dangerous; one stuck downstream call parks a worker forever, drains the pool, and turns a single slow dependency into total thread starvation."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use executors for bounded async work, not as a cure for blocking design.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Reason and trade-off"
+      ],
+      "rows": [
+        [
+          "Independent IO fan-out with timeouts",
+          "Use bounded pool + Future",
+          "Hides latency behind concurrency; costs thread wait time, repaid by enforcing timeouts and fallbacks"
+        ],
+        [
+          "Background periodic cleanup or retry pump",
+          "Use ScheduledExecutorService",
+          "Single place for cadence and jitter; costs one held thread, repaid by avoiding sleep-loop drift"
+        ],
+        [
+          "CPU-parallel divide-and-conquer",
+          "Use ForkJoinPool",
+          "Work-stealing balances uneven splits; costs loss of isolation, repaid only when tasks never block"
+        ],
+        [
+          "Trivial script with 3 short tasks",
+          "Raw threads or direct calls suffice",
+          "Executor plumbing outweighs reuse benefit; simpler code wins over framework ceremony"
+        ],
+        [
+          "Virtual-thread scale (Blocking-heavy IO)",
+          "Prefer virtual-thread executor",
+          "Platform threads cap at thousands; virtual threads trade pinning edge cases for massive parking concurrency"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The interview close is a sizing sentence, not a recitation of factories. State your core count assumption, your blocking ratio, your queue bound in tasks and megabytes, your rejection policy and what the caller does on reject, and the two dashboard graphs you would watch on day one. That proves you see the executor for what it is: a queue with an opinion about overload. Anyone can memorize `newFixedThreadPool`; few can say why a bounded queue with `CallerRunsPolicy` protects checkout latency while an unbounded queue protects only demo simplicity. Choose loud failure over silent growth, named threads over anonymous ones, and timeouts over indefinite waits — those three habits separate code that passes a whiteboard from code that survives a traffic spike."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Use an explicit `ThreadPoolExecutor` with core sized to steady load, max capped by downstream limits, a **bounded queue** for bursts, and a rejection policy that throttles or fails fast — because executors trade unbounded thread and memory risk for countable, monitorable backpressure."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:04:23.096Z",
+    "problems": []
+  }
+}

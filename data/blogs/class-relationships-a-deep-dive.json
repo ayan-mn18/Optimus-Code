@@ -1,0 +1,315 @@
+{
+  "slug": "class-relationships-a-deep-dive",
+  "title": "Class Relationships : A Deep Dive",
+  "summary": "Association, aggregation, composition, dependency, and inheritance explained as ownership and lifetime choices — with UML, Java code, and interview judgment.",
+  "kind": "LLD",
+  "problemSlug": "class-relationships-a-deep-dive-29-65",
+  "topic": "Object oriented Programming (OOPS)",
+  "difficulty": "Easy",
+  "coverEmoji": "🔗",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "OOPS",
+    "class-relationships",
+    "UML"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Intro to Class Relationships | Low Level Design Mastery",
+      "url": "https://www.lowleveldesignmastery.com/class-relationships/00-intro-to-class-relationships/",
+      "source": "lowleveldesignmastery.com",
+      "kind": "article"
+    },
+    {
+      "title": "Deep Dive: Build Twitter Using Class Diagrams - DevCamp",
+      "url": "https://devcamp.com/trails/uml-foundations/campsites/class-diagrams/guides/4496d36d-ab10-475b-94b8-7a33c89bed4e",
+      "source": "devcamp.com",
+      "kind": "article"
+    },
+    {
+      "title": "Mastering the Blueprint: A Deep Dive into Classes and Objects in Java",
+      "url": "https://medium.com/@noble_frost_lion_664/mastering-the-blueprint-a-deep-dive-into-classes-and-objects-in-java-4231d09fe30f",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Relationships in class diagrams - IBM",
+      "url": "https://www.ibm.com/docs/en/rsas/7.5.0?topic=diagrams-relationships-in-class",
+      "source": "ibm.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Every class relationship answers one question: if one object dies, what happens to the other?** Association says *nothing happens*. Aggregation says *the part lives on*. Composition says *the part dies too*. Dependency says *they were never linked, one just briefly used the other*. If you cannot state the lifetime rule, you do not understand the relationship — you are just drawing arrows."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "A class relationship is a **compile-time contract about reference-holding, ownership, and lifetime**. It tells a reader three things: can `A` reach `B` (navigability), does `A` keep `B` as state or just touch it in a method (coupling duration), and who is responsible for creating and destroying `B` (ownership). Classes alone tell you vocabulary. Relationships tell you structure — which is why interviewers ignore perfect class lists and attack the lines between them."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Association:** `A` holds a reference to an independent `B` and calls it. Lifetime is unrelated. Example: `Driver` → `Car`.",
+        "**Aggregation:** `A` collects `B`s that exist before and after `A`. Whole-part, but the part is shareable. Example: `Team` → `Player`.",
+        "**Composition:** `A` exclusively owns `B`. `B` is created with or by `A` and dies with `A`. Example: `House` → `Room`, `Car` → `Engine`.",
+        "**Dependency:** `A` does not hold `B`. `B` appears only as a parameter, return type, or local. Example: `RoutePlanner` uses `TrafficSnapshot`.",
+        "**Generalization / Realization:** `A` *is-a* `B` or *implements* `B`. No whole-part at all — it is substitutability. Example: `ElectricCar` extends `Car`, `S3Store` implements `BlobStore`."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: ownership and navigability"
+    },
+    {
+      "type": "mermaid",
+      "title": "All five relationships in one model",
+      "caption": "Read the arrowheads: lifetime gets stronger as you go down.",
+      "code": "classDiagram\n    class Driver\n    class Car\n    class Engine\n    class Garage\n    class ElectricCar\n    Driver --> Car : drives\n    Garage o-- Car : parks\n    Car *-- Engine : owns\n    Driver ..> Garage : locates\n    ElectricCar --|> Car : is-a"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read this diagram as **lifetime promises**, not decoration. `Driver --> Car` is a plain association: the driver keeps a reference while driving, the car outlives any single driver. `Garage o-- Car` is aggregation with a hollow diamond: the garage stores cars, but destroying the garage must not destroy the cars — they get towed elsewhere. `Car *-- Engine` is composition with a filled diamond: the engine is built inside the car factory and scrapped with the car, never shared. `Driver ..> Garage` is a dashed dependency: the driver queries a garage inside one method and holds nothing afterward. `ElectricCar --|> Car` is inheritance: substitutability, not containment. **Trade-off:** every step from dependency toward composition buys you encapsulation but costs you flexibility and testability."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Association: uses, and remembers"
+    },
+    {
+      "type": "paragraph",
+      "text": "Association means `A` stores `B` in a field and invokes it over time. Multiplicity and navigability are the whole design: one-to-many, bidirectional or unidirectional. Make it bidirectional only if traversal genuinely needs both directions, because bidirectional links double your consistency work — every add and remove must update two sides or the model rots. **Why choose it:** it models stable collaboration between independent lifecycles. **Trade-off:** you get direct navigation at the cost of coupling; `A` now cannot be understood, constructed, or tested without a `B`."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Aggregation: has, but does not own"
+    },
+    {
+      "type": "paragraph",
+      "text": "Aggregation is association with an explicit *no-ownership* promise: the whole references the part, the part pre-exists and survives the whole. Implement it exactly like association — a collection of references — but enforce the semantics in constructors and destructors: accept pre-built parts from outside, never `new` them inside, never cascade-delete them. A `Playlist` aggregates `Song`s; deleting the playlist must not delete the songs. **Why choose it:** it communicates shareability to every future reader. **Trade-off:** you gain reuse and independent evolution of the part, but you lose control — the part can be mutated or deleted behind your back, so you need defensive copies or immutable parts if consistency matters."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Composition: owns, creates, destroys"
+    },
+    {
+      "type": "paragraph",
+      "text": "Composition is exclusive ownership plus coincident lifetime. The whole creates the part (or takes sole ownership of it at construction), forbids sharing, and destroys it on teardown. In Java there is no destructor, so you express this by making the part private, non-escapable, and instantiated inside the whole — no setter, no leaked reference. A `Document` composes `Paragraph`s; a `Car` composes its `Engine`. **Why choose it:** invariants become local. The whole can guarantee the part's state because nobody else can touch it. **Trade-off:** you gain strong consistency and simpler reasoning at the cost of reuse and memory weight — the part cannot be shared, pooled, or kept alive independently, which is exactly wrong for caches, flyweights, and large shared graphs."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Dependency: uses, and forgets"
+    },
+    {
+      "type": "paragraph",
+      "text": "Dependency is the weakest link: `A` mentions `B` in a method signature or body but holds no field of type `B`. It is drawn dashed precisely because it should be erasable — change `B`, recompile `A`, no structural change to `A`. Prefer this wherever you can: pass a `Receipt` to a `Printer.print(receipt)` instead of storing the printer in the receipt. **Why choose it:** it minimizes coupling surface and keeps object graphs shallow. **Trade-off:** you gain replaceability and easy mocking at the cost of method-level plumbing — the caller must supply `B` every time, which pushes wiring burden outward to factories or callers."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Generalization and realization: is-a, not has-a"
+    },
+    {
+      "type": "paragraph",
+      "text": "Inheritance (`-- Idea|>`) and interface realization (`..|>`) are not whole-part at all. They promise substitutability: anywhere the parent or interface is expected, the child works. Use inheritance only for true behavioral specialization where Liskov holds — the child must not weaken preconditions or strengthen postconditions. Otherwise use an interface plus composition. **Why choose it:** you get polymorphism and one extension point for many variants. **Trade-off:** inheritance is the strongest compile-time coupling in the language. You gain code reuse but pay with fragility — a change to the base class silently breaks every subclass, which is why composition plus an interface almost always ages better."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Strength of coupling increases downward. Pick the weakest link that still enforces the invariant.",
+      "headers": [
+        "Relationship",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Dependency (`..>`) ",
+          "Lowest coupling, trivial to mock and replace",
+          "No persistent navigation; caller must wire the collaborator each time"
+        ],
+        [
+          "Association (`-->`) ",
+          "Stable navigation, models real collaboration",
+          "Lifecycle confusion; hard to know who creates and frees the peer"
+        ],
+        [
+          "Aggregation (`o--`) ",
+          "Reuse and sharing; part evolves independently",
+          "Aliasing bugs; whole observes mutations it did not cause"
+        ],
+        [
+          "Composition (`*--`) ",
+          "Strong invariants, local reasoning, safe cascade-delete",
+          "No sharing; heavier memory and construction cost; rigid hierarchy"
+        ],
+        [
+          "Inheritance (`--|>`) / Realization (`..|>`) ",
+          "Polymorphism, one contract for many behaviors",
+          "Fragile base-class problem; compile-time lock-in to hierarchy"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The interview signal is whether you **downgrade by default**. Juniors draw composition for everything because it feels safe. Seniors start with dependency, promote to association only when navigation must persist across calls, promote to aggregation only when containment without ownership is real, and reserve composition for true coincident lifetime. Every promotion must be justified by an invariant, not convenience. If you cannot name the invariant that forces the stronger link, use the weaker one."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Relationship mistakes do not throw on day one. They leak, corrupt, or deadlock months later. The classic failure is **composition drawn where aggregation was true**: an order *composes* a customer address, so deleting one order cascade-deletes the shared address row and every other order loses its shipping history. The inverse is just as bad: aggregation where composition was required leaves orphaned parts — delete a game lobby but keep its player-session objects alive in a static map, and you have a memory leak that looks like slow growth in heap dumps. Over-bidirectional associations cause a third failure: serialization storms and `StackOverflowError` when Jackson or `toString` chases `A → B → A` forever."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Symptom: cascade deleted too much.** Deleting a playlist removed songs for all users → you modeled aggregation as composition.",
+        "**Symptom: heap grows monotonically, GC cannot reclaim.** Orphaned children referenced from a parent you forgot → you modeled composition as association without a clear owner.",
+        "**Symptom: change in one class forces recompile and retest of twenty others.** God-object association hub → downgrade to dependency and inject per method.",
+        "**Symptom: infinite recursion in JSON logs or `equals`.** Bidirectional association without `@JsonIgnore` or an explicit DTO boundary → cut one direction or map through IDs."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The lifetime test",
+      "text": "For every whole-part line, ask aloud: **if I delete the whole right now, must the part die?** If yes, composition — create it inside, hide it, cascade-delete it. If no, aggregation — inject it from outside, never delete it. If you hesitate, it is plain association. Saying this sentence in an interview fixes half of all wrong diagrams."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes it concrete"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Relationships.java",
+      "code": "// Dependency: no field, just a parameter. Weakest coupling.\nclass Printer {\n    void print(Receipt receipt) { System.out.println(receipt.total()); }\n}\n\n// Association: holds a reference, but does not own the peer.\nclass Driver {\n    private Car car; // injected, may be swapped\n    Driver(Car car) { this.car = car; }\n    void drive() { car.move(); }\n}\n\n// Aggregation: collects pre-existing parts. Never creates or deletes them.\nclass Garage {\n    private final List<Car> slots = new ArrayList<>();\n    void park(Car car) { slots.add(car); }      // car lives on after garage closes\n    void unpark(Car car) { slots.remove(car); }\n}\n\n// Composition: creates, hides, and owns the part. No escape.\nclass Car {\n    private final Engine engine; // private + final + no getter = ownership\n    Car(String spec) { this.engine = new Engine(spec); }\n    void move() { engine.ignite(); }\n}\n\n// Realization: program to the interface, compose the implementation.\ninterface BlobStore { void put(String k, byte[] v); }\nclass OrderService {\n    private final BlobStore store; // association to abstraction, not concretion\n    OrderService(BlobStore store) { this.store = store; }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Notice how ownership is expressed in **constructors, not comments**. Composition calls `new` inside and exposes no setter. Aggregation and association take the collaborator as a constructor or method argument and never call `new`. Dependency takes it as a method argument and stores nothing. This is why code review beats UML review: the diagram can lie, but `new` inside versus injected from outside cannot. **Trade-off made explicit here:** `Car` is simple and self-contained but untestable without a real `Engine` — inject an `Engine` interface if you need to mock it, at the cost of weakening pure composition into association to an abstraction."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Draw the nouns, then interrogate every line",
+          "text": "After extracting entities for a system like parking lot or library, the interviewer will point at one line — say `Library — Book` — and ask aggregation or composition? Answer with the lifetime test, not the diamond shape."
+        },
+        {
+          "title": "Defend the arrow direction",
+          "text": "Expect: does `Book` know about `Library`? Argue for unidirectional IDs over bidirectional object pointers unless traversal both ways is proven. Bidirectional is a maintenance cost you must justify."
+        },
+        {
+          "title": "Convert inheritance to composition on demand",
+          "text": "If you drew `Bike extends Vehicle` and `Car extends Vehicle`, expect: what if we add `Electric` and `Rented` variants? Show how a `Powertrain` interface composed into `Vehicle` avoids a combinatorial hierarchy."
+        },
+        {
+          "title": "Show creation and deletion",
+          "text": "Walk through who calls `new` and what `delete` cascades to. Interviewers promote candidates who trace `deleteLibrary()` → keeps books, `deleteOrder()` → deletes order lines, without being prompted."
+        },
+        {
+          "title": "Name the multiplicity and the container",
+          "text": "Finish each line with `1 — *` and the concrete type: `List`, `Set`, or `Map`. Say why: `Map<slotId, Car>` for O(1) lookup by slot, `Set` for uniqueness, `List` only when order matters."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that kill you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Aggregation and composition are the same in code, so the distinction does not matter.** They compile the same but mean opposite delete behavior. The distinction is a promise to the next engineer and to the database schema.",
+        "**A hollow diamond means weak reference or nullable field.** No — it means shared whole-part lifetime. Nullability and reference strength are separate decisions.",
+        "**Bidirectional is better because navigation is flexible both ways.** It doubles update cost, breaks serialization, and hides the true owner. Default to unidirectional.",
+        "**Inheritance models reuse; composition models structure.** Backwards. Inheritance models *substitutability* under Liskov. If you only want reuse, compose and delegate.",
+        "**Dependency is too trivial to draw.** It is the most important line for decoupling. Showing `Service ..> DTO` proves you know the service does not retain the request.",
+        "**More relationships mean a richer design.** More lines mean more coupling. The best diagram is the one with the fewest, weakest lines that still enforce the invariants."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use this as your selection rule under pressure.",
+      "headers": [
+        "Relationship",
+        "Use when",
+        "Do not use when"
+      ],
+      "rows": [
+        [
+          "Dependency",
+          "Collaborator needed for one operation; you want easy mocking",
+          "You need to navigate to it later — that needs association"
+        ],
+        [
+          "Association",
+          "Peers collaborate over time with independent lifetimes",
+          "One side truly owns the other — upgrade to composition"
+        ],
+        [
+          "Aggregation",
+          "Whole groups pre-existing, shareable parts",
+          "Delete of whole must delete parts — that is composition"
+        ],
+        [
+          "Composition",
+          "Part has no identity outside the whole; invariant must be local",
+          "Part is shared, cached, or expensive to rebuild — share it instead"
+        ],
+        [
+          "Inheritance / Interface",
+          "True is-a with substitutable behavior; one contract, many variants",
+          "You only want field reuse or the variants cut across axes — compose instead"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Choose the weakest relationship that enforces the lifetime invariant — dependency for transient use, association for persistent navigation, aggregation for shared parts, composition for exclusive ownership, inheritance only for substitutable is-a — and prove each line by stating who creates the object and what delete cascades to.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:48:35.518Z",
+    "problems": []
+  }
+}

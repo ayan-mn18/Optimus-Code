@@ -1,0 +1,306 @@
+{
+  "slug": "isp",
+  "title": "ISP",
+  "summary": "ISP is your default route to the internet and your first bottleneck. This concept page covers tiers, transit vs peering, and last-mile trade-offs for HLD.",
+  "kind": "HLD",
+  "problemSlug": "isp-94-209",
+  "topic": "Networking",
+  "difficulty": "Easy",
+  "coverEmoji": "🌐",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "ISP"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Internet service provider - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Internet_service_provider",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "ISP: Internet Service Provider Explained - YouTube",
+      "url": "https://www.youtube.com/watch?v=Rdw46zhn17E",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Video: ISP Definition & Examples - Study.com",
+      "url": "https://study.com/academy/lesson/video/what-is-an-internet-service-provider-isp-definition-examples-quiz.html",
+      "source": "study.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "An ISP is not **internet access** in the abstract. It is your **default route plus a business contract**: who carries your packets when you have no better path, what that first hop costs, and where you get squeezed when they are congested, filtered, or down. In system design, treat the ISP as a **capacity limit and failure domain**, not as infinite bandwidth."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What an ISP actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "An Internet Service Provider is an organization that connects a customer network to the rest of the internet and takes responsibility for moving packets beyond the customer edge. That means three concrete jobs: provide a physical or radio **last-mile link**, assign routable identity via **IP addresses** (directly or through NAT), and provide **next-hop routing** — either by carrying traffic itself over long distances or by handing it to another network that can. Many ISPs also bundle DNS resolution, email, web hosting, and address registration, but those are add-ons. The core product is reachability: a default gateway that actually forwards."
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not think of ISPs as one flat category. There are **access providers** who run the last mile to homes and offices, **transit providers** who sell long-haul carriage to other ISPs, **hosting providers** who connect data centers rather than eyeballs, and **virtual providers** who resell capacity on someone else's wires and radios. The distinction matters because it determines incentives. An access ISP optimizes for subscriber density and support cost. A transit ISP optimizes for backbone utilization and peering ratios. A virtual ISP optimizes for price and has almost no control over the physical plant. If you conflate them, you will mis-predict latency, throughput, and who can fix an outage."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How a packet gets out: the mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "When your device sends to an address outside your LAN, the packet hits your home router, gets NATed to a public-facing address, and is forwarded out the WAN port to the ISP's access concentrator — often called a BNG or BRAS for wired access, or a packet gateway for mobile. That box authenticates you, polices your rate, applies your plan's queueing policy, and routes you into the ISP's regional network. From there the ISP makes an economic decision on every destination: if it has a **peering** path (direct exchange, settlement-free) or on-net customer, it sends it there; otherwise it pays a **transit** provider to carry it upstream. This is why two websites at the same distance can have wildly different latency from the same house: the path is chosen by contract, not geography."
+    },
+    {
+      "type": "mermaid",
+      "title": "Packet exit path",
+      "caption": "Default route from device through access ISP to peering or transit.",
+      "code": "flowchart LR\n  D[Device 192.168.1.5] --> R[Home Router NAT]\n  R --> B[BNG Access Concentrator]\n  B --> M[ISP Metro Core]\n  M --> P{Peered or On-Net?}\n  P -->|Yes| X[Peering Exchange]\n  P -->|No| T[Upstream Transit]\n  X --> S[Destination Network]\n  T --> S"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two control-plane details complete the picture. First, your public IP is usually **leased, not owned** — assigned by DHCP or by the mobile core, frequently behind Carrier-Grade NAT, and subject to change. You cannot assume stable inbound reachability unless you bought a static address. Second, DNS resolution typically defaults to the ISP's resolver, which means the ISP observes and can alter name lookups through filtering, hijacking, or just slow anycast routing. Competent designs treat ISP DNS as untrusted and measurable: override it where correctness matters, monitor it where it remains."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Last-mile termination:** DSLAM, CMTS, OLT, eNodeB/gNodeB, or satellite ground station — converts your loop into framed IP traffic.",
+        "**BNG / Broadband Gateway:** authenticates the session, enforces rate limits, applies QoS queues. This is where your plan's speed cap actually lives.",
+        "**DHCP + address pool / CGNAT:** hands out public or shared addresses. Trade-off: CGNAT conserves IPv4 but breaks inbound connections and port forwarding.",
+        "**ISP resolver + cache:** answers DNS fast when healthy, lies or filters when policy demands it. Never assume it is neutral.",
+        "**Border routers + BGP policy:** decide peering vs transit per prefix. This policy, not fiber length, dominates inter-domain latency."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The hierarchy that matters: tiers and peering"
+    },
+    {
+      "type": "paragraph",
+      "text": "The internet has no center, but it has a hierarchy of dependence. So-called **Tier 1** networks reach every other network without paying anyone for transit — they peer with each other in a full mesh and sell transit downward. **Tier 2** networks peer with some peers but still buy transit for the rest of the table. **Tier 3 / access** networks buy transit for essentially everything off-net and live or die by the price and quality of two or three upstream contracts. Choose to be Tier 3 and you trade independence for simplicity: you get full routes cheaply, but a single upstream dispute or fiber cut degrades everything you cannot reach via peering. Build peering aggressively and you trade simplicity for control: lower cost per bit and lower latency to popular destinations, at the price of running BGP, maintaining presence at exchanges, and balancing ratios so peers do not de-peer you."
+    },
+    {
+      "type": "mermaid",
+      "title": "Tiers, transit, and peering",
+      "caption": "Tier-1 mesh sells transit down; Tier-2 and access buy or peer sideways.",
+      "code": "graph TD\n  T1A[Tier-1 A] --- T1B[Tier-1 B]\n  T1B --- T1C[Tier-1 C]\n  T1A --- T1C\n  T1A --> T2A[Tier-2 Regional]\n  T1B --> T2B[Tier-2 Regional]\n  T2A --> A1[Access ISP]\n  T2B --> A1\n  T2A --- IX[Internet Exchange]\n  T2B --- IX\n  A1 --> H[Home User]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Peering is the lever interviewers want you to name. Two networks that exchange a lot of traffic meet at an **Internet Exchange** and swap it directly instead of paying a transit middleman. The trade-off is operational, not technical: peering cuts cost and often one or two router hops, but only works if traffic is roughly balanced and both sides maintain capacity at the exchange. When the link saturates during a football final or a game patch, there is no SLA to invoke — just a congested port and finger-pointing. That is why serious content networks do both: peer where volume justifies it, keep paid transit as overflow and as a weapon in peering negotiations."
+    },
+    {
+      "type": "table",
+      "caption": "Last-mile access methods and what you sacrifice with each.",
+      "headers": [
+        "Access method",
+        "Why you would pick it",
+        "What you give up"
+      ],
+      "rows": [
+        [
+          "Fiber to the home",
+          "Symmetric rates, low jitter, no shared-medium collapse; the only sane default for offices and stream ingest",
+          "Trenching cost and slow rollout; availability is a postcode lottery"
+        ],
+        [
+          "Cable / DOCSIS",
+          "High downstream reuse of existing coax; cheap to deploy at density",
+          "Shared segment: evening slowdown is structural, upstream stays thin, latency jitters under load"
+        ],
+        [
+          "DSL over copper",
+          "Reaches where nothing else does over phone pairs; dedicated loop per subscriber",
+          "Distance-killed speed, asymmetric, dying plant with no upgrade path"
+        ],
+        [
+          "Fixed wireless / cellular",
+          "Days to deploy, no trenches; works for temporary and rural sites",
+          "Spectrum is shared and metered; throughput varies with signal, sector load, and caps"
+        ],
+        [
+          "Satellite",
+          "Coverage anywhere with sky view; only option for truly remote endpoints",
+          "High latency on GEO, handoff jitter on LEO, strict fair-use throttles and weather loss"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "ISP failures rarely look like a clean down. They look like partial, time-correlated degradation that your dashboards misattribute to your own code. The classic is **oversubscribed aggregation**: the access link tests fine at 3am, then collapses to a third of contracted rate at 8pm because the ISP sold 50:1 contention on the PON splitter or CMTS segment. Second classic is **CGNAT port exhaustion**: thousands of subscribers share a handful of public IPs, outbound connections start failing with timeouts while pings still work, and your support queue fills with cannot connect reports that correlate with no deploy. Third is **bad BGP or resolver behavior**: a misconfigured route leak sends your traffic on a 200ms detour, or the ISP resolver starts returning filtered answers and your TLS handshake never even starts. If you only monitor origin health, you will chase ghosts for hours."
+    },
+    {
+      "type": "table",
+      "caption": "ISP failure modes and the symptom you actually observe.",
+      "headers": [
+        "Failure",
+        "Symptom from your side",
+        "How to confirm"
+      ],
+      "rows": [
+        [
+          "Oversubscribed last-mile / BNG policer",
+          "Throughput cliff at peak hours, first-hop latency spikes, video rebuffers but pings to gateway stay lossy",
+          "Graph speedtest and hop-1 RTT by hour; compare off-peak baseline"
+        ],
+        [
+          "CGNAT exhaustion / NAT table full",
+          "Random TCP connect timeouts, TURN/ gaming / P2P inbound fails, `connection timed out` with no RST",
+          "Count concurrent flows vs failures; test with static-IP host as control"
+        ],
+        [
+          "Upstream / peering saturation",
+          "One ASN or one region slow, others fine; traceroute shows latency exploding at exchange hop",
+          "Per-ASN latency split; MTR shows loss starting at specific border router"
+        ],
+        [
+          "DNS filtering / hijack",
+          "NXDOMAIN or wrong IP for valid domains, HTTPS cert mismatch, works when resolver switched to independent DNS",
+          "dig @ISP vs dig @independent; compare answers and response times"
+        ],
+        [
+          "Route leak / fiber cut upstream",
+          "Sudden latency jump or blackhole to subset of prefixes, BGP path length grows",
+          "Traceroute path change + BGP looking-glass check; correlate across ISPs"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "CGNAT breaks the inbound assumption",
+      "text": "Behind most residential and mobile ISPs you are **not addressable**. No open port, no self-hosted server, no direct WebRTC without relay. If your design needs inbound connections to eyeballs, you must budget for **relays, hole-punching, or a server-side rendezvous** — the NAT is the design, not an edge case."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The config you actually touch"
+    },
+    {
+      "type": "paragraph",
+      "text": "You never configure the ISP's core, but you configure around it. The useful skill is proving whether the problem is inside your house or past the demarcation point. Run traceroute / MTR, split latency per hop, and alert on the boundary: if hop 1 (your router) is clean and hop 2 (ISP gateway) is lossy, stop redeploying your service. The snippet below encodes that rule — parse MTR output, compute per-hop loss and delta latency, and flag the first bad hop so on-call does not blame application code for an access-network problem. Trade-off is noise: ICMP deprioritization causes false positives, so confirm with TCP measurements before paging."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "isp_boundary_check.py",
+      "code": "import re\n\ndef parse_mtr(report: str):\n    # Expects lines like: \" 2. isp-gateway  5.2%  120  18.4  22.1\"\n    hops = []\n    for line in report.splitlines():\n        m = re.match(r\"\\s*(\\d+)\\.\\s+\\S+\\s+([\\d.]+)%\\s+\\d+\\s+([\\d.]+)\\s+([\\d.]+)\", line)\n        if m:\n            hops.append({\n                \"hop\": int(m.group(1)),\n                \"loss\": float(m.group(2)),\n                \"avg_ms\": float(m.group(3)),\n                \"worst_ms\": float(m.group(4)),\n            })\n    return hops\n\ndef find_boundary(hops, loss_thresh=5.0, jump_thresh=25.0):\n    # WHY: hop 1 is your LAN. Blame the ISP only when\n    # degradation *starts* at hop 2+ and persists downstream.\n    for i in range(1, len(hops)):\n        prev, cur = hops[i-1], hops[i]\n        jump = cur[\"avg_ms\"] - prev[\"avg_ms\"]\n        if cur[\"loss\"] >= loss_thresh or jump >= jump_thresh:\n            owner = \"home LAN\" if cur[\"hop\"] == 1 else \"ISP / upstream\"\n            return cur[\"hop\"], owner, jump\n    return None, \"healthy\", 0.0\n\n# Example: hop 2 jumps +40ms with 8% loss -> ISP-side, not app-side.\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an HLD interview"
+    },
+    {
+      "type": "paragraph",
+      "text": "At Easy difficulty no one asks you to design an ISP. They check whether you remember the ISP exists when you draw boxes from client to cloud. The moment you say users upload video or join live calls, the interviewer is listening for last-mile asymmetry, NAT traversal, and peering cost. Name the uplink as the bottleneck before they prompt you, quantify it, and propose the standard escapes: edge ingest, adaptive bitrate, and relay infrastructure. That signals production sense in thirty seconds."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Draw the ISP explicitly",
+          "text": "Put client, home NAT, access ISP, transit/peering, then your edge. Say why: it forces discussion of NAT, first-hop latency, and who pays for bits."
+        },
+        {
+          "title": "Quantify the uplink",
+          "text": "State a number: typical asymmetric links give 5-20x less upstream. Show math: 1000 clients x 5 Mbps upstream ingest needs edge PoPs, not one central region."
+        },
+        {
+          "title": "Name NAT traversal",
+          "text": "For anything peer-to-peer or inbound (calls, gaming, IoT control), say STUN for discovery and TURN for relay fallback. Trade-off: TURN always works but you pay for every byte relayed."
+        },
+        {
+          "title": "Place your edge near their peering",
+          "text": "Argue for CDN and ingest in the same metros and exchanges where eyeball ISPs peer. Reason: cuts transit hops, protects tail latency during peak saturation."
+        },
+        {
+          "title": "Design for ISP DNS and filtering",
+          "text": "Mention independent resolvers, Happy Eyeballs for IPv4/IPv6, and retry with backoff. Shows you know lookups fail before TCP even starts."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Bandwidth equals speed:** A 500 Mbps plan with 80ms bufferbloat and 2% loss feels slower than a clean 50 Mbps fiber line. Latency and loss dominate interactive experience.",
+        "**The internet is symmetric and flat:** Residential paths are heavily asymmetric and policy-routed. Upload is the bottleneck; geography is secondary to peering contracts.",
+        "**One traceroute proves routing:** Routes flap with load and time of day. A single snapshot without hour-of-day context misleads.",
+        "**Changing DNS fixes the ISP:** It fixes name resolution only. It does nothing for policers, CGNAT exhaustion, or saturated peering.",
+        "**All IPs are public and stable:** Most eyeballs sit behind NAT with rotating addresses. Designing for direct inbound reachability without relays fails on contact."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to care and when to ignore it"
+    },
+    {
+      "type": "table",
+      "caption": "Scope the ISP correctly for the problem you are solving.",
+      "headers": [
+        "Situation",
+        "Do this",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Global consumer upload / live media",
+          "Model ISP uplink, NAT, peering; add edge ingest and TURN",
+          "Last mile and NAT decide success more than origin logic"
+        ],
+        [
+          "Single-region internal service",
+          "Abstract ISP as transit with latency band",
+          "Bottleneck is inside VPC and app tier, not eyeball access"
+        ],
+        [
+          "IoT fleet on cellular",
+          "Model caps, CGNAT, and flaky signal; use MQTT batching and resume",
+          "Metered, NATed links punish chatty protocols"
+        ],
+        [
+          "Enterprise with dual uplinks",
+          "Model BGP multihoming and failover explicitly",
+          "Redundancy only helps if failover is tested and provider-independent"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "An ISP is my client's **default route and first bottleneck** — I assume asymmetric, NATed, peak-hour-variable access and push ingest, caching, and relays to the edge where eyeball networks peer."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:07:10.085Z",
+    "problems": []
+  }
+}

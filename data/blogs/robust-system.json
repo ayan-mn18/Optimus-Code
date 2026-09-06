@@ -1,0 +1,261 @@
+{
+  "slug": "robust-system",
+  "title": "Robust System",
+  "summary": "Robustness is staying within SLOs under faults without adapting — built with budgets, isolation, and fallbacks, paid for with efficiency.",
+  "kind": "HLD",
+  "problemSlug": "robust-system-149-317",
+  "topic": "Resources Efficient & Extensible System Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🛡️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Robustness",
+    "Reliability",
+    "System Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Robustness - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Robustness",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "What Is Robust Control? | Robust Control, Part 1 - YouTube",
+      "url": "https://www.youtube.com/watch?v=A7wHSr6GRnc",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Robust Control System - an overview | ScienceDirect Topics",
+      "url": "https://www.sciencedirect.com/topics/engineering/robust-control-system",
+      "source": "sciencedirect.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**A robust system holds its stability and performance bounds when perturbed, without needing to re-tune itself.** Not faster. Not cheaper. Just predictable under garbage inputs, dead dependencies, traffic spikes, and bad deploys. If your design only works when everything is healthy, it is not robust — it is optimistic. Every mechanism below buys predictability by spending efficiency or extensibility somewhere else."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a robust system actually guarantees"
+    },
+    {
+      "type": "paragraph",
+      "text": "A robust system keeps two promises under disturbance: it does not collapse, and it does not silently degrade past its stated limits. Stability means no cascading failure, no unbounded queues, no OOM kill spiral. Performance means latency and throughput stay inside a permissible envelope — slower is allowed, unbounded is not. The critical phrase is *without adaptation*. A robust controller or service uses fixed parameters chosen for the worst plausible case, not a learner that figures it out at runtime. That is why robust design feels pessimistic: you size timeouts, queues, retries, and replicas for hostile conditions, then accept that you will leave headroom unused on a normal Tuesday. The trade-off is deliberate over-conservatism in exchange for survival when your model of the world is wrong."
+    },
+    {
+      "type": "paragraph",
+      "text": "Think in two axes: *resistance* and *avoidance*. Resistance is absorbing the hit — idempotent handlers that tolerate duplicate deliveries, parsers that reject malformed payloads instead of crashing, thread pools that bound work instead of growing forever. Avoidance is refusing to take the hit — admission control, load shedding, bulkheads, and circuit breakers that cut off a sick dependency before it infects you. Then split perturbations by size. Small-magnitude noise — jitter, single-node loss, brief GC pause — should be invisible to callers. Large-magnitude shocks — region loss, 10x traffic surge, poison config — will hurt, but the system must degrade in a bounded, prioritized way: drop background jobs before checkout, serve stale reads before failing writes. If you cannot state which class you handle and what the degraded behavior is, you have hand-waving, not robustness."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: contain, shed, recover"
+    },
+    {
+      "type": "paragraph",
+      "text": "Robustness is not one component. It is a request path where every hop has a budget and an escape hatch. You validate at the edge so bad input dies cheap. You isolate execution so one tenant, endpoint, or dependency cannot steal all threads, connections, or memory. You bound every wait with a deadline, because an unbounded wait is just a slow leak that becomes an outage. You retry only with a global budget and jitter, because unbounded retries turn a partial failure into a self-inflicted DDoS. And you define the fallback *before* the failure: cached value, default, queue-for-later, or explicit error. The WHY is simple: failures propagate through shared resources and unbounded waits. Remove the sharing and remove the unboundedness, and most cascades become impossible by construction. The price is complexity and idle capacity."
+    },
+    {
+      "type": "mermaid",
+      "title": "Robust request path",
+      "caption": "Every stage has a budget and a fallback; nothing waits forever.",
+      "code": "flowchart TD\n  A[Client Request] --> B[Validate and Admit]\n  B --> C{Overload?}\n  C -->|Yes| Z[Shed Load: fail fast]\n  C -->|No| D[Isolated Execution]\n  D --> E{Dependency Call}\n  E -->|Healthy| F[Call with Timeout]\n  E -->|Open Breaker| G[Fallback]\n  F --> H{Success?}\n  H -->|Yes| I[Return Success]\n  H -->|Timeout or Error| J{Budget Left?}\n  J -->|Yes| K[Retry with Jitter]\n  K --> F\n  J -->|No| G\n  G --> I\n  Z --> I"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk the diagram like an outage. `Validate and Admit` exists because parsing and auth are cheap, while downstream work is expensive — kill poison requests at the cheapest stage. The `Overload?` branch exists because queues do not create capacity, they hide collapse; shedding early with `429` or `503` plus `Retry-After` keeps the system recoverable. `Isolated Execution` — separate pools for critical versus best-effort work — exists so a slow analytics query cannot starve user checkout. The breaker exists so you stop paying the full timeout cost for a dependency you already know is dead. The retry budget exists because per-hop retries multiply: three hops each retrying three times turns one user retry into 27 backend calls. That is why the check is *global budget*, not per-library default. The trade-off at every diamond is the same: you spend code, config, and spare capacity to buy bounded worst-case behavior."
+    },
+    {
+      "type": "table",
+      "caption": "What each robustness mechanism buys and what it costs.",
+      "headers": [
+        "Mechanism",
+        "What it buys",
+        "What it costs"
+      ],
+      "rows": [
+        [
+          "Timeouts + deadlines",
+          "Bounds tail latency; prevents thread exhaustion",
+          "Cuts off slow successes; needs per-dependency tuning"
+        ],
+        [
+          "Retries with jitter + budget",
+          "Masks transient blips",
+          "Amplifies load; hides real failures if unbounded"
+        ],
+        [
+          "Circuit breaker",
+          "Fast fail when downstream is dead; faster recovery",
+          "False opens; needs fallback or it just fails faster"
+        ],
+        [
+          "Bulkhead / isolation",
+          "One failure cannot take all resources",
+          "Lower utilization; more pools to operate"
+        ],
+        [
+          "Load shedding + backpressure",
+          "Survives overload without collapse",
+          "Rejects valid work; clients must handle retry"
+        ],
+        [
+          "Fallback / degraded mode",
+          "Partial availability during outage",
+          "Stale or reduced function; complexity to maintain"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The most common robust-on-paper failure is the retry storm. Service B slows to 2 seconds. Service A has a 5-second timeout and 3 blind retries. Callers of A also retry. Within a minute, offered load to B is 5x, its queue explodes, GC thrashes, and a transient slowdown becomes a hard outage. What you see on dashboards: success rate looks okay for 90 seconds, then `p99` climbs vertically, thread-pool queue depth pegs, CPU saturates not from useful work but from queued and retried work, and then everything times out at once. Fix is not bigger pools — that just delays the cliff. Fix is deadline propagation, a shared retry budget, jitter, and idempotency so a retry is safe. Trade-off named: you trade a few extra transient errors for survival under sustained degradation."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second killer is hidden coupling through shared resources. One connection pool, one Kafka consumer group, one database, one AZ — logically separate features sharing one physical bottleneck. A poison pill — a 50MB payload, a hot key, a full-table scan from a new feature — consumes the shared resource and every other feature degrades identically. Symptom: all endpoints degrade together despite low average CPU, database shows one long-running query or lock wait while app hosts show threads blocked on I/O, and autoscaling does nothing because new hosts block on the same bottleneck. You built bulkheads on paper but not around the true contention point. The lesson: robustness requires knowing the actual shared fate — connection limits, noisy neighbors, quota, single-leader writes — and isolating or shedding there. That isolation looks wasteful until the day it saves you."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`p99` spikes while `p50` is flat and success rate is 99% — you have queueing or retries masking a sick dependency.",
+        "Thread or connection queue depth grows linearly and never drains — timeouts too generous, no shedding.",
+        "Traffic to a failing dependency does not drop after errors start — breaker missing or threshold too high.",
+        "One slow endpoint drags down unrelated endpoints on the same host — no bulkhead, shared pool.",
+        "Recovery causes a second outage — thundering herd on breaker close; you need staged ramp and jittered backoff.",
+        "Fallback never exercised until the outage, then it is broken — untested degraded path is not a path."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Making it concrete: budgets and breakers"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "robust_client.py",
+      "code": "import random, time\nfrom circuit import CircuitBreaker  # bulkhead + breaker abstraction\n\n# Fixed policy: worst-case bounded, no adaptation at runtime.\nTIMEOUT_S = 0.8        # per-attempt deadline: fail fast, don't queue\nMAX_RETRIES = 2        # global budget for this request tree\nBASE_BACKOFF_S = 0.05\n\nbreaker = CircuitBreaker(fail_threshold=20, reset_timeout_s=30)\n\ndef call_with_robustness(request, downstream):\n    if breaker.is_open():\n        return fallback(request)  # degraded, bounded, explicit\n    attempt = 0\n    while True:\n        try:\n            # deadline propagation: downstream must respect TIMEOUT_S\n            return downstream.call(request, timeout=TIMEOUT_S)\n        except TransientError:\n            if attempt >= MAX_RETRIES:\n                breaker.record_failure()\n                return fallback(request)\n            # jitter breaks retry synchrony; budget stops amplification\n            sleep = BASE_BACKOFF_S * (2 ** attempt) + random.uniform(0, 0.05)\n            time.sleep(sleep)\n            attempt += 1\n        except PermanentError:\n            # do NOT retry: 4xx, validation, non-idempotent without key\n            return fallback(request)"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet is opinionated on purpose. The timeout is short because a slow success that blocks a thread is worse than a fast fallback under load. Retries apply only to transient, idempotent failures — never to validation or non-idempotent writes without a key. Backoff is exponential with jitter to avoid synchronized retries stampeding recovery. The breaker short-circuits the wait when the dependency is known-dead, which is the difference between a 30ms fallback and thousands of 800ms timeouts piling up. Trade-off stated plainly: you will return stale or reduced answers more often, and you must maintain and test `fallback()`. Without that discipline this code just fails faster instead of surviving longer."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Resource efficiency is part of robustness"
+    },
+    {
+      "type": "paragraph",
+      "text": "Robustness without an efficiency story is just overprovisioning. Idle 5x capacity survives spikes, but it is expensive, hides leaks, and rots — nobody tests shedding if shedding never happens. The efficient version sets explicit service-level objectives, then provisions to the worst case you actually promise to survive: single-zone loss plus `p99` traffic, not every fantasy. Use autoscaling for predictable diurnal load, but do not call autoscaling robustness — it is too slow for a spike and it scales the amplification if retries are unbounded. Prefer cheap robustness: strict validation, small timeouts, shedding, and caches that let you serve stale reads without touching the sick path. Reserve expensive robustness — multi-region writes, dedicated pools per tenant — for the critical path only. WHY: every redundant unit is capacity you must operate, patch, and keep consistent. Extensibility suffers the same tax: each new feature that shares pools and budgets weakens the bulkhead, so new work must declare its isolation class and fallback on day one or it does not ship."
+    },
+    {
+      "type": "table",
+      "caption": "When robustness pays, and when it is waste.",
+      "headers": [
+        "Use it when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Dependency can fail or slow independently — network, third party, leader election",
+          "Single in-process call with no network or contention — timeouts add noise"
+        ],
+        [
+          "Overload is possible — flash sale, retry burst, poison input",
+          "Throughput is fixed and tiny — shedding logic never triggers"
+        ],
+        [
+          "Partial answer beats no answer — read path, recommendations, search",
+          "Wrong answer is worse than no answer — ledger settlement, safety interlock"
+        ],
+        [
+          "You can define and test fallback — stale cache, default, queue later",
+          "No fallback exists — breaker just converts slow failure to fast failure"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Force the failure model first",
+          "text": "Ask what breaks: crash, slowdown, partition, overload, poison input, bad deploy. Then ask what must still hold: which SLO, for which workload. Interviewers promote you when you scope worst-case before drawing boxes."
+        },
+        {
+          "title": "Draw budgets on the path",
+          "text": "Put timeout, queue bound, and retry budget on every arrow. State deadline propagation. Call out that per-hop retries multiply — propose one global budget. This is where medium candidates separate from juniors."
+        },
+        {
+          "title": "Isolate the critical path",
+          "text": "Split pools for critical versus background, reads versus writes, tenants that can hurt each other. Name the shared fate explicitly: connections, leader, quota. Explain the utilization cost and why you pay it."
+        },
+        {
+          "title": "Define degraded, not just down",
+          "text": "For each dependency, state the fallback: stale cache, default ranking, async queue, explicit error. Say how you test it with fault injection. An untested fallback scores zero."
+        },
+        {
+          "title": "Tie to efficiency and evolution",
+          "text": "Close with cost: what you overprovision, what you shed, how a new feature plugs in without weakening bulkheads. Propose bulkhead classes and a fallback contract so the design stays robust as it grows."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`More retries equals more reliability` — unbounded retries are the top cause of self-inflicted overload. Budget and jitter, or do not retry.",
+        "`Redundancy equals robustness` — three replicas sharing one database, one config, or one zone fail together. Redundancy without independence is theater.",
+        "`Autoscaling saves you` — it reacts in minutes, spikes kill in seconds, and it happily scales your retry amplification.",
+        "`Average latency proves health` — robustness lives in `p99`, queue depth, and time-to-recover. Averages hide collapse.",
+        "`Fallback is optional polish` — without a defined degraded behavior, breakers and shedding just change how you fail, not whether you survive.",
+        "`Robust means adaptive` — adaptation is a different property. Robust means fixed parameters that already handle the worst case you claim to handle."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The trap to avoid",
+      "text": "Do not propose timeouts, retries, and breakers with library defaults. Defaults compose badly: a 30-second timeout times three hops times three retries is a 4-minute user wait holding threads the whole way. **Always propagate a single end-to-end deadline and divide it downward.** If you cannot say the worst-case thread-seconds per user request, you have not designed it."
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Robustness is holding stability and SLOs under faults with fixed worst-case budgets — isolate resources, bound every wait, cap retries, and serve an explicit fallback.** Name the disturbance, the budget, and the cost, or it is just a buzzword."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:23:44.723Z",
+    "problems": []
+  }
+}

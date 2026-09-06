@@ -1,0 +1,328 @@
+{
+  "slug": "lld-crash-course",
+  "title": "LLD Crash Course",
+  "summary": "LLD is not UML trivia. It is timed proof you can turn vague requirements into extensible, working classes. This crash course gives you the delivery loop, the principles that matter, and the trade-offs to name out loud.",
+  "kind": "LLD",
+  "problemSlug": "lld-crash-course-143-298",
+  "topic": "Low Level Design Crash Course",
+  "difficulty": "Easy",
+  "coverEmoji": "🧱",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "OOP",
+    "Design Principles"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "LLD Crash Course for Freshers, SDE-I, SDE-II, SSE-I, SSE-II",
+      "url": "https://www.youtube.com/watch?v=33o_j_00N-8",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Low Level Design from Basics to Advanced - YouTube",
+      "url": "https://www.youtube.com/playlist?list=PL6W8uoQQ2c61X_9e6Net0WdYZidm7zooW",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Low Level Design in a Hurry - Hello Interview",
+      "url": "https://www.hellointerview.com/learn/low-level-design/in-a-hurry/introduction",
+      "source": "hellointerview.com",
+      "kind": "article"
+    },
+    {
+      "title": "LLD Foundations: Trade-offs Thinking (how real design decisions are made)",
+      "url": "https://dev.to/saras_growth_space/lld-foundations-trade-offs-thinking-how-real-design-decisions-are-made-4jhm",
+      "source": "dev.to",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**LLD interviews do not test whether you know patterns. They test whether you can choose structure under pressure and defend the cost of that choice.** Every class, interface, and `if-else` is a bet on what will change next. If you cannot name what you optimized for and what you sacrificed, you fail — even if the code runs."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What LLD actually is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Low Level Design is the **transformation of ambiguous product requirements into a set of collaborating classes with clear ownership of state and behavior**. Input: a problem statement like *design a parking lot* with almost no detail. Output: working code where every entity has one reason to change, every interaction goes through an explicit contract, and extension does not require editing tested code. It is not High Level Design — there are no load balancers, databases, or availability zones here. It is not Data Structures and Algorithms either — `O(log n)` is irrelevant if your `Booking` object mutates seat state from five different places. The unit of reasoning is **responsibility**: who owns the invariant, who enforces it, and what breaks if that rule is violated. If two classes can both put the system into an illegal state, your design is already wrong."
+    },
+    {
+      "type": "paragraph",
+      "text": "The interviewer scores three things in 45 minutes, in this order: **can you clarify scope before coding, can you model the domain without torturing it into a pattern, and can you handle change.** Clarification means pinning down entities, operations, constraints, and scale in under five minutes. Modeling means nouns become classes only after you have verbs and invariants — a `ParkingSpot` is not interesting because it has an ID, it is interesting because only one `Vehicle` can occupy it at a time and that rule must live in exactly one place. Handling change means when the interviewer says *now add electric vehicle charging and dynamic pricing*, you add a new strategy or decorator instead of rewriting your core. Working code that collapses on the first follow-up is a reject. Slightly incomplete code with seams in the right places is a hire."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: the 45-minute delivery loop"
+    },
+    {
+      "type": "mermaid",
+      "title": "LLD delivery loop",
+      "caption": "Run this loop in order. Skipping clarification to write classes faster is how you fail.",
+      "code": "flowchart TD\n  A[Clarify scope: entities, ops, constraints] --> B[Model domain: invariants and lifecycles]\n  B --> C[Assign responsibilities: who owns what]\n  C --> D[Define contracts: interfaces and interactions]\n  D --> E[Handle change: extension points and concurrency]\n  E --> F[Walk through code with a use case]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The order is the design. You clarify first because **coding the wrong invariant perfectly is still zero points** — building a stateless `Ticket` when tickets need cancellation, refund, and expiry guarantees a rewrite. You model invariants before classes because behavior determines structure, not the reverse. If `Seat` can be `AVAILABLE`, `HELD`, `BOOKED`, and `BLOCKED`, that lifecycle forces a state machine or an explicit owner; starting from getters and setters hides it until it corrupts production. You define contracts before implementations because **dependencies should point at stability**. Concrete classes churn, interfaces that capture *what* is needed do not. That is why the loop ends with a walkthrough: execute *park vehicle -> issue ticket -> unpark and pay* verbally and watch where state can go illegal. The walkthrough finds the missing null check, the race, the leaked responsibility that diagrams never show."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Freeze scope in 5 minutes",
+          "text": "Ask: what entities exist, what operations are in scope, what is explicitly out of scope, and what are the hard constraints. Example: do we need multiple floors, vehicle types, and payment, or just allocation? WHY: unbounded scope guarantees an unfinished solution. Trade-off: you sacrifice completeness for depth, and that is correct."
+        },
+        {
+          "title": "Extract invariants and lifecycles",
+          "text": "List rules that must never break: one vehicle per spot, no double booking, payment before exit. Draw state transitions for the core entity. WHY: invariants decide ownership. If you skip this, business logic will scatter across controllers and services and become untestable."
+        },
+        {
+          "title": "Assign nouns to owners",
+          "text": "Turn verbs into methods on exactly one owner. `ParkingLot.assignSpot()` owns allocation, `Ticket.calculateFee()` owns pricing input, `PaymentProcessor` owns money movement. WHY: every duplicated owner is a future inconsistency bug. Trade-off: a slightly fatter owner today beats distributed logic you cannot reason about."
+        },
+        {
+          "title": "Program to interfaces for volatility",
+          "text": "Introduce an interface only where change is likely: `SpotAllocationStrategy`, `PricingStrategy`, `PaymentMethod`. Keep stable things concrete. WHY: premature abstraction is as expensive as no abstraction. Each interface costs indirection; spend it where requirements explicitly wobble."
+        },
+        {
+          "title": "Prove it with code and a trace",
+          "text": "Write compilable core classes, then trace one happy path and one failure path. Show thread-safety if concurrency was agreed. WHY: interviewers trust execution traces, not boxes and arrows. Trade-off: less boilerplate, more correct core paths."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Principles and patterns that actually matter"
+    },
+    {
+      "type": "paragraph",
+      "text": "You need a working subset, not a textbook. **SOLID is a debugging tool, not a religion.** Single Responsibility tells you when a class is doing two jobs and will therefore break for two unrelated reasons. Open-Closed tells you to add behavior by adding code, because editing tested allocation logic to add VIP spots is how regressions ship. Liskov, Interface Segregation, and Dependency Inversion together say one thing: depend on narrow, behavioral contracts so substitutes cannot surprise you. On top of that, modern production code strongly prefers **composition over inheritance** because inheritance shares everything including mistakes — a `Bike extends Vehicle extends Asset` hierarchy freezes taxonomies that business will change next quarter. Prefer embedding a `ParkingBehaviour` or `Pricer` over subclassing. Use inheritance only for true *is-a* with substitutable behavior, which in interviews is rare."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**SRP over cleverness:** one class owns spot state, another owns billing. Merging them saves a file and costs you every future change.",
+        "**OCP via Strategy, not switch:** pricing, allocation, and fees vary independently — put each behind a strategy interface so a new rule is a new class, not an `if-else` edit.",
+        "**Composition over inheritance:** `ElectricSpot HAS-A Pricer` survives new vehicle types; `ElectricSpot EXTENDS Spot EXTENDS Slot` does not. Trade-off: more wiring for far less coupling.",
+        "**Encapsulation as invariant guard:** make fields private and mutate only through methods that enforce rules. Public setters are just global variables with syntax.",
+        "**Dependency Injection for testability:** pass `PaymentGateway` into `Checkout`, do not `new` it inside. Trade-off: verbose construction buys you mocks and safe refactoring.",
+        "**Factory for creation complexity:** when object creation needs selection logic — which spot type, which ticket — centralize it. Do not sprinkle `new` across business code."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs behind the standard choices. Say these out loud.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Composition vs Inheritance",
+          "Flexibility at runtime, no fragile base class, easy to combine behaviours",
+          "More boilerplate and wiring; harder to discover at a glance"
+        ],
+        [
+          "Interface vs Concrete class",
+          "Substitutability, mocking, Open-Closed extension without edits",
+          "Indirection cost, interface explosion if you abstract stable things"
+        ],
+        [
+          "Strategy vs if-else chain",
+          "New variant without touching tested code, isolated testing",
+          "Class proliferation; overkill for two branches that never grow"
+        ],
+        [
+          "Synchronized method vs Concurrent map + fine lock",
+          "Coarse lock is obviously correct, fast to write",
+          "Throughput collapse under contention; fine locks risk deadlock if ordering slips"
+        ],
+        [
+          "Anemic model + Service vs Rich domain object",
+          "Services are easy to start, familiar to most teams",
+          "Logic leaks everywhere, invariants unenforced, shotgun edits on every change"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bad LLD does not crash on day one. It rots. The classic failure is **scattered ownership of mutable state**: `Controller`, `Service`, and `Helper` all flip `seat.status` directly because the field was exposed for convenience. For months it works. Then a hold-expiry job and a payment callback race, both see `HELD`, both transition to `BOOKED`, and you sell the same seat twice. The symptom in logs is duplicate bookings with no exception — every component behaved correctly in isolation. The second classic failure is **inheritance used for variation**: `PremiumParkingLot extends ParkingLot` overrides `calculateFee()` and accidentally bypasses validation in the base method. The symptom is a pricing bug that only reproduces for one subclass and survives every unit test of the base class. Both root causes are identical: the invariant had no single guardian. Trade-off ignored: short-term speed of public fields and quick subclasses versus long-term ability to reason about correctness. Production always collects that debt with interest."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Double booking / double allocation:** two threads acquire the same spot. Symptom: same `spotId` on two active tickets. Cause: check-then-act without atomicity.",
+        "**Lost update on payment:** exit gate reads stale fee while pricing updates. Symptom: revenue leakage, `paid < expected` with no error. Cause: mutable ticket shared without synchronization.",
+        "**God service:** one `ParkingService` with 40 methods. Symptom: every feature touches the same file, merge conflicts and regressions spike. Cause: SRP violation.",
+        "**Pattern bloat:** AbstractFactoryFactory for three types. Symptom: new hires cannot trace a request in under an hour. Cause: abstraction without volatility — you paid indirection for no change."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code: what good looks like"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ParkingLot.java",
+      "code": "interface SpotAllocationStrategy {\n    ParkingSpot select(List<ParkingSpot> free, Vehicle v);\n}\n\nfinal class Vehicle {\n    final String plate; final VehicleType type;\n    Vehicle(String plate, VehicleType type) { this.plate = plate; this.type = type; }\n}\n\nfinal class ParkingSpot {\n    private final String id; private final SpotType type;\n    private Vehicle occupant; // null == free; guarded by lot lock\n    ParkingSpot(String id, SpotType type) { this.id = id; this.type = type; }\n    boolean isFree() { return occupant == null; }\n    void park(Vehicle v) {\n        if (occupant != null) throw new IllegalStateException(\"occupied: \" + id);\n        occupant = v;\n    }\n    void vacate() { occupant = null; }\n}\n\nclass ParkingLot {\n    private final Map<String, ParkingSpot> spots = new ConcurrentHashMap<>();\n    private final SpotAllocationStrategy strategy;\n    ParkingLot(SpotAllocationStrategy s) { this.strategy = s; } // DI: WHY testable\n    public synchronized Ticket park(Vehicle v) {\n        List<ParkingSpot> free = spots.values().stream()\n            .filter(ParkingSpot::isFree).filter(s -> s.supports(v)).toList();\n        ParkingSpot chosen = strategy.select(free, v); // OCP: new rule = new class\n        if (chosen == null) throw new IllegalStateException(\"full\");\n        chosen.park(v); // invariant enforced inside Spot, nowhere else\n        return new Ticket(chosen.getId(), v, System.currentTimeMillis());\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet passes because **every decision has an owner and a seam**. `ParkingSpot.park()` is the sole guardian of *occupied* — no caller can set the field directly, so double-park throws instead of corrupting silently. WHY `synchronized` on `park()`: correctness first. A coarse lock makes check-then-act atomic and is trivially reviewable in an interview. Trade-off stated openly: throughput under heavy contention will suffer, and the explicit next step is striped locks per floor or atomic compare-and-set on the spot, with lock ordering to avoid deadlock. WHY Strategy injected via constructor: allocation policy is the most volatile requirement — nearest entry today, EV-proximity tomorrow — so extension means adding a class, not editing allocation. WHY not an inheritance tree for spot types: a `supports(v)` predicate composes across dimensions like size and power without combinatorial subclasses. That is the difference between code that runs and design that survives."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "0-5 min: Clarify and bound",
+          "text": "State assumptions and write functional vs non-functional scope. Interviewers eliminate here if you jump to classes. Say: in scope is entry, allocation, exit billing; out of scope is multi-site sync and real payment settlement."
+        },
+        {
+          "title": "5-15 min: Domain model on whiteboard",
+          "text": "Name 4-6 core classes, their fields, and one-line responsibilities. Draw only relationships that carry behavior: Lot HAS spots, Ticket REFERENCES spot and vehicle, Lot USES strategy. No UML ceremony."
+        },
+        {
+          "title": "15-30 min: Write the hot path",
+          "text": "Code `park()` and `unpark()/checkout()` with real invariant checks and error paths. Skip getters, DTOs, and database code. Interviewers read this section most closely — make state transitions explicit."
+        },
+        {
+          "title": "30-40 min: Survive the follow-up",
+          "text": "Expect one extension and one non-functional twist: add a vehicle type, add dynamic pricing, or make it thread-safe. The correct move is to point at the seam you already left and add a class, not to refactor the world live."
+        },
+        {
+          "title": "40-45 min: Test and trade-off aloud",
+          "text": "Trace concurrency, nulls, full-lot, and payment failure. Close by naming two trade-offs you made and what you would do with another hour. That closing sentence often decides the hiring signal."
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "What changes with level. Same problems, harsher grading on seams and concurrency.",
+      "headers": [
+        "Level",
+        "Expected to nail",
+        "Forgivable to defer"
+      ],
+      "rows": [
+        [
+          "Fresher (0-1 yrs)",
+          "Clean classes, encapsulation, working park/unpark flow with validation",
+          "Fine-grained locking, full pattern vocabulary"
+        ],
+        [
+          "SDE-I (1-3 yrs)",
+          "SRP + OCP in code, Strategy or Factory applied once where justified, basic thread-safety",
+          "Distributed concerns, expiry jobs, payment reconciliation"
+        ],
+        [
+          "SDE-II and above (4+ yrs)",
+          "Invariant ownership, extension without edits, lock granularity trade-off, testability story",
+          "Nothing structural — vague ownership or scattered logic is a fail"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that kill you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**More patterns equals better design:** No. Each pattern is bought with indirection. Using Singleton, Factory, Observer, and Decorator in a parking lot signals you memorized a catalog, not that you can judge volatility. One well-placed Strategy beats four decorative patterns.",
+        "**UML completeness matters:** It does not. Interviewers cannot execute diagrams. A box diagram with no compilable hot path is a fail; a minimal diagram plus correct `park()` and `checkout()` with invariant checks is a pass.",
+        "**Inheritance models real-world taxonomy:** The real world is not stable. `Car extends Vehicle` breaks the day you need `ElectricCar` that is also `SubscriptionVehicle`. Model behavior with composition; reserve inheritance for substitutable contracts verified by Liskov.",
+        "**Thread-safety means sprinkling synchronized:** Random locks create deadlocks and false confidence. Safety means identifying the critical section — check-plus-allocate — and making it atomic, then stating the throughput cost and the finer-grained alternative.",
+        "**Edge cases can wait until the end:** They are the design. Full lot, duplicate entry, payment failure, and concurrent checkout decide where exceptions live and who rolls back state. Deferring them guarantees a redesign in the last ten minutes."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Apply the tool only where volatility or correctness demands it.",
+      "headers": [
+        "Technique",
+        "Use when",
+        "Avoid when"
+      ],
+      "rows": [
+        [
+          "Rich domain object with encapsulated state",
+          "An invariant must never break: occupancy, booking, balance",
+          "Pure data transfer or display-only view — a DTO with behavior is noise"
+        ],
+        [
+          "Strategy interface",
+          "Rule varies by type or time: pricing, allocation, fee calculation",
+          "Only two stable branches — an `if` is cheaper than three new files"
+        ],
+        [
+          "Factory",
+          "Creation needs choice or assembly: spot selection, ticket issuance",
+          "Trivial `new` with no branching — centralizing it adds indirection for nothing"
+        ],
+        [
+          "Observer / Events",
+          "Multiple independent reactions to one fact: notify display, billing, analytics on exit",
+          "Single synchronous side effect — direct call is clearer and easier to debug"
+        ],
+        [
+          "Fine-grained locking / concurrent structures",
+          "Measured contention on hot spots after a correct coarse solution exists",
+          "Interview core path — start coarse and correct, then name the scaling path"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The through-line for freshers through senior candidates is restraint. Juniors fail by writing too little structure — public fields, static helpers, and services that do everything. Intermediates fail in the opposite direction — interfaces for stable code, factories for single types, inheritance for every adjective. The senior signal is **proportional design**: narrow interfaces exactly where requirements admit change, concrete code everywhere else, invariants guarded in one place, and concurrency reasoned as atomicity plus stated cost. Practice by re-implementing the same problem — parking lot, elevator, locker — three times with different follow-ups, and each time force yourself to add the feature without editing the previous core. If you can do that, you understand LLD. If you have to rewrite, the seam was in the wrong place."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "How to practice this week",
+      "text": "Pick one problem. Timebox 45 minutes. Write scope, invariants, then code only `allocate` and `release` with tests for double-allocate and full-capacity. Then impose a follow-up — new vehicle type or concurrent entry — without editing the invariant owner. If your change touches the guardian class, study why the seam leaked."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **LLD is assigning each invariant to exactly one owner behind a narrow contract, so new behavior is added as new code and concurrent access stays atomic — and I will name the throughput and complexity cost of each seam.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:47:02.841Z",
+    "problems": []
+  }
+}

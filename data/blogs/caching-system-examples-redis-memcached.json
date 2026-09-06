@@ -1,0 +1,292 @@
+{
+  "slug": "caching-system-examples-redis-memcached",
+  "title": "Caching System Examples -> Redis / Memcached",
+  "summary": "Redis is a single-threaded data-structure server you can use as a cache. Memcached is a multi-threaded string-only cache and nothing else. Pick based on that, not benchmarks.",
+  "kind": "HLD",
+  "problemSlug": "caching-system-examples-redis-memcached-95-187",
+  "topic": "Caching Mechanisms",
+  "difficulty": "Medium",
+  "coverEmoji": "⚡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Caching Mechanisms",
+    "Redis",
+    "Memcached"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "The 3 Caching Tools That Power Modern Backend Systems (Redis ...",
+      "url": "https://designgurus.substack.com/p/redis-vs-memcached-vs-keydb-the-2026",
+      "source": "designgurus.substack.com",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding distributed caching for fast apps - Redis",
+      "url": "https://redis.io/glossary/distributed-caching/",
+      "source": "redis.io",
+      "kind": "article"
+    },
+    {
+      "title": "Fast caching solutions with Redis",
+      "url": "https://redis.io/solutions/caching/",
+      "source": "redis.io",
+      "kind": "article"
+    },
+    {
+      "title": "Redis vs. Memcached WordPress: Which Caching System is Better?",
+      "url": "https://www.cloudpanel.io/blog/redis-vs-memcached-wordpress/",
+      "source": "cloudpanel.io",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Redis and Memcached solve the same read problem in opposite ways: **Redis gives you computation near the cache at the cost of operational complexity. Memcached gives you dumb, predictable, horizontally scalable bytes at the cost of doing all intelligence in your application.** If you need more than `get` / `set` with a TTL, you have already chosen Redis."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "An in-memory cache is a lossy, TTL-bound copy of data whose source of truth lives elsewhere — usually a database or an upstream service. On read you check RAM first. On a **hit** you return in sub-millisecond time and shed load from the database. On a **miss** you fetch from source, store a copy with an expiry, and return. The trade-off is foundational: you buy lower `p99` latency and higher throughput with **staleness, extra invalidation logic, and a new failure mode** when the cache is empty, full, or partitioned from you."
+    },
+    {
+      "type": "paragraph",
+      "text": "Redis is a single-threaded, event-looped in-memory data-structure server. It stores strings, hashes, lists, sets, sorted sets, streams, bitmaps, and HyperLogLogs, and it can execute atomic server-side logic with Lua or transactions. It optionally persists via `RDB` snapshots or an append-only file, supports replication and sharding via Cluster or Sentinel, and enforces per-key TTLs plus configurable eviction. The trade-off: that richness makes single-key operations simple to reason about — no lock races on a command — but makes clustering, failover, and memory tuning your problem."
+    },
+    {
+      "type": "paragraph",
+      "text": "Memcached is a multi-threaded, shared-nothing, string-only cache. The API is effectively `get`, `set`, `add`, `cas`, `incr`, `delete` with a TTL, plus consistent-hash sharding done entirely on the client. Memory is managed by a slab allocator that buckets objects by size class to avoid fragmentation. There is no persistence, no replication, no server-side data structures, no failover. The trade-off: you get linear thread scaling for simple `get` / `set` workloads and trivial horizontal growth by adding nodes, but **every miss, every list, every leaderboard, every lock must be rebuilt in application code**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "In interviews and in production you will use **cache-aside (lazy load)** 95% of the time, regardless of tool. The application owns both the database and the cache. Reads are lazy: try cache, fall through to DB on miss. Writes invalidate or overwrite the cache entry, they do not write through it. Why this shape wins: it only caches what is actually read, so working-set memory stays bounded, and a cache crash never blocks writes. The trade-off is the first reader after an invalidation pays a miss, and concurrent misses can stampede the database unless you add request coalescing or jittered TTLs."
+    },
+    {
+      "type": "mermaid",
+      "title": "Cache-aside read and invalidate-write path",
+      "caption": "Lazy load on read, invalidate on write. The database remains the source of truth.",
+      "code": "flowchart TD\n  Client[Application Request] --> Lookup{Cache Lookup}\n  Lookup -->|Hit| Return[Return Bytes]\n  Lookup -->|Miss| DB[Read Database]\n  DB --> Fill[SET with TTL + Jitter]\n  Fill --> Return\n  Write[Application Write] --> DBW[Write Database]\n  DBW --> Inv[DEL / Invalidate Key]\n  Inv --> Ack[Acknowledge Write]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Writes are where Redis and Memcached diverge. With Memcached a write is `delete(key)` after the DB commit, then lazy refill on next read. It is simple and avoids stale data, but it guarantees a miss spike after every hot-key update. With Redis you have options: `DEL` for correctness, `SET` with new value for hot keys to avoid the refill penalty, `HSET` to patch one field of a hash without rewriting a whole object, or a Lua script to compare-and-set atomically. The trade-off: **Redis lets you hide the miss penalty by pushing write logic into the server, but every such shortcut couples your correctness to eviction and expiry semantics you must now get right.**"
+    },
+    {
+      "type": "paragraph",
+      "text": "Expiry and eviction are not the same thing. Expiry is per-key TTL you set — `SET key value EX 300` — and the key dies on its own. Eviction is what happens when RAM is full: Redis picks victims by policy (`noeviction`, `allkeys-lru`, `volatile-lru`, `volatile-ttl`, `allkeys-lfu`), Memcached picks by slab-LRU within a size class. You must set both deliberately. No TTL means stale data lives until eviction. `noeviction` with a full cache means writes start failing. The trade-off: aggressive TTLs bound staleness but inflate miss rate and database load; lenient TTLs do the reverse."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Redis vs Memcached on the dimensions interviewers actually probe.",
+      "headers": [
+        "Dimension",
+        "Redis",
+        "Memcached"
+      ],
+      "rows": [
+        [
+          "Threading model",
+          "Single-threaded command execution + background I/O threads. Predictable tail latency, caps at ~1 core for commands.",
+          "Multi-threaded. Scales GET/SET throughput with cores. Better raw ops/sec for small string workloads."
+        ],
+        [
+          "Data model",
+          "Strings, hashes, lists, sets, sorted sets, streams, bitmaps. Server-side atomic ops.",
+          "Opaque byte strings only. Any structure is serialized client-side."
+        ],
+        [
+          "Memory management",
+          "jemalloc + eviction policy you choose. Flexible but easy to misconfigure; fragmentation is visible.",
+          "Slab allocator + per-slab LRU. Predictable, low fragmentation, but a size class can evict while other memory sits idle."
+        ],
+        [
+          "Persistence / HA",
+          "RDB + AOF, async replicas, Sentinel failover, Cluster sharding. Survivable but operationally heavy.",
+          "None. Node loss = cold miss storm. Clients must handle it with hashing and refill."
+        ],
+        [
+          "Scaling",
+          "Cluster resharding with hash slots. Stateful, needs orchestration.",
+          "Client-side consistent hashing. Add node, lose ~1/N keys. Stateless servers."
+        ],
+        [
+          "Operations",
+          "Lua, transactions, pub/sub, blocking pops, rate-limit primitives. Fewer app round trips.",
+          "CAS + incr/decr only. All coordination logic lives in your code."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The threading choice is the most misunderstood trade-off. Redis stays single-threaded for commands because it makes **atomicity free**: `INCR`, `LPUSH`, `ZADD`, or a Lua script executes without interleaving, so rate limiters and queues do not need external locks. The cost is vertical scaling — one hot shard saturates one core while others idle, and a slow `KEYS *` or large `ZRANGE` blocks everyone. Memcached spreads connections across threads, so 32 cores serve 32x small gets cleanly. The cost is no useful server-side atomicity beyond `CAS` retry loops, so you push contention back to the client and the network."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is **thundering herd on a hot key expiry**. A popular key with `TTL 60s` expires. Ten thousand concurrent requests miss at once, all hit the database, database connection pool saturates, latency spikes from 5ms to 5s, health checks fail, autoscaler adds app nodes which add more database pressure. You see it as a periodic latency sawtooth aligned exactly to TTL boundaries, plus a database CPU cliff. Memcached makes this more likely because you cannot easily recompute inside the server. Redis lets you mitigate with `SET NX` locks, Lua-based singleflight, or probabilistic early refresh — at the cost of more code paths to test."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Hot key / hot shard:** one key gets 30% of traffic. Symptom: one Redis shard at 100% CPU while others idle, p99 climbs but average looks fine. Fix is key splitting (`key:{1..N}`), local in-process cache in front, or replication for reads.",
+        "**Slab imbalance in Memcached:** 1KB objects evict furiously while 1MB slabs sit half empty. Symptom: high evictions + low overall memory use + elevated miss rate. Fix is re-tuning growth factor or separating pools by object size.",
+        "**Stampede after cold restart:** cache fleet restarts empty. Symptom: database overload within seconds of deploy. Fix is staged rollout, warmed replicas, or fallback to stale-while-revalidate.",
+        "**Inconsistent invalidation:** write updates DB but `DEL` fails or races with a concurrent read refill. Symptom: users see resurrected stale values intermittently. Fix is delete-after-commit, versioned keys, or short TTL as a correctness backstop.",
+        "**Eviction as correctness bug:** using cache as a queue or session store with `allkeys-lru`. Symptom: sessions or jobs silently vanish under memory pressure. If loss is unacceptable, that data was never cache — move it to persistent storage."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Eviction is not deletion you control",
+      "text": "If `MEMORY USAGE` is near `maxmemory` and you see `evicted_keys` climbing, the cache is choosing what to drop. Any business logic that assumes a key survives — sessions, carts, idempotency tokens — is now broken. **Set `maxmemory-policy` explicitly and alert on evictions. Defaults will betray you.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code and config where it clarifies"
+    },
+    {
+      "type": "paragraph",
+      "text": "Correct cache code does three things the naive version skips: jittered TTL to de-synchronise expiries, delete-after-write for correctness, and coalescing or stale fallback to survive a miss storm. The trade-off is a few more lines per access path in exchange for eliminating the periodic database cliff. Do this once in a helper, not inline at every call site."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cache_aside.py",
+      "code": "import random, time\nimport redis\n\nr = redis.Redis(decode_responses=True)\nBASE_TTL = 300  # seconds\n\ndef get_user_profile(user_id: str):\n    key = f\"user:{user_id}:v2\"  # versioned key: deploy-safe invalidation\n    hit = r.get(key)\n    if hit is not None:\n        return hit\n    # Miss: singleflight with SET NX to avoid herd.\n    # Trade-off: one waiter computes, others use stale or wait briefly.\n    lock_key = key + \":lock\"\n    if r.set(lock_key, \"1\", nx=True, ex=5):\n        try:\n            row = load_from_db(user_id)  # source of truth\n            ttl = BASE_TTL + random.randint(-30, 30)  # jitter breaks expiry alignment\n            r.set(key, row, ex=ttl)\n            return row\n        finally:\n            r.delete(lock_key)\n    else:\n        time.sleep(0.05)\n        return r.get(key)  # may be None -> caller falls back to DB\n\ndef update_user_profile(user_id: str, row: str):\n    write_to_db(user_id, row)\n    # Delete AFTER commit. Trade-off: one extra miss vs. serving stale forever.\n    r.delete(f\"user:{user_id}:v2\")"
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "filename": "redis-cache.conf",
+      "code": "# Cache-only Redis: bound memory, evict cold keys, expire lazily.\n# Trade-off: volatile-lru protects persistent keys, but requires TTLs everywhere.\nmaxmemory 8gb\nmaxmemory-policy volatile-lru\n# Active expiry tuning: higher effort = more CPU to reclaim expired keys promptly.\nlazyfree-lazy-expire yes\nlfu-decay-time 5\n# Memcached equivalent thinking: -m 8192 -o slab_reassign,slab_automove\n# Trade-off: slab_reassign reduces imbalance but moves memory under load."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with placement and pattern",
+          "text": "Draw client -> cache -> DB. State cache-aside with TTL. Say why not write-through: you do not want every write paying cache cost for data that may never be read. Name the trade-off: lazy fill saves memory but guarantees miss latency on first read."
+        },
+        {
+          "title": "Choose the tool with a reason",
+          "text": "Say Memcached if the workload is string `get` / `set`, read-heavy, shardable, and loss-tolerant. Say Redis if you need hashes to avoid read-modify-write, sorted sets for leaderboards, lists for queues, or Lua for atomic check-and-set. Never say both are the same."
+        },
+        {
+          "title": "Handle the follow-ups before they ask",
+          "text": "Address stampede (jitter + singleflight), hot keys (replication or key splitting + local L1), invalidation race (versioned keys, delete-after-commit), and eviction policy (volatile-lru vs allkeys-lru). Each mitigation gets one sentence on what it costs."
+        },
+        {
+          "title": "Quantify memory and hit rate",
+          "text": "Estimate: 10M profiles x 2KB = 20GB + overhead. Shard by hash. State target hit rate (e.g., 90%+) and what you alert on: miss rate, evictions, p99 cache latency, DB connections during expiry windows."
+        },
+        {
+          "title": "Close with failure behavior",
+          "text": "State what happens when cache is down: degrade to DB with concurrency limits and circuit breaker, serve stale if allowed, never fail the write path because the cache failed. Loss of cache must be a latency event, not an outage."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Redis is faster than Memcached, always.** Wrong axis. Memcached often wins raw `GET` throughput per core on small strings because of threading. Redis wins when one server-side operation replaces five round trips.",
+        "**Cache persistence means durability.** `AOF` and `RDB` narrow the cold-restart window; they do not make Redis a database. Async replication still loses writes on failover. If you cannot recompute it, do not cache it — store it.",
+        "**More memory fixes a low hit rate.** Only if the working set fits and TTLs are sane. Unbounded cardinality keys, per-user keys with no reuse, or 10s TTLs will miss regardless of RAM. Fix key design first.",
+        "**Consistent hashing means no misses on scale-out.** Adding a Memcached node still remaps ~1/N keys. Plan for a controlled miss spike or use versioned keys and warm-up.",
+        "**Single-threaded means single-core machine.** Redis uses background threads for I/O, TLS, and persistence. The command pipeline is single-threaded — that is what gives you atomicity and what caps hot-shard throughput.",
+        "**TTL eliminates staleness.** TTL bounds it. Between write and expiry you serve stale unless you invalidate. Pick TTL as a correctness backstop, not the correctness mechanism."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The versioned-key trick",
+      "text": "Instead of `DEL` racing with refills, bump the version: `user:42:v3`. Old keys age out naturally. It costs memory for two versions briefly, but it **eliminates the delete-vs-refill race that causes ghost stale reads** — the bug most candidates cannot explain."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Decision table: match the workload shape, not hype.",
+      "headers": [
+        "Use it when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Read-heavy, skewed access: 20% of keys serve 80% of reads — session reads, product pages, config flags.",
+          "Write-heavy with no read reuse: every key written once and read once — caching adds latency with zero hit rate."
+        ],
+        [
+          "Redis hashes for objects you patch by field, sorted sets for rankings, lists/streams for queues.",
+          "You only need string get/set at massive scale and want minimal ops — Memcached shards with less to break."
+        ],
+        [
+          "You can tolerate seconds of staleness and have a clear invalidation owner per key.",
+          "Strong consistency required on every read — use versioned reads from source or consensus, not TTL hope."
+        ],
+        [
+          "Miss storms are bounded by singleflight, jitter, and DB concurrency limits.",
+          "Hot keys exceed single-shard CPU — add local L1 cache or split keys before blaming the tool."
+        ],
+        [
+          "Session or rate-limit state where occasional loss is acceptable and TTL is the cleanup.",
+          "Loss is a correctness violation: money, inventory, idempotency — put that in persistent storage."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Default heuristic I defend in reviews: start with Memcached semantics — plain keys, TTL, invalidate on write — even if you deploy Redis. Only adopt hashes, Lua, or persistence when a measured round-trip or correctness problem forces you. The trade-off is explicit: every Redis feature you enable buys fewer network hops or richer semantics and sells operational simplicity. Most outages I have debugged came from paying that price before they needed the feature."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Use **Memcached for simple, multi-threaded, loss-tolerant string caching you shard client-side; use Redis when you need server-side data structures and atomicity** — and treat TTL as a staleness bound, not an invalidation strategy."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:38:31.379Z",
+    "problems": []
+  }
+}

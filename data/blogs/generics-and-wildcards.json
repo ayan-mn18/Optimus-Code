@@ -1,0 +1,291 @@
+{
+  "slug": "generics-and-wildcards",
+  "title": "Generics and Wildcards",
+  "summary": "Generics are invariant, wildcards recover controlled variance. Master PECS, erasure, and when to use a type parameter vs a wildcard.",
+  "kind": "LLD",
+  "problemSlug": "generics-and-wildcards-29-65",
+  "topic": "Object oriented Programming (OOPS)",
+  "difficulty": "Medium",
+  "coverEmoji": "🧬",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "OOPS",
+    "Generics",
+    "Java"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Wildcards in Java - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/java/wildcards-in-java/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "java - When to use generic methods and when to use wild-card?",
+      "url": "https://stackoverflow.com/questions/18176594/when-to-use-generic-methods-and-when-to-use-wild-card",
+      "source": "stackoverflow.com",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding Java Generics and Wildcards | by Youssef Hassan",
+      "url": "https://medium.com/@Developer_YoussefHassan/understanding-java-generics-and-wildcards-f0ef3c1e5647",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "When to use wildcards in Java Generics? - Stack Overflow",
+      "url": "https://stackoverflow.com/questions/16707340/when-to-use-wildcards-in-java-generics",
+      "source": "stackoverflow.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**`List<Integer>` is not a `List<Number>`.** Generics are invariant by default. Wildcards are the *only* controlled way to get covariance and contravariance back. Memorise this: **`? extends T` gives you values out, `? super T` lets you push values in.** Everything else is commentary."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Generics are compile-time-checked parametric polymorphism. You parameterise a class, interface, or method with a type like `Box<T>` or `<T> T max(Collection<T> c)`, the compiler proves every put and get is consistent, then it erases `T` to `Object` or its bound. At runtime there is exactly one `ArrayList` class. That is the whole bargain: you get static safety with zero runtime representation, and you pay with erasure, invariant subtyping, and miserable error messages. A `List<Integer>` and a `List<String>` are the same class at runtime but incompatible types at compile time, deliberately."
+    },
+    {
+      "type": "paragraph",
+      "text": "Wildcards are anonymous type arguments for when you do not need a name. `?` means *some specific but unknown type*. `? extends Number` means *some unknown subtype of `Number`*. `? super Integer` means *some unknown supertype of `Integer`*. They do not add capability to the language — anything you can do with a wildcard you can do with a named type parameter. They subtract needless naming. Use a wildcard when the type is used only for flexible subtyping at one call site. Use a named `T` when two positions in a signature must refer to the *same* type. That distinction is the entire interview."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: invariance, erasure, and capture"
+    },
+    {
+      "type": "mermaid",
+      "title": "Why invariance forces wildcards",
+      "caption": "Integer is a Number, but List<Integer> is not a List<Number>. Wildcards create a bounded family that both can belong to.",
+      "code": "graph TD\n  Int[Integer] --> Num[Number]\n  Dbl[Double] --> Num\n  LInt[List Integer] --> LExt[List extends Number]\n  LDbl[List Double] --> LExt\n  LNum[List Number] --> LExt\n  LInt -.no.-> LNum\n  LDbl -.no.-> LNum"
+    },
+    {
+      "type": "paragraph",
+      "text": "Java arrays are covariant and unsound: you can assign an `Integer[]` to a `Number[]`, then get an `ArrayStoreException` at runtime when you store a `Double`. Generics fixed that mistake by making `List<Integer>` and `List<Number>` unrelated types. Nothing flows between them without a wildcard. `List<? extends Number>` is not a supertype in the naive sense — it is a family of types, and the compiler treats the `?` as a fresh capture variable per use. That is why you can read a `Number` out of it but cannot safely put an `Integer` in: the compiler does not know which member of the family you actually have. `List<Integer>` could be hiding behind that reference, and a `Double` write would corrupt it. The trade-off is explicit: **safety demands you give up either reads or writes, never both.** Erasure is the second half. Because `T` disappears at runtime, you cannot do `new T()`, `instanceof T`, or `new T[10]`. The compiler inserts casts and bridge methods to preserve the illusion, and that illusion leaks the moment you mix raw types, reflection, or varargs."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Invariance.java",
+      "code": "List<Integer> ints = List.of(1, 2, 3);\n// List<Number> nums = ints; // COMPILE ERROR: invariant\nList<? extends Number> nums = ints; // OK: covariant read-only view\nNumber n = nums.get(0); // OK: every member is a Number\n// nums.add(42); // COMPILE ERROR: might be List<Double>\n\nList<Object> objs = new ArrayList<>();\nList<? super Integer> sink = objs; // OK: contravariant write-only view\nsink.add(42); // OK: 42 is an Integer, fits any supertype bucket\n// Integer x = sink.get(0); // COMPILE ERROR: only know it is Object"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every wildcard buys flexibility by selling something else.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay",
+        "Trade-off"
+      ],
+      "rows": [
+        [
+          "`List<T>` exact match",
+          "Full read and write with precise type",
+          "Accepts only one concrete instantiation; `addAll` becomes useless",
+          "Precision vs reusability: exact types are correct but too narrow for APIs"
+        ],
+        [
+          "`? extends T` producer",
+          "Accepts `List<Integer>`, `List<Double>` wherever `List<T>` is expected",
+          "Becomes effectively read-only; `add(null)` is all you can write",
+          "Covariance vs mutability: you trade write access for subtype acceptance"
+        ],
+        [
+          "`? super T` consumer",
+          "Accepts `List<Number>`, `List<Object>` as a sink for `T` values",
+          "Reads degrade to `Object`; you lose return-type information",
+          "Contravariance vs readability: you trade read precision for write acceptance"
+        ],
+        [
+          "Named `<T>` method",
+          "Can relate argument to argument and to return type, e.g. `<T> T pick(List<T>)`",
+          "Extra type variable, harder signature, inference can fail cryptically",
+          "Expressiveness vs complexity: name a type only when two positions must match"
+        ],
+        [
+          "Unbounded `<?>`",
+          "Maximum acceptance: works for `containsAll`, `size`, `clear`",
+          "No reads beyond `Object`, no writes at all",
+          "Generality vs utility: use only when you touch structure, not elements"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The working rule is PECS — Producer Extends, Consumer Super — but understand *why* it holds. If a method only pulls values out of a collection to do work, that collection is a producer and should be `? extends T`, because you want the widest set of callers and you never need to write. If a method only pushes values in, it is a consumer and should be `? super T`, because you want the widest set of sinks and you never need a precise read. If it does both, you need an exact `T` or two coordinated type variables, and wildcards are the wrong tool. The opinionated part: most production generics code is over-wildcarded. A simple `<T>` signature that is slightly narrower beats a clever `? super ? extends` signature nobody can call without a cast. Choose the weakest wildcard that compiles your real call sites, not the most general one that type-checks in theory."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Generics fail at boundaries where compile-time information is gone: raw-type legacy code, reflection, deserialisation, and arrays. The compiler warns about unchecked casts, teams suppress the warning, and heap pollution follows — a `List<String>` reference pointing at memory that actually holds an `Integer`. Nothing explodes until far away, when a hidden compiler-inserted cast fires and you get a `ClassCastException` on a line with no visible cast. The second classic failure is `? extends` in a mutable API. Someone exposes `List<? extends Employee>` as a field or setter, then every downstream `add` stops compiling and engineers route around it with raw types or `Object` casts, destroying the safety the wildcard was meant to provide. The third is generic varargs like `<T> void of(T... items)` silently creating a `Object[]` that aliases a `String[]`, which corrupts on the next write."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`ClassCastException` with no cast in source: symptom of heap pollution from an unchecked cast, raw-type assignment, or deserialised `List` that lied about its element type. Look for `@SuppressWarnings(\"unchecked\")` upstream.",
+        "`UnsupportedOperationException`-style compile wall: `add` rejected on a `? extends T` collection. Symptom that you used covariance where you needed invariance. Fix is to change the API to an exact `List<T>` or a `? super T` sink.",
+        "`ArrayStoreException` vs compile error confusion: arrays fail at runtime, generics fail at compile time. If you see code converting `List<T>` to `T[]` via `(T[]) new Object[n]`, expect a `ClassCastException` at the call site.",
+        "`incompatible types: List<Integer> cannot be converted to List<Number>` in a method that only reads: symptom of missing `? extends`. Fix the parameter, not the call site.",
+        "`capture of ?` errors when copying between two wildcards: symptom that you need a private generic helper to give the wildcard a name so read and write can be correlated."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Never suppress and walk away",
+      "text": "Every `@SuppressWarnings(\"unchecked\")` is a loan against a future `ClassCastException`. If you must write one, isolate it in a tiny verified factory method that defensively copies, and document the invariant the compiler cannot check. The trade-off is localised risk versus distributed corruption."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes it concrete"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Pecs.java",
+      "code": "final class Transfers {\n  // Producer: src only gives values out -> extends.\n  // Consumer: dst only takes values in -> super.\n  static <T> void copy(List<? super T> dst, List<? extends T> src) {\n    for (T t : src) dst.add(t); // T is the bridge: read as T, write as T\n  }\n}\n\n// Exact type: read AND write the same list -> no wildcard.\nstatic <T> void swap(List<T> list, int i, int j) {\n  T tmp = list.get(i);\n  list.set(i, list.get(j));\n  list.set(j, tmp);\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "WildcardVsTypeParam.java",
+      "code": "// Wildcard: T appears once, only for subtyping flexibility. Preferred.\nboolean containsAll(Collection<?> other);\nvoid addAll(Collection<? extends E> src);\n\n// Named param: T relates two positions. Wildcard cannot express this.\nstatic <T> T pickFirst(List<T> list, T fallback) {\n  return list.isEmpty() ? fallback : list.get(0);\n}\n// Anti-pattern: naming a variable you use once.\n// <T extends E> void addAll(Collection<T> src) // works, but noisy\n\n// Capture helper: public wildcard API, private generic implementation.\nstatic void reverse(List<?> list) { reverseHelper(list); }\nprivate static <T> void reverseHelper(List<T> list) {\n  // Now T has a name, so get and set can correlate.\n  for (int i = 0, j = list.size() - 1; i < j; i++, j--)\n    swap(list, i, j);\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the two examples as a decision procedure. `copy` needs to accept a `List<Integer>` source into a `List<Number>` destination, so both parameters must be wildcarded in opposite directions, and the `<T>` exists only to tie the element read from `src` to the element written to `dst`. Without that bridge the compiler cannot prove the transfer is sound. `swap` and `pickFirst` need exact `List<T>` because they both read and write the same structure — any wildcard there either blocks the write or degrades the return type to `Object`. The `reverse` idiom is the professional move: expose `List<?>` because callers should be able to reverse any list, then immediately delegate to a private `<T>` helper that captures the wildcard so the body can call `get` and `set` with the same `T`. The trade-off you are managing is API generosity versus implementation precision, and the helper lets you have both."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Why does this not compile?",
+          "text": "You will be shown `List<Number> ns = new ArrayList<Integer>()` or an `add` into a `List<? extends Number>`. Say *invariance* in the first sentence, then explain the corruption it prevents: if the assignment were allowed, `ns.add(3.5)` would put a `Double` into an `Integer` list. Interviewers fail candidates who recite PECS without stating the counter-example."
+        },
+        {
+          "title": "Design addAll / copy",
+          "text": "You will be asked to type `void addAll` or `copy(dest, src)`. Write `Collection<? extends E>` for the source and `List<? super T>` for the destination without hesitation, then justify each with producer vs consumer. The follow-up is why not `<S extends T>`: answer that the extra name adds nothing when the type appears once."
+        },
+        {
+          "title": "Wildcard vs generic method",
+          "text": "You will be asked when `<T> void take(List<T>)` differs from `void take(List<?>)` or `<T extends Animal> void take(List<T>)` versus `void take(List<? extends Animal>)`. Answer: they accept the same calls, but only the named `T` lets you relate the argument to another argument or the return type, or to write into the same list inside the body."
+        },
+        {
+          "title": "The capture question",
+          "text": "You will be asked to implement `reverse(List<?>)` or `swap` on a wildcarded list and hit a capture error. The expected move is the private `<T>` helper. Naming this pattern — *capture helper* — signals senior-level familiarity."
+        },
+        {
+          "title": "The erasure question",
+          "text": "You will be asked why you cannot do `new T()`, `instanceof T`, or overload `foo(List<String>)` and `foo(List<Integer>)`. Answer: one shared runtime class, casts inserted by the compiler, and overloads that collide after erasure. Offer the workarounds — `Class<T>` token, factory `Supplier<T>`, or distinct method names — and name their cost: an extra parameter or lost type information."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`List<Integer>` is a subtype of `List<Number>` — false, and the most common fail. Subtyping on the element does not lift to subtyping on the container. That is what `? extends` is for.",
+        "`? extends Number` means you can add any `Number` — backwards. You can add nothing (except `null`) because the list might be a `List<Integer>` in disguise. Extends is for reading.",
+        "`? super Integer` means you get `Integer`s out — backwards. You get `Object`s out, because the list might be a `List<Object>`. Super is for writing.",
+        "`<T>` is more powerful than `?` so always use `<T>` — wrong trade-off. A type variable you use once is noise that complicates inference. Wildcards express *intent*: no relationship to maintain.",
+        "`Generics exist at runtime` — false outside of narrow cases like `Class<T>` tokens or anonymous subclass tricks. Erasure means `List<String>.class` does not exist, and reflection cannot recover element types reliably.",
+        "`PECS` is a syntax rule — it is a consequence, not a rule. The real rule is: covariance forbids writes, contravariance degrades reads. PECS just tells you which sacrifice each use-site makes."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use wildcards at flexible boundaries, exact types where identity matters.",
+      "headers": [
+        "Situation",
+        "Use this",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Method only reads from a collection parameter",
+          "`List<? extends T>`",
+          "Maximises callers; compiler enforces read-only discipline for free"
+        ],
+        [
+          "Method only writes to a collection parameter",
+          "`List<? super T>`",
+          "Maximises sinks; you accept every list that can hold a `T`"
+        ],
+        [
+          "Return type or field",
+          "Exact `List<T>`, never a wildcard",
+          "Wildcards in returns force every caller to deal with `?`; you push complexity outward"
+        ],
+        [
+          "Type relates two params or param to return",
+          "Named `<T>`, e.g. `<T> T getOrDefault(List<T>, T)`",
+          "Only a name can assert *same* type in two places; wildcards cannot"
+        ],
+        [
+          "Class declaration",
+          "Named `T`, e.g. `Box<T>`, `Cache<K,V>`",
+          "The type must be referenced across methods and stored in fields; `?` cannot be stored"
+        ],
+        [
+          "Heterogeneous or truly unknown data",
+          "`<?>` plus a capture helper, or a `Class<T>` token",
+          "Unbounded wildcard for structure-only ops; token when you need runtime behaviour back"
+        ]
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "Generics are invariant with erased implementations, so use `? extends T` when you only read, `? super T` when you only write, and a named `<T>` only when two positions must be the same type."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:51:19.035Z",
+    "problems": []
+  }
+}

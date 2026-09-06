@@ -1,0 +1,413 @@
+{
+  "slug": "design-youtube",
+  "title": "Design Youtube",
+  "summary": "Design YouTube for VOD upload and global adaptive playback: resumable uploads, async transcode DAG, blob storage, CDN, and sharded counters.",
+  "kind": "HLD",
+  "problemSlug": "design-youtube-150-325",
+  "topic": "More Interview Problems",
+  "difficulty": "Medium",
+  "coverEmoji": "📺",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "hld",
+    "youtube",
+    "video-streaming",
+    "cdn"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Cracking the Machine Coding Round - Abhishek Deb - Medium",
+      "url": "https://abhishekdeb48.medium.com/all-about-machine-coding-round-8e56c866fe87",
+      "source": "abhishekdeb48.medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Frontend Machine Coding Interview ( Employee Database Management ...",
+      "url": "https://www.youtube.com/watch?v=ZrMO0bCGwFg",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is the interview process like at YouTube? - Quora",
+      "url": "https://www.quora.com/What-is-the-interview-process-like-at-YouTube",
+      "source": "quora.com",
+      "kind": "article"
+    },
+    {
+      "title": "My Google interview key learnings -Visual design— Offer get - Medium",
+      "url": "https://medium.com/design-bootcamp/my-google-interview-experience-visual-design-b6fd3d7c0837",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Machine Coding Round Web Developer Interview - YouTube",
+      "url": "https://www.youtube.com/watch?v=uACMeA81QaM",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Machine Coding Round: The Complete Frontend Guide (2026)",
+      "url": "https://www.greatfrontend.com/blog/machine-coding-round",
+      "source": "greatfrontend.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "YouTube is not a *video storage* question. It is a **write-once, read-millions throughput** question. The interviewer wants to see if you split the system into two planes with opposite physics: an **ingest plane** that is slow, heavy, and async, and a **playback plane** that is hot, cacheable, and latency-sensitive. If you try to serve both from the same database and same request path, you fail. Strong answers name the trade-off at every fork: durability vs latency, consistency vs countability, origin cost vs edge cost."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a video sharing service where creators upload large video files and viewers worldwide play them with fast startup and no rebuffering under variable networks. The system must store originals durably, produce multiple renditions for different devices and bandwidths, serve metadata and search, and track views, likes, and comments. Target scale is billions of videos and users, with upload throughput measured in petabytes per day and playback dominated by a small fraction of viral videos. Your design must survive upload retries, transcode failures, regional outages, and flash crowds without losing data or collapsing origin servers."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**In scope:** resumable upload, async transcoding to adaptive renditions, durable blob storage, metadata store, global playback via CDN, view/like/comment counters.",
+        "**Out of scope unless asked:** recommendation ranking model internals, live chat at millisecond latency, ad auction, full-text comment search, DRM license server internals.",
+        "**Must decide:** VOD only for the first 30 minutes. Live streaming changes ingest from files to segments and breaks your pipeline. State that you are doing VOD, then note what changes for live."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not start drawing boxes until you pin the workload. YouTube fails in specific places — upload size, playback latency, and counter hotspots — and the right structure depends on numbers the interviewer has in mind. Ask in this order and write the answers down."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "VOD, live, or both?",
+          "text": "Propose VOD first. Ask if live ingest, low-latency segments, and chat are required. Reason: live forces segment ingest, rolling transcode, and edge pub-sub instead of file DAG."
+        },
+        {
+          "title": "Scale and access pattern?",
+          "text": "Ask for daily uploads, average file size, daily views, read-to-write ratio, and retention. Reason: this sizes blob storage, transcode workers, and CDN offload. Typical anchor is 100:1 or higher read-to-write."
+        },
+        {
+          "title": "Playback contract?",
+          "text": "Ask for target startup time, devices, and adaptive protocol. Reason: this forces HLS or DASH with segmented renditions instead of progressive MP4, which is the single most important playback decision."
+        },
+        {
+          "title": "Consistency needs?",
+          "text": "Ask if view counts and likes need exactness or if eventual is acceptable. Reason: exact counting under viral load is impossible without sharding and background aggregation, so you need permission to be eventual."
+        },
+        {
+          "title": "Search and feed depth?",
+          "text": "Ask if title-prefix search and home feed are required in round one, or if video-by-ID plus channel listing is enough. Reason: full search adds an index pipeline and changes metadata flow."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Agreed scope before architecture.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Resumable multipart upload with idempotent completion",
+          "Uploads are gigabytes over bad networks; without resume you guarantee retries and duplicates"
+        ],
+        [
+          "Functional",
+          "Async transcode to 144p-4K renditions plus thumbnails and previews",
+          "One source cannot serve phones and TVs; transcode is heavy and must leave the request path"
+        ],
+        [
+          "Functional",
+          "Metadata ops: create, get by ID, list by channel, title search",
+          "Playback and discovery read metadata on every view; it must be fast and independently scalable"
+        ],
+        [
+          "Functional",
+          "Playback via adaptive manifests and segment CDN delivery",
+          "Adaptive switching is how you survive bandwidth variance without rebuffering"
+        ],
+        [
+          "Functional",
+          "Views, likes, comments, subscriptions",
+          "Counters and feeds are the hidden hotspots that kill naive relational designs"
+        ],
+        [
+          "Non-functional",
+          "11x9s durability for originals, 99.95% playback availability",
+          "Loss of an original is permanent; loss of a cached segment is just a refetch"
+        ],
+        [
+          "Non-functional",
+          "<2s startup p90 on cached content, origin offload >95%",
+          "Trade-off: edge storage cost vs origin egress and latency"
+        ],
+        [
+          "Non-functional",
+          "Scale to millions of concurrent viewers and viral spikes",
+          "Design for Zipf distribution: 1% of videos drive most traffic"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the naive monolith"
+    },
+    {
+      "type": "paragraph",
+      "text": "The obvious first sketch is one stateless app server backed by a relational database and a filesystem or single blob bucket. Client POSTs the whole MP4, the server transcodes inline with `ffmpeg`, writes rows for metadata and views, and serves `/videos/:id.mp4` directly to players. It works for a demo with a hundred videos because there is almost no concurrency, files fit on one disk, and every view hits the same machine that already has the bytes. It is also exactly what you should draw first — in 60 seconds — so you can demolish it with reasons and earn the real design."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Why the monolith collapses",
+      "text": "**Three fatal couplings.** First, **synchronous transcode**: a 2 GB upload holds a request thread for minutes, so thread pools exhaust and uploads time out. Trade-off ignored: request latency vs pipeline throughput. Second, **byte serving from origin**: every playback bytes from your app tier, so bandwidth cost explodes and tail latency follows the slowest disk. Third, **single-row counters**: `UPDATE videos SET views = views+1` serialises all viewers of a viral video onto one row lock. You get lock contention, dead tuples, and lost updates. Add unbounded MP4s with no renditions and mobile clients stall on every dip in bandwidth."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Split ingest from playback and make everything after upload asynchronous. The client talks to an edge load balancer and API gateway. Uploads go to an **Upload Service** that mints resumable sessions and writes chunks directly to durable blob storage via signed URLs — bytes never transit your app servers. Completion enqueues a **transcode DAG** onto a durable queue. Stateless transcode workers pull, produce HLS/DASH segments and manifests, thumbnails, and previews, then write only pointers to the metadata store. Playback never touches origin unless the CDN misses: players fetch manifests from edge, then segments from the CDN with origin shield behind it. Metadata reads go through cache; writes go through the primary store and invalidate asynchronously. View events go to a streaming pipeline, not to the metadata row. The trade-off you are buying everywhere is **complexity for isolation**: more moving parts, but a viral playback spike cannot starve uploads and a transcode backlog cannot block watches."
+    },
+    {
+      "type": "mermaid",
+      "title": "YouTube VOD architecture",
+      "caption": "Async ingest, CDN-heavy playback, and out-of-band counters.",
+      "code": "graph TD\n  Client[Client App] --> Edge[Edge LB + API Gateway]\n  Edge --> Upload[Upload Service]\n  Edge --> MetaAPI[Metadata API]\n  Edge --> PlayAPI[Playback API]\n  Upload --> BlobRaw[Raw Blob Store]\n  Upload --> Queue[Transcode Queue]\n  Queue --> Workers[Transcode Workers]\n  Workers --> BlobRend[Rendition Blob Store]\n  Workers --> MetaDB[(Metadata DB)]\n  Workers --> SearchIdx[Search Index]\n  PlayAPI --> Cache[Manifest + Metadata Cache]\n  Cache --> MetaDB\n  PlayAPI --> CDN[Global CDN]\n  CDN --> Shield[Origin Shield]\n  Shield --> BlobRend\n  Client --> CDN\n  Client --> EventIngest[View Event Ingest]\n  EventIngest --> StreamProc[Stream Aggregator]\n  StreamProc --> CounterStore[(Sharded Counters)]\n  StreamProc --> MetaDB"
+    },
+    {
+      "type": "paragraph",
+      "text": "The write path is built for **resumption and exactly-once completion**. The Upload Service stores only session state — `uploadId`, chunk map, checksum, owner — not bytes. Clients upload 5-10 MB chunks with `Content-Range` to blob storage using short-lived signed URLs. On completion the service validates that all byte ranges are present, checks the hash, and performs an idempotent commit keyed by `clientToken`. If the client retries, the same token returns the same `videoId` instead of creating a duplicate. Only then is a transcode job enqueued with the source pointer. Workers are idempotent and checkpoint per rendition: if a 1080p task crashes after 70%, the retry resumes from segment offsets, not from zero. Trade-off: you pay for session state and checksum bookkeeping to avoid storing duplicate petabytes and re-transcoding on every network blip."
+    },
+    {
+      "type": "paragraph",
+      "text": "The read path is built for **edge hits and fast switching**. Do not serve progressive MP4. Transcode to 5-7 renditions and package as HLS or DASH: a small manifest listing 2-10 second segments per bitrate. The player downloads the manifest once, measures throughput, and picks segments adaptively. Segments are immutable and content-addressed by `videoId/rendition/segmentNo`, so they cache for months and purge is a non-event except on delete or takedown. Use origin shield in two regions to collapse cache misses so 1000 edge PoPs do not thundering-herd your blob store on a viral video. Metadata for title, channel, and manifest URLs sits in cache with a short TTL; the player can start with a stale title but must never start with a stale manifest pointer. Trade-off: many small segment requests cost more origin bookkeeping but give smooth adaptation and near-perfect CDN offload."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Data model"
+    },
+    {
+      "type": "mermaid",
+      "title": "Core metadata model",
+      "caption": "Bytes live in blob store; the database stores only pointers and counters.",
+      "code": "classDiagram\n  class Video {\n    String videoId\n    String channelId\n    String title\n    String status\n    String manifestUrl\n    long durationSec\n    long createdAt\n  }\n  class Channel {\n    String channelId\n    String name\n    long subscriberCount\n  }\n  class UploadSession {\n    String uploadId\n    String clientToken\n    long totalBytes\n    String checksum\n    String state\n  }\n  class Rendition {\n    String videoId\n    int bitrateKbps\n    int width\n    int height\n    String codec\n  }\n  class ViewCounter {\n    String videoId\n    long shardId\n    long count\n  }\n  Video --> Channel : owned by\n  Video --> Rendition : has\n  UploadSession --> Video : commits to\n  Video --> ViewCounter : counted by"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep bytes out of the database — that is the rule that decides every table. `Video` is a thin row: IDs, title, status (`UPLOADING | TRANSCODING | READY | FAILED`), manifest pointer, and timestamps. `Rendition` rows are pointers to segment prefixes, not blobs. `UploadSession` holds the chunk bitmap so resume does not need to list the bucket. Counters are sharded: `ViewCounter(videoId, shardId)` with 32-128 shards per viral candidate, summed on read or rolled up every few seconds. Use a relational store for `Video` and `Channel` where secondary indexes and transactional creation matter, and a wide-column or key-value store for counters, feeds, and comments where write throughput and partition tolerance matter. Trade-off: you accept eventual consistency on views, likes, and subscriber counts to keep write availability linear; metadata creation stays strongly consistent so two completes never mint two `videoIds` for one upload."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Core logic in code"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "UploadService.java",
+      "code": "import java.util.*;\n\npublic class UploadService {\n    private final Map<String, UploadSession> sessions = new HashMap<>();\n    private final Map<String, String> tokenToVideo = new HashMap<>(); // idempotency\n    private final Queue<String> transcodeQueue = new LinkedList<>();\n\n    public UploadSession createSession(String clientToken, long totalBytes, String checksum) {\n        // Idempotent create: retry with same token returns same session.\n        // Trade-off: store tokens briefly vs risk double videos on retry.\n        for (UploadSession s : sessions.values()) {\n            if (s.clientToken.equals(clientToken)) return s;\n        }\n        String id = UUID.randomUUID().toString();\n        UploadSession s = new UploadSession(id, clientToken, totalBytes, checksum);\n        sessions.put(id, s);\n        return s;\n    }\n\n    public String signedChunkUrl(String uploadId, long offset, long length) {\n        // In production: return pre-signed blob URL valid for minutes.\n        // Bytes go straight to blob store, not through this service.\n        return \"/blob/\" + uploadId + \"?offset=\" + offset + \"&len=\" + length;\n    }\n\n    public synchronized String complete(String uploadId, long bytesReceived, String sha256) {\n        UploadSession s = Objects.requireNonNull(sessions.get(uploadId));\n        if (tokenToVideo.containsKey(s.clientToken)) {\n            return tokenToVideo.get(s.clientToken); // duplicate completion\n        }\n        if (bytesReceived != s.totalBytes || !sha256.equals(s.checksum)) {\n            s.state = \"CORRUPT\";\n            throw new IllegalStateException(\"incomplete or corrupt upload\");\n        }\n        String videoId = \"v_\" + UUID.randomUUID().toString().substring(0, 8);\n        tokenToVideo.put(s.clientToken, videoId);\n        s.state = \"COMMITTED\";\n        transcodeQueue.add(videoId); // async: never transcode inline\n        return videoId;\n    }\n\n    static class UploadSession {\n        String uploadId; String clientToken;\n        long totalBytes; String checksum; String state = \"OPEN\";\n        UploadSession(String u, String t, long b, String c) {\n            uploadId = u; clientToken = t; totalBytes = b; checksum = c;\n        }\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "abr_and_views.py",
+      "code": "def pick_rendition(measured_kbps, renditions, hysteresis_kbps=300):\n    \"\"\"Client-side ABR: pick highest rendition safely below measured throughput.\n    Trade-off: aggressiveness (quality) vs stability (rebuffering).\n    Hysteresis prevents flapping between two bitrates.\"\"\"\n    candidates = [r for r in renditions if r['kbps'] + hysteresis_kbps <= measured_kbps]\n    if not candidates:\n        return min(renditions, key=lambda r: r['kbps'])\n    return max(candidates, key=lambda r: r['kbps'])\n\n\ndef aggregate_views(events, num_shards=64):\n    \"\"\"Stream-side rollup: dedup by (user, video, minute) then shard.\n    Trade-off: exact dedup window costs memory; short window + probabilistic\n    filter stops naive view fraud without a DB write per view.\"\"\"\n    seen = set()\n    shards = [0] * num_shards\n    for e in events:\n        key = (e['user_id'], e['video_id'], e['minute'])\n        if key in seen:\n            continue\n        # require minimum watch time before counting\n        if e.get('watch_sec', 0) < 5:\n            continue\n        seen.add(key)\n        shard = hash(e['video_id']) % num_shards\n        shards[shard] += 1\n    return shards"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Capacity and complexity"
+    },
+    {
+      "type": "paragraph",
+      "text": "Size from first principles and say the numbers out loud — interviewers grade the arithmetic, not the final digit. Assume 1 million uploads per day at 500 MB average: that is 500 PB per day of raw ingest before replication, which is why direct-to-blob upload and lifecycle deletion of raw chunks after transcode are non-negotiable. Each video expands 3-5x after renditions plus thumbnails, so plan for 1.5-2.5 EB per day of rendition storage without retention caps — in practice you tier cold renditions to cheaper storage and drop 4K for unwatched videos. On playback, 1 billion daily views at 50 MB average adaptive delivery is 50 PB per day of egress; at 95% CDN offload only 2.5 PB hits origin shield. Metadata is trivial by comparison: 1 million rows per day is 365 million per year, easily partitioned by `videoId` hash. Transcode is CPU-bound: if one minute of 1080p takes 30 CPU-seconds per rendition, one hour of content needs hours of worker time — hence an autoscaled worker pool decoupled by queue depth, not by request threads."
+    },
+    {
+      "type": "table",
+      "caption": "Back-of-envelope and per-operation costs.",
+      "headers": [
+        "Quantity",
+        "Estimate",
+        "Design consequence"
+      ],
+      "rows": [
+        [
+          "Upload QPS",
+          "~12 avg, ~50-100 peak per sec",
+          "Session state fits in memory + DB; no byte proxy needed"
+        ],
+        [
+          "Playback bandwidth",
+          "Tens of Tbps peak, 95%+ from edge",
+          "Immutable segments + long TTL; shield to protect origin"
+        ],
+        [
+          "Storage per video",
+          "Original + 5 renditions ~3-5x source",
+          "Tier cold content; generate 4K lazily on popularity"
+        ],
+        [
+          "Metadata GET",
+          "O(1) by ID + cache, p99 <20ms",
+          "Cache-aside; invalidate on status change only"
+        ],
+        [
+          "View increment",
+          "O(1) shard write, O(S) rollup read",
+          "Trade exactness for availability; S=32-128 shards"
+        ],
+        [
+          "Transcode latency",
+          "Minutes, async",
+          "Queue + checkpointing; never block upload response"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency and the hardest follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "The hardest follow-up is always **counting views correctly under concurrency without killing the database**. A viral video generates tens of thousands of increments per second to the same logical counter. If every playback does a transactional increment on one row, you serialize on a lock, burn IOPS, and still double-count retries and fraud. The fix is three layers. First, edge deduplication: the client sends one `viewEvent` only after 5+ seconds of playback with a playback session ID, and retries carry the same ID. Second, sharded ingestion: hash `videoId` into N counter shards and write `+1` to a random shard so no single row is hot; readers sum shards or read a rollup updated every few seconds by a stream processor. Third, anti-fraud windowing: dedup on `(userId, videoId, timeBucket)` and drop intervals with impossible velocity before aggregation. Trade-off: counts lag by seconds and are approximate under fraud filtering — that is the price of surviving the spike. Say it explicitly: YouTube chooses availability and directional accuracy over linearizable counts, and advertisers audit on the rolled-up pipeline, not the serving row. The same pattern covers likes with an extra uniqueness constraint per user, and comments with partitioned threads per video to avoid a single hot partition."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Transcode exactly-once is a lie",
+      "text": "Workers will crash mid-rendition and queue redelivery will duplicate jobs. Do not promise exactly-once execution — promise **idempotent output**: deterministic segment names (`seg-00042.ts`) and conditional writes. A retry overwrites the same objects instead of appending duplicates. Checkpoint per segment so resume is O(remaining), not O(total)."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Viral video meltdown",
+          "text": "Pin the top 0.1% in a hot-tier cache, raise TTL, pre-warm edges, and collapse misses at shield. Trade-off: extra replication cost for a few hours vs origin outage."
+        },
+        {
+          "title": "Search and discovery",
+          "text": "Stream metadata changes to an inverted index on title, description, and tags. Rank by text match times engagement velocity. Trade-off: index lag of seconds for write throughput."
+        },
+        {
+          "title": "Delete and takedown",
+          "text": "Mark status DELETED, revoke manifests, then purge CDN by surrogate key and expire signed URLs. Trade-off: purge is eventually consistent; segments may linger at edges for minutes."
+        },
+        {
+          "title": "Live in 5 minutes",
+          "text": "Swap file ingest for RTMP-to-segment ingest, rolling 2-second transcode, and edge pub-sub for segments. Trade-off: lower latency means smaller buffers and more rebuffering risk."
+        },
+        {
+          "title": "Multi-region active-active",
+          "text": "Store originals cross-region, serve manifests regionally, replicate metadata asynchronously. Trade-off: cross-region copy cost and conflict resolution vs survival of regional loss."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Duplicate `complete` retried after timeout — return existing `videoId` via `clientToken`, do not enqueue second transcode job.",
+        "Partial chunk upload with gaps — reject completion until byte-range bitmap is full; expose missing ranges for resume.",
+        "Corrupt or unsupported codec — mark `FAILED` with reason, keep original for forensics, do not retry infinitely; use dead-letter queue.",
+        "Thumbnail for black or blank video — fallback to first non-black frame or waveform; never block `READY` on thumbnails.",
+        "Delete while being watched — allow in-flight segments to finish, block new manifests, purge shield then edges.",
+        "Clock skew in view events — bucket by server arrival minute, not client timestamp, to keep dedup windows stable.",
+        "Comment flood on viral video — paginate by `(videoId, timestamp)` shards with rate limits; do not scan a single partition.",
+        "Region loss during upload — sessions are global records, chunks are regional blobs; re-point client to surviving region and resume."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How you are graded"
+    },
+    {
+      "type": "table",
+      "caption": "Weak vs strong signals for this round.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Scope",
+          "Tries to design recommendations, ads, and live in 45 min",
+          "Cuts to VOD upload + playback, names what is deferred and why"
+        ],
+        [
+          "Ingest",
+          "Single POST + inline ffmpeg",
+          "Resumable sessions, signed URLs, idempotent commit, async DAG"
+        ],
+        [
+          "Playback",
+          "Progressive MP4 from origin",
+          "HLS/DASH segments, immutable caching, shield, ABR logic"
+        ],
+        [
+          "Data",
+          "Video bytes in DB, one view counter row",
+          "Blobs for bytes, indexed metadata, sharded counters with rollup"
+        ],
+        [
+          "Scale math",
+          "No numbers or hand-waved infinite scale",
+          "Upload PB/day, egress offload %, shard count, worker pool sizing"
+        ],
+        [
+          "Failure",
+          "Happy path only",
+          "Retry, checkpoint, dead-letter, CDN purge, region failover with trade-offs"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Your 45-minute plan",
+      "text": "Minutes 0-5: clarify VOD vs live, scale, consistency, and search scope. 5-10: lock requirements table and state Zipf + read-heavy assumption. 10-15: draw naive monolith and kill it on transcode coupling, origin egress, and counter hotspot. 15-30: draw split design — upload sessions to blob, queue to workers, manifests to CDN, events to sharded counters — and walk one upload plus one playback end to end. 30-38: do capacity math and ABR reasoning. 38-45: take the view-count follow-up, then volunteer delete/purge and cold-tier trade-offs. Close by naming one thing you would build differently at 10x scale."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:46:35.889Z",
+    "problems": []
+  }
+}

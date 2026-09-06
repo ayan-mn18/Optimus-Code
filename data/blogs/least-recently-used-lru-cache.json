@@ -1,0 +1,292 @@
+{
+  "slug": "least-recently-used-lru-cache",
+  "title": "Least Recently Used (LRU) Cache",
+  "summary": "LRU Cache for HLD: recency as eviction signal, HashMap plus doubly-linked list for O(1), and why naive LRU breaks under scans, hot keys, and distribution.",
+  "kind": "HLD",
+  "problemSlug": "least-recently-used-lru-cache-95-215",
+  "topic": "Caching Mechanisms",
+  "difficulty": "Hard",
+  "coverEmoji": "🧠",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Caching",
+    "LRU",
+    "System-Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Introduction to LRU Cache - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/lru-cache-implementation/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "LRU Cache: How It Works (Data Structure & Code) | Interview Cake",
+      "url": "https://www.interviewcake.com/concept/java/lru-cache",
+      "source": "interviewcake.com",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding lru cache: fast data access - Redis",
+      "url": "https://redis.io/glossary/lru-cache/",
+      "source": "redis.io",
+      "kind": "article"
+    },
+    {
+      "title": "Least Recently Used Cache - Data Structures and Algorithms - YouTube",
+      "url": "https://www.youtube.com/watch?v=AVUncS_x33k",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**LRU bets that *recently used* predicts *soon needed*.** Everything else — the linked list, the hash map, the Redis flag — is just machinery to enforce that bet in `O(1)` and to evict the tail when you are wrong about capacity. If your workload has no temporal locality, LRU is actively harmful, not just neutral."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What LRU actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "An LRU cache is a fixed-capacity key-value store with two operations and one hard rule. `get(key)` returns the value and marks the key most-recently-used. `put(key, value)` inserts or overwrites, marks the key most-recently-used, and if `size > capacity`, deletes the least-recently-used key. Capacity is non-negotiable. There is no growth, no spill to disk inside the abstraction, no second chance. When full, every insert is also an eviction. That is the entire contract. The reason it survives in interviews and in production is that the contract is small enough to implement correctly under concurrency, yet expressive enough to front databases, origins, file blocks, and session state."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why recency? Because most serving workloads exhibit temporal locality: a row read 10ms ago is far more likely to be read again than a row read 10 hours ago. LRU encodes that observation as position. Head means *just touched*, tail means *untouched longest*. The trade-off is explicit: **you trade perfect future knowledge (Belady's optimal, unimplementable) for a cheap, online heuristic that is usually good and occasionally catastrophic.** Scans, nightly jobs, and cache-poisoning crawlers have no reuse, but LRU cannot tell. It will dutifully promote one-hit garbage to the head and evict your actual hot set to the tail."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: why hash map plus doubly-linked list"
+    },
+    {
+      "type": "paragraph",
+      "text": "You need two things simultaneously: find any key instantly, and reorder by recency instantly, including removal of the oldest. A hash map alone finds fast but has no order. An array or singly-linked list has order but promotion costs `O(n)` shifts or a linear search for the predecessor. The standard answer pairs them for a reason, not tradition: **the map gives you `O(1)` location of the node, the doubly-linked list gives you `O(1)` detach and reattach given only the node pointer.** Prev pointers are the whole trick — without them you cannot remove the tail or move a middle node without walking from the head. You pay one extra pointer per entry and the discipline of keeping two structures in sync on every path. Desync them and you leak, evict live keys, or return stale values."
+    },
+    {
+      "type": "mermaid",
+      "title": "LRU get / put path",
+      "caption": "Every operation ends with the touched key at the head and any eviction taken from the tail.",
+      "code": "flowchart TD\n    Req[\"get k or put k,v\"] --> Hit{\"key in hash map?\"}\n    Hit -->|yes| Promote[\"detach node, insert at head\"]\n    Promote --> Done[\"return value or update value\"]\n    Hit -->|no| Full{\"size == capacity?\"}\n    Full -->|yes| Evict[\"remove tail node and map entry\"]\n    Evict --> Insert[\"create node at head, add to map\"]\n    Full -->|no| Insert\n    Insert --> Done"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk a capacity-3 cache through `A -> B -> C -> A -> D` and the rule becomes visceral. After three puts the list head-to-tail is `C, B, A` if head is most recent. `get(A)` detaches `A` and re-inserts at head: `A, C, B`. `put(D)` misses, sees full, evicts the tail `B`, inserts `D` at head: `D, A, C`. `B` was least-recently-used, so it dies even though it was inserted second. Note what `get` did: it mutated ordering state on a read. That is why LRU is not a pure read path. **You trade read scalability for recency accuracy** — every hit takes a write lock or an atomic move, which is exactly why high-concurrency LRU is hard."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "LruCache.java",
+      "code": "import java.util.HashMap;\nimport java.util.Map;\n\nclass LruCache<K, V> {\n    private static class Node<K, V> {\n        K key; V value;\n        Node<K, V> prev, next;\n        Node(K k, V v) { key = k; value = v; }\n    }\n\n    private final int capacity;\n    private final Map<K, Node<K, V>> map = new HashMap<>();\n    private final Node<K, V> head = new Node<>(null, null); // MRU sentinel\n    private final Node<K, V> tail = new Node<>(null, null); // LRU sentinel\n\n    LruCache(int capacity) {\n        if (capacity <= 0) throw new IllegalArgumentException(\"capacity > 0\");\n        this.capacity = capacity;\n        head.next = tail; tail.prev = head;\n    }\n\n    public synchronized V get(K key) {\n        Node<K, V> n = map.get(key);\n        if (n == null) return null; // miss: no reorder\n        moveToHead(n);              // hit: read mutates order\n        return n.value;\n    }\n\n    public synchronized void put(K key, V value) {\n        Node<K, V> n = map.get(key);\n        if (n != null) { n.value = value; moveToHead(n); return; }\n        Node<K, V> fresh = new Node<>(key, value);\n        map.put(key, fresh);\n        addAfterHead(fresh);\n        if (map.size() > capacity) {\n            Node<K, V> victim = tail.prev;\n            removeNode(victim);\n            map.remove(victim.key); // evict LRU: tail.prev\n        }\n    }\n\n    private void moveToHead(Node<K, V> n) { removeNode(n); addAfterHead(n); }\n    private void addAfterHead(Node<K, V> n) {\n        n.next = head.next; n.prev = head;\n        head.next.prev = n; head.next = n;\n    }\n    private void removeNode(Node<K, V> n) {\n        n.prev.next = n.next; n.next.prev = n.prev;\n        n.prev = n.next = null; // fail fast on double-remove bugs\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three details in that code are where interviews are won. First, sentinels for head and tail eliminate every null-branch in pointer surgery — fewer branches, fewer corruptions under pressure. Second, `get` and `put` share `moveToHead`; separate the *policy* (where to insert) from the *mechanics* (how to splice) or `delete` and `update` will diverge. Third, `synchronized` is a correctness crutch, not a performance design. It serialises all hits. **You trade throughput for obviously-correct ordering.** Production variants replace it with sharded locks, striped LRUs, or lock-free queues, and each of those weakens strict LRU to approximate LRU. Say that trade-off out loud."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "LRU against the alternatives you should name in the interview.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "LRU vs no eviction / unbounded map",
+          "Bounded memory, predictable tail latency on hits",
+          "Forced misses + eviction logic; capacity tuning becomes a permanent job"
+        ],
+        [
+          "LRU vs LFU (frequency)",
+          "Adapts fast to shifting hot keys; O(1) and simple",
+          "Scan-vulnerable; forgets frequency, so one burst can evict stable hot keys"
+        ],
+        [
+          "LRU vs FIFO / Random",
+          "Exploits temporal locality; much higher hit ratio on skewed workloads",
+          "Write on read: hits mutate shared list, hurts concurrency"
+        ],
+        [
+          "Strict LRU vs segmented / TinyLFU / W-TinyLFU",
+          "Strict recency is easy to reason about",
+          "No scan protection or admission filter; segmented designs beat it 2-5x on mixed workloads"
+        ],
+        [
+          "Process-local LRU vs centralised (Redis/Memcached)",
+          "No network hop, ~50-100ns hits, no extra service",
+          "Per-host duplication, incoherent invalidation, cold on every deploy or scale-out"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Default sizing rule",
+      "text": "Size LRU from miss cost, not hit dreams. If a DB miss costs 20ms and you tolerate 1% misses at peak QPS, you need capacity for the working set that covers 99% of reads — measure with `hit_ratio` vs size curves, not gut feel. **Oversized LRU wastes heap and lengthens GC pauses; undersized LRU is just a slow pass-through to the database.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "LRU failures do not look like exceptions. They look like latency cliffs, database saturation, and hit-ratio graphs falling off a table. The mechanism is almost always the same: something changed the access distribution faster than recency can track, or concurrency turned ordering maintenance into contention. Monitor four signals together — `hit_ratio`, `evictions_per_sec`, `p99_origin_latency`, and `lock_wait_on_cache` — because any one alone lies. A falling hit ratio with rising evictions means your working set no longer fits or a scan is churning it. Flat hit ratio with rising p99 means thundering herd on a few expired hot keys, not a capacity problem."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Sequential scan churn:** nightly export or crawler reads 10M cold keys once. Symptom: `hit_ratio` 95% -> 40% in minutes, `evictions/sec` spikes, DB CPU saturates. LRU promotes every cold key to head. Fix is admission policy (scan-resistant SLRU, TinyLFU) or bypass cache for scans — not a bigger LRU.",
+        "**Thundering herd on expiry:** 5k threads miss the same hot key at once. Symptom: origin QPS multiplies 100x for seconds, duplicate downstream queries. LRU has no request coalescing. Fix with singleflight / mutex per key + short stale-while-revalidate, not larger TTL.",
+        "**Write-on-read contention:** 32-core box, 200k gets/sec, strict global LRU. Symptom: cache lock becomes top profiler frame, throughput plateaus while CPU spins. Every hit splices pointers. Fix with sharded LRU (e.g., 16 shards) or CLOCK approximation — trade exact recency for scalability.",
+        "**Incoherence across hosts:** 50 app servers each with local LRU, no invalidation bus. Symptom: users see stale prices or permissions for minutes after update; bug is host-affine. LRU does not solve consistency. Fix with versioned keys, short TTL, or move authoritative hot keys to central cache with pub/sub invalidation.",
+        "**GC / memory blowup:** storing large values or forgetting weight (bytes, not entries). Symptom: heap grows to old-gen, long GC pauses, then OOM despite `size < capacity`. Entry-count capacity lies when values vary 100 bytes to 5MB. Fix with weighted capacity (sum of bytes) and off-heap or central store for large objects."
+      ]
+    },
+    {
+      "type": "mermaid",
+      "title": "Layered caching with LRU",
+      "caption": "Local LRU absorbs repeats, central LRU absorbs cross-host sharing. Misses must coalesce before hitting origin.",
+      "code": "graph LR\n    Client[\"app threads\"] --> L1[\"process-local LRU\"]\n    L1 --> L2[\"central cache - LRU eviction\"]\n    L2 --> DB[\"database / origin\"]\n    L1 -.->|\"miss\"| L2\n    L2 -.->|\"miss + singleflight\"| DB"
+    },
+    {
+      "type": "paragraph",
+      "text": "That layered diagram is the HLD answer most candidates miss. A single LRU, anywhere, is rarely enough. Local LRU gives nanosecond hits but duplicates and diverges. Central cache gives coherence and shared working set but adds ~0.5-2ms per hit and a new failure domain. Stack them: small local LRU (e.g., 500-5k entries, seconds TTL) for burst absorption, large central LRU for cross-host sharing, origin behind with coalescing. **You trade coherence and an extra hop for hit ratio and origin protection.** Name who owns invalidation on write: write-through to central plus broadcast invalidate to locals, or version the key so stale locals expire harmlessly."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "LRU in distributed systems: do not hand-roll it"
+    },
+    {
+      "type": "paragraph",
+      "text": "In a single process, implement LRU yourself — it is 60 lines and the interview expects it. Across machines, do not. Distributed strict-LRU requires global ordering of touches, which means either a central sequencer (a bottleneck that defeats caching) or clock synchronisation with bounded staleness (now you have approximate LRU with operational cost). Production systems choose sampled or approximate eviction deliberately. Redis `allkeys-lru` does not maintain a perfect linked list; it samples N keys and evicts the least-recently-touched in the sample. **You trade eviction precision for O(1) memory overhead and no cross-shard coordination.** That is the correct trade for a shared cache, and you should say so instead of sketching a cross-region doubly-linked list."
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "filename": "redis.conf",
+      "code": "# Bounded central cache with approximate LRU\nmaxmemory 10gb\nmaxmemory-policy allkeys-lru\nmaxmemory-samples 10\n# Trade-off: higher samples -> closer to strict LRU\n# but more CPU per eviction. 5 is default, 10 is\n# the usual production compromise.\n# Pair with client-side TTL + versioned keys:\n# SET user:1234 \"...\" EX 60"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two knobs matter more than the algorithm name. `maxmemory-samples` controls how close you are to true LRU — raise it only after you prove eviction quality is the bottleneck, because each eviction scans more keys. TTLs control staleness independently of recency — LRU bounds *size*, TTL bounds *age*, and you almost always need both. Without TTL, a hot-but-mutated key sits at the head forever serving stale reads. Without LRU, a traffic spike in distinct keys OOMs the box. **Size without age is a staleness bug; age without size is an outage under cardinality explosion.** Configure both and dashboard both."
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Implement strict LRU in 10 minutes",
+          "text": "Write `get`/`put` with HashMap plus doubly-linked list, sentinels, O(1) move-to-head and tail eviction. Narrate why singly-linked fails and why array shifts are O(n). Do not reach for `LinkedHashMap` unless asked — interviewers want the pointer logic."
+        },
+        {
+          "title": "Add concurrency",
+          "text": "Start with coarse lock for correctness, then propose sharding by `hash(key) % N` or read-copy with approximate recency. Explain why reads must write (reorder) and how that forces contention. Measure lock wait, not just hit ratio."
+        },
+        {
+          "title": "Add weight, TTL, and delete",
+          "text": "Extend capacity from entry-count to byte-weight, add per-key expiry checked on access plus lazy sweep, add explicit `invalidate(key)`. Each breaks strict O(1) purity — say what you sacrifice and why product needs it."
+        },
+        {
+          "title": "Scale to HLD: local plus central",
+          "text": "Draw app hosts with small local LRU in front of Redis/Memcached with LRU eviction in front of DB. Discuss thundering herd (singleflight), stampede on deploy (warmup / prefetch), and invalidation (versioned keys vs pub/sub). Quantify: QPS, working-set bytes, miss penalty ms, target hit ratio."
+        },
+        {
+          "title": "Defend against scans and hot keys",
+          "text": "Propose SLRU (probation + protected segments) or TinyLFU admission filter for scan resistance, and replication or key-splitting for hot keys that exceed one shard. This is where Hard difficulty is graded: not reciting LRU, but knowing when to abandon it."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail Hard rounds"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`get` is read-only — false. In LRU every hit rewrites global order, so the read path needs synchronisation. If you claim lock-free reads with strict ordering, you are hand-waving.",
+        "LRU equals best hit ratio — false. LFU / TinyLFU / ARC beat LRU on skewed or scanning mixes. LRU is the default because it is simple and adaptive, not because it is optimal.",
+        "Bigger cache always helps — false past the working set. Beyond it you add heap, GC, and invalidation cost for zero hit-ratio gain. Show the knee in the curve.",
+        "Redis LRU is exact — false. It is sampled approximation. Do not promise strict recency across shards.",
+        "TTL and LRU are interchangeable — false. TTL bounds staleness, LRU bounds size. You need one for correctness, one for survival.",
+        "O(1) means fast at any scale — false. Constant-time pointer chasing with a global lock collapses under 100k+ ops/sec. Shard or approximate."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use LRU when recency predicts reuse and misses are expensive but tolerable.",
+      "headers": [
+        "Situation",
+        "Use LRU?",
+        "Why"
+      ],
+      "rows": [
+        [
+          "DB row / session / profile cache with Zipf reads",
+          "Yes",
+          "High temporal locality; LRU captures hot set with minimal code"
+        ],
+        [
+          "CDN edge / origin shield",
+          "Yes, with TTL",
+          "Repeat requests for hot objects; TTL bounds staleness, LRU bounds disk/RAM"
+        ],
+        [
+          "Scan-heavy ETL, one-pass exports, crawler traffic",
+          "No — use bypass or SLRU/TinyLFU",
+          "No reuse; strict LRU churns hot set for zero future hits"
+        ],
+        [
+          "Frequency-stable leaderboards, feature store",
+          "Prefer LFU / TinyLFU",
+          "Popularity persists; frequency predicts better than recency"
+        ],
+        [
+          "Per-host hot keys > single shard QPS",
+          "LRU + replication / splitting",
+          "Eviction policy cannot fix hotspotting; replicate the key instead"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**LRU keeps a fixed working set ordered by last touch with a map for lookup and a doubly-linked list for O(1) promotion, evicting the tail on overflow — ideal when recent use predicts reuse, layered with TTL and singleflight in production, and replaced by scan-resistant or frequency-based policies when it does not.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:40:36.493Z",
+    "problems": []
+  }
+}

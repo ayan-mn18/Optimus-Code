@@ -1,0 +1,282 @@
+{
+  "slug": "column-oriented-databases",
+  "title": "Column Oriented Databases",
+  "summary": "Why columnar storage wins analytical scans and loses point writes: layout, compression, skipping, and when to pick it in HLD.",
+  "kind": "HLD",
+  "problemSlug": "column-oriented-databases-92-303",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "📊",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "OLAP",
+    "Analytics"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is a columnar database? | Engineering - ClickHouse",
+      "url": "https://clickhouse.com/resources/engineering/what-is-columnar-database",
+      "source": "clickhouse.com",
+      "kind": "article"
+    },
+    {
+      "title": "Data orientation - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Data_orientation",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "What are columnar databases? Here are 35 examples. - Tinybird",
+      "url": "https://www.tinybird.co/blog/what-is-a-columnar-database",
+      "source": "tinybird.co",
+      "kind": "article"
+    },
+    {
+      "title": "Columnar vs relational databases? : r/dataengineering - Reddit",
+      "url": "https://www.reddit.com/r/dataengineering/comments/1ctzjxo/columnar_vs_relational_databases/",
+      "source": "reddit.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A columnar database is a bet that you will **read few columns over many rows** and almost never read or write one whole row. Everything — contiguous column files, heavy compression, sparse indexes, batch merges — exists to make a `SUM(revenue) WHERE date > X` scan 100x cheaper. That same layout makes `SELECT * WHERE id = 7` or `UPDATE one row` expensive. If you remember nothing else, remember the access pattern decides the store."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Logically a columnar database still looks like tables, rows, and SQL. Physically it does the opposite of Postgres or MySQL. A row store lays out `row1-col1, row1-col2, row1-col3, row2-col1...` contiguously so fetching one entity is one sequential read. A column store lays out `col1-row1, col1-row2, col1-row3...` contiguously, then separately `col2-row1, col2-row2...`. Each column is stored as its own stripe, block, or file, often split further into row-groups of tens or hundreds of thousands of rows. The trade-off is explicit: you sacrifice cheap whole-row assembly to avoid reading data you never asked for."
+    },
+    {
+      "type": "paragraph",
+      "text": "That layout only pays off for OLAP shapes: billions of events, dozens to hundreds of columns, queries that touch 2-5 columns and aggregate over millions of rows. Take an `events` table with 80 columns where the query needs `timestamp` and `price`. A row store drags all 80 columns off disk to get 2. A column store reads exactly 2 stripes and skips the other 78. The I/O reduction is not 10% — on wide tables it is 90%+ — and that is before compression. That is WHY analytics engines accept painful single-row writes: I/O skipped is I/O you never pay for, and analytical queries are I/O-bound."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "mermaid",
+      "title": "Columnar read path",
+      "caption": "Only referenced columns are read, decompressed, and scanned in vectors.",
+      "code": "flowchart TD\n  Q[Analytical query] --> P[Parse + column pruning]\n  P --> Z[Check min-max index per stripe]\n  Z --> R[Read only needed column stripes]\n  R --> D[Decompress in cache-friendly batches]\n  D --> V[Vectorized filter + aggregate]\n  V --> A[Assemble narrow result]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three mechanisms compound. First is **column pruning**: the planner maps the query to column IDs and never opens the other files. If you select 3 of 60 columns, you do roughly 1/20th of the disk work. The trade-off: `SELECT *` destroys this advantage and forces reassembly of the full row from 60 scattered places — a columnar worst case that can be slower than a row store. Second is **data skipping**: each stripe stores `min`, `max`, `count`, sometimes bloom filters. A query with `WHERE event_date BETWEEN 2026-08-01 AND 2026-08-07` skips every stripe whose range does not overlap. That is WHY physical sort order matters so much: sorted data makes min-max ranges tight and skipping effective; unsorted data makes every stripe overlap every predicate and skipping does nothing."
+    },
+    {
+      "type": "paragraph",
+      "text": "Third is **type-specific compression plus vectorized execution**. Grouping identical types together makes encoding trivial: low-cardinality strings become dictionary IDs plus run-length encoding, timestamps become delta-of-delta, sorted integers become frame-of-reference. Expect 5-10x on typical event data, far more on repeated enums, far less on random UUIDs or high-entropy text. The deeper win is that many engines operate directly on encoded vectors without decoding each value — filter an array of 1024 integers with one SIMD instruction instead of 1024 branches. The trade-off: you trade CPU for I/O. Decompression and decoding cost cycles, but analytical scans were waiting on disk and memory bandwidth anyway, so spending CPU to move less data wins."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Sort key is the whole design",
+      "text": "In a columnar table the `ORDER BY` or sort key controls locality, compression ratio, and skip efficiency at once. Put the column you always filter on first — usually time — then the next most selective predicate. Get this wrong and RLE collapses, min-max ranges overlap, and every query becomes a full scan. There is no neutral choice."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Row store versus column store"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not choose by data size. Choose by dominant operation. Row stores keep a B-tree or heap where one lookup returns one row with one or two page reads, and in-place updates touch one page. Column stores keep immutable sorted stripes that must be merged in the background, so a single-row insert becomes a memory buffer append plus a later merge of megabytes to rewrite kilobytes. That is WHY columnar ingestion is batched in thousands to millions of rows: amortise the merge cost or drown in write amplification."
+    },
+    {
+      "type": "table",
+      "caption": "Head-to-head trade-offs. Each row names what you gain and what you pay.",
+      "headers": [
+        "Dimension",
+        "Row store wins because",
+        "Column store wins because"
+      ],
+      "rows": [
+        [
+          "Read I/O for `SELECT a,b FROM 100-col table`",
+          "Must read full rows; pays for 98 unneeded columns",
+          "Reads only 2 stripes; skips 90%+ of bytes"
+        ],
+        [
+          "Point lookup `WHERE id = ?`",
+          "One B-tree probe returns full row in ms",
+          "Must seek N stripes and stitch row; often 10-100x slower"
+        ],
+        [
+          "Single-row write / update",
+          "In-place heap or B-tree update, WAL-protected",
+          "No in-place update; rewrite whole stripe or merge delta — write amplification"
+        ],
+        [
+          "Bulk scan + aggregate over millions of rows",
+          "Row-at-a-time iteration, branch-heavy, poor SIMD use",
+          "Vectorized scan over compressed vectors, GB/s per core"
+        ],
+        [
+          "Compression",
+          "Mixed types per page compress poorly, ~2x",
+          "Homogeneous values compress 5-10x, enables operating on encoded data"
+        ],
+        [
+          "Schema change / add column",
+          "Rewrite or null-fill affects all rows",
+          "Add one new column file; old stripes untouched until merged"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Vectorization deserves emphasis because interviewers probe it. Modern CPUs move data from memory far slower than they can add integers. A row engine loops `for each row: check predicate, branch, aggregate`, stalling on branches and cache misses. A columnar engine loads 1024 values into L1, applies a branchless SIMD filter, and accumulates. The trade-off is code complexity and rigidity: vectorized operators assume fixed-type dense arrays, which is exactly what a column stripe provides and exactly what a scattered row does not. That is WHY the storage layout and the execution engine must be designed together."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is treating a columnar table like an OLTP table: trickling in single-row inserts, frequent `UPDATE` or `DELETE by key`, and expecting fresh reads instantly. Columnar engines buffer writes in memory then merge-sort them into immutable parts. Sustained singleton writes keep the merger permanently behind, part counts explode from dozens to tens of thousands, and every read now opens ten thousand files instead of ten. The symptom you see is not a write error — writes look fast — it is read latency climbing from 200ms to 20s and background merge queue depth and open file handles growing monotonically."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure is analytical but undisciplined: `SELECT *`, unsorted ingestion, and high-cardinality `GROUP BY` on raw strings. Unsorted ingestion widens every min-max range so partition pruning stops working; the engine reads 10x the stripes for the same predicate. `SELECT *` over a 150-column table forces 150 stripe reads plus row reassembly, saturating disk and memory bandwidth for no reason. High-cardinality grouping on unsorted UUIDs or free text defeats dictionary encoding, spills aggregation hash tables to disk, and turns a sub-second query into a multi-minute, memory-exhausted one. The symptom is a bimodal latency graph: most dashboard queries fast, ad-hoc queries with full scans timing out, plus decompression CPU pinned while disk throughput looks low."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Read p99 explodes while ingest looks healthy: check part count, merge backlog, and files opened per query — too many small parts means batching is broken.",
+        "Every query scans far more rows than it returns: check `rows_read vs rows_returned` and stripe skip ratio. Near-zero skipping means sort key does not match filter.",
+        "Memory errors on `GROUP BY` or `JOIN`: high-cardinality keys blew up the hash table. Pre-aggregate, dictionary-encode, or shard the key.",
+        "Updates never converge: heavy `DELETE WHERE` or `UPDATE` leaves tombstone deltas that merges cannot collapse. Model events as immutable appends instead.",
+        "Cold queries 50x slower than warm: columnar relies on OS page cache for hot stripes. No cache isolation between ad-hoc and dashboard workloads means thrashing."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Wide-column is not columnar",
+      "text": "Cassandra, HBase, and Bigtable are **sparse-row key-value systems** with column families, not columnar OLAP engines. They optimise for key lookup and wide-row writes. They do not do column pruning, vectorized aggregation, or 10x analytics compression. Conflating the names in an interview signals you have not built either."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What the shape looks like"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "events_columnar.sql",
+      "code": "-- Sort key = query pattern. Time first because every query filters time.\nCREATE TABLE events (\n  event_date Date,\n  event_time DateTime,\n  user_id UInt64,\n  country LowCardinality(String),\n  revenue Float64\n) ENGINE = MergeTree()\nORDER BY (event_date, country, event_time);\n\n-- Cheap: touches 2 columns, prunes by date via min-max.\nSELECT country, sum(revenue)\nFROM events\nWHERE event_date BETWEEN '2026-08-01' AND '2026-08-07'\nGROUP BY country;\n\n-- Expensive: reassembles full rows + point lookup.\nSELECT * FROM events WHERE user_id = 12345 LIMIT 1;"
+    },
+    {
+      "type": "paragraph",
+      "text": "This DDL is opinionated on purpose. `ORDER BY (event_date, country, ...)` forces all rows for one day and country to land in the same stripes, which makes RLE on `country` collapse, makes `min/max(event_date)` per stripe tight, and lets the second query skip 95% of data before reading a byte. `LowCardinality(String)` tells the engine to dictionary-encode instead of storing raw strings — the right call for a few hundred countries, the wrong call for unique session IDs where the dictionary itself becomes larger than the data. The last query is included as a warning: a single-key lookup in a multi-billion-row MergeTree still scans stripe indexes across parts. If your workload is that query, you need a row store or a secondary key-value index, not a faster columnar scan. Trade-off stated plainly: optimise layout for the common filter, penalise everything else."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the workload split",
+          "text": "Start with numbers: writes per second vs scans per second, row size, columns touched per query. Say out loud: transactional point access stays in a row store, large scans and rollups move to columnar. Interviewers fail candidates who pick one store for both."
+        },
+        {
+          "title": "Draw ingestion separately from serving",
+          "text": "Sketch producers -> durable log or object store -> batch loader -> columnar table. State the batch size and freshness lag explicitly, e.g. 30-60s micro-batches. The trade-off: fresher data means smaller parts and worse merges; staler data means larger parts and faster scans."
+        },
+        {
+          "title": "Justify sort key and partitioning",
+          "text": "Propose one partition key, usually date, and a 2-3 column sort key matching the top filters. Explain what gets skipped and what becomes a full scan. This is where most Medium HLD passes are won."
+        },
+        {
+          "title": "Handle updates without hand-waving",
+          "text": "Say updates are appends with a version or use a collapsing pattern, then explain deduplication at read or merge time. Never promise in-place mutation at OLTP speed — the merge cost makes that false."
+        },
+        {
+          "title": "Size the failure modes",
+          "text": "Close with backpressure on ingest, part-count alerting, cache isolation for dashboards vs ad-hoc, and a row-store sidecar for key lookups. Shows you have operated the trade-off, not just read about it."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Columnar means schemaless or NoSQL — false. Most columnar analytical systems are strongly typed SQL tables; the columnar part is physical layout, not data model.",
+        "Columnar is always faster — false. It is slower for single-row reads, small-range lookups, and frequent updates because row reassembly and merge rewrites dominate.",
+        "Compression is free — false. You trade lower disk and network I/O for higher CPU on encode/decode. It wins because scans are bandwidth-bound, not because CPU is free.",
+        "Sorting does not matter if you have indexes — false. Sparse min-max indexes only work if data is physically clustered. Random order makes every stripe match every predicate.",
+        "Parquet or ORC files equal a database — false. Files give you columnar storage; a database adds ingestion merging, pruning metadata, concurrency, and a vectorized engine on top.",
+        "You can fix a bad sort key with more nodes — false. Scaling out a full scan because skipping is broken just pays for the same wasted I/O on more machines."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use columnar when scans dominate; keep row stores when rows dominate.",
+      "headers": [
+        "Use columnar when",
+        "Avoid columnar when"
+      ],
+      "rows": [
+        [
+          "Queries scan millions of rows but need <10% of columns",
+          "Queries fetch full entities by primary key"
+        ],
+        [
+          "Workload is append-mostly events, logs, metrics, impressions",
+          "Workload needs per-row ACID updates, deletes, or transactions"
+        ],
+        [
+          "You aggregate, filter by time, roll up dashboards",
+          "You need millisecond singleton reads at high concurrency"
+        ],
+        [
+          "Data is wide (50+ columns) and compressible",
+          "Rows are narrow, already small, or high-entropy and incompressible"
+        ],
+        [
+          "Freshness lag of seconds to minutes is acceptable",
+          "Reads must see every write instantly with strong consistency"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Use a column store when you **scan few columns over many immutable rows and aggregate**, because contiguous columns plus compression plus skipping make that 10-100x cheaper — and keep point reads and row mutations in a row store, because columnar turns those into expensive merges and row reassembly."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:30:21.638Z",
+    "problems": []
+  }
+}

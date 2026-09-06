@@ -1,0 +1,336 @@
+{
+  "slug": "data-link-layer",
+  "title": "Data Link Layer",
+  "summary": "Data Link Layer is hop-by-hop framing and forwarding: what it does, why MACs stay local, and where L2 breaks in real systems.",
+  "kind": "HLD",
+  "problemSlug": "data-link-layer-94-186",
+  "topic": "Networking",
+  "difficulty": "Easy",
+  "coverEmoji": "🔗",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "OSI",
+    "Data-Link"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Data Link Layer | NetworkAcademy.IO",
+      "url": "https://www.networkacademy.io/ccna/network-fundamentals/data-link-layer",
+      "source": "networkacademy.io",
+      "kind": "article"
+    },
+    {
+      "title": "Data Link Layer in OSI Model - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/computer-networks/data-link-layer/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "osi model breakdown - part 2: data link layer - YouTube",
+      "url": "https://www.youtube.com/watch?v=eKLX16UWdVY",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "I need clarifications with the Network Layer and Data link layer - Reddit",
+      "url": "https://www.reddit.com/r/ccna/comments/1af1oce/i_need_clarifications_with_the_network_layer_and/",
+      "source": "reddit.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "IP promises **end-to-end** delivery. The Data Link Layer promises only **one hop**. It wraps an IP packet in a frame addressed to the *next directly connected device*, gets it across that single link without trusting the wire, then throws the wrapper away. Every L2 design decision is that trade-off: **cheap, local, and fast vs. blind beyond one hop.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, without the textbook fog"
+    },
+    {
+      "type": "paragraph",
+      "text": "The Data Link Layer is Layer 2 of the OSI model, sitting between the Network Layer (IP) and the Physical Layer (bits on copper, fiber, or radio). Its input is a Layer 3 packet. Its output is a Layer 2 frame: header + packet + trailer, serialized as bits. On receipt it does the reverse: synchronize to the frame boundary, verify the trailer, strip the header, and hand the surviving packet upward. It does not route. It does not know where the final destination lives. It knows exactly one thing: which neighbor on *this* wire, *this* switch port, or *this* radio channel should receive these bits next. That narrow scope is intentional. By refusing to solve global delivery, Layer 2 can be implemented in cheap switch ASICs at line rate, with no routing table, no TTL, and no path computation."
+    },
+    {
+      "type": "paragraph",
+      "text": "Conceptually it splits into two sublayers because they solve different problems. **Logical Link Control (LLC)** is the software boundary: multiplexing multiple upper protocols over one physical interface, flow interaction, and acknowledgment bookkeeping where the protocol wants it. **Media Access Control (MAC)** is the hardware reality: who gets to talk on the shared medium right now, what is this interface's flat 48-bit address, and how are frames delimited and checked. Ethernet pins almost all of this to MAC: destination MAC, source MAC, EtherType, payload, and a 32-bit Frame Check Sequence. Wi-Fi (802.11), PPP, and HDLC keep the same architecture — local framing plus per-hop addressing — but change the header because the medium changes the trade-off. A point-to-point serial line needs no addressing at all. A radio cell needs acknowledgments, retransmission, and airtime arbitration because the medium is lossy and shared."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Framing:** mark where a frame starts and ends so the receiver can extract one packet from a continuous bit stream.",
+        "**Per-hop addressing:** source and destination `MAC` that are valid only on this link and are rewritten at every router hop.",
+        "**Error detection:** a checksum (FCS) that catches corrupted frames so they can be dropped, not forwarded.",
+        "**Medium arbitration:** rules for who transmits when — carrier sense and buffering on Ethernet, coordination and retries on Wi-Fi, nothing on a full-duplex point-to-point link.",
+        "**Local delivery:** switch forwarding by destination MAC within one broadcast domain, with no concept of a global path."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: frames, addresses, and one hop at a time"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why wrap the packet at all? Because the wire cannot be trusted and IP has no idea what wire it is on. The physical layer only moves symbols; it will happily deliver inverted, truncated, or collided bits. Layer 2 adds just enough structure to make one unreliable hop usable: a header the next device can parse without any prior per-flow state, and a trailer that proves the frame survived intact. The cost is overhead on every packet — 18 bytes on plain Ethernet plus preamble and gap — and the benefit is that IP stays medium-independent. Swap Ethernet for Wi-Fi or a point-to-point link and IP does not change. Only the frame changes. That separation is why the layer exists: **contain medium ugliness locally so the internetworking layer never sees it.** The trade-off is duplication — every hop re-adds addressing and checksumming IP already partially covers — accepted because local checks are cheap and catch errors one hop earlier, before they waste backbone capacity."
+    },
+    {
+      "type": "mermaid",
+      "title": "One L2 hop, end to end",
+      "caption": "IP addresses stay constant; MAC wrappers are created and destroyed per hop.",
+      "code": "flowchart TD\n    L3A[\"L3 packet src IP to dst IP\"] --> FR[\"Add L2 header plus FCS\"]\n    FR --> WIRE[\"Bits on physical medium\"]\n    WIRE --> SW[\"Switch reads dst MAC\"]\n    SW --> FWD[\"Known MAC unicast or flood\"]\n    FWD --> NEXT[\"Strip frame pass packet up\"]\n    NEXT --> L3B[\"Same L3 packet next hop\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk a packet across two routers and the distinction becomes mechanical. Host A wants to reach Host B three hops away. The IP header says `src = A, dst = B` and those two fields do not change in transit. The Ethernet header says `src = A MAC, dst = first-router MAC` on the first wire, then is discarded. The first router looks up the IP route, then builds a *new* Ethernet header: `src = first-router MAC, dst = second-router MAC`. Same packet, new frame. Switches in between never look at IP at all; they forward purely on destination MAC, learning which port owns which MAC by observing source addresses. That is why Layer 2 scales in hardware and fails at scale in topology: **no routing protocol means no loop avoidance**, so a redundant switched path without spanning-tree or equivalent will flood forever. You bought simplicity and line-rate forwarding. You paid with a flat address space and no hop count."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Inside an Ethernet frame"
+    },
+    {
+      "type": "table",
+      "caption": "Ethernet II frame on the wire, in receive order.",
+      "headers": [
+        "Field",
+        "Size",
+        "Why it is there"
+      ],
+      "rows": [
+        [
+          "Destination MAC",
+          "6 bytes",
+          "Local next-hop identifier; switch lookup key"
+        ],
+        [
+          "Source MAC",
+          "6 bytes",
+          "Reply address and switch learning input"
+        ],
+        [
+          "EtherType",
+          "2 bytes",
+          "Which upper protocol owns the payload, e.g. IPv4 vs ARP"
+        ],
+        [
+          "Payload",
+          "46-1500 bytes",
+          "Usually one IP packet; padded if too short"
+        ],
+        [
+          "FCS",
+          "4 bytes",
+          "CRC-32 over header plus payload; drop on mismatch"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "A switch is a MAC learning bridge, nothing more glamorous. On ingress it records `source MAC -> port` in a table with an aging timer, typically minutes. On forwarding it looks up `destination MAC`: hit means unicast out that one port, miss means flood out all ports in the VLAN except ingress, multicast and broadcast always flood. That is the whole algorithm, which is exactly why it forwards at millions of packets per second in silicon. The trade-off is state without control: the table is bounded (tens to hundreds of thousands of entries), unauthenticated, and shared by everyone in the broadcast domain. Fill it, poison it, or flap a MAC between ports and the switch degrades to a hub — flooding everything — or blackholes traffic while it re-learns. No Layer 3 protocol will save you here because the failure is below IP. Your `ping` will show loss or asymmetric latency while `IP route` looks perfect, and that mismatch is the signature of an L2 problem."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs: why Layer 2 looks the way it does"
+    },
+    {
+      "type": "table",
+      "caption": "Each L2 choice buys something local and loses something global.",
+      "headers": [
+        "Design choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Flat 48-bit MAC addresses",
+          "No assignment protocol; plug and forward with zero config",
+          "No aggregation, no hierarchy; tables grow with host count"
+        ],
+        [
+          "CRC-only error detection, no correction",
+          "Tiny hardware cost, 4 bytes, catches wire corruption fast",
+          "Corrupted frames are dropped; recovery pushed to TCP or Wi-Fi retries"
+        ],
+        [
+          "Hop-by-hop re-framing",
+          "Each link uses the best medium protocol; IP stays clean",
+          "Per-hop header and checksum overhead plus rewrite latency"
+        ],
+        [
+          "Transparent switch learning",
+          "Hosts need no config; line-rate forwarding in ASICs",
+          "Flooding, no loop protection by default, spoofable learning"
+        ],
+        [
+          "Broadcast domain",
+          "Service discovery and ARP work without a directory",
+          "One host can saturate all hosts; blast radius equals domain size"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pattern is consistent: Layer 2 optimizes for **local cost and speed** over **global correctness**. CRC instead of forward error correction is the clearest example. A CRC-32 detects burst errors from a noisy cable with near certainty for a few gates of logic, but it cannot repair anything. That is the right call on fiber with a bit-error rate of 1 in 10^12 — retransmit the rare loss upstream — and the wrong call on long-haul radio, which is why 802.11 adds its own acknowledgments and retransmissions while wired Ethernet does not. Same logic for flat addresses: burning a globally unique MAC into every NIC removes provisioning, which is why Ethernet won the LAN, but it guarantees the address carries no location. You cannot summarize MACs like IP prefixes, so every switch in the domain must learn every active host. That works for hundreds of hosts and collapses for hundreds of thousands. When someone proposes stretching one VLAN across two data centers, that table-size and flooding trade-off is the objection to raise."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you actually see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Layer 2 failures are disorienting because Layer 3 monitoring stays green. Routing is up, interfaces are up, but traffic vanishes, duplicates, or arrives corrupted at rates that confuse TCP. Learn the mapping from cause to symptom and you will isolate the layer in minutes instead of blaming the network generically."
+    },
+    {
+      "type": "table",
+      "caption": "Common L2 failure modes and their observable signature.",
+      "headers": [
+        "Failure",
+        "Symptom you observe",
+        "Why it happens"
+      ],
+      "rows": [
+        [
+          "FCS errors / bad cable / dirty optic",
+          "Interface counters climb on `CRC` or `FCS`, TCP retransmits, throughput collapses on one link only",
+          "Bits corrupted in transit; receiver drops frames before IP ever sees them"
+        ],
+        [
+          "Duplex mismatch",
+          "One side shows collisions or late collisions, other shows FCS errors; ping works small, dies large",
+          "Half vs full disagreement causes both sides to transmit over each other"
+        ],
+        [
+          "MTU mismatch / baby giants",
+          "Large packets drop, small packets pass; SSH hangs on banner, `ping -s 1472` fails",
+          "Frame exceeds receiver buffer; no IP fragmentation because frame never completes"
+        ],
+        [
+          "MAC table overflow or flapping",
+          "Intermittent unicast flooding, latency spikes, high CPU on software switches",
+          "Too many MACs or one MAC moving ports; switch floods or re-learns continuously"
+        ],
+        [
+          "Switching loop / broadcast storm",
+          "All links saturate at 100%, identical broadcasts looped, devices unreachable in seconds",
+          "Redundant L2 path with no loop guard; broadcasts replicate exponentially"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The broadcast storm deserves special attention because it is the fastest way a healthy design dies. One accidental loop — two ports patched to the same unmanaged switch, one misconfigured trunk — and a single ARP request circles forever, doubling on every traversal because switches flood unknown destinations by design. There is no TTL in Ethernet, so nothing ages the loop out. You see it as every switch port pegged, MAC tables churning, and hosts unable to ARP even for their gateway. The fix is architectural, not operational: keep broadcast domains small, enable loop protection where spanning-tree or short-path bridging applies, and route between domains instead of stretching them. Every time you extend VLANs for convenience you are widening the blast radius for exactly this failure. Name that trade-off out loud in a design review and you sound like someone who has been paged for it."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "ethernet_frame.py",
+      "code": "import struct\n\nDST_MAC = \"02:00:5e:aa:bb:cc\"\nSRC_MAC = \"02:00:5e:11:22:33\"\nETHERTYPE_IPV4 = 0x0800\n\ndef mac_to_bytes(s: str) -> bytes:\n    return bytes(int(b, 16) for b in s.split(\":\"))\n\ndef build_frame(payload: bytes) -> bytes:\n    if len(payload) < 46:\n        payload += b\"\\x00\" * (46 - len(payload))  # Ethernet minimum\n    header = mac_to_bytes(DST_MAC) + mac_to_bytes(SRC_MAC)\n    header += struct.pack(\"!H\", ETHERTYPE_IPV4)\n    # Real NICs append CRC-32 in hardware; we leave FCS symbolic here.\n    return header + payload\n\ndef parse_frame(frame: bytes):\n    dst, src, etype = struct.unpack(\"!6s6sH\", frame[:14])\n    return {\n        \"dst\": \":\".join(f\"{b:02x}\" for b in dst),\n        \"src\": \":\".join(f\"{b:02x}\" for b in src),\n        \"etype\": hex(etype),\n        \"payload_len\": len(frame[14:]),\n    }\n\nf = build_frame(b\"hello-l3-packet\")\nprint(parse_frame(f))"
+    },
+    {
+      "type": "paragraph",
+      "text": "The snippet builds the exact byte layout a switch actually matches on: six bytes of destination, six of source, two of EtherType, then payload. Notice what is *absent*: no TTL, no hop count, no global address. A switch parses those first 14 bytes and decides, which is why the decision is so fast and so dumb. Padding to 46 bytes is also visible — the minimum frame exists so collisions on old half-duplex Ethernet were detectable, a constraint modern full-duplex links still carry. Use this mental model when debugging: if the first 14 bytes are wrong — wrong VLAN tag, wrong destination, corrupted FCS — the rest of the packet is irrelevant because it will be flooded or dropped before IP runs."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an HLD interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Draw the L2 boundary first",
+          "text": " Sketch hosts, switches, and routers as separate symbols. Shade each broadcast domain. Say explicitly: MACs live inside the shading, IPs cross it. Interviewers grade this separation."
+        },
+        {
+          "title": "Explain ARP as the bridge",
+          "text": " State how IP-to-MAC resolution works per subnet and why ARP traffic never crosses a router. This proves you know why L2 and L3 need each other."
+        },
+        {
+          "title": "Kill the stretched VLAN",
+          "text": " When asked to connect two sites, argue for L3 with small L2 domains. Cite flooding, MAC scale, and storm blast radius as the priced-in costs of one big VLAN."
+        },
+        {
+          "title": "Size the MAC table and MTU",
+          "text": " For container or VM density, translate host count into MAC entries and overlay headers into MTU budget. Mention 1500 vs 9000 trade-off: throughput vs bufferbloat and middlebox breakage."
+        },
+        {
+          "title": "Name your loop guard",
+          "text": " Any redundant L2 path needs spanning-tree, MLAG discipline, or routed ECMP instead. Never draw two uplinks between switches without stating which mechanism breaks the loop."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**MAC addresses route across the internet.** They do not. They are rewritten every hop and meaningless past the broadcast domain; only IP is end-to-end.",
+        "**Switches look at IP addresses.** Learning bridges forward on destination MAC and learn from source MAC. If it inspects IP, it is acting as a router or middlebox, not as L2.",
+        "**FCS fixes errors.** It only *detects* them. The frame is discarded. Correction happens elsewhere — Wi-Fi link retries, TCP retransmission — or not at all for UDP.",
+        "**Wi-Fi is just wireless Ethernet.** It shares the frame idea but the medium forces different trade-offs: explicit ACKs, retransmission, encryption and airtime contention that wired full-duplex Ethernet skipped.",
+        "**Layer 2 is reliable end-to-end.** At best it makes one hop slightly less unreliable. Ordering, deduplication, and delivery guarantees are Layer 4 problems; L2 will happily drop, duplicate via flooding, or reorder across aggregated links."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to lean on L2 and when to get off it"
+    },
+    {
+      "type": "table",
+      "caption": "Scope rule: L2 inside the rack or room, L3 everywhere else.",
+      "headers": [
+        "Use L2 when",
+        "Use L3 instead when"
+      ],
+      "rows": [
+        [
+          "Hosts share a rack or single failure domain and need zero-config discovery",
+          "You span buildings, AZs, or providers — route to bound failure blast radius"
+        ],
+        [
+          "You need line-rate host-to-host throughput with tiny latency budget",
+          "You need policy, isolation, or traffic engineering — ACLs and metrics live at L3+"
+        ],
+        [
+          "VM or container mobility is confined and MAC count fits table limits",
+          "MAC count explodes (dense virtualization) — encapsulate or route, do not stretch VLANs"
+        ],
+        [
+          "The link is truly point-to-point (PPP, dark fiber pair)",
+          "Paths are redundant — you need TTL and routing metrics to survive loops"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The interview-ready heuristic is blunt: **switch where you must, route where you can.** Switching wins on cost per gigabit and operational simplicity inside one trust and failure boundary. Routing wins the moment scale, redundancy, or administrative separation appears, because hierarchical IP aggregates where flat MACs cannot. Overlays like VXLAN exist precisely to preserve that boundary — keep tenant L2 semantics at the edge while the fabric routes statelessly underneath. If you remember only the sizing argument, remember this: count MACs per domain and broadcasts per second. When either number scares you, the design has outgrown Layer 2."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "The Data Link Layer delivers frames **one local hop** using flat MAC addressing and a checksum, trading global reach for cheap line-rate forwarding — which is why we switch locally and route globally."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:03:09.867Z",
+    "problems": []
+  }
+}

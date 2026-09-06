@@ -1,0 +1,287 @@
+{
+  "slug": "write-amplification-and-split-brain",
+  "title": "Write amplification and split brain",
+  "summary": "Write amplification is the tax you pay for durable fast writes. Split brain is what happens when you refuse to pay the availability tax. This page explains both mechanisms, their trade-offs, and how to defend your choices.",
+  "kind": "HLD",
+  "problemSlug": "write-amplification-and-split-brain-92-205",
+  "topic": "Databases",
+  "difficulty": "Hard",
+  "coverEmoji": "💾",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "LSM",
+    "Replication",
+    "Distributed Systems"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Roger Sperry's Split Brain Experiments (1959–1968)",
+      "url": "https://embryo.asu.edu/pages/roger-sperrys-split-brain-experiments-1959-1968-0",
+      "source": "embryo.asu.edu",
+      "kind": "article"
+    },
+    {
+      "title": "Split-Brain: What We Know Now and Why This is Important for ... - PMC",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC7305066/",
+      "source": "pmc.ncbi.nlm.nih.gov",
+      "kind": "article"
+    },
+    {
+      "title": "Split-brain - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Split-brain",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Brain Lateralization: The Split Brain - YouTube",
+      "url": "https://www.youtube.com/watch?v=FsM1IQ9d2pw",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "You cannot make a write both cheap and safe during a failure. **Write amplification is the price of surviving a crash. Split brain is the price of surviving a partition while still accepting writes.** Every database design is just choosing which bill to pay, and showing the interviewer you know exactly when that bill comes due."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "Write amplification is a ratio, not a vibe. **Write Amplification Factor (WAF) = bytes physically written to storage media divided by bytes logically written by the user.** If the user writes 1 GB and your engine writes 10 GB to SSD, your WAF is 10. That extra 9 GB comes from somewhere specific: the write-ahead log, flush of memtables to sorted files, repeated rewrites during compaction, replication to followers, updates to every secondary index, and filesystem journaling underneath. If you cannot name which of those dominates in your design, you do not understand your write path. High WAF does not mean broken — it means you traded write I/O for something else, usually fast ingest or sequential disk access. The trade-off is explicit: you burn disk bandwidth and device endurance to buy throughput and crash safety."
+    },
+    {
+      "type": "paragraph",
+      "text": "Split brain has nothing to do with neuroscience despite sharing the name. In databases it means **two sides of a network partition both believe they are authoritative and both accept writes.** After the partition heals you have two divergent histories for the same logical key range with no single truth. This is not a rare edge case — it is the default outcome whenever you allow writes without a strict majority. Any design with two primaries, permissive leader election, expired leases that are still honored, or manual failover without fencing will split. The symptom is not an error. Both sides look healthy. The damage only appears on healing: conflicts, lost updates, duplicate side effects, broken invariants like negative inventory or double-spend. That is why split brain is worse than downtime. Downtime is obvious. Divergence is silent."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: why your bytes get rewritten"
+    },
+    {
+      "type": "paragraph",
+      "text": "Take a log-structured merge tree, because that is where interviewers test write amplification. The write path is deliberately staged to turn random writes into sequential ones. A write first lands in the write-ahead log for crash recovery — that is write number one. Then it lands in an in-memory memtable — free. On flush, the memtable becomes an immutable sorted file at Level 0 — write number two. So far WAF is already 2 before compaction even starts. Then compaction kicks in to keep reads usable. In leveled compaction each level is roughly 10x the size of the previous one, and when a file moves down it is merge-rewritten with overlapping files below it. A single user key can therefore be rewritten once per level, 5 to 7 times in a typical stack, plus the original log and flush. That is how you get WAF of 10 to 30 with leveled compaction. Tiered compaction rewrites less per byte but leaves more overlapping files, so reads get slower and space amplification rises. You never eliminate the cost, you only move it between write, read, and space. Claim otherwise and you fail."
+    },
+    {
+      "type": "mermaid",
+      "title": "LSM write amplification path",
+      "caption": "One logical write becomes many physical writes through log, flush, and compaction.",
+      "code": "flowchart TD\n  U[Client write 1 KB] --> W[WAL append 1 KB]\n  W --> M[MemTable in memory]\n  M --> F[Flush to L0 SST]\n  F --> C0[Compact L0 to L1 rewrite]\n  C0 --> C1[Compact L1 to L2 rewrite]\n  C1 --> C2[Compact L2 to L3 rewrite]\n  C2 --> S[Stable storage]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Split brain happens because failure detection is unreliable. Node A cannot distinguish between node B is dead and the network between A and B is dead. If both sides promote themselves to primary after a timeout, you have two primaries. The mechanism is always the same: a lease or leadership term expires on one side but the old leader never learns it and keeps serving. Without a single source of truth for who owns an epoch, both epochs are valid locally. Reads and writes diverge. Vector clocks or version histories can record the divergence but cannot prevent it. Prevention requires one of two hard rules: only a quorum can authorize a write, or every write must present a monotonically increasing fencing token that storage validates and rejects if stale. If your design has neither quorum writes nor fencing, it splits under partition. That is not pessimism, that is the definition. The trade-off is brutal and honest: enforcing quorum means rejecting writes on the minority side, which is unavailability by design."
+    },
+    {
+      "type": "mermaid",
+      "title": "Split brain under partition",
+      "caption": "Partition isolates two groups. Without quorum or fencing both elect a primary and diverge.",
+      "code": "flowchart LR\n  C1[Clients West] --> P1[Primary epoch 12]\n  C2[Clients East] --> P2[Primary epoch 12]\n  P1 --- X((partition)) --- P2"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Each durability choice buys one property by taxing another.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay",
+        "When the bill arrives"
+      ],
+      "rows": [
+        [
+          "Leveled compaction",
+          "Fast reads, bounded overlapping files",
+          "WAF 10-30, high compaction CPU",
+          "Sustained write throughput collapses under compaction debt"
+        ],
+        [
+          "Tiered compaction",
+          "Low WAF 2-4, high ingest",
+          "Slow reads, high space amplification",
+          "Read p99 explodes and disk fills with duplicates"
+        ],
+        [
+          "WAL + group commit",
+          "Crash safety without fsync per write",
+          "Added latency window, 2x write I/O",
+          "Power loss loses the last unflushed batch"
+        ],
+        [
+          "Sync replication x3",
+          "Survive node loss without data loss",
+          "3x network and disk amplification",
+          "Cross-zone latency on every write, tail latency coupling"
+        ],
+        [
+          "Quorum writes",
+          "No split brain, single history",
+          "Minority side unavailable",
+          "Partition means rejected writes and angry clients"
+        ],
+        [
+          "Allow minority writes",
+          "Always available for writes",
+          "Divergent histories, reconciliation loss",
+          "Healing requires conflict resolution and someone loses data"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "This is PACELC in practice, not as an acronym to recite. If partitioned, you choose between availability and consistency. Else, you choose between latency and consistency. Write amplification lives on the else side: synchronous flush plus synchronous replication gives you durability and consistency but adds latency and burns bandwidth on every write. Asynchronous paths remove the latency and lower apparent amplification, but only by risking loss. Split brain lives on the partitioned side: if you keep accepting writes everywhere you stay available but you guarantee reconciliation pain. Interviewers want to hear you state the loser explicitly. Saying my design is highly available *and* strongly consistent *and* low amplification signals you do not understand the problem. A senior answer picks a side and prices it: I use quorum writes, so I lose availability on partition, and I accept WAF of 12 to keep p99 reads stable."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Write amplification fails slowly, then all at once. The classic failure is compaction debt. Ingest outruns compaction for hours, Level 0 file count climbs, overlapping key ranges pile up, and suddenly every read has to check 40 files instead of 4. You see it as rising read p99 while write latency still looks fine, followed by write stalls when the engine throttles ingest to let compaction catch up. Disk usage grows faster than logical data growth because dead versions are not being reclaimed — that is space amplification riding alongside write amplification. On SSD-backed nodes you see a second failure: premature wear. A WAF of 20 means a 1 TB logical workload wears 20 TB of program-erase cycles. SMART wear indicators climb, throughput drops as the device does internal garbage collection, and nodes start failing months early. If you sized disks by logical data only, you run out of IOPS long before you run out of capacity."
+    },
+    {
+      "type": "paragraph",
+      "text": "Split brain fails silently and is discovered during reconciliation. Both partitions report success, replication lag dashboards go blank because there is no connection to measure, and client error rates stay near zero — which is exactly why it is dangerous. On healing, one of three things happens, all bad. With last-writer-wins, one side's writes vanish and users see resurrected old values or lost orders. With manual merge, queues fill with conflicts that no automated rule can resolve, like two different withdrawals against the same balance. With auto-increment or uniqueness constraints, you get duplicates that violate invariants downstream systems assumed were impossible. The telltale symptom post-healing is a spike in conflict counters, version branching, or fencing rejections as the demoted primary tries to write with a stale epoch. If you have no fencing rejection metric, you will not even see the attempt — you will just see corrupt state. That is the operational argument for quorum and fencing: they convert silent corruption into loud, monitorable unavailability."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Dashboard signal for write amplification: disk write bytes 10x client write bytes, Level 0 file count climbing, compaction pending bytes growing, read p99 degrading while CPU is saturated by compaction threads.",
+        "Dashboard signal for split brain risk: two nodes both reporting `is_leader=true` for the same shard, term or epoch diverging, fencing token rejections spiking after network flap, replication conflict queue depth jumping on heal.",
+        "On-call smell: writes succeed on both sides of a zone outage. That is not resilience — that is divergence unless quorum was enforced.",
+        "Log smell: old leader continues to serve reads and writes for minutes after a new leader was elected. Without fencing, those writes are poison."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Make it concrete"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "waf_estimate.py",
+      "code": "def estimate_waf(levels=6, growth=10, wal_factor=1.0):\n    # Each level rewrites overlapping data once per migration.\n    # Leveled compaction: ~1 rewrite per level + WAL + flush.\n    # This is a back-of-envelope model, not a benchmark.\n    compaction_rewrites = levels * 1.0  # ~1 full rewrite per level\n    flush_write = 1.0\n    total_physical = wal_factor + flush_write + compaction_rewrites\n    return total_physical / 1.0\n\nfor lv in [4, 6, 7]:\n    print(lv, estimate_waf(levels=lv))\n# 4 -> ~6x, 6 -> ~8x, 7 -> ~9x before replication.\n# Multiply by 3x replication and the real WAF is 18-27x.\n# That is why sizing by logical throughput alone always under-provisions."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "fencing.py",
+      "code": "class Storage:\n    def __init__(self):\n        self.fenced_epoch = 0\n        self.data = {}\n\n    def write(self, epoch, key, value):\n        # Fencing: only the holder of the latest epoch may write.\n        # Old primary with stale epoch is rejected loudly, not merged silently.\n        if epoch < self.fenced_epoch:\n            raise StalePrimaryError(f\"reject epoch {epoch}, fenced at {self.fenced_epoch}\")\n        if epoch > self.fenced_epoch:\n            self.fenced_epoch = epoch\n        self.data[key] = (value, epoch)\n        return True\n\n# On partition heal, writes from epoch 12 fail loudly once epoch 13 fenced.\n# Loud rejection is the point: it turns split brain into unavailability."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They ask you to design a durable key-value store or feed or order system",
+          "text": "Do not jump to sharding. Start with the write path: WAL, memtable, SST, replication factor, fsync policy. State your WAF budget up front. Example: I accept 3x replication plus leveled compaction, so roughly 20x physical writes per logical write, which means I need sequential I/O and I will isolate compaction to separate I/O scheduling."
+        },
+        {
+          "title": "They inject a partition between two availability zones",
+          "text": "This is the split-brain probe. Answer with quorum math immediately: with 3 replicas I need 2 for a write quorum, so the minority side rejects writes. If the requirement says writes must never fail, say the consequence out loud: then I will diverge and I need a conflict strategy plus fencing, and some updates will be lost or need human merge."
+        },
+        {
+          "title": "They ask how you prevent an old leader from corrupting data",
+          "text": "Say fencing token, not just lease. Leases expire and clocks skew. A monotonically increasing epoch stored alongside data, checked on every write, is what actually blocks the zombie primary. Mention that ZooKeeper-style sequential nodes or Raft terms exist precisely to mint those epochs."
+        },
+        {
+          "title": "They push on tail latency and disk cost",
+          "text": "Connect it back to amplification. High WAF means compaction competes with foreground traffic, so p99 spikes. Options are tiered compaction for ingest-heavy workloads, rate-limited compaction, separating hot and cold levels, or offloading secondary indexes to async paths — each with an explicit read or durability cost you must name."
+        },
+        {
+          "title": "They ask what you monitor",
+          "text": "Name four metrics: WAF as disk-write-bytes over client-write-bytes, compaction pending bytes, number of nodes claiming leadership per shard, and fencing rejection rate. If you cannot observe divergence, you cannot claim you prevent it."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`Replication factor 3 means 3x safety with no other cost.` No — it is 3x write amplification on network and disk plus quorum latency. Safety is never free.",
+        "`fsync off is fine because replication covers it.` Replication without durable local state just replicates loss faster. A power cut that kills all in-memory buffers on both replicas still loses data.",
+        "`Timestamps resolve split brain.` Wall clocks skew and two sides can generate the same timestamp. Last-writer-wins does not prevent divergence, it just silently discards one side.",
+        "`A load balancer health check prevents split brain.` Health checks detect unreachability, they do not grant exclusive ownership. Two load balancers can both route to different primaries.",
+        "`High write throughput proves low write amplification.` LSM engines show high throughput *because* they accept high amplification — they convert random writes to sequential rewrites in the background. The bill arrives later.",
+        "`Quorum reads and writes are just slower, otherwise identical.` They are categorically different: quorum is what preserves a single history under partition. Speed is secondary to correctness here."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Choose the cost that matches the workload and the invariant.",
+      "headers": [
+        "Technique",
+        "Use when",
+        "Avoid when"
+      ],
+      "rows": [
+        [
+          "Leveled LSM with high WAF",
+          "Read-heavy point lookups need bounded file overlap and predictable p99",
+          "Sustained heavy ingest or SSD endurance is the bottleneck"
+        ],
+        [
+          "Tiered LSM with low WAF",
+          "Write-heavy append or time-series ingest dominates and reads are scans",
+          "You need low read latency on random keys"
+        ],
+        [
+          "Sync quorum writes + fencing",
+          "Money, inventory, uniqueness, or ordering must never diverge",
+          "You promised always-writable during partitions — pick one"
+        ],
+        [
+          "Async replication / multi-primary",
+          "Comments, likes, carts where lost updates are tolerable and mergeable",
+          "Ledger balances or exactly-once effects where merge is impossible"
+        ],
+        [
+          "Group commit + batched fsync",
+          "You need durability without per-write fsync latency",
+          "Single-write latency SLA is sub-millisecond and loss window is unacceptable"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Write amplification is the background rewrite tax I pay for fast durable writes, and I prevent split brain by requiring a write quorum plus fencing tokens — which means the minority side fails loudly instead of diverging silently.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:27:20.164Z",
+    "problems": []
+  }
+}

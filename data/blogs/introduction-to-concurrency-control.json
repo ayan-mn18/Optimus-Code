@@ -1,0 +1,278 @@
+{
+  "slug": "introduction-to-concurrency-control",
+  "title": "Introduction to Concurrency Control",
+  "summary": "Concurrency control is how you let transactions overlap for throughput without letting them corrupt each other — you pick what anomaly you can tolerate, then pay for it in locks, retries, or versions.",
+  "kind": "HLD",
+  "problemSlug": "introduction-to-concurrency-control-90-197",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔒",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Concurrency-Control"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Concurrency Control in DBMS - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/dbms/concurrency-control-in-dbms/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Concurrency Control in DBMS: Locking, MVCC & More - Databricks",
+      "url": "https://www.databricks.com/blog/concurrency-control",
+      "source": "databricks.com",
+      "kind": "article"
+    },
+    {
+      "title": "Introduction to Database Concurrency Control - Agile Data",
+      "url": "https://agiledata.org/essays/concurrencycontrol.html",
+      "source": "agiledata.org",
+      "kind": "article"
+    },
+    {
+      "title": "Concurrency control - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Concurrency_control",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Concurrency control is **ordering**. You want N cores and N nodes doing work at once, but the final state must look like transactions ran in *some* serial order. Every protocol — locks, timestamps, MVCC, optimistic validation — is just a different place to impose that order, and a different bill for doing it. If you cannot name the bill, you do not understand the protocol."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Concurrency control is the set of rules a transactional system uses to interleave reads and writes from many simultaneous transactions while preserving **Isolation** and **Consistency**. Without it, two transactions touching the same rows produce three classic corruptions: one overwrites the other silently, one reads data that is later rolled back and acts on a value that never existed, and one sees half of another transaction's writes. The formal correctness bar is usually **serializability**: the interleaved execution must be equivalent to running those transactions one after another in some order. Weaker levels like read-committed or snapshot isolation deliberately drop that bar to buy throughput, and that choice is the entire design decision. In a single node this is a lock manager and a scheduler problem. In a distributed system it becomes a coordination problem, because there is no single memory, no single clock, and no free global order."
+    },
+    {
+      "type": "paragraph",
+      "text": "Scalability is why you cannot just serialize everything. A global exclusive lock is correct and trivially serializable, and it also caps you at one writer at a time — throughput collapses as contention rises, tail latency explodes, and adding nodes does nothing because they all queue on the same logical lock. Concurrency control exists to expose safe parallelism: let non-conflicting transactions proceed with zero coordination, and force coordination only where read-sets and write-sets actually intersect. That is why high-throughput systems obsess over **granularity**, **optimism**, and **versions**. Fine granularity means you lock a row instead of a table so unrelated rows do not block each other. Optimism means you assume conflicts are rare and check at commit instead of blocking up front. Versions mean readers never block writers by reading an old immutable snapshot. Each trick raises achievable concurrency under a specific workload shape, and each one fails badly when the workload violates its assumption."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: where you impose order"
+    },
+    {
+      "type": "mermaid",
+      "title": "Where ordering is enforced",
+      "caption": "Pessimistic blocks before work, optimistic checks after work, MVCC avoids blocking readers with versions.",
+      "code": "flowchart TD\n  Begin[Begin transaction] --> Work[Read and buffer writes]\n  Work --> Mode{Protocol}\n  Mode -->|Pessimistic| Lock[Acquire locks then proceed]\n  Mode -->|Optimistic| Validate[Validate versions at commit]\n  Mode -->|MVCC| Snapshot[Read snapshot write new version]\n  Lock --> Commit[Commit or abort]\n  Validate --> Commit\n  Snapshot --> Commit\n  Commit --> Done[Release locks and cleanup]"
+    },
+    {
+      "type": "paragraph",
+      "text": "All protocols follow the same skeleton: track what the transaction touched, decide on a serialization order, then enforce it. **Two-phase locking** enforces order up front — acquire shared locks for reads and exclusive locks for writes, hold them until commit, and never acquire after you start releasing. If every transaction obeys that, the lock acquisition order defines a serial order and you get serializability. **Timestamp ordering** assigns each transaction a monotonically increasing stamp and rejects any operation that arrives out of stamp order. **Optimistic concurrency** does no blocking during execution, records read-sets and write-sets plus a start version, then validates at commit that nothing it read was overwritten. **MVCC** keeps multiple physical versions of each row stamped with creator and deleter transaction IDs, so a reader picks the newest version visible to its snapshot and never waits for a writer. The trade-off is always the same axis: block early and waste waiting time, or risk late aborts and waste repeated work."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Pessimistic locking: pay in waiting"
+    },
+    {
+      "type": "paragraph",
+      "text": "Take locks before touching data because you expect conflicts. A read takes a shared lock, a write takes an exclusive lock, and conflicting lock requests queue. This is simple to reason about and gives strong guarantees with row-level granularity, predicate handling via range locks, and deadlock detection via a waits-for graph. The reason to choose it is **contention is high and aborts are more expensive than waits** — for example short update transactions over hot counters or inventory rows where optimistic retries would just thrash. The price is blocking, context switches, reduced parallelism under skew, and deadlocks that must be detected and broken by aborting a victim. Strict two-phase locking, where all locks are held to commit, also couples lock lifetime to transaction latency: one slow transaction holding a popular row lock stalls everyone behind it. Never pick table-level locks to “keep it simple” unless the table is tiny — you have converted a parallel system into a serial one for no correctness gain."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Optimistic, timestamp, and MVCC: pay in retries, clocks, and storage"
+    },
+    {
+      "type": "paragraph",
+      "text": "Optimistic validation assumes conflicts are rare, so execution is lock-free and the check happens only at commit: did anyone else commit a write to my read-set after my start timestamp? If yes, abort and retry. This wins when contention is low and transactions are mostly disjoint — read-heavy workloads, large multi-row reads that would otherwise hold many locks for a long time. The failure mode is starvation under a hot key: every writer aborts, retries, and aborts again, burning CPU while making zero progress. Timestamp ordering replaces locks with a global order, but needs a trustworthy ordering source, which in a distributed cluster means TrueTime-style clocks, hybrid logical clocks, or a sequencer that becomes a bottleneck. Choose it when you need decentralized decisions and can afford clock infrastructure."
+    },
+    {
+      "type": "paragraph",
+      "text": "MVCC is the default answer for modern transactional stores for one reason: **it removes read-write blocking entirely**. Writers create new versions instead of overwriting in place, readers pick the version visible to their snapshot timestamp, and writers check write-write conflicts at commit. The trade-off you accept is storage and cleanup cost — old versions accumulate, you need vacuuming or compaction, long-running read snapshots pin old versions and bloat storage, and write-write conflicts still need first-committer-wins or explicit locking. Snapshot isolation, the level most MVCC systems actually provide, is not serializable: write-skew anomalies slip through because two transactions can each read a consistent snapshot and then write disjoint rows that together violate an invariant. If your invariant spans multiple rows — balances, quotas, uniqueness across partitions — snapshot isolation alone will corrupt you, and you need serializable snapshot isolation or explicit predicate locks on top."
+    },
+    {
+      "type": "table",
+      "caption": "Same goal, different bill. Pick by contention and abort cost.",
+      "headers": [
+        "Protocol",
+        "What you gain",
+        "What you pay",
+        "Breaks when"
+      ],
+      "rows": [
+        [
+          "Two-phase locking (2PL)",
+          "Serializable by construction, simple reasoning",
+          "Blocking, deadlocks, lock hold time tied to latency",
+          "Hot rows + long transactions cause queueing"
+        ],
+        [
+          "Optimistic validation",
+          "No blocking when conflicts are rare, high parallelism",
+          "Wasted work on abort, retry storms, starvation",
+          "High write contention on same keys"
+        ],
+        [
+          "MVCC + snapshot isolation",
+          "Readers never block writers, stable snapshots",
+          "Version storage, vacuum cost, write-skew allowed",
+          "Multi-row invariants, long snapshots pin bloat"
+        ],
+        [
+          "Timestamp ordering",
+          "Decentralized order without lock manager",
+          "Clock dependence, rejects on late arrivals",
+          "Clock skew, partitioned sequencer"
+        ],
+        [
+          "Granular / hierarchical locks",
+          "Fine parallelism with escalation fallback",
+          "Lock manager overhead, escalation cliffs",
+          "Wrong granularity: too fine = overhead, too coarse = stalls"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Deadlock is the loudest failure and the easiest to diagnose: throughput drops to zero on a subset of keys, `SHOW ENGINE INNODB STATUS` or your lock-wait graph shows a cycle, and p99 spikes while CPU stays low because threads are parked, not working. The root cause is almost always inconsistent lock acquisition order across code paths or a lock held across an RPC — transaction A locks row 1 then calls a downstream service that locks row 2, while transaction B does the reverse. Fix the ordering, shrink the transaction boundary so no network call happens inside a lock, and set a lock-wait timeout with victim selection instead of waiting forever. If you see periodic deadlock storms after a deploy, diff the write order; someone reordered two updates."
+    },
+    {
+      "type": "paragraph",
+      "text": "The quiet failures are worse because metrics look green. **Lost update** shows up as counters that drift downward, inventory that oversells, or balances that do not reconcile — two transactions read version 5, both compute version 6, last writer wins and one increment vanishes. **Dirty reads** show up as downstream actions on phantom data: an order confirmation for a payment that rolled back. **Non-repeatable reads and phantoms** show up as flaky reports where the same query inside one transaction returns different rows. **Write skew under snapshot isolation** shows up as invariant violations with no overlapping writes — two on-call doctors each read that one is on duty and both go off duty. The symptom pattern is the clue: reconciliation mismatches mean lost updates, actions on rolled-back data mean dirty reads, and invariant breaks with disjoint write-sets mean you assumed snapshot isolation was serializable when it is not."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Deadlock: threads parked, lock-wait graph has a cycle, p99 spikes with low CPU — check lock order and RPCs inside transactions.",
+        "Retry storm: abort rate climbs with throughput, CPU burns with no commit progress — you used optimistic control on a hot key.",
+        "Version bloat: storage grows, vacuum cannot keep up, reads slow down — a long snapshot or analytics query is pinning old versions.",
+        "Skewed queueing: one partition is hot, others idle, lock-wait time concentrates on few keys — granularity too coarse or hashing too naive.",
+        "Phantom invariant breaks: no write-write conflict in logs but business rule violated — write-skew under snapshot isolation."
+      ]
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "OptimisticAccount.java",
+      "code": "public boolean transfer(AccountRow row, long debit, long expectedVersion) {\n  // Read phase already captured expectedVersion. Validate at commit.\n  String sql = \"UPDATE accounts SET balance = balance - ?, version = version + 1 \"\n             + \"WHERE id = ? AND version = ? AND balance >= ?\";\n  int updated;\n  try (var ps = conn.prepareStatement(sql)) {\n    ps.setLong(1, debit);\n    ps.setLong(2, row.id());\n    ps.setLong(3, expectedVersion);\n    ps.setLong(4, debit);\n    updated = ps.executeUpdate();\n  }\n  // updated == 0 means conflict or insufficient funds: abort, back off, retry.\n  // WHY this shape: no lock held during user think time; conflict cost\n  // is a retry, not a queue. Trade-off: hot keys thrash — switch to\n  // pessimistic SELECT ... FOR UPDATE when abort rate exceeds ~5-10%.\n  return updated == 1;\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the anomaly budget first",
+          "text": "Ask what inconsistency is tolerable: can a read see uncommitted data, can two increments collapse, can a report shift mid-transaction? Map answers to an isolation level before naming any protocol. Strong candidates state serializability versus snapshot isolation explicitly."
+        },
+        {
+          "title": "Characterize contention and read-write ratio",
+          "text": "State your assumption out loud: low contention favors optimistic or MVCC, high contention on few keys favors pessimistic row locks. Cite abort cost versus wait cost as the deciding trade-off, not fashion."
+        },
+        {
+          "title": "Pick granularity and scope",
+          "text": "Explain row versus predicate versus table locks, and single-shard versus cross-shard transactions. Distributed transactions need two-phase commit or a saga; say which and why atomicity across shards costs latency and availability."
+        },
+        {
+          "title": "Close the distributed gaps",
+          "text": "Address clocks, replicas, and failures: how timestamps stay ordered, how readers get snapshots from replicas, what happens when a coordinator crashes mid-commit. Mention deadlock detection, lock timeouts, and idempotent retries."
+        },
+        {
+          "title": "Name the failure you accept",
+          "text": "End with what still breaks: retry storms, version bloat, write-skew, or coordinator blocking. Interviewers promote answers that price the choice, not answers that claim one protocol wins everywhere."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail the round"
+    },
+    {
+      "type": "list",
+      "items": [
+        "“MVCC means serializable.” It usually means snapshot isolation, which still allows write-skew. If the invariant spans rows, you need extra checks.",
+        "“Optimistic is always faster because it is lock-free.” It is faster only when conflicts are rare. On a hot counter it is a retry loop that never commits.",
+        "“Higher isolation is always safer.” Higher isolation buys correctness with blocking and aborts. Running analytics at serializable stalls writers for no benefit.",
+        "“Locks and latches are the same.” Latches protect in-memory structures for microseconds; locks protect logical data for the transaction lifetime. Confusing them mis-sizes every bottleneck.",
+        "“Retries fix everything.” Retries without idempotence and exponential backoff turn one conflict into a thundering herd. Make the commit conditional and the retry bounded.",
+        "“A distributed transaction is just a bigger local one.” Cross-shard atomic commit adds a coordinator, extra round trips, and blocking on coordinator failure — that is why sagas exist."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use what"
+    },
+    {
+      "type": "table",
+      "caption": "Match the protocol to contention, not to hype.",
+      "headers": [
+        "Scenario",
+        "Use",
+        "Avoid",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Read-heavy with rare writes",
+          "MVCC with snapshot reads",
+          "Pessimistic read locks",
+          "Readers should never queue behind writers"
+        ],
+        [
+          "Hot counter, short updates",
+          "Pessimistic row lock or single-writer queue",
+          "Blind optimistic retry",
+          "Abort cost exceeds wait cost under contention"
+        ],
+        [
+          "Long multi-row read + invariants",
+          "Serializable or predicate locks",
+          "Snapshot isolation alone",
+          "Phantoms and write-skew violate cross-row rules"
+        ],
+        [
+          "Cross-shard writes needing atomicity",
+          "Two-phase commit for few shards",
+          "Naive multi-write without coordinator",
+          "Partial commit is corruption; price is latency"
+        ],
+        [
+          "Cross-service long workflow",
+          "Saga with compensations",
+          "Distributed lock held across RPCs",
+          "Holding locks over the network guarantees stalls"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **“I enforce a serial order with MVCC for non-blocking reads by default, pessimistic row locks for hot contended writes, and serializable checks only where a multi-row invariant demands it — because each step up in isolation is paid in waiting, retries, or version storage.”**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:12:10.477Z",
+    "problems": []
+  }
+}

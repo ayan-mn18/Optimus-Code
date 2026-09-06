@@ -1,0 +1,323 @@
+{
+  "slug": "remote-distributed-locks-needed-in-distributed-transactions",
+  "title": "Remote & Distributed Locks (Needed in Distributed Transactions)",
+  "summary": "Distributed locks don't give you mutual exclusion — leases plus fencing do. When and how to use them without corrupting data.",
+  "kind": "HLD",
+  "problemSlug": "remote--distributed-locks-needed-in-distributed-transactions-97-319",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Medium",
+  "coverEmoji": "🔒",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "distributed-locks",
+    "fault-tolerance",
+    "consensus",
+    "HLD"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "How to do distributed locking - Martin Kleppmann",
+      "url": "https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html",
+      "source": "martin.kleppmann.com",
+      "kind": "article"
+    },
+    {
+      "title": "Why Distributed Locks are a Trap (and How to Avoid Them) - YouTube",
+      "url": "https://www.youtube.com/watch?v=B6W0TXEirsQ",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Distributed Locks: Why Microservices Need Them — and Why They Still ...",
+      "url": "https://medium.com/@vinayak.chobe/distributed-locks-why-microservices-need-them-and-why-they-still-fail-in-production-2b9b36e6bec7",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Distributed Locking: A Practical Guide - by Oskar Dudycz",
+      "url": "https://www.architecture-weekly.com/p/distributed-locking-a-practical-guide",
+      "source": "architecture-weekly.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A distributed lock is **not a lock. It is a lease with an expiration**, granted by a third party that can be wrong. If your correctness depends on exclusion holding *after* the lease expires, you have already lost. The only safe design is **lease + fencing token checked by the resource itself** — everything else is optimisation, not safety."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A distributed lock gives you **best-effort single ownership of a named resource across processes that share nothing** except a coordination service. One holder at a time may act on `order:8421`, `job: nightly-rollup`, or `account:87` while others wait, back off, or fail fast. The lock server — Redis, ZooKeeper, etcd, a database row — records `resource -> owner-token + expiry`. It does not block threads. It does not stop a paused process from waking up and writing. It just answers the question *who holds this name right now, as far as I know*. That gap between *as far as I know* and *what is actually true* is where every outage lives. Choose the implementation based on what happens when that gap opens: nothing much, or corrupted state."
+    },
+    {
+      "type": "paragraph",
+      "text": "Split every use into two buckets, because they demand opposite designs. **Efficiency locks** exist to avoid duplicate work: run the cron on one node, suppress the second email, coalesce cache refreshes. If exclusion breaks and two nodes do the work, you waste money or annoy a user — nothing corrupts. A single Redis `SET NX PX` or a database row is plenty here, and quorum buys you nothing. **Correctness locks** exist to prevent two writers from interleaving updates to shared state: deduct inventory, mutate a file, drive an external actuator. If exclusion breaks, you get lost updates, split brain, or irreversible side effects. For this bucket a bare lock is **never sufficient**, no matter how many nodes run it. You need a lock service with strong consistency *plus* a fencing mechanism at the storage layer. Interviewers dock you for confusing the two — proposing ZooKeeper for duplicate emails is over-engineering, proposing single Redis for ledger writes is a correctness bug."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: lease, heartbeat, release"
+    },
+    {
+      "type": "paragraph",
+      "text": "Nobody implements a blocking distributed mutex. What gets built is a **timed lease**: acquire if absent, renew by heartbeat, expire automatically so a dead holder cannot block the system forever. The `TTL` is the core trade-off. Short TTL means fast recovery when a holder crashes — but forces frequent renewals and raises the chance a slow or paused holder loses the lease mid-work. Long TTL means stable ownership during GC pauses and network blips — but turns every crash into minutes of unavailability. That is why every serious library couples a short TTL (5–30s) with a background renewal thread that extends only while the holder is alive and healthy, and stops on shutdown or pause. Release must be **owner-checked**: delete only if the stored token still equals yours. Release without a token check lets a stale holder delete its successor's lock, collapsing exclusion exactly when you needed it."
+    },
+    {
+      "type": "mermaid",
+      "title": "Lease lifecycle",
+      "caption": "Acquire with token, extend by heartbeat, release by compare-and-delete.",
+      "code": "flowchart TD\n  A[\"Client generates random token\"] --> B[\"SET lock-key token NX PX=TTL\"]\n  B -->|\"key absent: acquired\"| C[\"Do work, renew TTL in loop\"]\n  B -->|\"key present: denied\"| D[\"Backoff, retry or fail fast\"]\n  C --> E[\"Release with Lua: delete only if token matches\"]\n  C -->|\"crash or stop renew\"| F[\"TTL expires, next waiter can acquire\"]"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "redis_lease.py",
+      "code": "import uuid, time, redis\nr = redis.Redis()\nACQUIRE = \"return redis.call('set', KEYS[1], ARGV[1], 'NX', 'PX', ARGV[2])\"\nRELEASE = \"if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end\"\n\ndef acquire(key: str, ttl_ms: int, wait_ms: int) -> str | None:\n    token = uuid.uuid4().hex  # owner identity, never reuse\n    deadline = time.monotonic() * 1000 + wait_ms\n    while time.monotonic() * 1000 < deadline:\n        if r.eval(ACQUIRE, 1, key, token, ttl_ms):\n            return token\n        time.sleep(0.05)\n    return None\n\ndef release(key: str, token: str):\n    # WHY Lua: GET + DEL must be atomic, else you delete your successor.\n    r.eval(RELEASE, 1, key, token)"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Never DEL a lock you did not verify",
+      "text": "`GET` then `DEL` in two round trips is broken. Between your `GET` and your `DEL` the lease can expire, a second client acquires it, and your stale `DEL` removes *their* lock. Both clients then believe they hold it. The fix is mechanical: **store a random token on acquire, compare-and-delete with a script on release**. If your client library does not do this, replace the library."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why TTL alone can never be safe: fencing"
+    },
+    {
+      "type": "paragraph",
+      "text": "Leases expire while work is still in flight. A process suffers a 15-second garbage-collection pause, its TTL lapses, a second process acquires the same lease and starts writing, then the first process wakes up *still believing it holds the lock* and writes anyway. No lock service can prevent this — from its viewpoint both acquisitions were sequential and valid. Clocks make it worse: if the holder's clock jumps or Redis's `EXPIRE` fires early relative to the holder, the window of dual ownership widens silently. The trade-off is brutal and unavoidable: you need expiry for liveness (crashed holders must not wedge you), but expiry destroys safety (live-but-slow holders become impostors). The way out is to stop asking the lock service to guarantee safety. Let it provide **liveness and ordering**, and push **safety down to the resource** with a monotonically increasing fencing token. The lock service hands out `1, 2, 3...` on every grant. The storage layer persists the highest token it has honoured and rejects any write with a smaller one. A stale holder's writes then fail closed even though it still thinks it is the owner."
+    },
+    {
+      "type": "mermaid",
+      "title": "Fencing blocks the stale writer",
+      "caption": "Lock service orders holders; storage rejects old tokens.",
+      "code": "flowchart LR\n  L[\"Lock service: counter 1, 2, 3\"] --> A[\"Client A gets token 1\"]\n  L --> B[\"Client B gets token 2 after A stalls\"]\n  A -->|\"write x with token 1\"| S[\"Storage: max seen = 2\"]\n  B -->|\"write x with token 2\"| S\n  S -->|\"reject 1, accept 2\"| R[\"One winner, no corruption\"]"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "fencing_write.py",
+      "code": "# WHY fencing: the resource, not the lock server, enforces exclusion.\n# Lock service must return a strictly increasing fence token per grant.\n# e.g. ZooKeeper sequential node, etcd revision, Redis INCR, DB sequence.\n\ndef guarded_write(db, key: str, value: str, fence: int):\n    # Atomically: reject if fence <= stored_fence\n    updated = db.execute(\"\"\"\n        UPDATE records SET data = %s, fence = %s\n        WHERE id = %s AND fence < %s\n    \"\"\", (value, fence, key, fence))\n    if updated == 0:\n        raise StaleOwner(\"token expired: another holder superseded you\")\n    return True"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Implementations, honestly compared"
+    },
+    {
+      "type": "table",
+      "caption": "Pick by consistency need and failure budget, not by fashion.",
+      "headers": [
+        "Approach",
+        "How exclusion is decided",
+        "Strength",
+        "Weakness / trade-off"
+      ],
+      "rows": [
+        [
+          "Single Redis `SET NX PX`",
+          "One in-memory primary; expiry by its clock",
+          "Simple, fast, fine for efficiency locks; auto-expiry gives liveness",
+          "Async replicas can both grant same lock after failover; clock jump breaks TTL; no fencing counter without extra work"
+        ],
+        [
+          "Quorum Redis (Redlock-style)",
+          "Majority of N independent instances, with validity-time deduction",
+          "Survives minority failure without full consensus engine",
+          "Still depends on wall-clock bounds and timing assumptions; needs fencing anyway; operational cost of N nodes for weak gain — prefer real consensus if you pay quorum cost"
+        ],
+        [
+          "ZooKeeper / etcd (ephemeral sequential nodes)",
+          "Consensus log; session expiry deletes node; ordering gives fencing",
+          "Strong consistency, session-based liveness, natural monotonic revision for fencing; recipe libraries handle herding",
+          "Higher latency and operational weight; session timeout is the same TTL trade-off in new clothes; clients must handle session loss as permanent fence invalidation"
+        ],
+        [
+          "Database advisory / row lease",
+          "`SELECT ... FOR UPDATE` or conditional `UPDATE ... WHERE owner/token`",
+          "No new infra; transactions give atomic acquire; fencing column is natural",
+          "Lock table becomes hotspot and failover risk; TTL needs sweeper job which itself needs leadership; throughput caps early"
+        ],
+        [
+          "K8s Lease / single-scheduler pinning",
+          "One object, one writer via API optimistic concurrency",
+          "Good enough for run-once controllers and cron without new systems",
+          "API server is the SPOF in practice; lease durations are coarse; not a general mutual-exclusion primitive"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Say this with a spine: **if you need correctness, use ZooKeeper/etcd or a transactional store and still add fencing — if you only need efficiency, use single Redis or the database you already run.** Running five Redis nodes to avoid operating etcd is the worst of both worlds: you pay quorum complexity without getting a consensus log or a trustworthy fencing counter. Conversely, dragging etcd into a dedup-email path is resume-driven design. Name the trade-off out loud: consistency and operability cost latency and headcount."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Distributed locks fail in exactly three shapes: **two holders at once, no holder ever, or a holder that cannot make progress.** Two-at-once comes from expiry during a pause, clock skew, or an unsafe release deleting a successor. Never-available comes from a TTL far longer than mean time to crash, a renewal thread that died silently, or a lock service partitioned away from every worker. No-progress comes from forgetting timeouts on the wait path: fifty workers block forever on a key whose owner is stuck in a downstream call, then thunder back when it releases. All three look identical from the outside at first — latency climbs, then duplicates or gaps appear in downstream data. Your instrumentation must distinguish them: emit `lock.hold_time`, `lock.wait_time`, `lock.renew_fail`, and `fence.rejected` as first-class metrics, or you will misdiagnose a fencing rejection as a database error."
+    },
+    {
+      "type": "table",
+      "caption": "Symptoms you will actually page on.",
+      "headers": [
+        "Symptom",
+        "Likely cause",
+        "What to check first"
+      ],
+      "rows": [
+        [
+          "Duplicate side effects: two emails, double charge",
+          "Lease expired mid-work; paused holder + successor both active",
+          "Hold time vs TTL; GC pause logs; are writes fenced?"
+        ],
+        [
+          "Successor's lock vanishes, both proceed",
+          "Stale client `DEL` without token compare",
+          "Client library release path; switch to Lua compare-delete"
+        ],
+        [
+          "Job stalls for full TTL after crash",
+          "TTL too long; no heartbeat; renewal thread blocked",
+          "Renewal success rate; shorten TTL + add heartbeat; add wait timeout"
+        ],
+        [
+          "Split brain after Redis failover",
+          "Replica promoted without lock state; two primaries granted",
+          "Replication mode; for correctness work, move to consensus store"
+        ],
+        [
+          "Workers pile up, then stampede",
+          "Unbounded blocking wait, no jitter or deadline",
+          "Wait-queue depth; add try-lock with deadline + jittered backoff"
+        ],
+        [
+          "Fencing rejections spike",
+          "Clock skew or chronic slowness causing superseded writes",
+          "NTP offset, p99 pause time; treat rejection as correct behaviour, retry by re-acquiring"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The GC-pause interleaving you must draw on a whiteboard",
+      "text": "Holder A acquires with 10s TTL. At 8s it pauses for 12s. TTL fires at 10s. B acquires, writes with fence `7`. A wakes at 20s and writes with fence `6`. **Without fencing, A's write silently clobbers B's.** With fencing, storage rejects `6 < 7` and A must re-acquire. If you cannot explain this timeline, do not claim your design is safe."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What to say when they ask about distributed transactions"
+    },
+    {
+      "type": "paragraph",
+      "text": "Locks do not make microservice writes transactional. Holding a lock across two services and two databases gives you **distributed mutual exclusion with none of atomicity, isolation, or rollback** — a slow, deadlock-prone 2PC without the C. The lock serialises entry but each store still commits independently, so a crash between commit one and commit two leaves partial state that no lease expiry will heal. Prefer **idempotent consumers + outbox + saga/compensation** for multi-step workflows, and reserve the lock for the narrow span where true single-writer ordering is required: electing the saga driver, guarding a non-idempotent leg, or serialising access to a legacy system that cannot do conditional writes. Keep the critical section tiny, never call another network service while holding a correctness lock unless the callee also checks the fence token. Every millisecond under lock is availability you borrowed from every other contender."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the bucket first",
+          "text": "Ask what breaks if two holders exist. Duplicate cron run means efficiency — propose single Redis try-lock with deadline. Money movement means correctness — say so and demand fencing. Interviewers score this split immediately."
+        },
+        {
+          "title": "Draw acquire, renew, release with tokens",
+          "text": "Show random owner token, TTL, heartbeat loop, and atomic compare-delete. State the TTL trade-off: short recovers fast but risks false expiry, long is stable but wedges on crash."
+        },
+        {
+          "title": "Volunteer the failure timeline",
+          "text": "Walk the GC-pause interleaving unprompted. Then add fencing: lock service issues monotonic tokens, storage rejects stale ones. This is the signal for senior+."
+        },
+        {
+          "title": "Compare two implementations and reject one",
+          "text": "Pick single Redis versus etcd/ZooKeeper, justify by consistency need and ops cost. Explicitly reject quorum-without-consensus if correctness matters. Have an opinion."
+        },
+        {
+          "title": "Bound the critical section",
+          "text": "Give wait timeout, hold timeout, jittered backoff, and metrics. Say what you never do under lock: fan out to downstream RPCs, hold across sagas, or block forever."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail candidates"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**`SET NX PX` alone is safe if the TTL is long enough.** No — any finite TTL can expire mid-work, and infinite TTL wedges on crash. Length tunes probability, fencing provides safety.",
+        "**Releasing with `DEL` is fine.** Only with a token compare. Naked `DEL` lets a stale holder murder its successor.",
+        "**Redlock gives consensus-level safety.** It gives availability against minority failure under timing assumptions. Without fencing at the resource, dual ownership is still possible.",
+        "**A lock makes scattered writes atomic.** It serialises *entry*, not *commit*. Crash between two stores still leaves partial effects — you need outbox/saga for atomicity.",
+        "**Blocking wait is simpler and safe.** Unbounded wait turns one stuck holder into a fleet-wide stall plus stampede. Always use try-lock with deadline, backoff, and jitter.",
+        "**Fencing tokens can come from wall-clock timestamps.** Clocks skew. Tokens must be monotonic from the lock service: sequence node, log revision, or atomic increment."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Default to avoiding the lock; earn it with a reason.",
+      "headers": [
+        "Use a distributed lock when",
+        "Avoid it — do this instead when"
+      ],
+      "rows": [
+        [
+          "Exactly one cron/scheduler must fire despite N replicas",
+          "Work is idempotent — allow duplicates and dedup downstream"
+        ],
+        [
+          "One writer must drive a legacy file, device, or API without conditional writes",
+          "Store supports compare-and-set / conditional write — use optimistic concurrency directly"
+        ],
+        [
+          "Electing a driver for a short, well-bounded step",
+          "Whole saga needs atomicity — use outbox + saga with compensation, not a giant lock"
+        ],
+        [
+          "Suppressing duplicate expensive computation across fleet",
+          "Contention is high and sustained — partition/shard the work instead of serialising it"
+        ],
+        [
+          "Bridging to a system that cannot fence — as efficiency aid only",
+          "Correctness is required but resource cannot check tokens — redesign the resource; no lock can save you"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Use short leases with owner-checked release for liveness, and enforce safety with monotonic fencing tokens at the resource — locks order access, fencing prevents corruption, and neither replaces transactions.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:56:57.530Z",
+    "problems": []
+  }
+}

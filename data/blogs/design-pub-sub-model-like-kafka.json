@@ -1,0 +1,401 @@
+{
+  "slug": "design-pub-sub-model-like-kafka",
+  "title": "Design Pub-Sub Model like Kafka",
+  "summary": "Design a Kafka-like pub-sub as an append-only log with per-subscriber offsets and pull-based workers — with thread-safe Java code, concurrency design, and follow-ups.",
+  "kind": "LLD",
+  "problemSlug": "design-pub-sub-model-like-kafka-45-85",
+  "topic": "LLD + Concurrency Interview Problems",
+  "difficulty": "Hard",
+  "coverEmoji": "📨",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Pub-Sub",
+    "Kafka",
+    "Multithreading"
+  ],
+  "evidence": [
+    {
+      "url": "https://leetcode.com/discuss/interview-question/1091960/uber-l5a-interview-machine-coding-multithreaded-queue-like-kafka/",
+      "title": "Uber L5a Interview | Machine coding: Multithreaded Queue like Kafka",
+      "source": "leetcode.com",
+      "kind": "report",
+      "companies": [
+        {
+          "name": "Uber",
+          "role": "L5a",
+          "date": "Mar 03, 2021",
+          "quote": "I recently appeared for an interview in Uber. The round was machine coding round and they asked me to build a system like kafka where we will have topics and multiple publishers and susbcribers should be able to interact with it without one blocking another."
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "Uber L5a Interview | Machine coding: Multithreaded Queue like Kafka",
+      "url": "https://leetcode.com/discuss/interview-question/1091960/uber-l5a-interview-machine-coding-multithreaded-queue-like-kafka/",
+      "source": "leetcode.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design Pub-Sub Model like Kafka | LLD + Multithreading - YouTube",
+      "url": "https://www.youtube.com/watch?v=_7Ft2GzR2tY",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Low Level design of Cache | LLD + Multithreading - YouTube",
+      "url": "https://www.youtube.com/watch?v=8qcxn7eJdw4",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "LLD + Multithreading | Movie Ticket Booking System - YouTube",
+      "url": "https://www.youtube.com/watch?v=dX5iHM2jlZw",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Designing a Kafka-Like Message Queue for Machine Coding Interviews",
+      "url": "https://dev.to/machinecodingmaster/java-lld-designing-a-kafka-like-message-queue-for-machine-coding-interviews-411l",
+      "source": "dev.to",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "This is not a queue question. It is a **state ownership** question. Anyone can wire a `BlockingQueue` between a producer and a consumer. The real test is: **where does consumption progress live, and who is allowed to mutate it concurrently?** If you store progress in the broker by deleting messages on read, you break broadcast. If you store it in the consumer with no coordination, you get lost wakeups and duplicate delivery. The passing design separates three things cleanly: an **immutable append-only log per topic**, **independent offsets per topic-subscriber pair**, and **isolated delivery workers**. Concurrency, ordering, and replay all fall out of that split. Miss it and every follow-up collapses."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design an in-memory pub-sub broker with Kafka-like semantics. Producers append messages to named topics without knowing who consumes them. Subscribers register to topics and each receives **every** message in order, at its own pace, even if it was offline or slow when the message was published. Consumption must not destroy the message for other subscribers. Subscribers must be able to rewind and replay from an earlier offset. The whole thing must work with concurrent publishers and concurrent consumers without losing messages, delivering out of order to the same subscriber, or busy-spinning worker threads. You need `createTopic`, `publish`, `subscribe`, `resetOffset`, and clean `shutdown` — all thread-safe, all non-blocking for publishers."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`createTopic(String name)` — idempotent creation of a topic log. Returns existing instance if already present.",
+        "`publish(String topic, Message msg)` — appends to the topic log and wakes only that topic's subscribers. Never blocks on slow consumers.",
+        "`subscribe(String topic, ISubscriber subscriber)` — creates independent consumption state starting at offset `0`, backed by its own worker.",
+        "`resetOffset(String topic, String subscriberId, int offset)` — rewinds or fast-forwards one subscriber without affecting any other subscriber on the same topic."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Queue or broadcast?",
+          "text": "Ask explicitly: does each message go to exactly one consumer or to all subscribers? Kafka-like means broadcast per topic with independent progress. This one answer kills the `BlockingQueue.take()` design. State it and get agreement."
+        },
+        {
+          "title": "Push or pull, and where does the thread live?",
+          "text": "Ask who drives delivery. Broker pushing on the publish thread couples producer latency to the slowest consumer — unacceptable. Agree on pull: each topic-subscriber pair owns a worker that polls its own offset. Trade-off: slightly higher latency for full isolation."
+        },
+        {
+          "title": "Ordering guarantee?",
+          "text": "Ask what order matters. Promise per-topic-subscriber FIFO, not global ordering across topics. That lets you shard workers per subscription without cross-topic coordination. If they demand total order, say the cost is a single global lock and you refuse to pay it."
+        },
+        {
+          "title": "Delivery semantics?",
+          "text": "Ask whether at-most-once, at-least-once, or exactly-once is expected. In-memory without transactions can only honestly offer at-least-once if you advance the offset after successful `onMessage`, at-most-once if before. Agree on at-least-once and idempotent consumers."
+        },
+        {
+          "title": "Durability and capacity?",
+          "text": "Ask if the log is bounded, persistent, or pure in-memory, and what happens on overflow. Agree on unbounded in-memory for the interview with a stated extension point for retention and segment compaction. Do not build disk persistence in 45 minutes."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Scope agreed with the interviewer before writing any code.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Topics hold ordered, immutable message log",
+          "Replay and broadcast both require non-destructive reads"
+        ],
+        [
+          "Functional",
+          "Each subscriber has independent offset per topic",
+          "Slow consumer must not block fast consumer; trade-off is O(subscribers x lag) memory for pending views"
+        ],
+        [
+          "Functional",
+          "subscribe starts at 0; resetOffset allows replay",
+          "Replay is the Kafka differentiator over plain queues"
+        ],
+        [
+          "Non-functional",
+          "publish is O(1) amortized and never blocks on consumers",
+          "Producer throughput is decoupled from consumption; wakeup is signal-only"
+        ],
+        [
+          "Non-functional",
+          "Per-subscriber FIFO preserved under concurrency",
+          "Parallelism across subscriptions, serial within one; trade-off is throughput vs ordering"
+        ],
+        [
+          "Non-functional",
+          "Graceful shutdown stops workers without message loss in log",
+          "Executor lifecycle is graded as heavily as the happy path"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the destructive queue"
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive answer is one `BlockingQueue<Message>` per topic. `publish` does `queue.offer(msg)`. Each subscriber thread does `queue.take()` and processes. It looks concurrent and it passes a single-consumer demo. It is wrong for pub-sub and the interviewer knows it in ten seconds. First, `take()` removes the element, so the second subscriber never sees the message — you built a work queue, not broadcast. Second, there is no offset, so rewind is impossible and a slow consumer either blocks everyone or loses data depending on whether you use `poll` or `take`. Third, waking is implicit in the queue, so you cannot add per-subscriber filtering or lag monitoring later. The trade-off you made without realising: you traded correctness of broadcast for the convenience of a built-in blocking primitive. That trade is never acceptable here."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NaiveBroker.java",
+      "code": "class NaiveBroker {\n    private final Map<String, BlockingQueue<String>> topics = new ConcurrentHashMap<>();\n    public void createTopic(String name) {\n        topics.putIfAbsent(name, new LinkedBlockingQueue<>());\n    }\n    public void publish(String topic, String msg) throws InterruptedException {\n        topics.get(topic).put(msg); // blocks producer if bounded; couples producer to consumer speed\n    }\n    // FATAL: take() destroys the message. Subscriber B never sees what A consumed.\n    // No offset, no replay, no independence. This is a work queue, not Kafka.\n    public String consume(String topic) throws InterruptedException {\n        return topics.get(topic).take();\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Why this fails the follow-up",
+      "text": "Ask the candidate to add a second subscriber or `resetOffset(2)` and the flat queue has nowhere to put that state. Progress was stored implicitly as **absence from the queue**. Kafka stores progress explicitly as **an integer offset per reader**. That one shift — from destructive read to indexed read over an append-only list — is the entire design. If you start with `BlockingQueue`, you will rewrite everything when the follow-up lands. Start with the log."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design — log, not queue"
+    },
+    {
+      "type": "paragraph",
+      "text": "Model each topic as an **append-only `ArrayList<Message>` guarded by a `ReentrantReadWriteLock` or a striped lock**, plus a monotonically increasing sequence number. Publishers only append under the write lock and then signal subscribers; they never touch consumer state. Each `(topic, subscriber)` pair gets a `TopicSubscriber` object holding its own `AtomicInteger offset` and a dedicated worker `Runnable`. The worker loops: snapshot log size under read lock, copy the slice from `offset` to end, release the lock, then invoke `subscriber.onMessage()` outside any broker lock, then advance the offset. Copy-then-process is deliberate. Holding the topic lock during user callback would serialize all subscribers behind the slowest `onMessage` and risk deadlock if the callback republishes. The trade-off: you pay a short-lived `ArrayList` copy per batch to buy lock freedom during I/O. Offsets advance after successful delivery for at-least-once semantics; on exception the worker retries without skipping. Waiting uses `wait/notify` or a `Semaphore` per `TopicSubscriber`, not busy spin, so idle subscribers cost zero CPU."
+    },
+    {
+      "type": "mermaid",
+      "title": "Broadcast via offsets",
+      "caption": "One shared log, independent cursors, isolated workers.",
+      "code": "flowchart TD\n    P[\"Producer: publish topic msg\"] --> B[\"Broker\"]\n    B --> T[\"Topic: append-only log + lock\"]\n    T --> O1[\"TopicSubscriber A offset 3\"]\n    T --> O2[\"TopicSubscriber B offset 7\"]\n    O1 --> W1[\"Worker A: poll and deliver\"]\n    O2 --> W2[\"Worker B: poll and deliver\"]\n    W1 --> C1[\"Subscriber A onMessage\"]\n    W2 --> C2[\"Subscriber B onMessage\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Pull beats push here and you should say why unprompted. Push from the publish thread means one slow `onMessage` blocks `publish` for everyone — head-of-line blocking with unbounded blast radius. Pull inverts control: each subscriber consumes at its own pace, lag is simply `log.size() - offset` and becomes observable for free. The trade-off is wakeup latency: a pulled worker needs a signal on new append or a short park, adding microseconds versus a direct call. That is cheap compared to coupling producer throughput to consumer latency. It also makes backpressure natural — a lagging worker just holds an older offset while others race ahead, with no shared buffer to fill. This is why real log systems use long-poll, not callbacks on the write path."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Class structure"
+    },
+    {
+      "type": "mermaid",
+      "title": "Pub-sub class design",
+      "caption": "Broker owns topics; delivery state lives in TopicSubscriber, not in the queue.",
+      "code": "classDiagram\n    class Broker {\n        +createTopic(name)\n        +publish(topic, payload)\n        +subscribe(topic, subscriber)\n        +resetOffset(topic, subscriberId, offset)\n        +shutdown()\n    }\n    class Topic {\n        +addMessage(message)\n        +readFrom(offset)\n        +size()\n    }\n    class Message {\n        +payload\n        +sequence\n    }\n    class ISubscriber {\n        +getId()\n        +onMessage(message)\n    }\n    class TopicSubscriber {\n        +run()\n        +signal()\n        +setOffset(offset)\n    }\n    Broker --> Topic\n    Topic --> Message\n    Topic --> TopicSubscriber\n    TopicSubscriber --> ISubscriber"
+    },
+    {
+      "type": "paragraph",
+      "text": "Four entities, each with one job. `Message` is immutable — payload plus sequence — so sharing it across workers needs no copying and no lock. `Topic` owns the log and the lock, exposes only `addMessage` and `readFrom(offset)` returning a defensive copy of the suffix. It never knows about delivery threads. `ISubscriber` is the user callback interface; keeping it separate from `TopicSubscriber` separates client code from broker bookkeeping, which is exactly what lets you add consumer groups later without touching `Topic`. `TopicSubscriber` is the key invention: it binds one topic to one subscriber, holds the offset atomically, and implements `Runnable` so the broker can schedule it on a cached thread pool. `Broker` is a thin controller over `ConcurrentHashMap` of topics and subscriptions. It creates workers, routes `publish` to the right log, and signals only affected workers. No god class, no static state."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "PubSubBroker.java",
+      "code": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.atomic.*;\nimport java.util.concurrent.locks.*;\n\nfinal class Message {\n    final long sequence; final String payload;\n    Message(long sequence, String payload) { this.sequence = sequence; this.payload = payload; }\n}\n\ninterface ISubscriber {\n    String getId();\n    void onMessage(Message m) throws InterruptedException; // may be slow; never called under broker lock\n}\n\nclass Topic {\n    private final String name;\n    private final List<Message> log = new ArrayList<>();\n    private final ReadWriteLock rw = new ReentrantReadWriteLock();\n    private final AtomicLong seq = new AtomicLong(0);\n    private final List<TopicSubscriber> workers = new CopyOnWriteArrayList<>();\n    Topic(String name) { this.name = name; }\n    void addWorker(TopicSubscriber w) { workers.add(w); }\n    Message append(String payload) {\n        Message m;\n        rw.writeLock().lock();\n        try { m = new Message(seq.getAndIncrement(), payload); log.add(m); }\n        finally { rw.writeLock().unlock(); }\n        for (TopicSubscriber w : workers) w.signal(); // signal-only; publish never blocks on consumers\n        return m;\n    }\n    List<Message> readFrom(int offset) {\n        rw.readLock().lock();\n        try {\n            if (offset >= log.size()) return List.of();\n            return new ArrayList<>(log.subList(offset, log.size())); // copy so callback runs lock-free\n        } finally { rw.readLock().unlock(); }\n    }\n    int size() { rw.readLock().lock(); try { return log.size(); } finally { rw.readLock().unlock(); } }\n}\n\nclass TopicSubscriber implements Runnable {\n    private final Topic topic; private final ISubscriber sub;\n    private final AtomicInteger offset = new AtomicInteger(0);\n    private final Object park = new Object();\n    private volatile boolean running = true;\n    TopicSubscriber(Topic topic, ISubscriber sub) { this.topic = topic; this.sub = sub; }\n    void signal() { synchronized (park) { park.notify(); } }\n    void reset(int o) { offset.set(Math.max(0, o)); signal(); }\n    void stop() { running = false; signal(); }\n    public void run() {\n        while (running) {\n            List<Message> batch = topic.readFrom(offset.get());\n            if (batch.isEmpty()) {\n                synchronized (park) {\n                    try { park.wait(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }\n                }\n                continue;\n            }\n            for (Message m : batch) {\n                if (!running) return;\n                try { sub.onMessage(m); } // outside any topic lock: slow consumer cannot stall log\n                catch (Exception e) { break; } // do NOT advance offset: at-least-once retry\n                offset.incrementAndGet(); // advance after success only\n            }\n        }\n    }\n}\n\nclass Broker {\n    private final ConcurrentMap<String, Topic> topics = new ConcurrentHashMap<>();\n    private final ConcurrentMap<String, TopicSubscriber> subs = new ConcurrentHashMap<>();\n    private final ExecutorService pool = Executors.newCachedThreadPool();\n    public void createTopic(String name) { topics.putIfAbsent(name, new Topic(name)); }\n    public void publish(String topic, String payload) {\n        Topic t = topics.get(topic);\n        if (t == null) throw new IllegalArgumentException(\"no topic: \" + topic);\n        t.append(payload);\n    }\n    public void subscribe(String topic, ISubscriber s) {\n        Topic t = topics.get(topic);\n        if (t == null) throw new IllegalArgumentException(\"no topic: \" + topic);\n        TopicSubscriber w = new TopicSubscriber(t, s);\n        if (subs.putIfAbsent(topic + \":\" + s.getId(), w) != null) return;\n        t.addWorker(w); pool.execute(w);\n    }\n    public void resetOffset(String topic, String subId, int o) {\n        TopicSubscriber w = subs.get(topic + \":\" + subId);\n        if (w != null) w.reset(o);\n    }\n    public void shutdown() { subs.values().forEach(TopicSubscriber::stop); pool.shutdownNow(); }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "pubsub.py",
+      "code": "import threading, time\nclass Topic:\n    def __init__(self):\n        self._log, self._lock, self._cond = [], threading.RLock(), threading.Condition()\n    def append(self, msg):\n        with self._cond:\n            self._log.append(msg)\n            self._cond.notify_all()  # publishers never wait for consumers\n    def read_from(self, off):\n        with self._lock:\n            return list(self._log[off:])  # copy: process outside lock\nclass TopicSubscriber(threading.Thread):\n    def __init__(self, topic, handler):\n        super().__init__(daemon=True)\n        self.topic, self.handler, self.offset, self._run = topic, handler, 0, True\n    def run(self):\n        while self._run:\n            batch = self.topic.read_from(self.offset)\n            if not batch:\n                with self.topic._cond:\n                    self.topic._cond.wait(timeout=0.2)\n                continue\n            for m in batch:\n                self.handler(m)  # advance only after success -> at-least-once\n                self.offset += 1"
+    },
+    {
+      "type": "table",
+      "caption": "Cost model to state out loud.",
+      "headers": [
+        "Operation",
+        "Time",
+        "Space / notes"
+      ],
+      "rows": [
+        [
+          "publish",
+          "O(1) amortized append + O(S) signals",
+          "S = subscribers on that topic; signal is just notify, not delivery"
+        ],
+        [
+          "deliver one message to one subscriber",
+          "O(1) + cost of onMessage",
+          "Callback runs lock-free; slow consumer affects only its own worker"
+        ],
+        [
+          "readFrom(offset)",
+          "O(lag) copy",
+          "Batch copy trades transient garbage for never holding lock during I/O"
+        ],
+        [
+          "resetOffset",
+          "O(1)",
+          "Atomic set; other subscribers untouched — the payoff of per-pair state"
+        ],
+        [
+          "memory",
+          "O(messages + subscriptions)",
+          "Log shared; only integers scale with subscribers, not message copies"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency — the hard part"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three races decide pass or fail. First, concurrent publishers appending: guard the `ArrayList` with a write lock and assign the sequence inside the same critical section, otherwise two threads interleave and order becomes meaningless. `ReadWriteLock` is the right call because appends are short and reads for batch copies are frequent — trade-off is slightly higher append overhead versus allowing concurrent batch snapshots. Second, lost wakeup: if `publish` signals between the worker's `isEmpty` check and its `wait`, the worker sleeps forever. Fix it by signalling on a dedicated monitor per worker and re-checking the log after waking, plus a bounded timed wait as a backstop so a missed notify self-heals within milliseconds. Third, offset visibility: the offset must be `AtomicInteger` or volatile-guarded, because the reset thread and the worker thread mutate and read it concurrently; a plain `int` lets `resetOffset` vanish under JIT reordering. Workers run on a `CachedThreadPool` so subscriptions scale without pre-sizing, and `shutdown` stops workers first then interrupts the pool. Never call user code while holding the topic lock — that single rule prevents the deadlock where `onMessage` publishes back to the same topic."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "SlowSubscriberDemo.java",
+      "code": "// Demonstrates isolation: slow subscriber must not stall fast subscriber or publisher.\nclass SlowSubscriber implements ISubscriber {\n    private final String id;\n    SlowSubscriber(String id) { this.id = id; }\n    public String getId() { return id; }\n    public void onMessage(Message m) throws InterruptedException {\n        if (id.equals(\"slow\")) Thread.sleep(200); // simulates slow downstream\n        System.out.println(id + \" got seq=\" + m.sequence + \" : \" + m.payload);\n    }\n}\n// Usage:\n// Broker b = new Broker(); b.createTopic(\"orders\");\n// b.subscribe(\"orders\", new SlowSubscriber(\"slow\"));\n// b.subscribe(\"orders\", new SlowSubscriber(\"fast\"));\n// for (int i = 0; i < 10; i++) b.publish(\"orders\", \"evt-\" + i); // returns instantly\n// b.resetOffset(\"orders\", \"slow\", 0); // replay only slow, fast unaffected"
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Say this about guarantees",
+      "text": "Claim **at-least-once per subscriber, in order**, and defend it in one sentence: offset advances only after `onMessage` returns, so a crash or exception replays the same message rather than skipping it. That means consumers must be idempotent. Do not claim exactly-once — without a transactional outbox you cannot have it, and pretending otherwise is a trust-destroying answer. Trade-off stated, seniority signalled."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Consumer groups with competing consumers?",
+          "text": "Add a Group object holding its member TopicSubscribers and dispatch each message to exactly one member via round-robin on sequence modulo group size. Trade-off: you gain horizontal scale but lose global per-topic broadcast within the group — say both."
+        },
+        {
+          "title": "Partitions for parallelism?",
+          "text": "Shard one topic into N sub-logs keyed by hash of message key. Each partition keeps its own sequence and lock, so publishers to different keys proceed in parallel. Trade-off: ordering narrows to per-partition; cross-partition order is gone by design."
+        },
+        {
+          "title": "Bounded log and retention?",
+          "text": "Cap the list with a retention window or size, compact by dropping prefix below min live offset across subscribers. Trade-off: bounded memory versus breaking replay for a subscriber that lags past retention — surface lag as a metric and fail reset explicitly."
+        },
+        {
+          "title": "Offline subscribers and late joiners?",
+          "text": "Persist TopicSubscriber offsets in a map so re-subscribe resumes rather than restarting at zero. New subscribers default to end (like latest) or beginning (like earliest) based on a flag you add to subscribe. No code change to the hot path."
+        },
+        {
+          "title": "Backpressure and poison messages?",
+          "text": "Add per-worker bounded handoff queue plus dead-letter topic after K retries. A handler that always throws never advances its offset, so without a retry cap one poison message halts that subscriber forever. Name the cap."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Publish to non-existent topic: throw `IllegalArgumentException`, do not auto-create silently — auto-creation hides typos and partitions the log.",
+        "Duplicate `subscribe` with same subscriber id: idempotent no-op, do not spawn a second worker or messages double-deliver.",
+        "`resetOffset` beyond log size: clamp or park worker until log catches up; never throw inside the worker loop.",
+        "`onMessage` throws: break batch, keep offset, retry with backoff — advancing would silently drop data.",
+        "Subscriber that republishes to the same topic from `onMessage`: safe only because callback runs outside the topic lock; state this invariant.",
+        "Shutdown with in-flight batches: stop flag plus `shutdownNow`, log retained so restart can replay from persisted offsets.",
+        "Null or empty payload and null subscriber: fail fast at the API boundary, not deep in the worker thread where the stack trace is useless."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How you are graded"
+    },
+    {
+      "type": "table",
+      "caption": "Weak vs strong signals for this round.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Model",
+          "BlockingQueue per topic, take() consumes",
+          "Append-only log + per-pair offset; broadcast and replay fall out naturally"
+        ],
+        [
+          "Concurrency",
+          "synchronized everywhere or busy-spin poll",
+          "ReadWriteLock for log, lock-free callback, wait/notify with timed backstop, atomic offsets"
+        ],
+        [
+          "Threading",
+          "Publish thread calls subscriber directly",
+          "Dedicated worker per subscription on pooled executor; publisher never blocks"
+        ],
+        [
+          "Semantics",
+          "Claims exactly-once or ignores failures",
+          "States at-least-once, advances offset after success, demands idempotent consumers"
+        ],
+        [
+          "Extensibility",
+          "Cannot answer groups, partitions, retention",
+          "Points to exact seam: Group dispatcher, partition sharding, min-offset compaction"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "45-minute plan",
+      "text": "Minutes 0–5: lock the contract — broadcast not work-queue, pull workers, per-subscriber FIFO, at-least-once. Minutes 5–12: draw the log plus offset diagram and kill the `BlockingQueue` approach out loud. Minutes 12–30: code `Message`, `Topic`, `TopicSubscriber`, `Broker` in that order, narrating each lock and why the callback escapes it. Minutes 30–38: demo slow versus fast subscriber and `resetOffset` replay live. Minutes 38–45: take two follow-ups — consumer groups and retention — and sketch them as deltas, not rewrites. Close by stating every trade-off you paid: copy-per-batch for lock freedom, signal fan-out for producer isolation, integer-per-subscriber for replay."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:38:44.648Z",
+    "problems": []
+  }
+}

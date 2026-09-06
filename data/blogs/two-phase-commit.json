@@ -1,0 +1,321 @@
+{
+  "slug": "two-phase-commit",
+  "title": "Two Phase Commit",
+  "summary": "Two Phase Commit buys atomic commit across nodes by making everyone vote before anyone acts — and pays for it with blocking, held locks, and a coordinator that can freeze the world.",
+  "kind": "HLD",
+  "problemSlug": "two-phase-commit-96-216",
+  "topic": "Data consistency in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔒",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Distributed Systems",
+    "Consistency",
+    "Transactions"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Two-Phase Commit - Martin Fowler",
+      "url": "https://martinfowler.com/articles/patterns-of-distributed-systems/two-phase-commit.html",
+      "source": "martinfowler.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Two Phase Commit in Distributed Transaction? - Medium",
+      "url": "https://hongilkwon.medium.com/when-to-use-two-phase-commit-in-distributed-transaction-f1296b8c23fd",
+      "source": "hongilkwon.medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Distributed Transactions Explained: 2 Phase Commit vs Saga Pattern",
+      "url": "https://www.youtube.com/watch?v=DOFflggE_0Q",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Difference Between Two-Phase Commit and Saga Pattern - Baeldung",
+      "url": "https://www.baeldung.com/cs/two-phase-commit-vs-saga-pattern",
+      "source": "baeldung.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**2PC is vote-then-decide.** No participant exposes an update until every participant has promised it *can* commit. That promise is what gives you atomicity — and it is also what blocks you, holds locks, and dies when the coordinator dies. If you remember nothing else: **atomicity here is purchased with unavailability.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two Phase Commit is an **atomic commitment protocol** for a single logical transaction that touches state on multiple failure-independent nodes. One node acts as **coordinator** (transaction manager). The rest are **participants** (resource managers, shards, databases). The guarantee is narrow and strong: once the protocol decides, all operational participants eventually reach the **same** outcome — either all commit or all abort. No split where A commits and B rolls back because B never heard the news. That is atomicity across crash and message loss, not performance, not isolation by itself, not consensus on arbitrary values. The protocol assumes a fail-stop model with stable storage: nodes can crash and recover, messages can be delayed or lost and retried, but a recovered node can read what it durably recorded before crashing. Without that durable log, the guarantee collapses. 2PC does **not** elect leaders, does not replicate a log, and does not stay live during partitions. It prioritises agreement on outcome over ability to make progress."
+    },
+    {
+      "type": "paragraph",
+      "text": "Think of it as a contract with two binding moments. In phase one the coordinator asks: *can you promise to commit this exact update later, no matter what else happens, short of your own crash?* Each participant checks constraints, acquires locks, reserves inventory, forces a `PREPARED` record to disk, and only then votes `YES`. A `NO` vote means *I already know I cannot do it*. In phase two the coordinator, having collected votes, makes the single global decision and forces *that* decision to disk before telling anyone. Participants that voted `YES` have surrendered their right to unilaterally abort — they must wait for the decision and then obey it, even if they have to wait hours. That surrender is why the protocol is correct, and why operators hate it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: vote, decide, obey"
+    },
+    {
+      "type": "paragraph",
+      "text": "Phase 1 — **Prepare / voting.** The coordinator force-writes a `BEGIN` record, then sends `PREPARE(transaction-id, updates)` to every participant. Each participant executes the update tentatively: validate, take row or range locks, check uniqueness, stage redo/undo, and force-write either `PREPARED` or `ABORT` to its write-ahead log *before* replying. `YES` means: I hold everything I need and I will commit if told to, after recovery if necessary. This is the expensive part. Locks are now held across the network. Other transactions queue behind them. The participant cannot time out its promise — a local timeout after voting `YES` does not release it, because the coordinator may have already decided `COMMIT` on the strength of that vote. That is the trade-off most designs miss: you bought certainty for the coordinator by stealing autonomy from the participant."
+    },
+    {
+      "type": "paragraph",
+      "text": "Phase 2 — **Commit / abort.** If every vote is `YES`, the coordinator force-writes `COMMIT`, then broadcasts `COMMIT`. If any vote is `NO`, times out, or the coordinator itself decides to abort, it force-writes `ABORT` and broadcasts `ABORT`. A participant receiving `COMMIT` replays its staged update to the visible state, releases locks, force-writes `COMMIT`, and acks. On `ABORT` it discards staged state, releases locks, force-writes `ABORT`, and acks. The coordinator can forget the transaction only after all acks. Recovery is log-driven: on restart a coordinator with `COMMIT` in its log re-sends `COMMIT`; with only `BEGIN` and no decision it aborts. A participant that finds `PREPARED` but no decision is **in-doubt** — it must block, keep locks, and poll the coordinator or peers until it learns the decision. There is no safe unilateral escape."
+    },
+    {
+      "type": "mermaid",
+      "title": "2PC message flow",
+      "caption": "Vote must be unanimous before any commit is visible.",
+      "code": "flowchart TD\n  C1[Coordinator writes BEGIN] --> C2[Send PREPARE to all participants]\n  C2 --> P1[Participant validates, locks, WAL PREPARED]\n  P1 --> V{All votes YES?}\n  V -->|Yes, unanimous| D1[Coordinator writes COMMIT]\n  V -->|Any NO or timeout| D2[Coordinator writes ABORT]\n  D1 --> B1[Broadcast COMMIT]\n  D2 --> B2[Broadcast ABORT]\n  B1 --> E1[Participants commit, release locks, ack]\n  B2 --> E2[Participants rollback, release locks, ack]\n  E1 --> F[Coordinator forgets after all acks]\n  E2 --> F"
+    },
+    {
+      "type": "table",
+      "caption": "What must be durable at each step, and why.",
+      "headers": [
+        "Step",
+        "Durable write before next message",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Coordinator start",
+          "`BEGIN` with participant list",
+          "Recovery knows who to poll; without list, orphans stay in-doubt forever"
+        ],
+        [
+          "Participant vote YES",
+          "`PREPARED` with redo and undo",
+          "Crash after voting YES must still commit on recovery; memory alone loses the promise"
+        ],
+        [
+          "Participant vote NO",
+          "`ABORT`",
+          "Prevents false in-doubt on restart; allows immediate lock release"
+        ],
+        [
+          "Coordinator decision",
+          "`COMMIT` or `ABORT`",
+          "Decision survives coordinator crash; re-broadcast is idempotent"
+        ],
+        [
+          "Participant enact",
+          "`COMMIT` or `ABORT` + ack",
+          "Duplicate COMMIT after recovery stays safe; coordinator knows when to garbage-collect"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "What 2PC gives you and what it charges.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "The trade-off in one line"
+      ],
+      "rows": [
+        [
+          "Atomic outcome across nodes: no partial commit",
+          "Blocking: in-doubt participants hold locks indefinitely",
+          "Correctness depends on waiting; waiting kills availability"
+        ],
+        [
+          "Simple reasoning: one global decision",
+          "Single coordinator is a bottleneck and fate-sharing point",
+          "Centralised decision is easy to reason about and easy to kill"
+        ],
+        [
+          "Works with heterogeneous stores that can prepare and recover",
+          "Two network round trips plus two WAL fsyncs on critical path",
+          "Latency floor is ~4x a local commit even with zero contention"
+        ],
+        [
+          "No split-brain on outcome: recovery converges",
+          "No liveness under partition: minority cannot progress",
+          "Safety over liveness, always — the opposite of AP systems"
+        ],
+        [
+          "Strong isolation if locks held to commit",
+          "Lock hold time spans network RTT + slowest voter",
+          "Contention scales with slowest participant, not fastest"
+        ],
+        [
+          "Proven inside single-cluster databases",
+          "Fragile stretched across teams, regions, or long business steps",
+          "Tight coupling is fine inside one engine, poison across services"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The blocking is not an implementation bug you can tune away. It is the price of the promise. Once a participant says `YES`, the coordinator may have told a *different* participant to commit and then crashed before informing you. If you unilaterally aborted to free locks, you would diverge — exactly the split 2PC exists to prevent. So you must block. Three-phase commit adds another round to reduce (not eliminate) blocking windows, Paxos-commit replaces the coordinator with consensus, but both add complexity and latency. That is why modern judgment is blunt: use 2PC where blocking windows are milliseconds and the coordinator is replicated — inside a distributed database — and refuse it where blocking windows are seconds, minutes, or human steps."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "In production 2PC rarely violates atomicity. It violates your SLOs and then your on-call. Failures show up as frozen rows, growing lock queues, and threads stuck in `PREPARED` for longer than any normal transaction should live. The dashboard signature is distinctive: throughput collapses while CPU stays idle, because everyone is waiting on locks held by in-doubt transactions, not doing work."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Coordinator crashes after collecting YES but before broadcasting decision.** Participants sit in `PREPARED`, holding row locks. Symptom: sudden spike in lock-wait timeouts and `in-doubt transaction` count; restart of coordinator replays `COMMIT` and the jam clears at once.",
+        "**Network partition isolates coordinator from one participant.** Coordinator times out and aborts; isolated participant stays in-doubt holding locks. Symptom: one shard shows stuck prepared transactions while others show aborts; reconciliation lag grows until partition heals.",
+        "**One slow participant votes late.** All fast participants hold locks while waiting for the straggler, then hold longer while waiting for decision. Symptom: p99 latency explodes, tail propagates to unrelated transactions touching same rows; classic head-of-line blocking.",
+        "**Participant crashes after WAL PREPARED, before decision arrives.** On restart it recovers to in-doubt and must poll. Symptom: after a rolling restart you see a wave of recovery queries to the coordinator and brief commit delay, not data loss — if the WAL survived. If the WAL did not survive, you have corruption, not just delay.",
+        "**Coordinator forgets too early or loses decision log.** Participants retry `what was the decision?` and get no answer. Symptom: orphans that never resolve, manual `commit-or-abort` by DBA, and the creeping fear that manual resolution diverged.",
+        "**Long-lived business transaction stretched over 2PC.** Locks held across payment gateway calls or user think-time. Symptom: deadlocks, timeout storms, and pressure to set short lock timeouts — which then cause false aborts and retry avalanches."
+      ]
+    },
+    {
+      "type": "mermaid",
+      "title": "Participant states",
+      "caption": "PREPARED is a trapdoor: you can only leave when the coordinator tells you how.",
+      "code": "stateDiagram-v2\n  [*] --> Active\n  Active --> Aborted: vote NO\n  Active --> Prepared: vote YES + WAL\n  Prepared --> Committed: receive COMMIT\n  Prepared --> Aborted: receive ABORT\n  Prepared --> InDoubt: coordinator unreachable\n  InDoubt --> Committed: recovery learns COMMIT\n  InDoubt --> Aborted: recovery learns ABORT"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Timeouts do not fix in-doubt",
+      "text": "A participant that voted `YES` **cannot** time out and abort to free locks. That timeout would risk aborting a transaction the coordinator already committed elsewhere. Timeouts are only safe *before* voting `YES` and at the coordinator while waiting for votes. After `YES`, the only safe action is to block and ask."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What the code has to do"
+    },
+    {
+      "type": "paragraph",
+      "text": "If your pseudo-code does not show two forced log writes and idempotent handlers, it is not 2PC — it is a happy-path RPC. The log is the protocol. Every state transition that creates an obligation must hit stable storage before the next message goes out, otherwise a crash turns a promise into a lie. Handlers for `COMMIT` and `ABORT` must be safely replayable because the coordinator will retransmit until it gets an ack, and recovery will replay after restarts. Participant IDs, transaction IDs, and decisions need deduplication keys for the same reason."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "twopc.py",
+      "code": "# Simplified coordinator + participant. Real systems fsync WAL; dicts stand in here.\nclass Participant:\n    def __init__(self, name):\n        self.name = name\n        self.log = {}  # txn_id -> PREPARED | COMMIT | ABORT\n        self.locked = set()\n    def prepare(self, txn_id, keys):\n        if txn_id in self.log:\n            return self.log[txn_id]  # idempotent replay\n        if not self.can_lock(keys):\n            self.log[txn_id] = \"ABORT\"\n            return \"NO\"\n        self.lock(keys)              # hold until decision\n        self.wal_write(txn_id, \"PREPARED\", keys)\n        return \"YES\"\n    def decide(self, txn_id, decision):\n        # Must be idempotent: coordinator retries until ack.\n        if self.log.get(txn_id) == decision:\n            return \"ACK\"\n        self.wal_write(txn_id, decision, None)\n        if decision == \"COMMIT\":\n            self.apply_staged(txn_id)\n        else:\n            self.discard_staged(txn_id)\n        self.unlock(txn_id)\n        return \"ACK\"\n    def recover(self, txn_id, coordinator):\n        if self.log.get(txn_id) == \"PREPARED\":\n            # In-doubt: block and poll, never unilaterally abort.\n            return coordinator.query_decision(txn_id)\n    def wal_write(self, txn_id, state, keys):\n        self.log[txn_id] = state  # real code: serialize + fsync first\n    def can_lock(self, keys): return True\n    def lock(self, keys): pass\n    def unlock(self, txn_id): pass\n    def apply_staged(self, txn_id): pass\n    def discard_staged(self, txn_id): pass\nclass Coordinator:\n    def __init__(self, participants):\n        self.participants = participants\n        self.log = {}\n    def run(self, txn_id, work):\n        self.wal_write(txn_id, \"BEGIN\")\n        votes = [p.prepare(txn_id, work[p.name]) for p in self.participants]\n        decision = \"COMMIT\" if all(v == \"YES\" for v in votes) else \"ABORT\"\n        self.wal_write(txn_id, decision)  # decision durable BEFORE broadcast\n        for p in self.participants:\n            p.decide(txn_id, decision)  # retry until ACK in real code\n        return decision\n    def query_decision(self, txn_id):\n        return self.log.get(txn_id, \"ABORT\")  # no decision yet => abort\n    def wal_write(self, txn_id, state):\n        self.log[txn_id] = state"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "You propose atomic cross-shard work",
+          "text": "Prompt is usually order + payment + inventory, or money transfer across shards. Say explicitly: one database transaction cannot span these stores, so we need an atomic commitment protocol or a different consistency model. Name 2PC as the textbook answer before critiquing it."
+        },
+        {
+          "title": "Walk the two phases with failures",
+          "text": "Draw coordinator and two participants. Trace PREPARE, votes, COMMIT. Then trace coordinator crash between decision-write and broadcast, and participant crash after PREPARED. Show WAL reads on recovery. Interviewers grade recovery paths, not happy path."
+        },
+        {
+          "title": "Quantify the blocking cost",
+          "text": "State lock hold time as prepare RTT + slowest vote + decision RTT, times contention. Explain why throughput collapses under even one straggler, and why timeouts after YES are unsafe. This separates memorised answers from understood ones."
+        },
+        {
+          "title": "Pivot to what you would actually ship",
+          "text": "For cross-microservice work, reject bare 2PC and propose Saga with idempotent steps plus transactional outbox, or push atomicity down into a distributed database that runs consensus-backed commit internally. Justify the switch by availability and coupling, not fashion."
+        },
+        {
+          "title": "Handle the follow-ups",
+          "text": "Expect: how do orphans resolve? How do you make COMMIT idempotent? Why not 3PC? What if the coordinator is replicated with Raft? Answer: cooperative recovery, dedup keys, 3PC still blocks under partition, replicated coordinator narrows but does not remove blocking."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**2PC is consensus — it is not.** Consensus (Paxos/Raft) keeps making progress with a majority; 2PC needs unanimity and blocks without it. Conflating them signals you do not understand liveness.",
+        "**Timeouts make 2PC non-blocking.** They do not. A timeout before voting YES can abort safely. A timeout after YES cannot resolve anything — the participant must stay in-doubt and keep locks.",
+        "**2PC gives exactly-once effects by itself.** It gives atomic decision, not exactly-once execution. Retried COMMITs, duplicate payments, double inventory decrements still need idempotency keys and dedup on the apply path.",
+        "**It is fine across microservices because frameworks hide it.** XA across services couples availability: every service must be up and lock-compatible for the duration. One deploy, one slow dependency, one long GC pause freezes all participants.",
+        "**The coordinator can just be made highly available and blocking disappears.** A replicated coordinator reduces coordinator-loss windows but participants still block during partitions and slow votes. You shrank one failure mode, not the fundamental unanimity requirement.",
+        "**Abort is always safe and cheap.** Abort after work started still costs wasted validation, held locks during voting, and retry storms if clients immediately retry contended keys. High-contention workloads abort themselves to death."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use 2PC where blocking is milliseconds and coupling is acceptable.",
+      "headers": [
+        "Use 2PC when",
+        "Avoid 2PC when",
+        "Prefer instead"
+      ],
+      "rows": [
+        [
+          "Shards inside one database cluster with fast network and replicated coordinator",
+          "Operations span teams, regions, or external gateways",
+          "Saga orchestration with compensations + outbox"
+        ],
+        [
+          "Short, highly contended OLTP writes that must be atomic",
+          "Long business workflows with user think-time or third-party calls",
+          "Saga, workflow engine, idempotent steps"
+        ],
+        [
+          "Homogeneous stores with prepare, WAL, and idempotent commit",
+          "Heterogeneous APIs that cannot lock and recover",
+          "Outbox + events, eventual consistency"
+        ],
+        [
+          "You can accept unavailability during partition to keep atomicity",
+          "You must stay writable during partition",
+          "Quorum writes, CRDTs, or saga with apologies"
+        ],
+        [
+          "You get it for free inside Spanner/Cockroach-style stores",
+          "You would hand-roll coordinator, recovery, and orphan reaping",
+          "Use the database that already solved it; do not rebuild it"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pragmatic rule: **never build cross-service 2PC yourself.** If you need strong atomicity across shards, buy it from a system whose commit protocol is backed by consensus and whose blocking windows are bounded by machine failure, not business latency. If you need coordination across services, accept eventual consistency and design compensations explicitly: each local transaction commits and publishes via transactional outbox, the orchestrator drives the saga forward, and each step has a named compensating action with its own idempotency key. You trade immediate atomicity for independence — deploys, scaling, and partial availability stop fate-sharing. Name that trade-off out loud in the interview; it is the judgment they are hiring for."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**2PC gets atomic commit across nodes by forcing unanimous durable YES votes before anyone commits — which is exactly why it blocks holding locks whenever the coordinator fails or any voter is slow, so use it inside a distributed database and use sagas across services.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:34:54.607Z",
+    "problems": []
+  }
+}

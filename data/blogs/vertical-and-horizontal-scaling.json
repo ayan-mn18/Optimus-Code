@@ -1,0 +1,274 @@
+{
+  "slug": "vertical-and-horizontal-scaling",
+  "title": "Vertical and horizontal Scaling",
+  "summary": "Vertical vs horizontal scaling for HLD interviews: what each lever does, what it costs, how it fails, and when to pick which.",
+  "kind": "HLD",
+  "problemSlug": "vertical-and-horizontal-scaling-1-90-182",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "↕️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Distributed Systems"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Horizontal vs. vertical scaling: how they compare & what they cost",
+      "url": "https://www.cloudzero.com/blog/horizontal-vs-vertical-scaling/",
+      "source": "cloudzero.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is Horizontal Scaling vs. Vertical Scaling? - Akamai",
+      "url": "https://www.akamai.com/glossary/what-is-horizontal-scaling-vs-vertical-scaling",
+      "source": "akamai.com",
+      "kind": "article"
+    },
+    {
+      "title": "Vertical vs Horizontal Scaling: Key Differences and Best Strategies",
+      "url": "https://aerospike.com/blog/vertical-vs-horizontal-scaling/",
+      "source": "aerospike.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Vertical scaling buys you **simplicity with a hard ceiling**. Horizontal scaling buys you **unbounded capacity with permanent coordination cost**. Every scalability argument is just deciding which pain you would rather operate: a box that will eventually be too small, or a fleet that will eventually disagree with itself."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "Vertical scaling means the **same logical node does more work** because it has more CPU, RAM, disk IOPS, or network throughput. Same IP, same identity, same dataset, bigger resources. You go from 4 vCPU / 16 GB RAM to 32 vCPU / 128 GB RAM and your single Postgres primary, Redis node, or Java monolith handles 5x the throughput without changing how it talks to the rest of the system. Horizontal scaling means **more nodes share the work**. Same size, more copies. You go from 2 API servers to 20 behind a load balancer, or from 1 database partition to 16 shards, or from 3 queue consumers to 30. Identity multiplies. The work must now be **routed, partitioned, or replicated** — and that routing logic is the entire cost of the approach."
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not confuse scaling with elasticity. Scalability is **can the architecture handle N times the load if given resources**. Elasticity is **can it acquire and release those resources automatically as demand moves**. Vertical scaling is rarely elastic — you schedule a resize, you restart, you eat downtime. Horizontal scaling is built for elasticity — an autoscaler adds and removes identical units on a metric like CPU, queue depth, or p99 latency. In an interview, say it explicitly: **vertical scales capacity, horizontal scales capacity *and* parallelism and fault domains**. That is why the second one always wins at large scale, and always costs more to build."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Vertical scaling is a resource swap. You stop the process, attach it to a larger machine or raise its cgroup limits, warm caches and connection pools, and restart. Nothing about service discovery changes. Connection strings stay identical. Transactions still see one log, one lock manager, one buffer pool. That is why it is fast to execute and why databases love it: **a single writer avoids distributed consensus entirely**. The trade-off is fate-sharing — CPU saturation, a bad deploy, a kernel panic, or an availability-zone power loss takes 100% of capacity, not 5%. And there is a physical stop: no cloud sells you an infinite machine. Once you hit the largest instance, your only remaining lever is to redesign."
+    },
+    {
+      "type": "paragraph",
+      "text": "Horizontal scaling is a routing problem plus a state problem. For stateless work it is almost mechanical: register each new replica in service discovery, let the load balancer or Kubernetes Service send it a share of requests, let health checks drain it when it dies. Throughput scales near-linearly until the balancer, the database, or a downstream dependency becomes the bottleneck. For stateful work it is hard: you must decide **who owns what**. Either replicate everything everywhere with a consensus protocol like Raft, which caps write throughput at the leader, or partition by key with consistent hashing or range sharding, which forces you to handle rebalancing, hot keys, and cross-shard queries. The trade-off is inverted: you remove the size ceiling but you accept **coordination, partial failure, and eventual consistency** as permanent operating costs."
+    },
+    {
+      "type": "mermaid",
+      "title": "Scale up vs scale out",
+      "caption": "One bigger box vs many identical boxes behind routing.",
+      "code": "flowchart LR\n  C1[Clients] --> BIG[Single server\\n32 vCPU 128GB RAM]\n  C2[Clients] --> LB[Load balancer]\n  LB --> N1[App 1]\n  LB --> N2[App 2]\n  LB --> N3[App 3]\n  N1 --> DB[(Shared DB)]\n  N2 --> DB\n  N3 --> DB"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Vertical vs horizontal across the dimensions interviewers actually probe.",
+      "headers": [
+        "Dimension",
+        "Vertical (scale up)",
+        "Horizontal (scale out)"
+      ],
+      "rows": [
+        [
+          "Capacity ceiling",
+          "Hard stop at largest machine or quota. 2-4x headroom, then redesign.",
+          "Effectively unbounded. Add nodes until routing or state layer bottlenecks."
+        ],
+        [
+          "Availability",
+          "Single blast radius. Failure = full outage unless you pay for hot standby.",
+          "N-1 or N-2 survivable by design. Failure = degraded, not dead."
+        ],
+        [
+          "Complexity",
+          "Near zero architectural change. Same code, same queries, same deploy.",
+          "Requires load balancing, discovery, idempotency, partitioning, rebalancing."
+        ],
+        [
+          "Consistency",
+          "Strong by default. One lock manager, one WAL, no clock skew.",
+          "Must choose: consensus for strong consistency or sharding for scale, never both cheap."
+        ],
+        [
+          "Scaling operation",
+          "Disruptive. Usually restart or failover. Minutes of risk.",
+          "Non-disruptive. Rolling add and drain. Seconds per node, but autoscaler can flap."
+        ],
+        [
+          "Cost shape",
+          "Superlinear. A 2x machine costs 3-4x. You pay for peak 24 hours a day.",
+          "Linear-ish. Ten small nodes cost ~10x one small node, and you can scale to zero."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Why the table looks this way: a single node serialises all decisions in one memory space, so it is consistent and simple but cannot survive itself dying and cannot exceed physics. A fleet parallelises decisions, so it survives individual deaths and grows without bound, but now every write, read, and deploy needs agreement about **where it goes and what happens if the target is gone**. That agreement is load balancers, health checks, retries, timeouts, shard maps, and consensus — code you must write, monitor, and debug. Trade-off stated plainly: **pick vertical when coordination would cost more than the outage risk; pick horizontal when the outage risk or growth rate costs more than the coordination.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Vertical scaling fails abruptly and totally. You will see it as a cliff, not a slope. The JVM spends 90% of time in GC because heap cannot fit the working set, p99 jumps from 80ms to 8 seconds while CPU sits at 100%, connection pools exhaust because each query holds longer, then the OOM killer or cloud health check restarts the box and the cache is cold, so the restart thunders straight back into overload. Disk is sneakier: IOPS cap on a single volume throttles writes, replication lag grows from milliseconds to minutes, and reads that used to hit memory start hitting disk. The dashboard signature is unmistakable: **all signals saturate together on one host**, and there is no other host to take the spill."
+    },
+    {
+      "type": "paragraph",
+      "text": "Horizontal scaling fails partially and confusingly. The fleet looks green while users see errors. Classic signatures: a hot shard where one partition key gets 40% of traffic and its node runs at 95% CPU while siblings idle at 20%; sticky sessions that defeat the balancer after one slow node accumulates long-lived connections; autoscaling lag where traffic spikes in 30 seconds but new pods need 90 seconds to become ready, so existing pods queue and time out; and split-brain retries where a timed-out write is retried to a different node and executed twice because the handler was not idempotent. The symptom you chase is **skew, not saturation** — p50 looks fine, p99 explodes, and error logs cluster on a subset of node IDs or shard IDs."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Single node at 100% CPU + rising GC + connection timeouts = you hit the vertical ceiling. Fix is bigger box *now*, sharding *next quarter*.",
+        "One AZ down = full outage = you scaled vertically but never replicated. No amount of vCPU replaces a second fault domain.",
+        "p99 bad, p50 fine, errors isolated to 1-2 pods or shards = horizontal imbalance. Check key distribution, balancer algorithm, and connection reuse.",
+        "Scale-out event followed by *more* latency = cold caches, slow startup, or downstream database that does not scale horizontally. Autoscaler fed the bottleneck.",
+        "Duplicate charges, double inserts after retries = you scaled out writers without idempotency keys. Fleet retries expose non-idempotent logic that a single box hid."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code and config where it clarifies"
+    },
+    {
+      "type": "paragraph",
+      "text": "Horizontal only works if any replica can handle any request. That means no local session, no local disk as source of truth, and retries that are safe to replay. The two artifacts below enforce that: an autoscaler that adds identical stateless pods on a real signal, and a handler that carries no affinity. If you cannot write the second one, you are not ready for the first one — you will just multiply broken state."
+    },
+    {
+      "type": "code",
+      "language": "yaml",
+      "filename": "hpa.yaml",
+      "code": "apiVersion: autoscaling/v2\nkind: HorizontalPodAutoscaler\nmetadata:\n  name: checkout-api\nspec:\n  scaleTargetRef:\n    apiVersion: apps/v1\n    kind: Deployment\n    name: checkout-api\n  minReplicas: 4\n  maxReplicas: 60\n  behavior:\n    scaleUp:\n      stabilizationWindowSeconds: 60   # avoid flapping on 30s spikes\n      policies:\n      - type: Percent\n        value: 50\n        periodSeconds: 60\n    scaleDown:\n      stabilizationWindowSeconds: 300  # scale down 5x slower than up\n  metrics:\n  - type: Pods\n    pods:\n      metric:\n        name: http_requests_per_second\n      target:\n        type: AverageValue\n        averageValue: 800\n  - type: Resource\n    resource:\n      name: cpu\n      target:\n        type: Utilization\n        averageUtilization: 65"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "handler.py",
+      "code": "import hashlib\n\n# Stateless request path: any replica can serve any user.\n# WHY: enables horizontal scale-out without sticky sessions.\n# TRADE-OFF: every request pays a remote read (Redis/DB) instead of local memory.\n\ndef get_cart(user_id: str, redis, db) -> dict:\n    key = f\"cart:{user_id}\"\n    cart = redis.get(key)\n    if cart is not None:\n        return cart\n    # cache miss: single-flight to DB, then repopulate with short TTL\n    cart = db.fetch_cart(user_id)\n    redis.setex(key, 60, cart)\n    return cart\n\ndef charge_idempotently(idem_key: str, amount_cents: int, ledger, seen) -> dict:\n    # WHY: horizontal retries will deliver the same request twice.\n    # Without this, scale-out turns a timeout into a double charge.\n    if seen.exists(idem_key):\n        return seen.get(idem_key)\n    result = ledger.charge(amount_cents)\n    seen.setex(idem_key, 86400, result)\n    return result\n\ndef pick_shard(order_id: str, num_shards: int) -> int:\n    # Consistent routing without coordinator.\n    # WHY: lets any app node find the owner without a lookup hop.\n    # TRADE-OFF: adding shards requires rebalancing; hot keys still need splitting.\n    h = int(hashlib.sha256(order_id.encode()).hexdigest(), 16)\n    return h % num_shards"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start vertical, name the limit",
+          "text": "For a URL shortener, feed reader, or MVP e-commerce, say: run stateless API plus managed relational primary, scale the box to ~10k RPS. State the ceiling explicitly — connections, memory for working set, single-AZ fate — so the interviewer sees you know where it breaks."
+        },
+        {
+          "title": "Split stateless from stateful",
+          "text": "Draw the line: API tier, workers, and edge cache go horizontal on day one because they hold no authority. Database, search index, and ordered queues do not. Interviewers promote you when you refuse to scale out the writer just because reads are hot — add read replicas or cache instead."
+        },
+        {
+          "title": "Introduce the balancer and health model",
+          "text": "Specify algorithm (least-connections over round-robin for uneven cost), active health checks, drain timeout, retry budget with backoff and jitter. Explain why: without bounded retries and idempotency, horizontal scale multiplies load during partial outages instead of absorbing it."
+        },
+        {
+          "title": "Partition state when the box stops fitting",
+          "text": "When asked to go from millions to billions of rows or keys, pick a shard key with high cardinality and stable access pattern — user_id, not country — and describe rebalancing: virtual shards, background backfill, dual-read cutover. Name the new costs: cross-shard queries, hot keys, operational tooling."
+        },
+        {
+          "title": "Close with cost and operations",
+          "text": "Finish with numbers: superlinear price of the next instance size versus linear fleet plus load-balancer and observability overhead. Say what you would alert on: CPU and heap for vertical risk, per-node skew and shard heat for horizontal risk, and autoscaler thrash for both."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "\"Horizontal is always more available.\" Only if failures are independent. Put all replicas in one zone, one bad config push, or one shared database and they fail together — you paid coordination cost for no fault isolation.",
+        "\"Vertical is just lazy.\" For strong consistency, single-digit-millisecond transactions, and small teams, one big primary with a synchronous standby is the correct design. Distributed consensus to avoid a bigger box is overengineering.",
+        "\"Stateless means no state anywhere.\" It means no *local, authoritative* state. Session data, carts, and idempotency records still exist — in external cache or store where every replica can reach them. Local-only state is what blocks scale-out.",
+        "\"Autoscaling equals scalability.\" Autoscaling only adds compute. If the database, downstream API quota, or shard heat is the limit, new pods increase queueing and cost while latency gets worse. Fix the bottleneck, not the replica count.",
+        "\"Sharding solves hot keys.\" Sharding solves total volume. A celebrity key or a single tenant doing 50% of writes still hammers one shard. Hot keys need key-splitting, caching, or request coalescing — a different mechanism."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Pick by workload shape, not by fashion.",
+      "headers": [
+        "Workload",
+        "Prefer vertical",
+        "Prefer horizontal"
+      ],
+      "rows": [
+        [
+          "Stateless API / web tier",
+          "Only for prototype or < few hundred RPS",
+          "Default. Any replica serves any request; scale on RPS and CPU."
+        ],
+        [
+          "Relational primary (OLTP writes)",
+          "Default up to hardware limit. Keeps ACID cheap.",
+          "Only via sharding or consensus; accept 2-3x ops cost."
+        ],
+        [
+          "Read-heavy store / cache",
+          "Bigger cache delays the problem for weeks",
+          "Read replicas + sharded cache. Invalidate carefully."
+        ],
+        [
+          "Queue consumers / stream processors",
+          "Bigger worker for CPU-heavy transforms",
+          "Partition by key, scale consumers with lag, keep ordering per partition."
+        ],
+        [
+          "ML training / batch sort",
+          "Bigger GPU box for single-model iteration speed",
+          "Data-parallel workers; network and shuffle become the limit."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The working rule most senior engineers converge on: **scale up until it hurts, scale out before it kills you**. Up hurts as deploy risk, noisy p99, vertically-priced bills, and a single point of failure you can no longer justify. Out kills when you shard too early and spend six months building rebalancers, backfills, and distributed debuggers for traffic a single large node could have carried. In practice that means one disciplined path: keep writes vertical with a standby, push reads horizontally with replicas and cache, keep all compute stateless and horizontally elastic, and shard state only when working set, write rate, or fault-domain math forces it. Say that ordering in the interview and you sound like someone who has operated both."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "**Scale up for simplicity and strong consistency until cost or blast radius forces you; scale out stateless work by default and stateful work by partitioning, because only the fleet removes the ceiling — at the price of routing, replication, and operations you must own.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:08:44.039Z",
+    "problems": []
+  }
+}

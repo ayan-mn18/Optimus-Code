@@ -1,0 +1,371 @@
+{
+  "slug": "database-selection-based-on-use-case",
+  "title": "Database Selection based on use case",
+  "summary": "Choosing a database is choosing which pain you accept: model your reads, writes, consistency, and growth first, then pick the engine whose trade-offs match.",
+  "kind": "HLD",
+  "problemSlug": "database-selection-based-on-use-case-92-203",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "🗄️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "System Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "The Ultimate Guide to Choosing the Right Database for Your Application",
+      "url": "https://www.jusdb.com/blog/the-ultimate-guide-to-choosing-the-right-database-for-your-application",
+      "source": "jusdb.com",
+      "kind": "article"
+    },
+    {
+      "title": "Different Types of Databases & When To Use Them | Rivery",
+      "url": "https://rivery.io/data-learning-center/database-types-guide/",
+      "source": "rivery.io",
+      "kind": "article"
+    },
+    {
+      "title": "Identifying the right database for a use case | by rahul anand",
+      "url": "https://interviewnoodle.com/identifying-the-right-database-for-a-use-case-901733fe1701",
+      "source": "interviewnoodle.com",
+      "kind": "article"
+    },
+    {
+      "title": "How to Choose the Right Database for Your Use Case ... - YouTube",
+      "url": "https://www.youtube.com/watch?v=8PQKvUoeKgM",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Database choice is access-pattern choice.** Data shape does not decide it. Your read path, write path, consistency requirement, and scaling path decide it. Get those four right and the engine picks itself. Get them wrong and no tuning saves you."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What database selection actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Database selection is the act of binding a workload to a storage engine whose guarantees and scaling model fit that workload for the next 2-3 orders of magnitude of growth. It is not a ranking of engines from best to worst. There is no best. There is only fit. A workload is four things: **what you store** (structured rows, documents, keys, graphs, events, vectors), **how you read it** (point lookup, range scan, join, full-text, aggregation, nearest-neighbor), **how you write it** (single-row transactions, high-ingest appends, counters, idempotent upserts), and **what correctness costs** (can you lose a write, show stale data, double-charge a user). The selection problem is precise: choose the engine where your dominant access pattern is the *native* operation, your consistency need is the *default* guarantee, and your growth path is *horizontal without a rewrite*. Everything else is secondary — operational maturity, ecosystem, and cost matter, but they never rescue a fundamental mismatch."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this framing? Because beginners pick by data shape: \"JSON, so document store.\" That is why migrations happen. JSON fits in Postgres with `jsonb` just fine. The real question is: do you query *inside* that JSON with joins and transactions, or do you fetch it whole by key at 50k RPS? The first wants a relational engine with secondary indexes and ACID. The second wants a key-value store with partitioning and no cross-partition coordination. Same bytes, opposite engines. The trade-off is always this: **engines that make one access pattern cheap make another expensive.** Relational systems buy ad-hoc queries and strong integrity with join cost and harder sharding. Key-value systems buy linear scale and microsecond latency with no joins and application-side integrity. You do not get both. Name what you are sacrificing on day one."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from workload to engine"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do selection in order, and do not skip steps. First, quantify the workload: peak QPS for reads and writes, read/write ratio, average and p99 payload size, latency SLA, and retention. A 500-reads/sec catalog with complex filters is a different universe from a 200k-writes/sec event stream even if both are called \"data.\" Second, lock the consistency contract: does a read after a write have to see the write, can two writers conflict, what happens on a network partition? If money moves, you need linearizable single-shard transactions. If it is a like counter or session, eventual consistency is not just acceptable, it is cheaper. Third, map queries to storage primitives: point GET by primary key, range scan by sort key, secondary-index lookup, multi-way join, time-range aggregation, graph traversal. Each engine has exactly one or two primitives that are fast; the rest are emulated slowly. Fourth, project the scaling bottleneck: data size, request rate, or both? Single-node vertical scaling ends at roughly tens of TB and tens of thousands of IOPS — beyond that you are sharding, partitioning, or separating OLTP from OLAP whether you planned to or not."
+    },
+    {
+      "type": "mermaid",
+      "title": "Selection flow",
+      "caption": "Follow the queries and consistency need, not the hype.",
+      "code": "flowchart TD\n  W[\"Workload: QPS, R-W ratio, latency SLA\"] --> C[\"Need joins + ACID across rows?\"]\n  C -->|Yes| R[\"RDBMS: Postgres, MySQL\"]\n  C -->|No| K[\"Point lookup by key at scale?\"]\n  K -->|Yes| KV[\"KV store: Redis, Dynamo-style\"]\n  K -->|No| H[\"High-write append + partition scans?\"]\n  H -->|Yes| WIDE[\"Wide-column / LSM: Cassandra, Scylla\"]\n  H -->|No| T[\"Time-range aggregates?\"]\n  T -->|Yes| TS[\"Time-series / OLAP: ClickHouse, TSDB\"]\n  T -->|No| G[\"Many-hop relations?\"]\n  G -->|Yes| GR[\"Graph: Neo4j-style\"]\n  G -->|No| S[\"Full-text / facets?\"]\n  S -->|Yes| SE[\"Search: inverted index engine\"]\n  S -->|No| D[\"Opaque doc by ID + flexible fields?\"]\n  D -->|Yes| DOC[\"Document: Mongo-style\"]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, without lying"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every database category is a bundle of decisions about coordination, disk layout, and query planning. Learn to read the bundle. B-trees favor reads and range scans but pay write amplification on random inserts. LSM-trees favor write throughput by buffering and merging, but pay read amplification and compaction debt. Strong consistency favors correctness and simple application code but costs cross-replica coordination and tail latency. Eventual consistency buys availability and speed but pushes conflict resolution into your code. Normalization buys integrity and small writes but taxes every read with joins. Denormalization buys fast reads but taxes every write with fan-out and drift risk. There is no configuration that removes the cost — only moves it between write path, read path, and operations."
+    },
+    {
+      "type": "table",
+      "caption": "Core tensions. Pick a side deliberately.",
+      "headers": [
+        "Tension",
+        "Left side buys",
+        "Right side buys",
+        "Price you pay"
+      ],
+      "rows": [
+        [
+          "Strong vs eventual consistency",
+          "No stale reads, simple app logic",
+          "Lower p99, survives partitions",
+          "Coordination latency vs conflict-handling code"
+        ],
+        [
+          "Normalized vs denormalized",
+          "One source of truth, safe updates",
+          "Single-fetch reads, no joins",
+          "Join cost vs write fan-out and drift"
+        ],
+        [
+          "B-tree vs LSM storage",
+          "Fast point/range reads, stable latency",
+          "Massive ingest, cheap writes",
+          "Write stalls vs compaction debt and read amplification"
+        ],
+        [
+          "Scale-up vs scale-out",
+          "Joins, transactions, simple ops",
+          "Near-linear QPS and data growth",
+          "Hardware ceiling vs sharding and cross-shard limits"
+        ],
+        [
+          "Flexible vs enforced schema",
+          "Fast iteration, sparse fields",
+          "Data quality, planner can optimize",
+          "Silent bad data vs migration cost"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The most misunderstood trade-off is coordination. A single-primary relational database can give you serializable transactions because all conflicting writes meet in one place. That is why it is simple to reason about. The moment you shard to scale writes, cross-shard transactions become two-phase, slow, and failure-prone — so sharded systems restrict you to single-partition transactions. That is not a missing feature. It is physics: you cannot have global agreement, partition tolerance, and single-digit-millisecond writes at once. If an interviewer pushes \"can we have both,\" the correct answer is: we isolate the 5% of operations that need strong guarantees onto a transactional store and let the other 95% scale on something looser. Splitting the workload beats searching for a mythical engine."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The families and what each is actually for"
+    },
+    {
+      "type": "paragraph",
+      "text": "Forget feature matrices. Memorize native operations. If your dominant query is not the engine's native operation, you will emulate it badly forever. Relational is native at indexed lookups, joins, and multi-row ACID. Document is native at whole-document fetch by ID and evolving nested shape. Key-value is native at microsecond GET/SET by key and TTL. Wide-column is native at high-throughput writes partitioned by key with range scans inside a partition. Time-series and columnar OLAP are native at append-only ingest plus scans over billions of rows with compression and vectorized execution. Graph is native at multi-hop traversals where a join would explode. Search is native at tokenized text, ranking, and faceting. Vector stores are native at approximate nearest-neighbor over embeddings. Use an engine outside its native operation and you pay every day in latency, cost, and application contortions."
+    },
+    {
+      "type": "table",
+      "caption": "Match the dominant query to the native primitive.",
+      "headers": [
+        "Family",
+        "Native operation",
+        "Best fit",
+        "What breaks it"
+      ],
+      "rows": [
+        [
+          "Relational (Postgres, MySQL)",
+          "Join + filter + transaction",
+          "Orders, payments, inventory, authZ, catalogs under ~10TB",
+          "Write sharding, huge blobs, hot counters"
+        ],
+        [
+          "Document",
+          "Fetch whole doc by ID",
+          "Profiles, CMS, config with varying fields",
+          "Cross-doc transactions, ad-hoc joins, analytics scans"
+        ],
+        [
+          "Key-value / cache",
+          "GET by key, TTL, counters",
+          "Sessions, carts, rate limits, leaderboards, feature flags",
+          "Secondary-index queries, range analytics"
+        ],
+        [
+          "Wide-column (LSM)",
+          "Append by partition key, scan in partition",
+          "Timelines, IoT ingest, messaging, activity feeds",
+          "Ad-hoc joins, global secondary indexes, strong cross-partition ACID"
+        ],
+        [
+          "Columnar OLAP / warehouse",
+          "Scan + aggregate billions of rows",
+          "BI, funnels, revenue reports, log analytics",
+          "Single-row low-latency writes, point updates"
+        ],
+        [
+          "Time-series",
+          "Append timestamped points, downsample",
+          "Metrics, tick data, sensor telemetry",
+          "Relational constraints, heavy updates"
+        ],
+        [
+          "Graph",
+          "k-hop traversal",
+          "Fraud rings, permissions, recommendations",
+          "Bulk aggregations, high-ingest flat logs"
+        ],
+        [
+          "Search + vector",
+          "Rank by text / similarity",
+          "Product search, support search, RAG retrieval",
+          "Source of truth, money transactions"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The OLTP versus OLAP split deserves its own sentence because it ends more debates than any engine comparison. **OLTP serves the product; OLAP serves questions about the product.** OLTP needs millisecond point reads and writes on live rows — row stores with B-trees. OLAP needs to scan and aggregate history — columnar stores with compression and parallel execution. Running analytics on your primary OLTP is borrowing trouble: long scans contend with user traffic, lock rows, and blow buffer pools. The standard answer is change-data-capture into a warehouse or lakehouse and let each side use its native layout. The trade-off you accept is freshness lag and pipeline ops in exchange for isolating failure domains and letting both workloads scale independently."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Wrong-engine failures do not look like errors. They look like slow, expensive normal. A relational primary used as a queue or counter shows lock waits, deadlocks, and p99 climbing under write contention while CPU looks idle — the symptom is `UPDATE hot_row` serializing everything. A document store used for relational reporting shows ever-growing aggregation pipelines that scan entire collections and time out; the team adds indexes until writes stall. A wide-column store queried by non-partition key shows full-cluster scatter-gather: p50 fine, p99 terrible, coordinators saturated. A key-value store asked to answer \"all users who did X\" forces the application to loop over millions of keys — the database is fast and the system is slow. An OLTP primary doubling as analytics shows buffer-pool evictions, replica lag, and user-facing timeouts every morning when the BI jobs run. The pattern is identical: the emulated operation dominates cost, and scaling the cluster scales the waste."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Hot partition:** one key gets 80% of traffic, one node burns while others idle, throttling errors despite low average load. Fix is key salting, write sharding, or moving counters to Redis-style atomic increments.",
+        "**Join explosion on read:** p99 grows with table size, `JOIN` spills to disk, replicas lag. Symptom is slow product pages that get slower every month. Fix is denormalized read model or moving aggregates to OLAP.",
+        "**Compaction debt:** LSM writes were fast until reads suddenly degrade and disk usage balloons. Symptom is periodic latency cliffs and space amplification. Fix is sizing compaction, TTLs, and separating hot and cold data.",
+        "**Stale-read bugs:** eventual store used for money or inventory shows oversell, double-spend, lost updates. No dashboard catches it — customers do. Fix is moving that slice to transactional store with conditional writes.",
+        "**Analytics contention:** daily reports correlate exactly with user-facing p99 spikes. Fix is CDC to warehouse, not a bigger primary. Bigger primary just delays the same collision."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The 18-month bill",
+      "text": "Migrations are not caused by scale alone. They are caused by **implicit contracts**: application code that assumed joins, transactions, or flexible queries the engine never promised. When traffic doubles, those assumptions become rewrites. If you cannot name your consistency and query contract in one paragraph today, you will rewrite it under pressure later."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Make it concrete: let the queries vote"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "selection.sql",
+      "code": "-- Workload A: money moves. Native = relational transaction.\n-- Why: two rows must change atomically, concurrent writers conflict.\nBEGIN;\nUPDATE accounts SET balance = balance - 100 WHERE id = 'a1';\nUPDATE accounts SET balance = balance + 100 WHERE id = 'a2';\nCOMMIT;\n-- Trade-off accepted: single-shard coordination cost, harder write sharding.\n\n-- Workload B: feed ingest. Native = partitioned append, not join.\n-- Why: 100k writes/sec, reads are \"latest N in partition\".\nCREATE TABLE events (\n  user_id   TEXT,\n  event_ts  TIMESTAMPTZ,\n  payload   JSONB,\n  PRIMARY KEY ((user_id), event_ts)\n) WITH partition_by = 'user_id';\n-- Trade-off accepted: no cross-partition ACID, app owns secondary lookups.\n\n-- Workload C: product search. Native = inverted index, not LIKE '%...%'.\n-- SELECT * FROM products WHERE name LIKE '%red shoe%'; -- full scan, dies at scale\n-- Move to search engine: tokenize, rank, facet. Trade-off: index lag + dual-write ops."
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that file as a decision log, not syntax. The first block says correctness outweighs raw throughput, so we pay coordination. The second says throughput outweighs ad-hoc querying, so we pay query restriction and partition-aware application code. The third says ranking and tokenization outweigh freshness, so we pay pipeline complexity. In an interview, narrate each choice this way: **what we optimize, what we sacrifice, and where the sacrificed work goes.** Sacrificed work never disappears — joins moved to write-time denormalization, consistency moved to idempotency keys and sagas, freshness moved to CDC lag. Senior answers track the displaced cost. Junior answers pretend it vanished."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Force the workload numbers",
+          "text": "Ask QPS, read/write ratio, payload size, latency SLA, data size in 12 months, and retention. If the interviewer is vague, state assumptions aloud: 5k reads/sec, 500 writes/sec, 20ms p99, 2TB growing 2x yearly. This frames every later choice."
+        },
+        {
+          "title": "Lock consistency before naming engines",
+          "text": "Ask: can a read be stale? Can two writes race? What breaks if we double-apply? Money, inventory, and booking need ACID or conditional writes. Feeds, metrics, and sessions tolerate eventual. Say it explicitly."
+        },
+        {
+          "title": "List 3-5 real queries, then vote",
+          "text": "Write the actual access patterns: GET order by ID, list orders by user, aggregate revenue by day, search by text. The engine with the most native hits wins the primary. The losers become secondaries, not compromises."
+        },
+        {
+          "title": "Design for the bottleneck, not day one",
+          "text": "Show single-node first, then the split: transactional core stays relational, hot keys move to cache, history streams to OLAP via CDC. Explain the shard key and what becomes impossible cross-shard. That is the scaling story."
+        },
+        {
+          "title": "Close with evolution and ops",
+          "text": "Name TTLs, archiving, index budget, backup and restore time, failover behavior, and when you would revisit the choice. Interviewers promote candidates who describe the second database they will need, not those who defend one forever."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**“NoSQL is faster than SQL.”** Speed is per-operation, not per-engine. Key-value is faster at key lookup; it is catastrophically slower at joins because it refuses to do them. Name the operation before claiming speed.",
+        "**“Postgres cannot scale.”** Postgres scales reads via replicas and scales to TBs on one node. What it does not do cheaply is multi-master write sharding with global transactions. Scale it where it is strong; offload where it is not.",
+        "**“Flexible schema means no design.”** Schemaless only defers design to application code. Without validation and versioning, you get silent corruption and unqueryable variants. Flexibility trades upfront migration cost for permanent data-quality cost.",
+        "**“One database keeps it simple.”** One engine for OLTP, search, and analytics is simple until load arrives — then every workload contends for the same buffer pool and lock space. Two purpose-built stores with CDC is operationally more but architecturally simpler.",
+        "**“Caching fixes a wrong model.”** A cache hides a hot read; it does not fix scatter-gather queries, write contention, or stale-transaction bugs. If the hit rate must be 99% for the page to load, the primary model is wrong.",
+        "**“Vector search replaces the database.”** Embeddings retrieve candidates; they do not enforce ownership, payment, or inventory. Retrieval is a secondary index next to a transactional source of truth, not a replacement."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use what — and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Default picks. Defend the exception, not the rule.",
+      "headers": [
+        "Use case",
+        "Default",
+        "Why it wins",
+        "Do not use when"
+      ],
+      "rows": [
+        [
+          "E-commerce orders, payments, ledger",
+          "Relational",
+          "Multi-row ACID, constraints prevent oversell and double-charge",
+          "You need 100k+ writes/sec globally — then shard or isolate hot counters"
+        ],
+        [
+          "User profile, catalog item by ID",
+          "Relational with JSONB or Document",
+          "Evolving fields but still indexed and transactional",
+          "You join across docs constantly — stay fully relational"
+        ],
+        [
+          "Session, cart, rate limit, leaderboard",
+          "Key-value / Redis-style",
+          "Microsecond point ops, TTL, atomic increments",
+          "You need ad-hoc filters or durable history"
+        ],
+        [
+          "Feed, chat, IoT ingest, events",
+          "Wide-column LSM",
+          "Partitioned append scales writes linearly",
+          "You need global joins or strong cross-partition transactions"
+        ],
+        [
+          "Metrics, logs, tick data",
+          "Time-series / columnar",
+          "Compression + downsampling + fast range scans",
+          "Rows mutate frequently or need row-level transactions"
+        ],
+        [
+          "Fraud, authZ graph, recommendations",
+          "Graph",
+          "Traversals without join explosion",
+          "Workload is bulk scans, not hops"
+        ],
+        [
+          "Product / support search, RAG",
+          "Search + vector index",
+          "Tokenization, ranking, ANN similarity",
+          "It holds money or must be strongly consistent — keep that in Postgres"
+        ],
+        [
+          "Dashboards, funnels, BI",
+          "Warehouse / OLAP",
+          "Parallel scans over history without hurting OLTP",
+          "You need millisecond single-row writes — that is OLTP"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "\"I start from read/write patterns and consistency, put transactions in a relational core, serve hot keys from key-value, scale appends on partitioned LSM, and isolate analytics in columnar OLAP via CDC — because no single engine is native at all four.\""
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:25:05.761Z",
+    "problems": []
+  }
+}

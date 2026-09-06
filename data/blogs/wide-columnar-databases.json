@@ -1,0 +1,279 @@
+{
+  "slug": "wide-columnar-databases",
+  "title": "Wide Columnar Databases",
+  "summary": "Wide-column stores are partitioned, LSM-backed sparse maps where you trade ad-hoc queries for predictable single-partition reads at massive scale.",
+  "kind": "HLD",
+  "problemSlug": "wide-columnar-databases-92-303",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": " f5c4 ",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "NoSQL",
+    "Wide-Column",
+    "Cassandra"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is a Wide-Column Database? Definition & FAQs - ScyllaDB",
+      "url": "https://www.scylladb.com/glossary/wide-column-database/",
+      "source": "scylladb.com",
+      "kind": "article"
+    },
+    {
+      "title": "What exactly is a wide column store? - Stack Overflow",
+      "url": "https://stackoverflow.com/questions/62010368/what-exactly-is-a-wide-column-store",
+      "source": "stackoverflow.com",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding Wide Column Databases: Flexibility and ... - Medium",
+      "url": "https://medium.com/@mahendrasingh.05/understanding-wide-column-databases-flexibility-and-scalability-for-big-data-applications-2a9c06a195f5",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "What difference between columnar and wide column databases?",
+      "url": "https://dba.stackexchange.com/questions/322592/what-difference-between-columnar-and-wide-column-databases",
+      "source": "dba.stackexchange.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A wide-column database is **not a table with many columns**. It is a **distributed, sorted sparse map** keyed as `(partition key, clustering key, timestamp) -> cells`. You give up joins and ad-hoc `WHERE` clauses to buy one thing: **every hot query touches exactly one partition on a known set of nodes, no scatter, no coordinator fan-out**. If your design cannot name the partition for every read, you picked the wrong database."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A wide-column store organizes a keyspace into tables, tables into partitions, and partitions into rows of cells. The full address of a value is four parts: **row key that hashes to a partition**, **column family**, **column qualifier**, and **timestamp**. That last part is load-bearing. Each cell is versioned, which is why the honest mental model is a 3-dimensional map, not a relational row. Rows in the same table do not share a schema. One partition can hold three qualifiers, the next can hold three million, and no space is paid for missing cells. The name *wide* refers to this sparsity: a logical row can be arbitrarily wide without altering the table, because columns are created on write simply by naming a new qualifier. The trade-off is immediate: you get schema flexibility and storage efficiency for sparse data, but you lose any engine-level guarantee that two rows look alike, which pushes validation and evolution entirely into application code."
+    },
+    {
+      "type": "paragraph",
+      "text": "Physically, nothing about this resembles a relational heap. A partition is the unit of distribution, replication, and access. The partition key is hashed onto a token ring, and all rows sharing that key land on the same replica set and are stored sorted by their clustering columns. Inside a node the data lives in an LSM-tree: recent writes in memory, older writes in immutable sorted files, merged in the background. That is why writes are always fast regardless of dataset size, and why reads are fast *only* when they are partition-local and clustering-ordered. Cross-partition scans, secondary predicates, and multi-partition transactions are not slow features — they are anti-features the architecture explicitly refuses to optimize. Choose this engine when your access pattern can be reduced to: hash to one partition, then range-scan a sorted slice inside it."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Wide-column is not columnar"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers use this confusion as a filter, so kill it in one sentence. **Columnar** systems like Snowflake, BigQuery, and Redshift store each column contiguously to compress and scan billions of values for analytics. They live for `SELECT avg(x) GROUP BY y` over the whole dataset. **Wide-column** systems like Cassandra, Bigtable, HBase, and ScyllaDB store each partition's cells together sorted by key to serve point lookups and narrow range slices at high concurrency and low latency. They live for `SELECT * WHERE user_id = ? AND ts > ? LIMIT 50` repeated millions of times per second. One optimizes throughput of full scans; the other optimizes latency of key-addressed slices. The trade-off: pick columnar when queries are unpredictable but offline-tolerant, pick wide-column when queries are narrow, known in advance, and must never queue behind a warehouse scan. Saying *we need Cassandra for analytics* or *we need BigQuery for user timelines* signals you memorized names without understanding storage layout."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Writes take the fast path by design. A coordinator hashes the partition key, forwards the mutation to the nodes that own that token range, and each replica appends to a commit log and inserts into an in-memory memtable. Acknowledgement waits only for the configured quorum — typically two of three replicas — not for disk compaction or global agreement. This is why ingest scales linearly with node count and survives node loss: durability comes from replicating the log, not from fsyncing a B-tree in place. The cost is pushed to the background. Memtables flush to immutable SSTables, and compaction continuously merges, sorts, deduplicates by timestamp, and evicts tombstoned cells. The trade-off: you buy O(1) ingest and tunable availability at the price of read amplification and operational complexity. A read may have to merge memtable plus several SSTables plus repair inconsistencies, which is exactly why data modeling that keeps partitions small and reads slice-local matters more than hardware."
+    },
+    {
+      "type": "mermaid",
+      "title": "Write and read path",
+      "caption": "All access is routed by partition hash; replicas converge lazily.",
+      "code": "flowchart TD\n  A[Client driver with token map] --> B[Coordinator node]\n  B -->|hash partition key| C[Replica set for token]\n  C --> D[Commit log append]\n  D --> E[Memtable in memory]\n  E --> F[Flush to SSTable]\n  F --> G[Compaction merge and evict]\n  H[Read request] --> B\n  B --> C\n  C --> I[Merge memtable plus SSTables]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Reads invert the cost. The coordinator again hashes the partition key and asks the fastest quorum of replicas. Each replica seeks to the partition, then walks clustering columns in stored sort order, merging versions across memtable and SSTables and resolving conflicts by timestamp with last-write-wins. If you asked for `partition_key = X AND cluster_col BETWEEN a AND b`, this is one seek plus a sequential slice — the ideal case, bounded disk I/O and no cross-node coordination. If you omitted the partition key, the coordinator must fan out to every node, wait for the slowest, and filter in memory. That full-cluster scan is what pages on-call at 3am. Clustering order is declared at table creation and is immutable for a reason: it is the physical sort order on disk. Sorting left-to-right by partition key, then clustering key, then qualifier and timestamp is not an optimization, it is the layout. The trade-off: range queries inside a partition are essentially free, but any ordering you did not declare in advance cannot be served without rebuilding the table under a new key."
+    },
+    {
+      "type": "mermaid",
+      "title": "Logical to physical layout",
+      "caption": "Hash distributes partitions; clustering columns sort inside each partition.",
+      "code": "graph TD\n  K[Keyspace] --> T[Table]\n  T --> H[Partition key hash]\n  H --> P1[Partition A on replica set 1]\n  H --> P2[Partition B on replica set 2]\n  P1 --> S1[Rows sorted by clustering key]\n  P2 --> S2[Rows sorted by clustering key]\n  S1 --> V1[Cells by qualifier and timestamp]"
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of the wide-column model",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why it is worth it only sometimes"
+      ],
+      "rows": [
+        [
+          "Linear horizontal scale for key-addressed reads and writes",
+          "No joins, no multi-partition transactions, weak ad-hoc query support",
+          "Scale is useless if your queries need relational algebra"
+        ],
+        [
+          "Single-digit millisecond p99 on partition-local access",
+          "p99 collapses on scatter queries and oversized partitions",
+          "Latency SLO holds only when every hot path names its partition"
+        ],
+        [
+          "Tunable consistency per request with always-writable replicas",
+          "Eventual consistency, last-write-wins, client-visible repair and hints",
+          "Availability during partitions costs you conflict resolution logic"
+        ],
+        [
+          "Cheap sparse storage and online column addition",
+          "No engine schema enforcement, costly migrations when access pattern changes",
+          "Flexibility shifts work to application versioning and backfills"
+        ],
+        [
+          "High ingest rate from LSM and append-only writes",
+          "Compaction debt, tombstone overhead, read amplification",
+          "Write throughput is borrowed from future read and compaction budget"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Wide-column outages rarely look like a crash. They look like latency that climbs for weeks, then falls off a cliff. The root cause is almost always a modeling violation that the engine cannot protect you from: a partition that grows without bound, a hot key that defeats the hash, or deletes that never actually delete. Because compaction and repair are asynchronous, the symptom lags the mistake by days. You will see healthy CPU, healthy disk usage, and a p99 that doubles every release while p50 stays flat. That divergence — p50 fine, p99 terrible — is the signature of partition skew and SSTable pile-up. Treat it as a data-model alarm, not a capacity alarm. Adding nodes to a hot-partition problem just gives you more expensive slow nodes."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Unbounded partition growth:** appending events to `PARTITION BY user_id` for a power user creates a multi-GB partition. Symptom: reads for that one key time out, GC pauses spike on replicas owning it, repair never finishes. Limit partitions to tens of MB and bucket by time: `(user_id, month)` not `user_id`.",
+        "**Hot partition / celebrity key:** every request hashes to the same token, so one replica set saturates while the rest idles. Symptom: one node's CPU and queue depth pegged, coordinator timeouts, token-aware driver cannot help. Fix with key salting, caching in front, or splitting the hot entity.",
+        "**Tombstone storm:** high `DELETE` rate or TTL churn leaves markers that must be scanned until compaction grace expires. Symptom: a query returning 10 rows reads 100k tombstones, tracing shows `TombstoneOverwhelmingException` or scanned-tombstone warnings, latency explodes after a bulk delete. Prefer TTLs with aligned expiry and avoid re-inserting deleted qualifiers.",
+        "**Large collections and wide rows:** a single `set` or `map` with 100k elements is read and written whole. Symptom: heap pressure, multi-second mutations, client timeouts on an otherwise fast table. Model collections as clustering rows, not as one cell.",
+        "**Wrong consistency at the wrong time:** `ONE` on a contended counter plus retry storm creates resurrected deletes and phantom reads. Symptom: values flap after repair, deletes reappear. Use quorum for read-modify-write paths and idempotent upserts."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The failure I would drill in an interview is the unbounded time-series partition, because it combines every trade-off at once. It starts correct — `PRIMARY KEY (sensor_id, ts)` gives beautiful slice reads — and ends with a 5 GB partition that cannot be compacted, streamed, or repaired within timeouts. The fix is bucketing: `PRIMARY KEY ((sensor_id, day), ts)` bounds each partition to one day of data, keeps slices sequential, and makes TTL expiry align with SSTable boundaries so compaction actually drops files instead of rewriting them. Cost: reads spanning a week now touch seven partitions and need client-side merge. That is the canonical wide-column bargain stated plainly: you bound physical partition size to protect p99, and you pay by doing multi-partition fan-out in application code only on the rare path that needs it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Data modeling is query modeling"
+    },
+    {
+      "type": "paragraph",
+      "text": "There is no normalized wide-column schema. You start from queries, not entities, and you denormalize deliberately into one table per query shape. Identify the partition key that isolates each query to one replica set, then choose clustering columns that make the sort order answer range and ordering without filtering. Everything else is a payload column. If two queries need different partitions or different sort orders, you write to two tables. Duplication is not a smell here; scatter reads are. The trade-off is explicit: storage and write amplification roughly double per additional access path, but read latency stays flat and predictable because each path remains partition-local. Teams that try to save storage with one generic table pay it back with full scans and secondary indexes that collapse under load."
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "timeline.cql",
+      "code": "-- Query first: latest 50 posts per user, paged by time.\n-- Partition bounds growth to one month. Clustering sorts newest first.\nCREATE TABLE user_timeline (\n  user_id uuid,\n  month text,           -- e.g. '2026-09', bucketing key\n  created_at timestamp,\n  post_id uuid,\n  body text,\n  PRIMARY KEY ((user_id, month), created_at, post_id)\n) WITH CLUSTERING ORDER BY (created_at DESC, post_id ASC)\n  AND default_time_to_live = 7776000;\n\n-- Serve it with a partition-local slice. No ALLOW FILTERING. Ever.\nSELECT post_id, created_at, body FROM user_timeline\n WHERE user_id = ? AND month = ?\n ORDER BY created_at DESC LIMIT 50;"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape survives review: `(user_id, month)` hashes to one replica set, so the read touches at most three nodes and one of them answers from a sequentially stored slice. `created_at DESC` matches the requested order on disk, so no in-memory sort. `post_id` disambiguates identical timestamps without breaking order. The `month` bucket caps partition size — the trade-off versus bare `user_id` is that a cross-month timeline needs two sequential queries merged client-side, but each query stays bounded and TTL expiry aligns to whole SSTables. If the interviewer asks for *posts by hashtag across all users*, do not bolt a secondary index onto this table; propose a second table partitioned by `(hashtag, month)` and a dual write. Say the cost out loud: twice the writes, half the ways to page on-call."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "ALLOW FILTERING is a confession",
+      "text": "If your CQL needs `ALLOW FILTERING`, your data model is wrong. It tells every node to scan and discard. It passes in demo, times out at 10x data. In an interview, stop and re-key the table the moment you reach for it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the access patterns before any schema",
+          "text": "List Q1, Q2, Q3 with shape, rate, and latency SLO. Example: Q1 get latest N per user at 20k rps p99 <10ms, Q2 append event at 50k wps, Q3 monthly export offline. State which must be partition-local and which may fan out. Interviewers score this higher than syntax."
+        },
+        {
+          "title": "Choose partition and clustering keys on the whiteboard",
+          "text": "Propose `PRIMARY KEY ((user, bucket), ts)` and defend bucket granularity with math: events per day times cell size equals partition size. Show you can size a partition to 10-100 MB. Compute replica fan-out per query."
+        },
+        {
+          "title": "State consistency and replication explicitly",
+          "text": "Pick replication factor 3, write quorum plus read quorum for the critical path, `ONE` only for fire-and-forget ingest you can afford to lose or reconcile. Explain last-write-wins and why counters and read-modify-write need quorum or idempotent design."
+        },
+        {
+          "title": "Kill the relational follow-ups cleanly",
+          "text": "When asked for joins, ad-hoc filters, or transactions, do not hack secondary indexes. Propose denormalized tables, materialized views maintained by dual write or CDC, and bounded fan-out in the service. Name the write-amplification cost without flinching."
+        },
+        {
+          "title": "Talk operations like an owner",
+          "text": "Mention compaction strategy per workload, tombstone budget, TTL alignment, hot-key detection via driver metrics, and repair cadence. The medium-level signal is: you know fast writes are paid back in compaction and you sized partitions to keep that debt collectible."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**It is just a relational table with flexible columns.** No. There is no optimizer that saves a bad predicate. No partition key means full-cluster scatter, regardless of indexes.",
+        "**Wide-column equals columnar analytics.** Opposite workloads. Wide-column serves key-addressed OLTP slices; columnar serves full-dataset OLAP scans. Mixing them guarantees both latency and cost pain.",
+        "**Columns are free, so add a secondary index for every filter.** Secondary indexes fan out to all partitions and break p99 at scale. Each new query shape wants its own denormalized table, not an index.",
+        "**More nodes fix hot keys.** Hashing spreads distinct keys, not load on one key. A celebrity partition saturates its replica set at any cluster size; fix the key, add cache, or split the entity.",
+        "**Deletes are instant and cheap.** Deletes are tombstone writes that inflate reads until compaction purges them after grace period. High churn without TTL alignment is a slow latency leak.",
+        "**Consistency is a cluster setting.** Consistency is per-request in these systems. You can write at `ONE` and read at `QUORUM` on the same table, and that choice is the availability-versus-correctness trade-off you must justify."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use it for known narrow slices; avoid it for relational or analytic freedom.",
+      "headers": [
+        "Use wide-column when",
+        "Avoid it when",
+        "What to pick instead"
+      ],
+      "rows": [
+        [
+          "High-write time-series, timelines, IoT events keyed by device plus time bucket",
+          "You need cross-entity joins or multi-row transactions",
+          "Relational store with real ACID boundaries"
+        ],
+        [
+          "User profiles, sessions, inboxes served by single-key lookups at massive concurrency",
+          "Queries are exploratory with unpredictable predicates",
+          "Document store with indexing or columnar warehouse"
+        ],
+        [
+          "Append-heavy logs and message histories with TTL expiry and paged range scans",
+          "Dataset fits on one node and team wants operational simplicity",
+          "Postgres — do not pay distributed overhead for non-distributed scale"
+        ],
+        [
+          "Multi-region active-active ingest that must stay writable during partitions",
+          "You need strong secondary ordering or global uniqueness constraints",
+          "Spanner-style strongly consistent store, accept the latency cost"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Use a wide-column store when every hot query can hash to one bounded partition and range-scan its clustering order — you trade joins and ad-hoc queries for linear scale and predictable p99 on known slices.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:30:07.057Z",
+    "problems": []
+  }
+}

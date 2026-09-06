@@ -1,0 +1,321 @@
+{
+  "slug": "dash",
+  "title": "DASH",
+  "summary": "DASH is client-driven adaptive bitrate streaming over plain HTTP: split video into segments, describe them in an MPD, let the player switch quality to match the network.",
+  "kind": "HLD",
+  "problemSlug": "dash-94-210",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "📺",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "Video-Streaming",
+    "DASH"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "How to Use Em Dashes (—), En Dashes (–) , and Hyphens (-)",
+      "url": "https://www.merriam-webster.com/grammar/em-dash-en-dash-how-to-use",
+      "source": "merriam-webster.com",
+      "kind": "article"
+    },
+    {
+      "title": "Dash - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Dash",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Grammar: Meet the Dashes - YouTube",
+      "url": "https://www.youtube.com/watch?v=EmVnnnq3CqM",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Dashes | Style Manual",
+      "url": "https://www.stylemanual.gov.au/grammar-punctuation-and-conventions/punctuation/dashes",
+      "source": "stylemanual.gov.au",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**DASH moves intelligence to the client.** The server is dumb storage for pre-encoded segments at different bitrates. The player measures its own throughput and buffer and picks the next quality. That single inversion is why it scales on commodity HTTP instead of needing a smart streaming server."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What DASH is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "**Dynamic Adaptive Streaming over HTTP (DASH)** is a vendor-neutral adaptive bitrate protocol for delivering audio and video over plain HTTP. Video is pre-transcoded into a **ladder** of 5-8 renditions — for example 270p at 400 kbps up to 1080p or 4K at 12 Mbps — then chopped into short, independently decodable segments of 2 to 6 seconds, typically 4 seconds for on-demand. A manifest called the **Media Presentation Description (MPD)** lists every rendition, segment URL template, codec, resolution, bandwidth, and timeline. The client fetches the MPD once, then makes a sequence of ordinary HTTP GETs for segments, switching rendition on every segment boundary based on observed network conditions. No persistent connection. No UDP. No server-side session state."
+    },
+    {
+      "type": "paragraph",
+      "text": "What it is *not*: it is not progressive download, where you serve one big `mp4` file and hope the network keeps up. It is not a transport protocol like RTMP or WebRTC that pushes frames over a long-lived connection. DASH is a **convention on top of HTTP caching infrastructure**. The trade-off is explicit: you accept 4 to 30 seconds of end-to-end latency and 15-25% storage overhead for the ladder in exchange for traversing every NAT, firewall, and CDN cache without custom servers. If you need sub-second interaction, you picked the wrong tool."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The pipeline has five stages and only one loop. **Transcode** the mezzanine source into aligned renditions — keyframes must line up across renditions or switching tears. **Segment and package** into ISO BMFF or CMAF chunks with identical durations. **Publish** segments plus MPD to an origin store. **Distribute** via a CDN so 95%+ of segment requests never hit origin. **Adapt** in the player: after each segment download, estimate throughput as `segment_size / download_time`, check buffer occupancy, and select the highest rendition whose declared bitrate fits below a safety margin, usually 0.7 to 0.8x of estimated throughput. That loop runs every 2-6 seconds for the entire session. Server scaling is trivial because the server does nothing per-viewer. Client complexity is high because every player is now a control system."
+    },
+    {
+      "type": "mermaid",
+      "title": "DASH end-to-end flow",
+      "caption": "Dumb origin and CDN, smart player loop.",
+      "code": "flowchart LR\n    ENC[Transcoder Ladder] --> SEG[Segmenter + MPD Generator]\n    SEG --> ORIG[Origin Store]\n    ORIG --> CDN[CDN Cache]\n    CDN --> PLAYER[DASH Player ABR Loop]\n    PLAYER -->|GET next segment| CDN\n    PLAYER -->|throughput + buffer estimate| PLAYER"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Inside the MPD and segments"
+    },
+    {
+      "type": "paragraph",
+      "text": "The MPD is XML hierarchy: **Period** contains **AdaptationSet** contains **Representation** contains **SegmentTemplate**. Periods mark major timeline breaks like ad inserts. AdaptationSets separate media types — one for video, one for audio, one for subtitles — so you can mix 1080p video with high-bitrate audio independently. Representations are the actual ladder rungs, each tagged with `bandwidth`, `width`, `height`, and `codecs`. `SegmentTemplate` avoids listing thousands of URLs by using a pattern like `seg-$RepresentationID$-$Number$.m4s` plus `SegmentTimeline` for variable durations. For on-demand, the MPD is static with full duration. For live, it is dynamic with a sliding window, `availabilityStartTime`, and `timeShiftBufferDepth`. The trade-off: templates keep the manifest to kilobytes instead of megabytes, but the client must do correct time math or it requests segments that do not exist yet and stalls."
+    },
+    {
+      "type": "code",
+      "language": "xml",
+      "filename": "manifest.mpd",
+      "code": "<MPD type=\"static\" mediaPresentationDuration=\"PT600S\" minBufferTime=\"PT4S\">\n  <Period>\n    <AdaptationSet mimeType=\"video/mp4\" codecs=\"avc1.640028\">\n      <Representation id=\"360p\" bandwidth=\"800000\" width=\"640\" height=\"360\" />\n      <Representation id=\"720p\" bandwidth=\"2500000\" width=\"1280\" height=\"720\" />\n      <Representation id=\"1080p\" bandwidth=\"6000000\" width=\"1920\" height=\"1080\" />\n      <SegmentTemplate media=\"seg-$RepresentationID$-$Number$.m4s\"\n        initialization=\"init-$RepresentationID$.mp4\" duration=\"4\" />\n    </AdaptationSet>\n    <AdaptationSet mimeType=\"audio/mp4\" codecs=\"mp4a.40.2\">\n      <Representation id=\"audio\" bandwidth=\"128000\" />\n    </AdaptationSet>\n  </Period>\n</MPD>"
+    },
+    {
+      "type": "paragraph",
+      "text": "Segment duration is the central tuning knob and every choice hurts somewhere. **2-second segments** adapt faster to bandwidth drops and reduce live latency, but they double manifest churn, double HTTP request rate, cut CDN cache efficiency, and degrade compression by 8-12% because you force keyframes more often. **6 to 10-second segments** compress better and slash origin QPS, but adaptation lags by a full segment and a sudden throughput collapse guarantees a rebuffer because you committed to a large chunk at the wrong bitrate. Most on-demand services settle on **4 seconds**: the compromise between coding efficiency and reaction time. Live services pushing for low latency go to 1-2 seconds with CMAF chunks and accept the higher packaging and CDN cost. State that trade-off explicitly in the interview."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "DASH design choices and what each one costs.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "HTTP + TCP + CDN delivery",
+          "Traverses firewalls, reuses commodity caches, no streaming servers to scale",
+          "Higher latency than UDP push, head-of-line blocking, TCP slow-start on every new connection"
+        ],
+        [
+          "Client-driven ABR",
+          "No per-session server state, scales linearly with CDN, player has best signal",
+          "Inconsistent quality across players, oscillation and unfairness on shared links, duplicated ABR logic per platform"
+        ],
+        [
+          "Pre-encoded ladder",
+          "Simple origin, deterministic quality, high cache hit ratio",
+          "20% storage overhead, slow to add new codec, wasted encodes for unwatched renditions"
+        ],
+        [
+          "Short segments",
+          "Fast adaptation, lower live delay, fine-grained ad insertion",
+          "Worse compression, more HTTP overhead, more manifest updates"
+        ],
+        [
+          "Long segments",
+          "Better compression, fewer requests, cheaper origin and CDN",
+          "Slow adaptation, large rebuffer when network drops mid-segment"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Why client-driven won: around 2010 the alternative was server-driven protocols that kept per-client state and pushed at a fixed rate. That meant stateful servers that could not be cached and collapsed under flash crowds. DASH bet that **bandwidth estimation is best done where the data arrives** and that **stateless HTTP scales better than any smart server**. The cost is control. The origin cannot enforce fairness or global quality policy — ten players behind one bottleneck will each greedily probe for bandwidth and oscillate together. You trade server scalability for client anarchy, then spend years tuning ABR heuristics to tame it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "DASH failures look like player behavior, not server errors, which is why they are hard to debug. Origin and CDN return 200s while users see spinning wheels. The root causes are almost always **ABR mis-estimation, cache fragmentation, or clock and timeline drift** between packager, origin, and player. Throughput estimators overreact to a single slow segment and downshift two rungs, then overcorrect upward and cause oscillation. Low cache hit ratio on tail renditions means the 1080p segments always go to origin and take 800 ms while 360p comes from edge in 40 ms, which biases the player to stay low forever. In live, if the packager advertises a segment before it is fully written, players 404, back off differently, and desynchronize."
+    },
+    {
+      "type": "table",
+      "caption": "Production failure, user-visible symptom, and fix.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Fix"
+      ],
+      "rows": [
+        [
+          "ABR oscillation",
+          "Quality flickers 360p to 1080p every few seconds, high quit rate",
+          "Hysteresis + hold-down timer, cap upshifts to one rung per 2 segments"
+        ],
+        [
+          "Rebuffer loop on bandwidth drop",
+          "Long freeze then low quality stuck for minutes",
+          "Buffer-based guardrail, fast downshift on buffer < 4s, reserve lowest rung"
+        ],
+        [
+          "CDN cache fragmentation",
+          "High-bitrate users stall, low-bitrate users fine, origin QPS spikes",
+          "Consistent segment naming, larger edge TTL, pre-warm top renditions"
+        ],
+        [
+          "Live edge 404s",
+          "Join failures, live spinner at segment boundary",
+          "Advertise segments only after origin commit, add availability offset of 2 segments"
+        ],
+        [
+          "Audio-video drift",
+          "Lipsync error grows, separate AdaptationSets selected badly",
+          "Constrain audio and video buffer jointly, align segment durations"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Rebuffering beats oscillation",
+      "text": "Viewers tolerate one sustained drop to 480p. They do not tolerate flickering between sharp and blurry every 8 seconds. **Bias your ABR toward stability**: downshift fast, upshift slow, and require two consecutive good measurements before climbing. The trade-off is you leave 10-15% of available bandwidth unused to buy perceived quality."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "ABR in code: what the client actually does"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "abr.py",
+      "code": "class AbrController:\n    def __init__(self, bitrates, safety=0.75):\n        self.bitrates = sorted(bitrates)  # e.g. [400k, 800k, 2500k, 6000k]\n        self.safety = safety\n        self.throughput_ewma = None\n        self.last_upshift = 0\n\n    def on_segment_downloaded(self, size_bytes, download_s, buffer_s, now_s):\n        inst = (size_bytes * 8) / max(download_s, 0.001)\n        alpha = 0.3  # EWMA: smooths noise, slows reaction. Trade-off.\n        if self.throughput_ewma is None:\n            self.throughput_ewma = inst\n        else:\n            self.throughput_ewma = alpha * inst + (1 - alpha) * self.throughput_ewma\n\n        # Panic: buffer starving, ignore throughput, drop hard.\n        if buffer_s < 4.0:\n            return self.bitrates[0]\n        # Hold-down: prevent oscillation after an upshift.\n        allowed = self.throughput_ewma * self.safety\n        candidate = max([b for b in self.bitrates if b < allowed], default=self.bitrates[0])\n        current = getattr(self, 'current', self.bitrates[0])\n        if candidate > current and (now_s - self.last_upshift) < 8.0:\n            return current\n        if candidate > current:\n            self.last_upshift = now_s\n        self.current = candidate\n        return candidate"
+    },
+    {
+      "type": "paragraph",
+      "text": "This controller shows the two schools of ABR in one place. **Throughput-based** logic picks bitrate from estimated network speed — reactive but noisy on mobile networks where a single slow segment poisons the average. **Buffer-based** logic picks bitrate from buffer occupancy — stable but wasteful because it ignores that the network could support more. Production players use a hybrid: panic to the bottom rung when `buffer < 4s` regardless of throughput, otherwise use damped throughput with a safety factor and an upshift hold-down. The `safety = 0.75` and `alpha = 0.3` are not magic; lower safety wastes bandwidth but prevents rebuffers, higher alpha reacts faster but oscillates. Name both when you write this on the board."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Live, DVR, and low latency"
+    },
+    {
+      "type": "paragraph",
+      "text": "On-demand DASH is easy because the whole timeline exists. Live DASH is a distributed systems problem: the packager is appending segments while thousands of players poll the updated MPD. You must add an **availability window** — typically live edge minus 2 to 3 segment durations — or players request the future and 404. DVR adds a sliding `timeShiftBufferDepth` of 30 minutes to 2 hours, which bounds CDN cache size but forces eviction discipline. Low-latency DASH uses CMAF chunks of 200-500 ms inside a 2-second segment so the player can fetch partial segments with chunked transfer encoding. The trade-off is brutal: you cut glass-to-glass delay from 20 seconds to 3-5 seconds, but you triple MPD update rate, break many mid-tier caches that do not support chunked delivery, and your ABR has almost no buffer to smooth over jitter. Do not propose low-latency unless the use case demands live interaction."
+    },
+    {
+      "type": "mermaid",
+      "title": "Player buffer control states",
+      "caption": "ABR is a state machine driven by buffer level.",
+      "code": "stateDiagram-v2\n    [*] --> Startup\n    Startup --> Stable: buffer > 10s\n    Stable --> Panic: throughput collapse\n    Panic --> Stable: buffer recovers\n    Panic --> Rebuffer: buffer empty\n    Rebuffer --> Startup: playback resumes"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design a video-on-demand service",
+          "text": "Start with ingest, transcoding ladder, segment store, CDN, and MPD. State segment duration and why 4 seconds. Draw the ABR loop. Mention per-title encoding as an optimization: simple animation needs fewer rungs than action footage at the same quality."
+        },
+        {
+          "title": "Add live streaming with 100k concurrent viewers",
+          "text": "Explain dynamic MPD, availability offset, and edge caching. Quantify: 100k viewers x 2 Mbps / 4s segments = 50k requests per second to CDN, near zero to origin if hit ratio holds. Show where it breaks: packager lag and thundering herd on MPD refresh."
+        },
+        {
+          "title": "Handle seek, pause, and bitrate switching",
+          "text": "Seek is a new MPD time lookup plus independent segment fetch — no server session to reset. Pause lets the buffer fill then stops requesting. Switching is free at segment boundaries because renditions share keyframe alignment. Contrast with stateful push where seek tears down the session."
+        },
+        {
+          "title": "Push to low latency or 4K at scale",
+          "text": "Do the math out loud: 4K at 12 Mbps x 10k viewers = 120 Gbps sustained. Show why you need tiered CDN and why CMAF chunks cost cache efficiency. Argue when *not* to do it: news highlights do not need 3-second delay."
+        },
+        {
+          "title": "Defend your metrics",
+          "text": "Propose join time, rebuffer ratio, average delivered bitrate, and quality switch frequency. Say which you would sacrifice first: protect rebuffer ratio over average bitrate every time."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that kill you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**DASH is a codec.** No. It is codec-agnostic. It carries H.264, H.265, AV1, VP9 identically — the MPD just declares `codecs`. Changing codecs changes ladder efficiency, not the protocol.",
+        "**More rungs are always better.** No. Each rung adds storage, packaging, and cache fragmentation. Beyond 6 rungs the ABR gain is marginal and tail renditions never warm in cache.",
+        "**TCP is fine for live.** Only up to a point. TCP retransmits and guarantees order, which adds delay exactly when live cannot afford it. That is why ultra-low-latency uses different stacks.",
+        "**The server picks quality.** No. In DASH the client picks. If you draw server-side bitrate switching, you are describing a different decade.",
+        "**CBR ladder is optimal.** No. Constant bitrate wastes bits on easy scenes and starves hard ones. Per-title and capped VBR win on quality per byte at the cost of unpredictable segment sizes that confuse naive throughput estimators."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use DASH when scale and reach outweigh latency.",
+      "headers": [
+        "Use DASH when",
+        "Avoid DASH when"
+      ],
+      "rows": [
+        [
+          "VOD catalog at internet scale, CDN-friendly, device-heterogeneous playback",
+          "Sub-second interaction needed — video calls, auctions, live betting — use WebRTC instead"
+        ],
+        [
+          "Live one-to-many where 5-30s delay is acceptable and viewers tolerate buffering over drops",
+          "Contribution from camera to cloud where packet loss must be recovered fast — use SRT or RTMP"
+        ],
+        [
+          "You need codec freedom and vendor neutrality across players and CDNs",
+          "You control the whole ecosystem and want tight platform integration — a proprietary stack may be simpler"
+        ],
+        [
+          "Ad insertion, DVR, multi-audio and subtitles matter — Periods and AdaptationSets handle it natively",
+          "Tiny clips under 10 seconds — segmentation and MPD overhead exceeds the benefit, serve progressive files"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**DASH splits video into multi-bitrate HTTP segments described by an MPD so dumb CDN caches scale delivery while the smart client switches quality every few seconds — at the cost of higher latency for massive reach.**"
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "paragraph",
+      "text": "Final judgment: choose DASH when your problem is **scale and heterogeneity**, not speed. It is the right default for anything that looks like a catalog or a broadcast. It is the wrong default for anything that looks like a conversation. In the design interview, show you understand that split by quantifying segment duration, cache hit impact, and ABR stability — and by refusing low-latency DASH unless the product actually needs it."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:21:30.135Z",
+    "problems": []
+  }
+}

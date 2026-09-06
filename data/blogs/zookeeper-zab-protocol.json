@@ -1,0 +1,324 @@
+{
+  "slug": "zookeeper-zab-protocol",
+  "title": "Zookeeper ZAB Protocol",
+  "summary": "ZAB is ZooKeeper's crash-recovery atomic broadcast: one leader serializes all writes into zxid order and commits via quorum, trading write throughput for prefix-ordered recovery.",
+  "kind": "HLD",
+  "problemSlug": "consensus-use-cases-97-320",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Medium",
+  "coverEmoji": "🗳️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Consensus",
+    "Fault-Tolerance",
+    "ZooKeeper"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "The Zab Algorithm. At the core of Zookeeper | by Aditya Shete | Medium",
+      "url": "https://medium.com/@adityashete009/the-zab-algorithm-502781c54498",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Zab Algorithm in Distributed Systems - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/zab-algorithm-in-distributed-systems/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "ZooKeeper Internals",
+      "url": "https://zookeeper.apache.org/doc/r3.4.13/zookeeperInternals.html",
+      "source": "zookeeper.apache.org",
+      "kind": "article"
+    },
+    {
+      "title": "[PDF] Zab: High-performance broadcast for primary-backup systems",
+      "url": "https://classpages.cselabs.umn.edu/Fall-2017/csci8211/Papers/Distributed%20Systems%20Zab-%20High-performance%20broadcast%20for%20primary-backup%20systems.pdf",
+      "source": "classpages.cselabs.umn.edu",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**ZAB is not generic consensus. It is primary-backup log replication with crash-recovery baked in.** One leader owns all ordering, assigns every write a `zxid`, and a write is real only after a quorum has it on disk. Everything else — election, discovery, sync — exists to preserve one property: **followers never diverge in prefix**. Lose that and ZooKeeper's watches, ephemeral nodes, and conditional updates become lies."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What ZAB is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "ZAB — ZooKeeper Atomic Broadcast — is the protocol that keeps all ZooKeeper replicas applying the same state transitions in the same order, even as leaders crash, disks survive, and networks partition. The system model is explicit: processes crash and recover any number of times, stable storage survives the crash, channels are FIFO point-to-point TCP, failures are crash-only, and clocks are used only for liveness through timeouts. Safety must hold even if clocks lie. Liveness is allowed to stall. That split is deliberate: ZAB would rather stop accepting writes than let two servers disagree on history. The trade-off is availability under partition versus consistency of the log, and ZAB always picks the log."
+    },
+    {
+      "type": "paragraph",
+      "text": "It provides three interlocking guarantees. **Reliable delivery:** if one correct server delivers message `m`, every correct server eventually delivers `m`. **Total order:** if one server delivers `a` before `b`, every server that delivers both delivers them in that order — no gaps, no reordering, no per-slot holes. **Causal / prefix order:** if a sender delivers `a` before broadcasting `b`, then `a` is ordered before `b` everywhere; critically, all proposals from an old leader are ordered before any proposal from the new leader. That last clause is what separates ZAB from textbook Paxos. Paxos can commit slot 2 while slot 1 is still undecided. ZAB forbids it. The log is a prefix or it is nothing. The price is head-of-line blocking: one slow or missing proposal stalls everything behind it."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Prefix order is the whole point",
+      "text": "Total order alone does not save you. If a client creates `/lock/alice` and then a new leader issues `/lock/bob`, every replica must see Alice before Bob. ZAB enforces this by forcing the new leader to first deliver the entire committed history of the old leader. If you allow out-of-order commits you get faster recovery and a broken coordination service."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: elect, recover, broadcast"
+    },
+    {
+      "type": "paragraph",
+      "text": "ZAB runs in two modes that never overlap. Either there is an established leader streaming proposals, or there is no leader and the ensemble is recovering. Recovery itself splits into election, discovery, and synchronization. Broadcast is the steady state. The reason for the hard separation is safety: you cannot let a new leader propose until you know exactly which old proposals survived. So ZAB halts the world, picks the most up-to-date candidate, forces it to adopt the longest committed prefix it can find in a quorum, drags lagging followers forward or truncates their uncommitted tail, and only then reopens for writes."
+    },
+    {
+      "type": "mermaid",
+      "title": "ZAB lifecycle",
+      "caption": "No broadcast until recovery completes. Leader loss always re-enters election.",
+      "code": "flowchart TD\n  A[No Leader - Timeout or Startup] --> B[Leader Election - Highest epoch, then highest zxid wins]\n  B --> C[Discovery - Leader collects follower histories]\n  C --> D[Sync - Leader sends DIFF, TRUNC, or SNAP]\n  D --> E[Broadcast - Leader proposes, quorum acks, leader commits]\n  E -->|Leader suspected lost| A\n  E -->|Quorum ACK received| F[Commit in zxid order and deliver to state machine]"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Steady state: atomic broadcast"
+    },
+    {
+      "type": "paragraph",
+      "text": "In broadcast, the leader is the sole sequencer. A client write hits the leader, the leader assigns a 64-bit `zxid` made of `epoch` in the high 32 bits and a monotonic `counter` in the low 32 bits, appends a PROPOSE to its own log, and fans it out over FIFO channels. A follower on receipt persists the proposal to its transaction log first, then sends ACK. When the leader has ACKs from a quorum including itself, it commits locally, applies to its in-memory tree, and broadcasts COMMIT. Followers apply strictly in `zxid` order. FIFO matters here: because TCP never reorders, a follower that ACKs proposal 7 has implicitly seen everything through 7, so the leader can reason about prefixes, not individual slots. The trade-off: write latency is one disk force on the leader plus one disk force on the slowest follower in the fastest quorum plus two network hops. You buy durability and order with tail latency."
+    },
+    {
+      "type": "mermaid",
+      "title": "Quorum commit path",
+      "caption": "Commit requires quorum ACKs, delivery is always in zxid order.",
+      "code": "graph LR\n  L[Leader] -->|PROPOSE zxid 1.42| F1[Follower 1]\n  L -->|PROPOSE zxid 1.42| F2[Follower 2]\n  L -->|PROPOSE zxid 1.42| F3[Follower 3]\n  F1 -->|ACK after fsync| L\n  F2 -->|ACK after fsync| L\n  L -->|COMMIT on quorum| F1\n  L -->|COMMIT on quorum| F2\n  L -->|COMMIT on quorum| F3"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why a single proposer? Because it collapses consensus to log shipping. No ballot fight per operation, no two leaders assigning the same `zxid` to different values. The `epoch` changes only on leader change, so every `zxid` is globally unique and totally ordered by integer comparison. Followers are dumb and fast: log, ack, apply in order. The cost is brutal and intentional: all writes flow through one CPU, one disk, one network card. ZAB scales reads by letting any follower serve them, but write throughput is capped at what one leader can fsync. If you need multi-leader write scaling, ZAB is the wrong answer — say so."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Leader change: discovery and sync"
+    },
+    {
+      "type": "paragraph",
+      "text": "Election picks the candidate with the highest `epoch`, breaking ties by highest `zxid`. That rule is not vanity — it maximizes the chance the new leader already holds every committed proposal, because a committed proposal sits on a quorum and the candidate with the longest log intersects that quorum. Discovery then makes it certain: the prospective leader contacts a quorum, collects their last committed `zxid` and log tails, and adopts the longest committed prefix as its own initial history. Any proposal that never reached a quorum is not committed and may be discarded; followers holding such extra uncommitted entries get TRUNCated. Synchronization then converges followers: up-to-date followers get a DIFF of missing committed proposals replayed in order, moderately behind followers get the missing log segment, hopelessly behind followers get a full SNAPshot plus subsequent log. Only after a quorum signals readiness does the leader bump the `epoch`, start assigning new `zxid`s, and enter broadcast. The trade-off is recovery time versus safety: ZAB replays everything rather than negotiating per-slot, which is slower to recover but trivial to reason about and impossible to fork."
+    },
+    {
+      "type": "table",
+      "caption": "ZAB design choices and what each one costs.",
+      "headers": [
+        "Choice",
+        "Why it helps",
+        "What it costs"
+      ],
+      "rows": [
+        [
+          "Single leader sequences all writes",
+          "One total order, no conflicting proposals, simple follower logic",
+          "Leader CPU, disk fsync, and bandwidth cap write throughput; leader loss halts writes"
+        ],
+        [
+          "Quorum ACK + disk force before commit",
+          "Committed entry survives f crashes in 2f+1 ensemble; tolerates correlated power loss if disks hold",
+          "Write latency is 2 network hops + slowest fsync in quorum; minority partition cannot make progress"
+        ],
+        [
+          "FIFO TCP channels",
+          "ACK implies prefix received; leader can reason about histories without per-message negotiation",
+          "Head-of-line blocking; one stalled TCP connection stalls that follower's pipeline"
+        ],
+        [
+          "zxid = epoch + counter",
+          "Global total order by integer compare; epoch bump isolates old leaders instantly",
+          "Old leader's in-flight proposals with stale epoch must be discarded, wasting work"
+        ],
+        [
+          "Timeouts for liveness only",
+          "Safety never depends on clock accuracy; slow network cannot cause divergence",
+          "Bad timeout tuning causes false suspicions, flapping elections, and write stalls"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why ZAB is not Paxos"
+    },
+    {
+      "type": "paragraph",
+      "text": "Classic Paxos agrees on each log slot independently. That sounds flexible until you need causal order. A leader can get value `B` accepted for slot 2 by one quorum, lose leadership, and a new leader can get a different value committed for slot 1 while re-proposing `B` for slot 2 from a higher ballot. The final log is consistent per slot but the delivery order the application saw is scrambled: `B` was effectively visible before its causal predecessor. ZAB refuses to play that game. It binds ordering to delivery: you cannot deliver slot N+1 until you have delivered N, and you cannot start a new epoch until you have delivered every committed entry from prior epochs. Abandoned uncommitted suffixes are truncated, not resurrected out of order. The benefit is that a ZooKeeper client that received an ACK knows its update and everything before it will appear before anything the next leader creates. The cost is that a single unrecoverable hole would freeze the log — which is why recovery must find and fill the hole before broadcast resumes."
+    },
+    {
+      "type": "paragraph",
+      "text": "Against Raft the gap is narrower, and you should say that in an interview. Both are leader-based, log-replication, quorum-commit protocols with term/epoch numbers and prefix consistency. The practical differences are emphasis and plumbing: ZAB was built for crash-recovery with stable storage and FIFO channels as first-class assumptions, and its discovery/sync phase is explicit about DIFF versus TRUNC versus SNAP. Raft makes leader completeness and log matching more pedagogically clean with RequestVote constraints and nextIndex bookkeeping. Choose based on ecosystem, not religion: if you run ZooKeeper you get ZAB; if you build new you pick Raft or etcd's implementation for operability. The trade-off is identical in both: simplicity and strong leadership versus single-leader write bottleneck."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "table",
+      "caption": "Failure to user-visible symptom mapping. Diagnose from the client inward.",
+      "headers": [
+        "Failure",
+        "What the client sees",
+        "What to check first"
+      ],
+      "rows": [
+        [
+          "Leader partitioned from quorum",
+          "Writes hang or time out, reads still succeed on followers; new leader elected in majority partition",
+          "Leader cannot get quorum ACKs; election notifications; `syncLimit` exceeded on isolated side"
+        ],
+        [
+          "Quorum loss — 2 of 3 down or disks dead",
+          "All writes block indefinitely; sessions expire; ensemble is read-only at best",
+          "No majority to elect or commit; transaction log presence on survivors; restore from snapshot + replay"
+        ],
+        [
+          "Follower disk stall or full dataDir",
+          "P99 write latency spikes, leader throttles, followers fall behind then disconnect",
+          "fsync latency, disk usage, follower `sync` queue depth; slow ACKs in leader logs"
+        ],
+        [
+          "Long GC pause on leader or followers",
+          "Spurious leader election, burst of session expirations, write errors retried by clients",
+          "GC logs correlating with election start; heap sizing; tickTime versus pause duration"
+        ],
+        [
+          "Mis-tuned tickTime, initLimit, syncLimit",
+          "Flapping leadership under normal network jitter or slow snapshot transfer",
+          "Followers timing out during SNAP transfer; raise initLimit, separate leader election port latency"
+        ],
+        [
+          "Uncommitted suffix on old leader",
+          "No client-visible anomaly if correct — truncated entries were never ACKed to clients",
+          "Follower TRUNC during sync; alarm only if committed entry ever truncated, which means a bug or disk corruption"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The nastiest production failure is not split-brain — quorum prevents that — it is slow-brain. A follower whose disk fsync takes 200ms does not break safety because the leader only needs the fastest quorum, but if your ensemble is three nodes, every commit needs two ACKs, so one slow disk plus one jittery network path sets your write latency. Operators respond by adding nodes, which is backwards: five nodes tolerates two failures but still needs three ACKs, so tail latency gets worse while availability gets better. Size for failure tolerance, not for speed. The other classic is session expiry storms during election: clients holding ephemeral nodes disconnect, their session timeout fires before a new leader is ready, and thousands of ephemeral deletes replay at once. The symptom looks like data loss; it is ordered deletion doing exactly what it promised. The trade-off is session timeout length: short timeouts detect dead clients fast but amplify election churn."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Do not serve reads as if they were commits",
+      "text": "Followers can serve reads locally without touching ZAB. That is fast and stale by design. If a recipe needs read-your-write or linearizable read, route it through the leader or use `sync` before read. Every ZooKeeper consistency bug I have seen in reviews traces to treating a follower read as a committed prefix."
+    },
+    {
+      "type": "code",
+      "language": "properties",
+      "filename": "zoo.cfg",
+      "code": "tickTime=2000\n# heartbeat interval. Election timeout is ~ tickTime * syncLimit with randomization.\ninitLimit=10\n# follower may take up to 10 * tickTime (20s) to connect + sync snapshot at startup.\n# Too low -> followers with large snapshots never join. Too high -> dead leader blocks longer.\nsyncLimit=5\n# follower may lag up to 5 * tickTime (10s) behind leader before being dropped.\n# Tighten for faster failure detection, loosen for jittery networks. Liveness only.\ndataDir=/var/lib/zookeeper\n# transaction log + snapshots live here. Must be dedicated disk. fsync latency = write latency.\nclientPort=2181\nserver.1=zk1:2888:3888\nserver.2=zk2:2888:3888\nserver.3=zk3:2888:3888\n# 2888 = leader-follower replication, 3888 = election. Need 2f+1 servers to tolerate f faults."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "zab_broadcast.py",
+      "code": "class Leader:\n    def __init__(self, epoch):\n        self.epoch = epoch\n        self.counter = 0\n        self.quorum_size = 2  # 3-node ensemble, including self\n\n    def propose(self, txn, followers):\n        self.counter += 1\n        zxid = (self.epoch << 32) | self.counter\n        # FIFO send: follower that sees zxid N has seen all < N.\n        for f in followers:\n            f.receive_propose(zxid, txn)  # follower: fsync to txn log, then ACK\n        acks = 1  # leader counts itself after local fsync\n        for f in followers:\n            if f.ack(zxid):  # blocks until fsync done on follower\n                acks += 1\n            if acks >= self.quorum_size:\n                break\n        if acks >= self.quorum_size:\n            self.commit(zxid)  # apply in order, then broadcast COMMIT\n            return zxid\n        raise QuorumLost(\"minority partition: cannot commit, step down\")\n\nclass Follower:\n    def apply_commit(self, zxid):\n        # Must apply strictly in zxid order. Gap -> wait, do not skip.\n        assert zxid == self.last_delivered + 1, \"prefix violation: stall, request sync\"\n        self.state_machine.apply(zxid)\n        self.last_delivered = zxid"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Define the guarantees before the mechanism",
+          "text": "Start with reliable delivery, total order, and prefix/causal order. Say why prefix order rules out per-slot Paxos optimizations. Interviewers promote you when you lead with properties, not packet names."
+        },
+        {
+          "title": "Draw the write path with quorum math",
+          "text": "Client -> leader -> PROPOSE -> fsync + ACK -> quorum -> COMMIT -> deliver in zxid order. State 2f+1 tolerates f, write needs f+1 ACKs. Name the latency cost: two hops plus slowest fsync in the fastest quorum."
+        },
+        {
+          "title": "Walk a leader failure end to end",
+          "text": "Timeout -> election on epoch then zxid -> discovery collects quorum histories -> adopt longest committed prefix -> DIFF / TRUNC / SNAP to converge followers -> bump epoch -> resume. Emphasize uncommitted suffixes are discarded and that is safe because they were never ACKed to clients."
+        },
+        {
+          "title": "Explain zxid as a design decision",
+          "text": "High bits epoch, low bits counter. Integer comparison gives total order, epoch change fences old leaders without clock sync. Contrast with ballot-per-slot: cheaper, but forces single proposer — the write-bottleneck trade-off."
+        },
+        {
+          "title": "Close with reads, sessions, and sizing",
+          "text": "Follower reads are stale unless synced through leader. Session timeouts interact with election time to cause expiry storms. Three nodes for default tolerance, five for two-fault tolerance with worse tail latency. Recommend ZooKeeper only for small metadata, not data plane."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "ZAB is just leader election. Election is the prelude; atomic broadcast plus crash-recovery is the protocol. An election without discovery and sync is unsafe.",
+        "ZAB needs ACKs from all followers. It needs a quorum. Waiting for all turns one slow follower into a full outage — the exact mistake quorum exists to avoid.",
+        "Reads go through ZAB. They do not by default. Replication and ordering apply to writes; reads are local unless you force a leader round-trip.",
+        "ZAB handles malicious nodes. It assumes crash-recovery and FIFO, not Byzantine behavior. One lying disk or network adversary breaks its assumptions.",
+        "Bigger ensembles are faster. More voters means more ACKs to collect and higher tail latency. Scale ZooKeeper by keeping data small and reads local, not by adding voters.",
+        "Epoch and zxid are timestamps. They are logical sequence numbers. Clocks drive only timeouts for liveness; ordering never trusts wall-clock time."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "ZAB / ZooKeeper fit versus alternatives.",
+      "headers": [
+        "Use ZAB-backed ZooKeeper when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "State is small metadata: config, membership, locks, leader pointers, offsets — kilobytes, not gigabytes",
+          "State is large or high-throughput: logs, blobs, event streams — leader fsync becomes the ceiling"
+        ],
+        [
+          "Strict prefix order and watches matter: every observer must see the same sequence of changes",
+          "You need multi-region active-active writes or causal-only consistency — single leader plus quorum RTT will hurt"
+        ],
+        [
+          "Read-heavy with tolerant staleness: many followers can serve reads locally",
+          "You need linearizable reads by default on every read — each such read pays leader quorum cost"
+        ],
+        [
+          "You already operate ZooKeeper recipes and need ephemeral + session semantics",
+          "You are greenfield and want simpler operations — a Raft-based store with cleaner tooling may cost less to run"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "**ZAB is single-leader, quorum-committed, prefix-ordered broadcast: the leader assigns zxid order, commits only after a quorum persists to disk, and a new leader must replay the full committed history before proposing — which trades write scale for a log that never forks.**"
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:58:54.038Z",
+    "problems": []
+  }
+}

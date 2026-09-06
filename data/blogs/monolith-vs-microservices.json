@@ -1,0 +1,314 @@
+{
+  "slug": "monolith-vs-microservices",
+  "title": "Monolith Vs Microservices",
+  "summary": "Monolith vs microservices is a deployability and ownership trade-off, not a scale badge. When to start together, when to split, and how each fails.",
+  "kind": "HLD",
+  "problemSlug": "monolith-vs-microservices-91-202",
+  "topic": "System Design Tradeoffs",
+  "difficulty": "Medium",
+  "coverEmoji": "🏗️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "System Design Tradeoffs",
+    "Architecture",
+    "Monolith",
+    "Microservices"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Monolithic Vs Microservices Architecture - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/software-engineering/monolithic-vs-microservices-architecture/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Microservices vs. monolithic architecture - Atlassian",
+      "url": "https://www.atlassian.com/microservices/microservices-architecture/microservices-vs-monolith",
+      "source": "atlassian.com",
+      "kind": "article"
+    },
+    {
+      "title": "Monolithic vs Microservices - Difference Between Software ... - AWS",
+      "url": "https://aws.amazon.com/compare/the-difference-between-monolithic-and-microservices-architecture/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "This is **not a performance choice, it is a coordination choice**. A monolith makes cross-module changes cheap and deployments coupled. Microservices make deployments independent and every cross-service change expensive. Pick based on **who needs to ship without talking to whom**, not on expected traffic."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A **monolith** is one codebase, one build pipeline, one deployable artifact. UI, business logic, and data access live in the same process and usually share one database. You can have clean internal modules, but at runtime there is one unit to deploy, scale, and roll back. The reason teams start here is blunt: in-process function calls have no network, no serialization, no version skew. **Trade-off:** you buy development speed and atomic change at the cost of coupled deployment — one bad module can block or break the whole release."
+    },
+    {
+      "type": "paragraph",
+      "text": "**Microservices** are multiple small processes, each with its own codebase, pipeline, deployment, and — if you are doing it correctly — its own data store. Services talk only over the network via APIs or events. There is no shared in-memory state and no cross-service database join. The reason teams accept this pain is ownership isolation: team A can deploy service A ten times a day without coordinating with team B. **Trade-off:** you buy independent deployability and isolated scaling at the cost of distributed-system failure modes — latency, partial failure, eventual consistency, and versioning — on every interaction that used to be a function call."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: where a request actually goes"
+    },
+    {
+      "type": "paragraph",
+      "text": "In a monolith the request path is short. Load balancer to app instance to database, all logic resolved inside one process. That is why debugging is straightforward: one stack trace, one log stream, one transaction. The database enforces consistency with ACID transactions across modules. **Trade-off:** that single database and single artifact become the contention point. Scale means cloning the whole thing, even if only checkout is hot and everything else is idle."
+    },
+    {
+      "type": "mermaid",
+      "title": "Monolith request path",
+      "caption": "One artifact, one database, in-process calls only.",
+      "code": "graph TD\n  Client --> LB[Load Balancer]\n  LB --> App1[App Instance<br/>UI + Logic + Data Access]\n  LB --> App2[App Instance<br/>UI + Logic + Data Access]\n  App1 --> DB[(Single Database)]\n  App2 --> DB"
+    },
+    {
+      "type": "paragraph",
+      "text": "In microservices the request path is a chain. Client to gateway to service to service to database, with each hop adding serialization, network latency, and a chance to fail independently. Consistency is no longer free: you cannot wrap two services in one SQL transaction, so you use sagas, outbox patterns, and retries. **Trade-off:** you can scale and deploy the hot service alone, but you pay per hop in tail latency and you must design for a downstream being slow or dead on every call."
+    },
+    {
+      "type": "mermaid",
+      "title": "Microservices request path",
+      "caption": "Independent deploys, network hops, data per service.",
+      "code": "graph LR\n  Client --> GW[API Gateway]\n  GW --> SvcA[Service A]\n  GW --> SvcB[Service B]\n  SvcA --> DBA[(DB A)]\n  SvcB --> DBB[(DB B)]\n  SvcA --> SvcC[Service C]\n  SvcC --> DBC[(DB C)]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Head-to-head trade-offs"
+    },
+    {
+      "type": "table",
+      "caption": "Same requirement, opposite cost. Pick your pain.",
+      "headers": [
+        "Dimension",
+        "Monolith",
+        "Microservices"
+      ],
+      "rows": [
+        [
+          "Deployment",
+          "One artifact. Atomic deploy and rollback. One team's broken commit blocks everyone.",
+          "Independent deploys. One service ships without rebuilding the world. Deploys require versioned contracts."
+        ],
+        [
+          "Communication",
+          "In-process call: microseconds, typed, no serialization. Refactor is a rename.",
+          "Network call: milliseconds, JSON/gRPC, schema evolution, retries. Refactor is a migration."
+        ],
+        [
+          "Data and consistency",
+          "One DB, joins and ACID transactions. Strong consistency is default.",
+          "DB per service. No cross-service joins. Sagas and eventual consistency. Reporting needs CQRS or ETL."
+        ],
+        [
+          "Scaling",
+          "Scale everything together. Simple but wasteful if load is skewed to one module.",
+          "Scale hot services alone. Efficient but requires autoscaling, discovery, and load balancing per service."
+        ],
+        [
+          "Failure blast radius",
+          "One process crash takes all modules on that host. But failure is total and obvious.",
+          "One service can fail without killing others — if you built bulkheads. More often you get cascading gray failure."
+        ],
+        [
+          "Observability",
+          "One log, one trace, one profiler. Debugging is grep.",
+          "Distributed tracing, log correlation IDs, per-service dashboards mandatory. Debugging without trace IDs is hopeless."
+        ],
+        [
+          "Team scaling",
+          "Fast for 1 team of 3-8. Merge conflicts and release trains strangle 5+ teams.",
+          "Enables 5-50 teams to ship in parallel. Each team pays on-call and platform tax."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that table as an interviewer does: there is no winner. If your bottleneck is **shipping a product with a small team**, the monolith wins because coordination cost dominates. If your bottleneck is **twenty teams blocking each other on one release train**, microservices win because queuing cost dominates. **Trade-off to state out loud:** monoliths optimize for change locality; microservices optimize for ownership locality. Most junior answers pick microservices for scale; senior answers pick based on team topology and deploy frequency."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Scaling and deployment: why they diverge"
+    },
+    {
+      "type": "paragraph",
+      "text": "A monolith scales horizontally by cloning identical instances behind a load balancer. This works until the workload is uneven. If search needs 50 instances and billing needs 2, you run 50 copies of billing anyway, including its memory footprint and connection pool. Vertical splits — read replicas, caching, background workers pulled out of the request path — carry you surprisingly far before a full split is justified. **Trade-off:** you keep operational simplicity (one health check, one autoscaling policy) and waste compute on cold modules."
+    },
+    {
+      "type": "paragraph",
+      "text": "Microservices let you set CPU, memory, replicas, and instance types per service, and let you choose different stores per access pattern — relational for orders, search index for catalog, cache for sessions. Deployment becomes per-service canary, blue-green, or rolling. But now you need service discovery, centralized config, secret rotation per service, and contract testing so v2 of one service does not break three consumers. **Trade-off:** you stop paying for idle capacity and start paying in platform engineering. Without that platform — paved-road CI/CD, gateway, tracing — microservices are slower than a monolith, not faster."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Monoliths fail loudly and together. The classic killers are a shared connection pool exhausted by one slow query, a memory leak in one module triggering OOM kills for the whole process, and a schema migration that locks the single database and stalls every endpoint. Deployments fail as all-or-nothing: a bad migration or a broken startup check means zero new instances pass health checks and you roll back everything. The symptom you see is **correlated failure** — latency spikes or 500s across unrelated endpoints at the same time, because they share a process and a database."
+    },
+    {
+      "type": "paragraph",
+      "text": "Microservices fail partially and confusingly. The classic killers are retry storms, cascading timeouts, and eventual-consistency surprises. Service A calls B with a 2-second timeout and 3 retries; B slows down; A multiplies load by 3x and takes down B, then queues fill and A falls over too. Or an order saga completes payment but inventory reservation fails minutes later, leaving a state no single database row explains. The symptom you see is **gray failure and tail latency** — p50 looks fine, p99 explodes, one downstream dashboard goes red, and user-facing errors are intermittent and order-dependent. Without deadlines, budgets, circuit breakers, and idempotency keys, this is the default outcome, not an edge case."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Monolith smell: every endpoint degrades at once, DB CPU pinned at 100%, deploy takes 40 minutes and everyone waits.",
+        "Microservices smell: p99 latency 10x p50, `Gateway Timeout` on only one route, duplicate charges or duplicate emails after retries.",
+        "Monolith data smell: one table with 200 columns touched by six modules, migration locks writes for minutes.",
+        "Microservices data smell: two services disagree on the same entity, support ticket says 'I paid but my order says pending'."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The expensive middle",
+      "text": "A **distributed monolith** — microservices that deploy together, share one database, and make synchronous calls to each other — has both costs and neither benefit. If you cannot deploy service A without deploying B, or if services join across each other's tables, you do not have microservices. Say this in the interview; it signals you have operated one."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code: what the boundary looks like"
+    },
+    {
+      "type": "paragraph",
+      "text": "The difference is visible in how modules call each other. Inside a monolith — even a well-modularized one — it is a typed function call inside a transaction. Across services it is a versioned network call with timeout, retry budget, and a fallback, and writes need compensation. If you cannot show that second shape, you are not ready to split. **Trade-off:** the network boundary forces explicit failure handling that the in-process call hides."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ModularMonolith.java",
+      "code": "// In-process: cheap, transactional, atomic.\n// This is why you start here.\n@Transactional\npublic Order placeOrder(OrderRequest req) {\n  inventory.reserve(req.items());      // direct call, same TX\n  Order order = orders.save(req);      // rolls back together on failure\n  payments.charge(order);              // throws -> everything rolls back\n  return order;\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "service_call.py",
+      "code": "# Cross-service: every call needs deadline, idempotency, compensation.\n# This overhead is the real cost of microservices.\nimport httpx\n\ndef place_order(order_id, items, idempotency_key):\n    try:\n        r = httpx.post(\n            \"http://inventory/reserve\",\n            json={\"order_id\": order_id, \"items\": items},\n            headers={\"Idempotency-Key\": idempotency_key},\n            timeout=0.8,  # deadline, not default 5s\n        )\n        r.raise_for_status()\n    except httpx.HTTPError:\n        # No shared TX. Must compensate: cancel order, emit event.\n        publish(\"order.failed\", {\"order_id\": order_id})\n        raise"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "paragraph",
+      "text": "No one asks you to recite definitions. They give you a system — URL shortener, food delivery, e-commerce — and watch where you draw boundaries and how you justify them. The expected arc is: start monolithic, name the pressure that forces a split, then split one seam at a time."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with a modular monolith",
+          "text": "Say: one deployable, modules with strict interfaces, one relational DB. Explain why: team is small, domain is unstable, transactions matter more than independent deploys. This buys you speed without painting yourself into a big ball of mud."
+        },
+        {
+          "title": "Name the scaling or ownership trigger",
+          "text": "Do not split preemptively. Split when you can point at one: checkout needs 10x instances of everything else, search needs a different data store, or two teams constantly conflict on the release branch. No trigger, no split."
+        },
+        {
+          "title": "Carve one seam, not five",
+          "text": "Pick the least coupled, most load-skewed module first — usually notifications, search, media processing, or billing. Give it its own DB, an event interface, and a strangler route. Explain the data migration: dual-write or outbox, backfill, then cut over reads."
+        },
+        {
+          "title": "Show the operational price",
+          "text": "For every service you add, name the platform you now need: gateway, discovery, per-service autoscaling, distributed tracing with correlation IDs, centralized logging, contract tests. If you skip this, the design is fantasy."
+        },
+        {
+          "title": "Handle the cross-service write",
+          "text": "The follow-up is always consistency: order + payment, booking + inventory. Answer with saga with compensation and idempotency keys, not 2PC. State the user-visible trade-off: temporary inconsistency (pending state) in exchange for availability."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`Microservices are faster.` No. Network hops add latency. p99 gets worse, not better. You split for deploy independence and isolated scaling, and you pay in latency.",
+        "`Microservices scale better by default.` Only the hot service scales better. Total operational load is higher. A monolith behind a load balancer with caching handles enormous traffic.",
+        "`One database shared by services is fine.` It is a distributed monolith. Shared tables mean coupled deploys and no ownership boundary. One service, one schema.",
+        "`Splitting early avoids rework.` Splitting early on a misunderstood domain guarantees wrong boundaries and expensive cross-service refactors. Modular monolith first, split on evidence.",
+        "`More services means more resilience.` Only with bulkheads, timeouts, retries with budgets, circuit breakers, and load shedding. Without them, more services means more ways to cascade."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use which"
+    },
+    {
+      "type": "table",
+      "caption": "Default to monolith. Earn microservices.",
+      "headers": [
+        "Situation",
+        "Use this",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Small team, new product, domain changing weekly",
+          "Modular monolith",
+          "Refactor cost is near zero; cross-module transactions stay correct"
+        ],
+        [
+          "Single team, read-heavy traffic, skewed load on one endpoint",
+          "Monolith + cache + read replicas + workers",
+          "Fixes scale without paying distributed tax"
+        ],
+        [
+          "Multiple teams blocking on one release train",
+          "Split by team boundary",
+          "Deploy independence unblocks throughput; Conway's law working for you"
+        ],
+        [
+          "One module needs different scaling or storage",
+          "Extract that one service",
+          "Isolated scaling and right store outweigh integration cost"
+        ],
+        [
+          "Strict isolation: noisy neighbor or blast-radius requirement",
+          "Split the risky module",
+          "Bulkhead contains failure; rest stays up"
+        ],
+        [
+          "No platform team, no tracing, manual deploys",
+          "Do not split",
+          "You will build a distributed monolith and ship slower"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The sane migration path is **modular monolith → strangler → selected services**, not a rewrite. Enforce module interfaces, ban cross-module table access, put an API gateway in front even for one backend so routes can peel off later. Extract with the outbox pattern: write business row and event row in one local transaction, relay events to a bus, let the new service build its own state. **Trade-off:** you accept dual-running and backfill complexity for a rollback path. Big-bang rewrites fail because they couple a domain redesign with an infrastructure redesign with no working fallback."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Start with a modular monolith for speed and correctness, and extract a service only when one team, one scaling need, or one failure domain forces independent deployment — and price in the network, consistency, and platform cost.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:32:29.800Z",
+    "problems": []
+  }
+}

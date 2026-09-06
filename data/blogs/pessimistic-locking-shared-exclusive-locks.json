@@ -1,0 +1,301 @@
+{
+  "slug": "pessimistic-locking-shared-exclusive-locks",
+  "title": "Pessimistic Locking (Shared & Exclusive Locks)",
+  "summary": "Pessimistic locking blocks concurrent access with shared and exclusive locks. When contention is certain, blocking beats retrying — at the cost of throughput and deadlocks.",
+  "kind": "HLD",
+  "problemSlug": "pessimistic-locking-shared--exclusive-locks-92-302",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "🔒",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "Concurrency",
+    "Locking"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Optimistic vs. Pessimistic locking - Stack Overflow",
+      "url": "https://stackoverflow.com/questions/129329/optimistic-vs-pessimistic-locking",
+      "source": "stackoverflow.com",
+      "kind": "article"
+    },
+    {
+      "title": "How to Build Pessimistic Locking Implementation - OneUptime",
+      "url": "https://oneuptime.com/blog/post/2026-01-30-pessimistic-locking-implementation/view",
+      "source": "oneuptime.com",
+      "kind": "article"
+    },
+    {
+      "title": "Concurrency Control in DBMS: Locking, MVCC & More - Databricks",
+      "url": "https://www.databricks.com/blog/concurrency-control",
+      "source": "databricks.com",
+      "kind": "article"
+    },
+    {
+      "title": "Documentation: 18: 13.3. Explicit Locking - PostgreSQL",
+      "url": "https://www.postgresql.org/docs/current/explicit-locking.html",
+      "source": "postgresql.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Pessimistic locking assumes conflict **will** happen, so it makes the loser **wait**. A transaction grabs a `Shared` lock to read or an `Exclusive` lock to write, and holds it until commit. Correctness becomes trivial. Concurrency becomes the thing you pay with."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Pessimistic locking is mutual exclusion enforced by the database lock manager before a row is touched, not after. When you run `SELECT ... FOR UPDATE`, you are not just reading — you are requesting an **Exclusive (X)** lock on those rows. When you run `SELECT ... FOR SHARE`, you are requesting a **Shared (S)** lock. The database grants the lock, queues anyone incompatible behind you, and only releases at `COMMIT` or `ROLLBACK`. That hold-until-commit behavior is the entire design. It is what converts a race condition into a queue."
+    },
+    {
+      "type": "paragraph",
+      "text": "The two modes exist because reads and writes interfere differently. **Shared locks are compatible with each other**: ten transactions can hold S on the same account row and all read the same committed balance. **Exclusive locks are compatible with nothing**: if one transaction holds X on that row, no other transaction can get S or X until the holder finishes. That is why the write path is `read-with-X → modify → commit`, not `read → modify → hope`. You pay the blocking cost up front to avoid the lost-update and read-skew anomalies entirely. The trade-off is explicit: you trade waiting time and deadlock risk for no-retry correctness."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Shared vs exclusive: the only matrix that matters"
+    },
+    {
+      "type": "table",
+      "caption": "Lock compatibility. Rows are the lock already held, columns are the lock requested.",
+      "headers": [
+        "Held \\ Requested",
+        "Shared (S)",
+        "Exclusive (X)"
+      ],
+      "rows": [
+        [
+          "Shared (S)",
+          "Granted — concurrent readers allowed",
+          "Blocked — writer queues behind readers"
+        ],
+        [
+          "Exclusive (X)",
+          "Blocked — reader queues behind writer",
+          "Blocked — writer queues behind writer"
+        ],
+        [
+          "No lock",
+          "Granted",
+          "Granted unless another X/S conflicts"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Learn this matrix cold because every interview follow-up derives from it. S-S succeeds, so read-heavy workloads with `FOR SHARE` still scale. S-X and X-X block, so any contended write serializes all other access to that row. That serialization is the point when two debits hit the same balance: the second transaction must see the first transaction's result, not a stale snapshot. Why not just use X for everything? Because you would serialize reads that never needed serializing. Use S when you need to prevent the row from being changed while you read it — foreign-key checks, balance validation — and X when you intend to change it. The wrong choice either corrupts data (too weak) or collapses throughput (too strong)."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "mermaid",
+      "title": "Pessimistic lock acquisition and queuing",
+      "caption": "T2 blocks in the lock manager until T1 commits.",
+      "code": "flowchart TD\n  T1A[\"T1: BEGIN\"] --> T1B[\"T1: SELECT row 1 FOR UPDATE\"]\n  T1B --> L[\"Lock Manager: X on row 1 granted to T1\"]\n  T2A[\"T2: BEGIN\"] --> T2B[\"T2: SELECT row 1 FOR UPDATE\"]\n  T2B --> Q[\"Lock Manager: T2 request queued, T2 blocks\"]\n  Q --> T1C[\"T1: UPDATE row 1 + COMMIT\"]\n  T1C --> R[\"Lock released, T2 wakes and gets X\"]\n  R --> T2C[\"T2: reads new value, proceeds\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are three actors: your transaction, the lock manager (an in-memory hash table from row identifier to holder plus waiter queue), and the storage engine. On `SELECT ... FOR UPDATE`, the executor asks the lock manager for X before returning the row. If no conflicting lock exists, it is granted instantly and recorded in the transaction's lock set. If a conflict exists, the requesting backend suspends — it does not spin, it sleeps — until the holder commits or aborts, or until `lock_timeout` fires. On commit, the engine releases all locks held by that transaction in one batch, then wakes waiters in FIFO order. This is why pessimistic locking composes with atomicity: the lock lifetime equals the transaction lifetime. Short transaction equals short block. Long transaction equals system-wide stall. That coupling is the central performance lever."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Locks are held to commit, not to statement end",
+      "text": "The most common production bug is opening a transaction, doing `SELECT FOR UPDATE`, then calling an external API before `COMMIT`. You now hold an X lock across network latency. Every other writer on that row piles up behind you. Keep the critical section to **read-modify-write-commit** with no I/O inside."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Pessimistic locking evaluated without euphemism.",
+      "headers": [
+        "Dimension",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Correctness",
+          "Lost updates and read-modify-write races eliminated by construction; no retry logic",
+          "Must get lock scope and order right, or you trade races for deadlocks"
+        ],
+        [
+          "Contention behavior",
+          "Predictable serialization; high-conflict workloads make progress without livelock",
+          "Blocked transactions hold connections and threads; throughput collapses under hot rows"
+        ],
+        [
+          "Latency",
+          "No wasted work or abort-retry storms when conflict rate is high",
+          "P99 latency spikes from queuing; one slow holder stalls all waiters"
+        ],
+        [
+          "Complexity",
+          "Application code is linear: lock, check, write, commit",
+          "Operational complexity: timeouts, deadlock handling, lock monitoring become mandatory"
+        ],
+        [
+          "Granularity",
+          "Row-level locks limit blast radius vs table locks",
+          "Lock manager memory and acquisition cost grow with number of rows locked"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Choose pessimistic locking when the conflict probability is high enough that optimistic retry would just burn CPU and abort repeatedly. Classic threshold: inventory decrement, seat reservation, ledger debit, or any hot counter where dozens of writers hit the same few rows per second. In that regime, waiting in a queue is cheaper than all but one transaction doing work and then rolling back. Choose against it when conflicts are rare — the common case for most tables. Then you are paying blocking, deadlock detection, and connection exhaustion for protection you almost never need. Multiversion concurrency already gives readers a snapshot without blocking; adding S locks on top just slows reads for no correctness gain. The trade-off to state in an interview: **pessimism minimizes wasted work at the cost of minimized concurrency**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "It fails three ways, each with a distinct signature. First, **blocking pile-up**: a hot row with a slow holder causes waiter count and transaction age to grow linearly while CPU stays idle. Your dashboard shows low CPU, high `pg_stat_activity` with `wait_event = lock`, and client timeouts. Second, **deadlock**: T1 locks A then wants B, T2 locks B then wants A. Neither can proceed. The database picks a victim and aborts it with a deadlock error. Your logs show intermittent `deadlock detected` errors that spike with concurrency, not with data size. Third, **lock escalation or table locks**: an unindexed `SELECT FOR UPDATE` or a bulk `UPDATE` without a selective predicate takes thousands of row locks or a full table lock, turning a row-level design into a table-level stall. Symptom: a single background job freezes the entire table for seconds."
+    },
+    {
+      "type": "mermaid",
+      "title": "Deadlock from inconsistent lock order",
+      "caption": "Two transactions acquire the same two rows in opposite order.",
+      "code": "flowchart TD\n  T1[\"T1: X on Row A granted\"] --> W1[\"T1 requests X on Row B, blocks\"]\n  T2[\"T2: X on Row B granted\"] --> W2[\"T2 requests X on Row A, blocks\"]\n  W1 --> D[\"Deadlock detector aborts youngest\"]\n  W2 --> D"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Blocked, not slow query**: `SELECT ... FOR UPDATE` shows in `pg_locks` as granted=false. Fix is shorter transactions and `lock_timeout`, not a bigger instance.",
+        "**Deadlock on every deploy**: inconsistent lock order across code paths. Fix is global ordering — always lock parent before child, or `ORDER BY id` before `FOR UPDATE`.",
+        "**Queue workers all process the same row**: missing `SKIP LOCKED`. Fix is `FOR UPDATE SKIP LOCKED` so workers skip contested rows instead of serializing.",
+        "**Write stalls during analytics**: explicit `LOCK TABLE` or `ACCESS EXCLUSIVE` from DDL colliding with row locks. Fix is to never mix DDL with live traffic and to prefer row locks."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What the SQL actually looks like"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "pessimistic.sql",
+      "code": "-- Exclusive: I intend to modify this balance.\nBEGIN;\nSELECT balance FROM accounts WHERE id = 1 FOR UPDATE;\n-- application checks balance >= amount, then:\nUPDATE accounts SET balance = balance - 100 WHERE id = 1;\nCOMMIT;\n\n-- Shared: I need it stable while I read, but will not modify it.\nBEGIN;\nSELECT balance FROM accounts WHERE id = 1 FOR SHARE;\n-- other writers with FOR UPDATE now block; other FOR SHARE readers proceed.\nCOMMIT;\n\n-- Non-blocking variants for latency-sensitive paths:\n-- Fail fast instead of queuing:\nSELECT balance FROM accounts WHERE id = 1 FOR UPDATE NOWAIT;\n-- Skip contested rows (job queues):\nSELECT id FROM jobs WHERE status = 'pending' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED;"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three details matter here. `FOR UPDATE` takes X; `FOR SHARE` takes S — say which one and why. `NOWAIT` converts blocking into an immediate error, which is what you want for interactive requests that should fail fast rather than hang behind a stuck holder. `SKIP LOCKED` converts blocking into skipping, which is what you want for competing consumers pulling from a queue table: each worker locks a different row instead of all workers queuing on the same head row. Pair all of these with `SET lock_timeout = '2s'` so a forgotten transaction cannot wedge the system forever. The pattern to defend: lock only the rows you will write, in a deterministic order, and commit immediately."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "`SKIP LOCKED` is the queue pattern",
+      "text": "If the interview asks for a job queue on a relational table, the answer is `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1`. Without it, N workers serialize on one row. With it, each worker skips rows already locked and throughput scales with worker count. Name the trade-off: skipped rows may be delayed if the holder rolls back."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design a wallet debit or inventory decrement",
+          "text": "Start with the lost-update race: two concurrent reads of `balance=500`, two debits of 400, both succeed. Then impose `SELECT FOR UPDATE` inside a transaction so the second read blocks until the first commits and sees `100`. Draw the lock queue."
+        },
+        {
+          "title": "Shared vs exclusive — when is each correct?",
+          "text": "Say: X when the transaction writes the row; S when it only needs the row frozen during a check. Give the compatibility rule S-S ok, everything with X blocks. Mention `FOR SHARE` for validating a parent row before inserting a child."
+        },
+        {
+          "title": "What breaks at 10x contention?",
+          "text": "Answer: hot-row serialization, connection exhaustion from blocked backends, deadlocks from unordered multi-row locks. Mitigations: deterministic lock order with `ORDER BY`, short transactions, `NOWAIT` / `SKIP LOCKED`, and splitting the hot row (sharded counters)."
+        },
+        {
+          "title": "Pessimistic vs optimistic — pick one and defend it",
+          "text": "Pick pessimistic when conflict rate is high and retry cost is high (ledger, inventory). Pick optimistic with version columns when conflicts are rare and throughput matters. Never say one is strictly better — the interviewer is testing whether you condition on workload."
+        },
+        {
+          "title": "Granularity and isolation follow-up",
+          "text": "Explain row vs table locks, and that `REPEATABLE READ` plus `FOR UPDATE` is often the pragmatic answer for read-modify-write. Be ready to discuss why table locks are a throughput cliff and how missing indexes silently widen lock scope."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Pessimistic means locking the whole table.** No — `FOR UPDATE` is row-level by default. Table locks come from `LOCK TABLE` or DDL, and they are the escalation you are trying to avoid.",
+        "**Shared locks are free.** They still block exclusive locks. Sprinkling `FOR SHARE` over read paths serializes writers for no reason if a snapshot read would have sufficed.",
+        "**Locks are released after the SELECT.** Wrong. They are held until `COMMIT`/`ROLLBACK`. Anything slow inside the transaction extends the block for everyone queued behind you.",
+        "**Pessimistic locking prevents deadlocks.** It causes them. Any time two transactions lock multiple rows in different orders, the waiter graph can cycle. Prevention is ordering, timeouts, and keeping the locked set small.",
+        "**`SELECT FOR UPDATE` works the same under every isolation level.** The lock semantics are similar but interaction with snapshots and predicate locking differs. State your isolation level before reasoning about phantoms and range locks.",
+        "**Retrying fixes a deadlock.** Retrying the victim is required, but without fixing lock order the deadlock just recurs at higher load. Retry is mitigation; ordering is the fix."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Decision rule conditioned on contention and cost of conflict.",
+      "headers": [
+        "Use pessimistic (S/X) when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "High write contention on few rows — ledger, inventory, reservations",
+          "Low contention — optimistic version check gives same safety with no blocking"
+        ],
+        [
+          "Violation cost is severe — overdraft, oversell, double-spend",
+          "Stale read is tolerable or reconciled later — analytics, feeds, caches"
+        ],
+        [
+          "Transaction does read-modify-write atomically in one round trip",
+          "Transaction spans user think time or external RPC — lock would be held across the network"
+        ],
+        [
+          "Competing consumers need strict handoff — use `SKIP LOCKED` queue",
+          "Read-heavy workload where MVCC snapshots already isolate readers without locks"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Use pessimistic locking — **Shared for stable reads, Exclusive for writes, held to commit** — when contention is certain and a conflict is too expensive to retry; otherwise its blocking and deadlocks cost more than they save."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:28:31.699Z",
+    "problems": []
+  }
+}

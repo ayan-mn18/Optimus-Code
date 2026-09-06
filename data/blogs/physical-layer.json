@@ -1,0 +1,281 @@
+{
+  "slug": "physical-layer",
+  "title": "Physical Layer",
+  "summary": "Physical Layer (L1) explained for HLD: bits to signals, media trade-offs, failure symptoms, and what to say in an interview.",
+  "kind": "HLD",
+  "problemSlug": "physical-layer-94-186",
+  "topic": "Networking",
+  "difficulty": "Easy",
+  "coverEmoji": "🔌",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "Physical-Layer",
+    "OSI"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Physical Layer in OSI Model - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/computer-networks/physical-layer-in-osi-model/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Physical layer - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Physical_layer",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Layer 1 Physical Layer - The OSI-Model",
+      "url": "https://osi-model.com/physical-layer/",
+      "source": "osi-model.com",
+      "kind": "article"
+    },
+    {
+      "title": "Physical Layer Explained | Computer Network Basic |Simplilearn - YouTube",
+      "url": "https://www.youtube.com/watch?v=VdGOk6kX4LI",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**The Physical Layer decides if your bits physically survive the trip.** Everything above it assumes `1s` and `0s` arrive intact. Layer 1 is where that assumption is either earned — with volts, light, radio, timing, and cable — or silently violated. Get it wrong and no retry logic, load balancer, or consensus protocol saves you; they just retransmit garbage over a broken pipe."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "The Physical Layer is **Layer 1 of the OSI model**: the hardware-to-physics boundary that moves a raw bitstream from one device onto a shared physical medium and back off again. It does not understand frames, MAC addresses, IP packets, ports, or sessions. It understands only three things: **what electrical, optical, or radio event represents a `1` versus a `0`**, **when one bit ends and the next begins**, and **what plug, frequency, and power level make that event legal on this medium**. If a component makes forwarding decisions, buffers data, or reads an address, it is not operating at Layer 1, no matter what the box says."
+    },
+    {
+      "type": "paragraph",
+      "text": "That narrow scope is deliberate. Layer 2 turns an unreliable wire into a framed, error-checked link. Layer 1 gives Layer 2 something to work with: a best-effort stream of symbols plus a clock. The trade-off is **simplicity for blindness**. By refusing to interpret meaning, Layer 1 stays blazingly fast and interoperable across vendors — a fiber transceiver does not care if it carries TCP or QUIC. The cost is that it cannot fix anything. Corrupted signal in means corrupted bits out, and the layers above pay the retransmission bill."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: bits to signals to bits"
+    },
+    {
+      "type": "paragraph",
+      "text": "Layer 2 hands down a frame as a sequence of bits. Layer 1 cannot put bits on copper, fiber, or air directly — those media only carry analog phenomena. So it performs a three-stage translation. First, **line coding** maps bits to symbols that survive the channel: it guarantees enough transitions for the receiver to stay synchronized and avoids long runs of identical levels that cause baseline wander. Second, **modulation** impresses those symbols onto a carrier: varying voltage, light intensity or wavelength, or radio amplitude, frequency, and phase. Third, the **medium interface** drives the result at the agreed power, impedance, and timing. The receiver reverses the chain: detect energy, recover the clock, slice symbols, decode to bits. Lose any stage and the whole chain collapses — which is why link bring-up is negotiated, not assumed."
+    },
+    {
+      "type": "mermaid",
+      "title": "Layer 1 transmit-receive chain",
+      "caption": "Logical request becomes physics, then becomes logic again. Clock recovery is part of the data path, not an accessory.",
+      "code": "flowchart LR\n  L2TX[\"L2: Frame to send\"] --> ENC[\"Line Coding\\nbits to symbols\"]\n  ENC --> MOD[\"Modulation\\n symbols to signal\"]\n  MOD --> MED[\"Medium\\n copper / fiber / radio\"]\n  MED --> DEM[\"Demodulation\\n signal to symbols\"]\n  DEM --> CLK[\"Clock Recovery\\n find bit boundaries\"]\n  CLK --> DEC[\"Decoding\\nsymbols to bits\"]\n  DEC --> L2RX[\"L2: Frame received\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two details do most of the real work: **synchronization and negotiation**. There is no separate clock wire on most modern links, so the receiver must extract timing from the signal transitions themselves — that is why coding schemes deliberately insert transitions even when the payload is all zeros. Before user data flows, the two PHYs train: they agree on speed, duplex, lane count, and transmit equalization in a process you see as autonegotiation or link training. The trade-off here is **robustness for time**. More aggressive equalization and forward error correction lets you push longer or noisier links, but link-up takes longer and every bit carries coding overhead. That is why a `10 Gbps` link never delivers `10 Gbps` of usable throughput."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Line coding and scrambling:** maps bits to transmittable symbols, e.g. Manchester, 4B/5B, 64b/66b, PAM4. Why it exists: to guarantee transitions for clock recovery and DC balance. Trade-off: every extra coding bit is bandwidth you pay but cannot use for data.",
+        "**Modulation and demodulation:** converts symbols to physical energy and back. Copper varies voltage, fiber varies light intensity or coherent phase, wireless varies radio amplitude, frequency, and phase. Why it matters: higher-order modulation packs more bits per symbol but demands cleaner signal — range collapses as rate climbs.",
+        "**Timing and duplex control:** defines bit duration, when to sample, and whether transmission is one-way, alternating, or simultaneous. Simultaneous bidirectional use doubles theoretical throughput on the same pair but forces echo cancellation and crosstalk control, which costs silicon and power.",
+        "**Medium access physics:** multiplexing, carrier sensing, connector and frequency specification. Static multiplexing gives deterministic latency at the cost of idle waste; dynamic sharing improves utilization at the cost of contention and jitter."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Media and topology: the physics you are buying"
+    },
+    {
+      "type": "paragraph",
+      "text": "In high-level design you rarely pick a modulation scheme, but you always pick a medium and a topology, and both are Layer 1 decisions that constrain everything above. **Point-to-point** gives two devices the full channel — full-duplex switched Ethernet, a fiber pair between racks, a microwave hop. **Multipoint** forces many devices to share one channel — classic bus, hub, shared radio cell, passive optical splitters. The trade-off is brutal and permanent: dedicated capacity and fault isolation versus cable, port, and spectrum cost. Shared media look cheap on a diagram and expensive in tail latency, because one chatty or faulty node degrades everyone."
+    },
+    {
+      "type": "table",
+      "caption": "The three physical media you will actually choose between.",
+      "headers": [
+        "Medium",
+        "What you get",
+        "What you pay",
+        "HLD rule of thumb"
+      ],
+      "rows": [
+        [
+          "Twisted-pair copper",
+          "Cheap ports, easy termination, carries power over short runs, full duplex to ~10 Gbps over tens of meters",
+          "Distance-limited, vulnerable to EMI and crosstalk, power-hungry at high rates, bulky at scale",
+          "Use inside a rack or room. Never bet a cross-campus backbone on copper."
+        ],
+        [
+          "Single/multi-mode fiber",
+          "Enormous bandwidth-distance product, immune to EMI, low bit error rate, kilometers without repeat",
+          "Transceiver and splicing cost, fragile bend radius, needs cleaning and power budget planning",
+          "Default for anything between racks, buildings, or regions. Cost is in optics, not the glass."
+        ],
+        [
+          "Wireless radio",
+          "No trench, mobility, fast deployment, broadcast naturally",
+          "Shared, half-duplex, interference-prone, highly variable SNR, physics-capped capacity",
+          "Use for access and mobility, not for deterministic core capacity. Budget for retries and jitter."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "This is why senior interviewees name the medium before the protocol. Saying *we will replicate between zones* is hand-waving. Saying *we will replicate between zones over diverse fiber paths with independent conduits, because a single backhoe cut is a correlated failure across all our logical redundancy* shows you understand that Layer 1 diversity is what makes Layer 3 redundancy real. The trade-off you are buying with fiber diversity is **availability for money**: two entries, two risers, two optics vendors cost double and sit idle 99.9% of the time, until the day they save the system."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Layer 1 failures never announce themselves as Layer 1 failures. They surface as flaky Layer 2 and Layer 4 symptoms because the PHY keeps delivering bits — just wrong or late ones. Attenuation weakens the signal over distance. Noise and crosstalk corrupt symbols. Clock drift causes the receiver to sample in the wrong window. A dirty fiber connector or a kinked copper run does not cut the link; it raises the bit error rate from `1e-12` to `1e-6`, which checksums and CRCs then convert into drops, retransmits, and collapsed goodput. You will chase this as *random tail latency* for weeks if you do not look at error counters."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Degraded signal, not dead link:** symptom is rising `CRC`, `FCS`, or `PCS` errors, TCP retransmits, and throughput that falls off a cliff under load while pings look fine. Check interface error counters and optical levels first, not application logs.",
+        "**Flapping link / autonegotiation loop:** symptom is interfaces bouncing up and down, spanning-tree recalculations, routing churn. Usually mismatched speed/duplex settings, marginal cable, or bad optic. Forcing speed without understanding why it failed to negotiate hides the fault and locks in duplex mismatch.",
+        "**Shared-medium contention:** symptom is good median latency with terrible p99, especially correlated across hosts. On hubs, old half-duplex segments, or Wi-Fi cells, carrier sense and collisions mean throughput is not additive. Adding nodes reduces per-node capacity.",
+        "**Repeater-amplified noise:** hubs and repeaters regenerate everything including noise and collisions. Symptom is one faulty NIC jabbering or one noisy segment poisoning an entire collision domain. The fix is a switch — a Layer 2 boundary — not a faster repeater.",
+        "**Power and environment:** symptom is correlated errors across many links at the same time of day or temperature. Copper resistance, laser drift, and radio propagation all move with heat and humidity. If all links in one bundle degrade together, suspect the environment, not the code."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Hubs are not switches, repeaters are not routers",
+      "text": "A **repeater and hub** live purely at Layer 1: they amplify and flood every bit to every port, collisions included. They have no notion of address or frame. A **switch** reads MAC addresses and forwards frames per port — that is Layer 2. Confusing them in an interview signals you do not know where framing starts. Say it crisply: *hubs extend the collision domain, switches break it.*"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Make it concrete"
+    },
+    {
+      "type": "paragraph",
+      "text": "You never configure Layer 1 with application code, but you observe it on every host. The snippet below shows the two lenses that clarify thinking: a toy encoder that proves why raw bits cannot go on the wire unchanged, and the kind of link-state inspection that separates a software bug from a physics bug. The trade-off illustrated is **transitions for overhead**: Manchester encoding guarantees a clock edge every bit at the cost of doubling the baud rate."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "phy_intuition.py",
+      "code": "def manchester_encode(bits: str) -> list[int]:\n    # 0 -> falling edge [1, 0], 1 -> rising edge [0, 1]\n    # Guarantees a transition mid-bit so receiver can recover clock.\n    out = []\n    for b in bits:\n        out.extend([0, 1] if b == '1' else [1, 0])\n    return out  # 4 payload bits -> 8 symbols on wire: 2x overhead\n\ndef link_budget(tx_dbm: float, loss_db: float, rx_sensitivity_dbm: float) -> bool:\n    # Toy fiber budget: received power must clear sensitivity + 3dB margin.\n    rx = tx_dbm - loss_db\n    margin = rx - rx_sensitivity_dbm\n    print(f\"RX {rx:.1f} dBm, margin {margin:.1f} dB\")\n    return margin >= 3.0\n\nprint(manchester_encode(\"1010\"))\nprint(link_budget(tx_dbm=0.0, loss_db=12.0, rx_sensitivity_dbm=-19.0))"
+    },
+    {
+      "type": "paragraph",
+      "text": "In a real incident you would run the operational equivalent: check negotiated speed and duplex, read `FCS` and symbol errors, read optical transmit and receive power against the vendor budget, and swap the *cheapest Layer 1 component first* — cable, optic, port. Restarting services before ruling out error counters is how a 15-minute re-termination turns into a 6-hour outage review. Name that ordering explicitly in interviews; it proves production judgment."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an HLD interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Anchor the stack in one sentence",
+          "text": "State where you are: *Layer 1 moves symbols over a medium; it has no addresses and makes no decisions.* Then point at the diagram where copper, fiber, or radio sits. Interviewers forgive simplification here but penalize placing switching or routing at Layer 1."
+        },
+        {
+          "title": "Turn requirements into distance and environment",
+          "text": "Translate throughput and availability into meters, EMI, and fate-sharing. Cross-rack means fiber and diverse paths. Factory floor means shielded or fiber for noise immunity. Last-meter mobility means wireless with explicit retry budget. Justify the medium from constraints, not habit."
+        },
+        {
+          "title": "Name the bottleneck physics",
+          "text": "Say what caps this link: attenuation over length, shared-medium contention, or signal-to-noise ratio. Then state the consequence for upper layers: *wireless variability forces idempotent retries and hedged reads; fiber bit errors are rare enough that TCP recovery is sufficient.* That causal link is what Easy difficulty is testing."
+        },
+        {
+          "title": "Show failure awareness",
+          "text": "Volunteer one correlated Layer 1 failure: single conduit, single switch uplink optic, single Wi-Fi channel. Propose the countermeasure and its cost: diverse entry, bonded links on separate line cards, or wired backhaul for critical nodes. Trade-off stated, no prompting needed."
+        },
+        {
+          "title": "Close the loop upward",
+          "text": "Explain how Layer 1 properties leak into your HLD numbers: coding overhead and half-duplex cut usable bandwidth, contention inflates p99, link training adds failover time. Effective capacity is never the headline PHY rate — size queues and timeouts against the degraded value, not the label."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Layer 1 provides reliability.** No. It provides *delivery attempts*. Error detection, retransmission, and ordering start at Layer 2 and above. Assuming the wire is reliable is how you design a protocol that melts on Wi-Fi.",
+        "**More headline speed always means more goodput.** No. Coding overhead, inter-frame gaps, contention, and retransmits take a large cut. A `1 Gbps` PHY rarely yields `1 Gbps` to the application, and a lossy wireless link yields far less.",
+        "**Wireless is just wired without wires.** No. Wired full-duplex point-to-point gives isolated capacity; wireless is shared, half-duplex, and interference-driven. Capacity planning that treats them identically fails under load.",
+        "**A hub, switch, and router differ only in speed.** No. They differ in layer: hub repeats bits, switch forwards frames by MAC, router forwards packets by IP. Substituting one for another changes broadcast, collision, and failure domains.",
+        "**Protocols like Ethernet and Wi-Fi live entirely at Layer 1.** No. Each spans Layer 1 plus Layer 2. The PHY half defines modulation and connectors; the MAC half defines framing and medium access. Name which half you mean."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to think at Layer 1, and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Layer 1 reasoning pays off in placement and capacity, not in application logic.",
+      "headers": [
+        "Think Layer 1 when...",
+        "Ignore Layer 1 when...",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Sizing links, picking fiber vs copper vs wireless, planning rack and site interconnect",
+          "Choosing API shape, data model, or consistency protocol",
+          "Medium determines distance, error rate, and correlated failure — application design cannot retrofit it"
+        ],
+        [
+          "Diagnosing CRC errors, flaps, p99 spikes correlated by rack, bundle, or radio cell",
+          "Debugging deterministic logic bugs reproducible on loopback",
+          "Pattern tied to hardware locality is physics until proven otherwise"
+        ],
+        [
+          "Designing for availability: diverse conduits, dual optics, bonded diverse paths",
+          "Adding logical redundancy on the same cable or channel and calling it HA",
+          "Logical redundancy without physical diversity is a single point of failure with extra steps"
+        ],
+        [
+          "Estimating realistic throughput and failover time",
+          "Quoting PHY headline rates as application capacity",
+          "Overhead, contention, and retraining always discount the label — budget the discount"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The opinionated rule: **touch Layer 1 early in design, then leave it alone.** Spend interview minutes on medium, distance, diversity, and degraded-mode capacity, because those decisions calcify into concrete and contracts. Do not spend them tuning modulation or connector pinouts — that is vendor selection, not architecture. The architect's job is to ensure the physics gives the software a fair chance, then let Layer 2 and above do the clever work."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "***The Physical Layer converts frames into transmittable signals and back — coding, modulation, timing, and connectors over copper, fiber, or radio — with no notion of addresses or reliability, so its bandwidth, error rate, and physical diversity set the ceiling every higher layer must live under.***"
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:02:16.381Z",
+    "problems": []
+  }
+}

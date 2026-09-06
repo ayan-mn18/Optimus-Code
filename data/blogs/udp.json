@@ -1,0 +1,301 @@
+{
+  "slug": "udp",
+  "title": "UDP",
+  "summary": "UDP is connectionless, best-effort delivery at Layer 4: 8-byte header, no handshake, no ordering, no retransmission. You use it when you want control of latency and reliability trade-offs in the application, not from the transport.",
+  "kind": "HLD",
+  "problemSlug": "udp-94-211",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "📦",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "UDP",
+    "Transport"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is UDP? - Cloudflare",
+      "url": "https://www.cloudflare.com/learning/ddos/glossary/user-datagram-protocol-udp/",
+      "source": "cloudflare.com",
+      "kind": "article"
+    },
+    {
+      "title": "User Datagram Protocol - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/User_Datagram_Protocol",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "User Datagram Protocol - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/computer-networks/user-datagram-protocol-udp/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Connectionless Communication & Use Cases for Beginners - YouTube",
+      "url": "https://www.youtube.com/watch?v=NX1GphslFKY",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "UDP is **fire-and-forget with ports**. No connection, no sequence numbers, no retransmission — just a datagram handed to IP and forgotten. That is the entire point: you pay zero round-trips for transport reliability so **you** can decide what loss, delay, and ordering mean for your application. Every UDP design is a custom reliability design."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What UDP actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "UDP is a Layer 4 transport over IP (protocol number 17) that multiplexes independent datagrams between processes using 16-bit source and destination ports. Each send is a standalone unit: an 8-byte header — source port, destination port, length, checksum — plus payload, encapsulated directly in IP with no prior setup and no retained state on either endpoint. There is no handshake, no session teardown, no negotiated window, no stream abstraction. Two datagrams sent back-to-back from the same socket to the same destination have no defined relationship to each other once they leave the host. Routers forward them as ordinary IP packets; the receiver's kernel demultiplexes by destination port and either queues the payload for a bound socket or drops it. If you want delivery confirmation, ordering, deduplication, congestion response, or fragmentation safety, that logic lives above UDP or it does not exist."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The send path is deliberately thin, and that thinness is why high-scale systems keep rebuilding on top of it. The application calls send on a UDP socket with a destination address and port. The kernel prepends the 8-byte header, computes the checksum over payload plus an IP pseudo-header, encapsulates in IP, and emits the packet. No connection table is consulted, no sequence state is advanced, no timer is armed. On receive, the kernel checks length and checksum, matches the 4-tuple to a bound socket, and either enqueues or discards. There is no acknowledgment packet, no reordering buffer, no flow-control advertisement. Loss is silent by default. Duplication and reordering are legal outcomes, not errors. This is why UDP adds almost no head-of-line blocking and no handshake latency: it refuses to do the work that forces TCP to wait. The trade-off is explicit — you removed the coordination, so the network no longer hides variance from you."
+    },
+    {
+      "type": "mermaid",
+      "title": "UDP send and receive path",
+      "caption": "No handshake, no ACK, no retained connection state on either side.",
+      "code": "flowchart TD\n  A[App process] --> B[UDP socket sendto addr port]\n  B --> C[Add 8B header + checksum]\n  C --> D[Encapsulate in IP proto 17]\n  D --> E[Network: best-effort forward]\n  E --> F{Receiver kernel}\n  F -->|port bound| G[Enqueue to socket buffer]\n  F -->|no socket| H[Drop + optional ICMP unreachable]\n  G --> I[App recvfrom: handle loss order dup]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Notice what is missing from that diagram compared to any TCP diagram: there is no reverse arrow for ACKs, no state box for sequence or window, no retransmission loop. That absence is the design. It means a single UDP sender can spray packets at line rate without maintaining per-peer timers, which is why DNS resolvers, game servers, and telemetry collectors can sustain millions of tiny independent interactions without connection-table exhaustion. The cost is that every property TCP gives you for free — at-least-once delivery, in-order bytes, congestion backoff — must now be an explicit application decision. Systems that succeed with UDP are specific about which of those properties they actually need, and they implement only that subset."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The 8-byte header and why it stays small"
+    },
+    {
+      "type": "table",
+      "caption": "All UDP adds beyond IP, and what each field costs you.",
+      "headers": [
+        "Field",
+        "Size",
+        "What it does and what it omits"
+      ],
+      "rows": [
+        [
+          "Source port",
+          "16 bits",
+          "Identifies sender for replies. Can be zero in some uses. No connection identifier, no stream ID."
+        ],
+        [
+          "Destination port",
+          "16 bits",
+          "Demultiplexes to receiving process. Only routing key at this layer."
+        ],
+        [
+          "Length",
+          "16 bits",
+          "Total datagram size including header. Max 65535 bytes IP-limited; practical limit is path MTU to avoid IP fragmentation."
+        ],
+        [
+          "Checksum",
+          "16 bits",
+          "End-to-end integrity over payload plus IP pseudo-header. Optional in IPv4, required in IPv6. Detects corruption, does not correct or retransmit."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The checksum detail trips up candidates. UDP computes it over a pseudo-header containing source and destination IP addresses, protocol number, and UDP length — data that is not transmitted as part of the UDP header itself. The reason is defensive binding: it proves the datagram arrived at the intended host and protocol, not just the right port. IPv4 permits a zero checksum to skip the CPU cost, a legacy optimization you should never rely on in a new design. IPv6 forbids it, because silent corruption in a connectionless protocol with no retransmission is unrecoverable. Even with a correct checksum, UDP only detects some corruptions; it never repairs them. The trade-off is CPU and simplicity versus silent acceptance of bit errors — which is why real-time media codecs assume corruption and loss rather than trusting the network."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What you gain and what you pay for with UDP.",
+      "headers": [
+        "Property",
+        "UDP behavior",
+        "Trade-off"
+      ],
+      "rows": [
+        [
+          "Setup latency",
+          "Zero round-trips before first byte. Send immediately.",
+          "Gain: ideal for single-packet exchanges like DNS. Cost: no path validation, trivial to spoof source address."
+        ],
+        [
+          "Reliability",
+          "Best-effort. No ACKs, no retries, no ordering.",
+          "Gain: no head-of-line blocking, no tail latency from retransmits. Cost: application must tolerate or reimplement loss handling."
+        ],
+        [
+          "Ordering and duplication",
+          "Arrival order undefined. Duplicates possible.",
+          "Gain: receiver never stalls waiting for a gap. Cost: any sequence-sensitive logic needs its own sequence numbers and dedup window."
+        ],
+        [
+          "Congestion and flow control",
+          "None built in. Sends at application rate.",
+          "Gain: full pacing control for media and custom congestion schemes. Cost: naive sender can congest or starve itself; unfair to competing traffic without backoff."
+        ],
+        [
+          "State and scale",
+          "Stateless per datagram. No per-connection memory or timers.",
+          "Gain: servers handle far more peers with fixed memory. Cost: no context to distinguish attack traffic from legitimate bursts."
+        ],
+        [
+          "Header overhead",
+          "8 bytes vs 20+ for TCP before options.",
+          "Gain: matters for small payloads like game inputs and telemetry. Cost: you saved ~12 bytes and lost the entire reliability machine."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The opinionated summary: choose UDP when the cost of waiting exceeds the cost of being wrong about a packet. Voice, live video, multiplayer position updates, and DNS all share that shape — a late retransmit is worse than a gap, because the application has a newer value or can re-ask cheaply. Choose against UDP when correctness depends on every byte arriving exactly once in order, or when your team will not build congestion control, retransmission, and security on top. A raw UDP socket without pacing, deadlines, and spoofing defenses is not a fast design; it is an unfinished one. QUIC exists precisely because teams kept rebuilding the same subset — loss detection, encryption, congestion control — badly over raw UDP."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "UDP failures are quiet, which makes them expensive. TCP fails loudly with resets, timeouts, and collapsed throughput. UDP fails by delivering slightly wrong behavior that looks like application bugs: robot voice, teleporting players, DNS tails that only spike during congestion, telemetry gaps that correlate with deploys. The second class of failure is security-shaped. Because there is no handshake to validate the source, UDP services are natural reflectors and flood targets. A small spoofed request that triggers a large response becomes someone else's denial-of-service problem. Operators learn this the hard way when a memcached or NTP-style endpoint is left open and starts amplifying traffic at 50x."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Silent loss under congestion — symptom: periodic quality cliffs, not errors.** Routers drop UDP first when queues fill because there is no backoff signal. You see flat error logs but degraded media, stale game state, or rising `request_timeout` without `connection_error`. Fix is application pacing, FEC, or loss-aware codecs — not bigger buffers.",
+        "**Reordering and duplication — symptom: non-monotonic state.** Two position updates arrive out of order and the entity snaps backward. Duplicate DNS or RPC requests execute twice. You need per-message sequence numbers and a small reorder window plus idempotency keys; UDP will not provide them.",
+        "**IP fragmentation blowup — symptom: all-or-nothing loss for large datagrams.** A 4KB datagram fragments at the IP layer; losing one fragment discards the whole datagram. Loss rate multiplies. Symptom is large payloads failing far more often than small ones on the same path. Fix is to stay under path MTU (~1200-1400 bytes) or implement your own segmentation.",
+        "**ICMP blackhole and NAT timeout — symptom: works locally, dies across the internet.** No socket bound on the receiver means ICMP port-unreachable, which some stacks surface as errors and others swallow. NAT bindings for UDP expire in tens of seconds without keepalives, so idle peers become unreachable with no close event. Fix is explicit heartbeats and NAT-traversal logic.",
+        "**Spoofed-source floods and amplification — symptom: egress spike with no matching ingress demand.** Attacker forges victim address, your service replies generously. You see outbound bandwidth 10-50x inbound on a stateless endpoint. Fix is response-size caps, request validation, rate limiting per source prefix, and never exposing an amplifying UDP service unauthenticated."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes the semantics concrete"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "udp_minimal.py",
+      "code": "import socket\n\n# Sender: no connect, no guarantee, no ordering. Each sendto is independent.\nsock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\nsock.settimeout(0.5)  # receive timeout is app policy, not transport\n\nSEQ = 0\ndef send_update(payload: bytes, addr=(\"game.example\", 3478)):\n    global SEQ\n    # App owns sequencing because UDP has none.\n    # Trade-off: 4 bytes overhead to get ordering + dedup back.\n    SEQ += 1\n    sock.sendto(SEQ.to_bytes(4, \"big\") + payload, addr)\n\ndef recv_update():\n    try:\n        data, _ = sock.recvfrom(1400)  # keep under MTU to avoid fragmentation\n    except socket.timeout:\n        return None  # loss is a normal return value, not an exception path\n    seq = int.from_bytes(data[:4], \"big\")\n    return seq, data[4:]\n\n# Receiver side (separate socket): bind, then filter.\n# Missing sequence = loss. Older sequence = reorder. Same sequence = duplicate.\n# Application decides: drop stale, buffer slightly, never block head-of-line."
+    },
+    {
+      "type": "paragraph",
+      "text": "That snippet is the whole mental model in twelve lines. `sendto` returns after handing the packet to the kernel; success means queued locally, not received remotely. `recvfrom` with a timeout treats loss as a normal branch, not a failure — because with UDP it is normal. The sequence prefix is the cheapest possible reliability layer: four bytes buys you loss detection, reorder tolerance, and dedup, without buying retransmission delays you may not want. Real systems extend this pattern: add an ACK bitmask if you need selective retry like QUIC does, add timestamps if you need RTT for pacing, add a nonce and encryption if you need spoof resistance. Each addition reclaims one TCP property at the cost of some of UDP's latency advantage. Name that exchange explicitly in a design review."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "DNS, gaming, or streaming prompt — defend UDP in one breath",
+          "text": "Interviewer asks why DNS uses UDP or how you would move game state at 60Hz. Answer: single-packet request-response with cheap retry beats a 1-RTT handshake, and stale state is worthless so retransmitting old positions hurts. State the trade-off immediately: we accept loss and reorder to bound tail latency."
+        },
+        {
+          "title": "TCP vs UDP — refuse the speed myth",
+          "text": "Never say UDP is faster on the wire. Bits travel at the same speed. UDP is faster to first byte because it skips setup and never stalls on gaps. Then add the correction interviewers wait for: sustained bulk throughput is usually higher on TCP because of mature congestion control. UDP only wins throughput if you build equivalent control."
+        },
+        {
+          "title": "Design reliable delivery over UDP",
+          "text": "This is the QUIC question without naming QUIC. Sketch sequence numbers, selective ACKs, retransmission timers, and congestion window on a whiteboard. Explain why you would use selective repeat rather than go-back-N, and why you encrypt headers to prevent middlebox ossification. This proves you know what TCP was doing for you."
+        },
+        {
+          "title": "Scale and NAT discussion",
+          "text": "Explain why a million-idle-players server prefers UDP: no per-connection kernel state or keepalive timers, fixed socket buffers shared across peers. Then volunteer the catch: NAT bindings expire quickly and there is no close signal, so you need application heartbeats every 15-25 seconds and explicit presence timeouts."
+        },
+        {
+          "title": "Security follow-up — close the loop",
+          "text": "Every UDP design question ends here. Name spoofing, reflection, and flood risk without being prompted. Propose minimum defenses: validate before responding, cap response-to-request size ratio, rate-limit by /24 or connection ID, require proof-of-source such as a cookie or handshake before expensive work. That answer separates medium from senior."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail the round"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**UDP is always faster than TCP.** False for bulk transfer. It avoids handshake and head-of-line delay, but without congestion control a naive UDP flow either loses heavily or must self-throttle to TCP-like rates anyway.",
+        "**UDP guarantees nothing, so checksums do not matter.** Wrong direction. Because nothing is retransmitted, undetected corruption is permanent. Integrity checks matter more, not less — which is why IPv6 mandates the checksum.",
+        "**A smaller header is the main reason to use UDP.** The 12-byte saving over TCP is noise except for tiny high-rate payloads. The real reasons are zero setup, no ordering stalls, and stateless scaling.",
+        "**Broadcast and multicast require UDP.** They pair naturally with connectionless delivery, but the requirement is set by the distribution model, not the protocol. What UDP gives you is the absence of per-receiver connection state that would make fan-out infeasible.",
+        "**QUIC is just TCP over UDP.** QUIC reimplements loss recovery and congestion control over UDP, but adds stream multiplexing without TCP head-of-line blocking, encrypted transport headers, and faster handshakes. Calling it TCP-over-UDP misses why the rebuild was necessary."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Decision guide for system design: pick the transport that matches loss tolerance.",
+      "headers": [
+        "Scenario",
+        "Verdict",
+        "Reasoning"
+      ],
+      "rows": [
+        [
+          "DNS lookups, SNMP, DHCP, heartbeat telemetry",
+          "Use UDP",
+          "Single small exchange, idempotent, cheap to retry at app layer. Handshake would dominate cost."
+        ],
+        [
+          "Live voice, video conferencing, multiplayer movement",
+          "Use UDP with app logic",
+          "Stale data is useless. Prefer loss and FEC plus jitter buffers over retransmission delay."
+        ],
+        [
+          "Bulk file transfer, payments, ordered logs",
+          "Do not use raw UDP",
+          "Needs exactly-once in-order delivery and congestion fairness. That is TCP or QUIC, not hand-rolled retries."
+        ],
+        [
+          "New internet-facing request-response API",
+          "Prefer TCP or QUIC over raw UDP",
+          "Needs encryption, congestion control, and spoof resistance by default. Raw UDP forces you to rebuild all three."
+        ]
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**UDP is stateless datagram delivery with ports and a checksum and nothing else — use it when a late packet is worse than a lost packet, and budget for sequencing, retry, pacing, and anti-spoofing in your own layer.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:13:09.270Z",
+    "problems": []
+  }
+}

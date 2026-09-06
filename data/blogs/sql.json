@@ -1,0 +1,273 @@
+{
+  "slug": "sql",
+  "title": "Sql",
+  "summary": "SQL is a declarative contract over normalized relations: you state invariants and desired results, the engine enforces correctness and picks the access path.",
+  "kind": "HLD",
+  "problemSlug": "sql-92-203",
+  "topic": "Databases",
+  "difficulty": "Easy",
+  "coverEmoji": "🗃️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "SQL"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "LeetCode 2408 — Design SQL",
+      "url": "https://leetcode.com/problems/design-sql/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "Medium. Resolved through the LeetCode API, not guessed from the slug."
+    },
+    {
+      "title": "SQL Explained in 100 Seconds - YouTube",
+      "url": "https://www.youtube.com/watch?v=zsjvFFKOm3c",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "SQL Introduction - W3Schools",
+      "url": "https://www.w3schools.com/sql/sql_intro.asp",
+      "source": "w3schools.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is SQL? Explained Simply for Beginners | by Sairam Kosinepalli",
+      "url": "https://medium.com/@sairam.kosinepalli1999/what-is-sql-explained-simply-for-beginners-ee40f05c8f5d",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Please explain to me what SQL actually is???",
+      "url": "https://www.reddit.com/r/SQL/comments/cf0uxr/please_explain_to_me_what_sql_actually_is/",
+      "source": "reddit.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**SQL is a declarative correctness contract, not a storage API.** You declare *what* must stay true (schema, keys, constraints) and *what* result you want (`SELECT`, `JOIN`, `WHERE`). The engine chooses *how* to get it — access path, join order, locking. Trade-off you are buying every time: **you surrender physical control to gain query flexibility and enforceable correctness.** If you do not need enforceable relations, do not pay that price."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "SQL is the interface to a relational database management system built on the relational model. Data lives in **relations** (tables) — unordered sets of tuples (rows) with fixed attributes (columns) and types. Each row has identity via a **primary key**. Tables link via **foreign keys**: a column whose value must match a primary key elsewhere, which encodes one-to-many and many-to-many relationships without duplicating facts. The language splits into **DDL** (`CREATE TABLE`, `ALTER`, constraints, indexes), **DML** (`INSERT`, `UPDATE`, `DELETE`), **DQL** (`SELECT` with `WHERE`, `JOIN`, `GROUP BY`, `ORDER BY`), plus transaction control (`BEGIN`, `COMMIT`, `ROLLBACK`). What makes it relational is not the syntax. It is three guarantees: **set semantics** (operations over whole sets, not pointers), **schema enforcement** (types, `NOT NULL`, `UNIQUE`, `CHECK`, foreign-key referential integrity), and **declarative execution** (you specify predicates and joins, the optimizer picks the plan)."
+    },
+    {
+      "type": "paragraph",
+      "text": "An RDBMS is the engine behind that contract. It adds **ACID transactions** (atomic, consistent, isolated, durable state changes), a **cost-based optimizer** that rewrites your declarative statement into a physical plan, **B+Tree indexes** for logarithmic lookup and ordered scans, a **write-ahead log (WAL)** for crash recovery, and **concurrency control** — typically multi-version concurrency control (MVCC) plus row-level locks. That stack is why teams pick SQL when money, inventory, users, permissions, or any state where a half-applied update is corruption cannot be tolerated. You pay in rigidity: schema changes are coordinated, writes serialize on contention points, and horizontal scaling is harder than a key-value store because relations and transactions assume a single authoritative ordering of truth."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from statement to rows on disk"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every statement takes the same path, read or write. The **parser and validator** checks syntax and resolves identifiers against the catalog: does the table exist, does the column exist, does this user have permission, do types line up. The **planner and optimizer** then converts the logical tree (`scan -> filter -> join -> aggregate -> sort`) into candidate physical plans: sequential scan versus index scan, nested-loop versus hash versus merge join, which join order. It picks by cost estimates from table statistics and index selectivity. This is why identical SQL can be fast or catastrophic: you wrote the logic, the optimizer chose the physics based on what statistics and indexes you gave it. The **executor** runs the chosen plan as an iterator pipeline, pulling pages through the buffer pool, applying predicates, probing indexes, joining, aggregating. Writes go through the same executor but add constraint checks, index maintenance, and durability steps."
+    },
+    {
+      "type": "mermaid",
+      "title": "SQL read and write path",
+      "caption": "Every statement flows through parse, plan, execute, and storage.",
+      "code": "graph TD\n  C[Client statement] --> P[Parser and validator]\n  P --> O[Planner and optimizer]\n  O --> E[Executor]\n  E --> B[Buffer pool]\n  B --> D[Heap pages and BTree indexes]\n  E --> W[WAL for writes]\n  W --> D"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Storage behind the abstraction"
+    },
+    {
+      "type": "paragraph",
+      "text": "On disk the abstraction is brutally physical. Rows live in **heap pages** (typically 8KB or 16KB blocks). Indexes are almost always **B+Trees**: shallow, fan-out in the hundreds, which gives `O(log N)` point lookups *and* ordered range scans and `ORDER BY` without a sort. That dual property is why the B+Tree won — a hash index gives faster points but cannot do ranges, so the trade-off is a slightly slower point lookup to keep range queries viable. Secondary indexes store the indexed columns plus a pointer to the heap row, which is why a query that filters on an indexed column but selects ten unindexed columns still does heap fetches. Covering indexes fix that by storing what the query needs, at the cost of larger indexes and slower writes. Reads hit the **buffer pool** first; a miss is a disk stall. That is why working-set fit is the dominant performance variable, not CPU."
+    },
+    {
+      "type": "paragraph",
+      "text": "Writes pay for durability explicitly. The engine **writes to the WAL first**, fsyncs, then mutates in-memory pages and marks them dirty for later checkpointing. The trade-off is latency for survival: without WAL-first you lose acknowledged writes on crash; with it every commit waits on sequential log I/O. Then it updates every affected index, checks foreign keys and unique constraints, and takes locks or creates new row versions under MVCC. MVCC is why readers usually do not block writers: readers see a snapshot, writers create new versions, and vacuum or purge later reclaims dead versions. The cost is write amplification, bloat if cleanup lags, and serialization failures or deadlocks when two writers touch the same keys in opposite order. There is no free isolation — you pick `READ COMMITTED` versus `REPEATABLE READ` versus `SERIALIZABLE` to trade anomaly risk against abort and retry rate."
+    },
+    {
+      "type": "table",
+      "caption": "Core SQL design decisions and what each one costs.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Normalization to 3NF",
+          "Single source of truth, no update anomalies, flexible future queries",
+          "More joins, slower reads without indexes, harder to shard across nodes"
+        ],
+        [
+          "Declarative optimizer",
+          "Portable queries, automatic plan improvement as stats grow",
+          "Unpredictable plans, cliff when stats are stale or predicates are opaque"
+        ],
+        [
+          "Strong schema plus constraints",
+          "Bad data rejected at the boundary, joins stay meaningful",
+          "Migrations lock or backfill, application deploys must coordinate with schema"
+        ],
+        [
+          "B+Tree secondary indexes",
+          "Fast filtered lookup, range scan, ordered output",
+          "Every write updates every index, larger storage, slower ingest"
+        ],
+        [
+          "ACID transactions with MVCC",
+          "Multi-row all-or-nothing updates, snapshot reads",
+          "Lock contention, deadlocks, retry logic, single-primary write bottleneck"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "SQL systems rarely fail by returning wrong rows. They fail by getting slow, getting stuck, or refusing writes — and the symptom points directly at the mechanism. Learn to map symptom to layer: plan choice shows up in latency percentiles, contention shows up in lock waits and timeouts, durability shows up in commit stalls, capacity shows up in connection and disk behavior. If you cannot read `EXPLAIN`, slow-query logs, and lock / wait metrics, you are guessing. The honest trade-off of the whole stack is that safety mechanisms become the bottleneck under load, so production work is mostly deciding which safety to keep and which to relax deliberately."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Missing or unusable index → sudden p99 spike and CPU saturation.** Symptom: one endpoint jumps from 20ms to 2s after data growth, `EXPLAIN` shows `Seq Scan` on a million-row table with `rows removed by filter`. Often caused by a function on the indexed column, type mismatch, or leading-wildcard `LIKE`. Fix is a usable index or rewritten predicate — not a bigger instance.",
+        "**Lock contention and deadlocks → timeouts under concurrent writes.** Symptom: `UPDATE` on hot counters, queues, or parent rows queues up, transaction latency climbs, logs show deadlocks or `lock wait timeout`. MVCC does not save you when writers serialize on the same row or gap. Fix is shorter transactions, consistent lock order, batch splitting, or moving the counter out of the transactional path.",
+        "**Connection exhaustion → cascading refusal.** Symptom: healthy CPU and disk but new requests fail with too-many-connections or pool timeouts, usually after an upstream slowdown holds connections open. Relational databases use one backend process per connection, so the trade-off is safety of isolation against cost per connection. Fix is pooling, aggressive timeouts, and shedding slow queries — not raising `max_connections` blindly.",
+        "**Bloat, hot keys, and unbounded growth → write slowdown and autovacuum panic.** Symptom: tables and indexes grow far beyond row count, updates get slower, autovacuum never catches up, sequential UUID or monotonic primary keys hammer one B+Tree leaf and one partition. Fix is fill-factor tuning, partitioning, key design that spreads writes, and archiving — the price of keeping every fact queryable forever.",
+        "**Online migration → blocked writes.** Symptom: deploy hangs on `ALTER TABLE`, adds a `NOT NULL` column, or rebuilds an index and production writes stall behind an `ACCESS EXCLUSIVE` lock. Schema rigidity is the cost of enforcement. Fix is expand-migrate-contract steps, concurrent index builds, and backfills in batches."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The classic self-inflicted wound",
+      "text": "**N+1 queries and `SELECT *` will beat any index.** An ORM that loads 500 parents then fires 500 child queries turns one join into 501 round trips. You see it as low database CPU but high request latency and thousands of identical queries in the log. Fix it with an explicit join or batched `WHERE id IN (...)` and a projection that names only the columns you need. The trade-off: ORM convenience hides access paths, so you must still inspect the SQL it emits."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The minimal model: what the toy SQL problem is actually testing"
+    },
+    {
+      "type": "paragraph",
+      "text": "The simplified design exercise strips SQL to its barest shape: named tables with fixed column counts, auto-incrementing `rowId` starting at 1, and three operations — `insertRow`, `deleteRow`, `selectCell`. There is no parser, no planner, no types, no constraints, no joins. The structure that passes is `dict[tableName -> dict[rowId -> list[str]]]` plus a per-table next-id counter that never reuses ids after deletion. The parent-exists check of a filesystem problem becomes a table-exists and row-exists check here. The point is not databases — it is modeling namespaced, id-addressed collections with clean failure semantics: insert into a missing table fails, select or delete of a missing row returns empty or no-op depending on the contract you state. Say the contract out loud before coding."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "toy_sql.py",
+      "code": "class SQL:\n    def __init__(self, names: list[str], columns: list[int]):\n        # table -> rowId -> row values. Counter never goes backwards.\n        self._tables: dict[str, dict[int, list[str]]] = {n: {} for n in names}\n        self._width: dict[str, int] = dict(zip(names, columns))\n        self._next_id: dict[str, int] = {n: 1 for n in names}\n\n    def insertRow(self, name: str, row: list[str]) -> None:\n        # Real engine would validate width, types, constraints here.\n        rid = self._next_id[name]\n        self._tables[name][rid] = list(row)\n        self._next_id[name] = rid + 1\n\n    def deleteRow(self, name: str, rowId: int) -> None:\n        # Tombstone in real MVCC; here just drop. Id is never reused.\n        self._tables[name].pop(rowId, None)\n\n    def selectCell(self, name: str, rowId: int, columnId: int) -> str:\n        # columnId is 1-based in the problem contract.\n        return self._tables[name][rowId][columnId - 1]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Name why this toy is dishonest, because the interviewer will ask next. It stores rows as opaque string lists, so there are no types to validate, no width to enforce, no `UNIQUE` or foreign key to check. It looks up `selectCell` by exact `rowId` hash, so there is no predicate evaluation, no scan versus index decision, and no join algorithm at all. It has no WAL, no transactions, no isolation, and no persistence — a crash loses everything. Use that gap deliberately: after the toy passes, say *to make this real I would add a catalog for schema, a B+Tree per indexed column for `WHERE` without full scans, constraint checks on the write path, and a WAL plus MVCC if concurrent writers and crash recovery matter.* That one sentence turns an easy coding task into a database design conversation, which is exactly the promotion the interviewer is offering."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Implement the toy without fumbling the contract",
+          "text": "Write `insertRow`, `deleteRow`, `selectCell` with nested maps in under ten minutes. State edge behavior: unknown table, duplicate semantics, deleted `rowId` reuse (never reuse), 1-based `columnId`. Trade-off to name: hash maps give O(1) by id but make every future filtered query a full scan — fine for the toy, fatal for the real system."
+        },
+        {
+          "title": "Defend the schema and keys",
+          "text": "Given a prompt like users, orders, and items, draw tables, pick primary keys, place foreign keys, and state constraints. Say why surrogate integer keys simplify joins and moves at the cost of needing extra unique constraints for natural identity, and why you normalize to avoid update anomalies unless read pressure forces denormalization."
+        },
+        {
+          "title": "Reason about one query plan out loud",
+          "text": "Take a `WHERE status = ? AND created_at > ?` plus a join and walk the plan: which index leads, is it covering, nested-loop versus hash join, what `EXPLAIN` would show. Name the trade-off: each added index speeds that read and taxes every write, so you justify indexes by measured selectivity, not intuition."
+        },
+        {
+          "title": "Pick SQL versus alternatives with reasons",
+          "text": "When asked why SQL here, answer in trade-offs: need multi-row atomicity, ad-hoc joins, and enforced integrity → SQL; need massive write fan-out, flexible documents, or simple key lookup at extreme scale → key-value or document store. Never say one is faster — say what workload each one refuses to suffer."
+        },
+        {
+          "title": "Scale the single node one step",
+          "text": "Propose read replicas for read-heavy skew, then partitioning for write or size pressure, then caching for hot reads — each with its cost. Replicas trade freshness for throughput, partitioning trades cross-shard joins and transactions for capacity, caching trades invalidation complexity for latency. Stop before designing a distributed database from scratch."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**SQL is just a language.** No — it is an optimizer plus storage plus transaction contract. Two identical statements can differ 1000x by plan. Talk about the engine, not the keywords.",
+        "**Joins are inherently slow.** Unindexed joins on large sets are slow. Indexed joins on right-sized relations are the entire reason the model exists. Denormalizing to avoid a join trades read speed today for anomaly risk forever.",
+        "**NoSQL is faster than SQL.** Faster at what shape? Key lookups at huge scale, yes. Multi-row atomic updates with ad-hoc predicates, no. Speed without a workload is meaningless — name the access pattern first.",
+        "**Normalization is always correct.** Third normal form minimizes anomalies but maximizes joins. High-read systems deliberately denormalize, add covering indexes, or materialize views — and accept write-time cost and refresh complexity to buy read latency.",
+        "**The ORM means I do not need SQL.** The ORM emits SQL you cannot see. If you cannot read its output and its N+1 pattern, you have outsourced performance without oversight.",
+        "**`rowId` or auto-increment equals identity.** It is a physical address aid, not business identity. Reusing ids after delete, exposing them as API contracts, or assuming gapless sequences breaks under concurrency and replication — use stable natural or UUID business keys where identity matters."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use SQL when correctness and query flexibility dominate; leave when shape or scale breaks the model.",
+      "headers": [
+        "Use relational SQL when",
+        "Use something else when"
+      ],
+      "rows": [
+        [
+          "Multiple rows must change atomically (orders, payments, inventory)",
+          "Writes are append-only events or counters with no cross-row invariants"
+        ],
+        [
+          "Relationships are real and queried flexibly (joins, filters, aggregates)",
+          "Access is always by single key and never joins — a key-value store is cheaper"
+        ],
+        [
+          "Bad data must be rejected at the boundary (constraints, foreign keys)",
+          "Schema varies per record and evolves weekly — a document store fits better"
+        ],
+        [
+          "Reads need ad-hoc predicates, ranges, ordering, and aggregation",
+          "Data is graph traversals, full-text, vectors, or time-series with specialized engines"
+        ],
+        [
+          "Dataset fits one primary with replicas or clean partitioning",
+          "Write volume or global latency demands multi-primary or edge-local writes"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Use SQL when related facts must stay jointly correct and queryable in ways I cannot predict; I accept schema rigidity and single-primary writes to buy enforced integrity, declarative joins, and ACID transactions.** Then point at the schema, one index, and one failure mode to prove you mean it."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:23:28.106Z",
+    "problems": []
+  }
+}

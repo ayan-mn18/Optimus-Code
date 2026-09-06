@@ -1,0 +1,297 @@
+{
+  "slug": "hld-interview-tips",
+  "title": "HLD Interview Tips",
+  "summary": "HLD interviews test ambiguity handling and tradeoff judgment under time pressure, not encyclopedic knowledge. This guide gives the delivery framework, core tradeoffs, and failure modes to pass.",
+  "kind": "HLD",
+  "problemSlug": "hld-interview-tips-89-196",
+  "topic": "Introduction to High Level Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🏗️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "System Design",
+    "Interview Tips"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "System Design in a Hurry - Hello Interview",
+      "url": "https://www.hellointerview.com/learn/system-design/in-a-hurry/introduction",
+      "source": "hellointerview.com",
+      "kind": "article"
+    },
+    {
+      "title": "HLD Interview Questions and Answers | MindMajix - YouTube",
+      "url": "https://www.youtube.com/watch?v=K7k8KvTXP7Q",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "A Framework For System Design Interviews - ByteByteGo",
+      "url": "https://bytebytego.com/courses/system-design-interview/a-framework-for-system-design-interviews",
+      "source": "bytebytego.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "An HLD interview is not a test of whether you can draw boxes. It is a test of whether you can **turn vague product goals into quantified bottlenecks, then defend one explicit tradeoff at each bottleneck**. If you do not name the tradeoff and pick a side with reasons, you fail — even if the diagram looks correct."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What HLD is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "High Level Design is the decision of **which state lives where, which path requests take, and what breaks first at scale**. You define services, data stores, queues, caches, and the contracts between them. You deliberately ignore method-level logic, class structure, and design patterns — that is Low Level Design. HLD answers four questions only: how much load, where is the source of truth, what is synchronous versus asynchronous, and how does the system degrade when a part dies. Everything else is decoration. A passing candidate quantifies load in requests per second, reads versus writes, payload size, and retention, then lets those numbers force the choice of database, cache, partition key, and replication topology. A failing candidate starts with \"I will use microservices with Kafka and Redis\" before knowing if the system does 100 or 100,000 writes per second."
+    },
+    {
+      "type": "paragraph",
+      "text": "HLD and LLD are graded on opposite skills. LLD rewards **correctness and extensibility** inside one process: clean interfaces, no broken invariants, sensible concurrency. HLD rewards **judgment under uncertainty** across many machines: you will never have complete requirements, you will never have time to cover everything, and the interviewer will move the goalposts mid-session on purpose. Why that split exists is simple. In production, HLD mistakes cost months and migrations; LLD mistakes cost a refactor. So the interviewer is asking: can I trust you to pick a data model and a scaling axis that will not need a rewrite in six months? If you treat HLD like a bigger LLD and start debating class names, you signal you do not understand that cost difference. State the non-functional target first — latency percentile, availability, consistency — then choose structure to meet it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: how the 45 minutes actually work"
+    },
+    {
+      "type": "mermaid",
+      "title": "HLD interview flow",
+      "caption": "The interview is a funnel: wide scope, then numbers, then one deep bottleneck.",
+      "code": "flowchart TD\n  A[Clarify scope: users, features, out of scope] --> B[Back of envelope: QPS, storage, bandwidth]\n  B --> C[High level API and data model]\n  C --> D[Happy path architecture]\n  D --> E[Deep dive: one bottleneck]\n  E --> F[Failure modes and tradeoffs recap]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The interviewer runs a fixed script even when the prompt sounds open-ended. First five minutes: do you ask scoping questions or do you start drawing? Interviewers score this heavily because it predicts real collaboration. Next five minutes: can you convert \"design YouTube\" into numbers — daily active users, upload rate, read-to-write ratio, average object size — without hand-waving? Then ten minutes for API and data model, ten minutes for the baseline architecture, and the remaining fifteen for a deep dive the interviewer chooses, usually the hardest part like feed ranking, upload fan-out, or payment exactly-once semantics. Why this funnel shape? Breadth without depth proves nothing; depth without breadth means you optimized the wrong bottleneck. The mechanism forces you to show both. Control the clock by timeboxing aloud: \"I will spend two minutes on estimates, then propose the API.\" That sentence buys you control of the session."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The delivery framework that passes"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "1. Scope in 3 minutes, out loud",
+          "text": "Lock functional scope to 2-3 core flows and explicitly descope the rest. State users, key actions, and non-goals. Tradeoff: you sacrifice feature completeness to gain time for depth where points are actually awarded."
+        },
+        {
+          "title": "2. Quantify before you draw",
+          "text": "Compute peak QPS, read-write ratio, storage over 1-3 years, bandwidth, and cache working set. Write the assumptions. Tradeoff: rough arithmetic now beats precise modeling later because it tells you whether you need sharding, a CDN, or nothing at all."
+        },
+        {
+          "title": "3. Fix API and data model next",
+          "text": "Define 3-5 endpoints and the primary keys, indexes, and ownership of each entity. Choose SQL versus NoSQL here, not later. Tradeoff: committing early constrains the design, which is the point — data access patterns dictate scaling, not the other way around."
+        },
+        {
+          "title": "4. Draw the happy path, then kill it",
+          "text": "Show client to load balancer to app to store to cache to queue in one clean path. Then immediately ask where it breaks. Tradeoff: a simple stateless baseline is easier to reason about and to replicate than a clever topology that hides its single point of failure."
+        },
+        {
+          "title": "5. Deep dive on one bottleneck only",
+          "text": "Pick the highest-leverage constraint — hot partition, fan-out storm, large blob transfer, contention on counters — and solve it end to end with replication, partitioning, or async processing. Tradeoff: ignoring secondary problems is intentional; interviewers reward one solved bottleneck over five mentioned ones."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "This order is not ritual, it is dependency management. Estimates determine whether caching or sharding is even justified. The API plus data model determines whether reads can be served from an index or require a scatter-gather. The happy-path diagram without those two is just boxes with no reason to exist, which is why experienced interviewers interrupt box-first candidates and force them back to numbers. The most common objection — \"but I do not know the exact traffic\" — misses the point. You are expected to state an assumption, derive consequences, and show how the design changes if the assumption is 10x wrong. That sensitivity analysis is what separates a medium candidate from a hire. Never present a component without the why: \"cache here because reads are 100:1 and cacheable for 60 seconds, tradeoff is staleness.\""
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Core tradeoffs you must name aloud"
+    },
+    {
+      "type": "table",
+      "caption": "Every HLD choice buys one property by selling another. Say both sides.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "SQL vs NoSQL",
+          "Strong consistency, joins, ad-hoc queries; simpler correctness",
+          "Vertical scaling ceiling; sharding is painful and joins do not survive partitions"
+        ],
+        [
+          "Synchronous vs queue + async worker",
+          "Decoupling, burst absorption, retry; higher write throughput",
+          "No immediate result, eventual consistency, operational cost of queue lag and poison messages"
+        ],
+        [
+          "Cache-aside vs read-through",
+          "Cache-aside is simple and survives cache loss; read-through centralizes miss logic",
+          "Cache-aside risks thundering herd on hot keys; read-through adds latency on miss and library coupling"
+        ],
+        [
+          "Single region vs multi-region",
+          "Lower latency to global users, survival of regional outage",
+          "Cross-region replication lag, conflict resolution, 2-3x cost and far harder consistency story"
+        ],
+        [
+          "Monolith + vertical scale vs partitioned services",
+          "Monolith ships faster and debugs easier under low scale",
+          "Single deploy blast radius and connection / CPU ceiling; partitioning buys scale but pays serialization and network failure modes"
+        ],
+        [
+          "Strong vs eventual consistency",
+          "Strong is easy to reason about for money and inventory",
+          "Higher tail latency and lower availability under partition; eventual is fast and available but forces compensating actions"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Most HLD failures are not code bugs, they are **capacity and hotspot failures the diagram hid**. The classic is the hot partition: one logical key receives disproportionate traffic — a celebrity post, a flash-sale SKU, a top driver in a city — and the shard holding it saturates CPU or connections while the rest of the fleet sits idle. The fix was known at design time: pick a partition key with cardinality and add a write-through counter shard or read cache, but the candidate chose `user_id` or `product_id` without checking skew. Why this happens is predictable. Uniform-hash thinking assumes even distribution, but real workloads are Zipfian. If you do not ask about skew and do not design a mitigation — key splitting, local aggregation, request coalescing — the system behaves correctly in tests and collapses on launch day. Interviewers probe this by asking \"what if one key is 1000x hotter?\" They want a concrete answer, not \"we will add more shards.\""
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Symptom to memorize",
+      "text": "Watch for **p99 latency climbing while average latency looks flat, plus one replica with 5-10x CPU and connection queueing while siblings are idle**. That split — healthy fleet, one burning host — is a hotspot or thundering-herd signature, not a general capacity shortage. The dashboard lie is adding capacity evenly; it does not help because the hot key still lands on one node."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Thundering herd on cache expiry: TTLs aligned, cache misses converge on DB, DB connection pool exhausts, latency spikes in a wall. Fix with jittered TTL plus request coalescing or a mutex on recompute.",
+        "Unbounded queue growth: producers outrun consumers during peak, lag grows linearly, then disk fills or visibility timeouts cause duplicate processing. Symptom is consumer lag + duplicate side effects.",
+        "Synchronous fan-out collapse: feed post or notification triggers thousands of inline writes, request thread blocks, timeouts cascade. Symptom is write p99 exploding with fan-out size.",
+        "Large-blob head-of-line blocking: video or image bytes share the same path as API calls, saturating bandwidth and harming small requests. Symptom is API timeouts correlated with upload peaks. Fix with object storage + CDN and pre-signed URLs."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Numbers that keep you honest"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "estimates.py",
+      "code": "# Back-of-envelope template. Do this in 2 minutes on the board.\n# Tradeoff: precision is sacrificed for bottleneck detection.\nDAU = 50_000_000\nREQ_PER_USER_PER_DAY = 20\nREAD_WRITE_RATIO = 100  # 100 reads per write\nAVG_PAYLOAD_BYTES = 2_000\n\ntotal_req_day = DAU * REQ_PER_USER_PER_DAY\npeak_qps = total_req_day * 3 / 86400  # 3x for peak vs average\nwrite_qps = peak_qps / (READ_WRITE_RATIO + 1)\nread_qps = peak_qps - write_qps\n\nstorage_per_day = (total_req_day / (READ_WRITE_RATIO + 1)) * AVG_PAYLOAD_BYTES\nprint(f\"peak {peak_qps:,.0f} QPS  read {read_qps:,.0f}  write {write_qps:,.0f}\")\nprint(f\"new bytes/day ~ {storage_per_day/1e12:.2f} TB\")\n# If write_qps < 1k and storage < few TB: you do NOT need sharding yet.\n# If read_qps > 10k and cacheable: you DO need CDN/cache before anything exotic."
+    },
+    {
+      "type": "paragraph",
+      "text": "Run this shape of arithmetic for every prompt, even when the numbers feel invented. Why it matters is that it kills entire branches of over-engineering instantly. A write rate of 100 per second does not need consistent hashing, Cassandra, or multi-leader replication — a single primary with read replicas and a cache covers it with far less operational burden. Conversely, 50k reads per second with a 100:1 ratio forces a cache or CDN decision before any discussion of database internals. State the decision rule aloud so the interviewer sees judgment: \"At this QPS a single Postgres primary handles writes, so I will spend complexity budget on cache invalidation, not sharding. Tradeoff is write availability during failover.\" That one sentence earns more signal than five extra boxes. Memorize the anchors: 1KB-1MB typical payloads, single node handles low-thousands QPS, network and disk — not CPU — usually bind first."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "0-5 min: Scoping interrogation",
+          "text": "Interviewer gives a one-liner like notification service. You must extract scale, core use cases, and constraints. Red flag is nodding and drawing. Strong signal is descoping: out of scope is analytics, admin, billing."
+        },
+        {
+          "title": "5-10 min: Estimation pressure",
+          "text": "You compute QPS, storage, bandwidth. Interviewer watches whether you separate peak from average and reads from writes. Saying it depends without picking a number fails."
+        },
+        {
+          "title": "10-20 min: API plus data model",
+          "text": "You define endpoints and tables or collections with keys. Interviewer tests access patterns: how do you fetch a timeline, how do you avoid N+1 across shards? Vague entities with no keys fail."
+        },
+        {
+          "title": "20-35 min: Guided deep dive",
+          "text": "Interviewer picks the pain point: exactly-once delivery, ordering, large media, contention. You must go two levels deeper than the happy path — sequence, retry, idempotency keys, dedup tables. Staying at box level fails."
+        },
+        {
+          "title": "35-45 min: Bottlenecks and wrap-up",
+          "text": "You name what breaks at 10x, how you monitor it, and how you degrade gracefully. Strong close restates each major choice as tradeoff: chose X over Y because Z, would revisit when load hits W."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail candidates"
+    },
+    {
+      "type": "list",
+      "items": [
+        "\"More components means better design.\" No — every queue, cache, and replica is operational cost and a new failure mode. Start with the smallest system that meets the numbers, then add only when a quantified bottleneck forces it.",
+        "\"NoSQL is more scalable, so default to it.\" Scalability comes from partitioning and access patterns, not the label. If you need joins, range scans, and strong invariants, relational with read replicas wins until write scale proves otherwise.",
+        "\"Consistent hashing solves hotspots.\" It solves membership churn and even distribution, not skew. A hot key still hashes to one node. Skew needs key splitting, caching, or aggregation — different tools.",
+        "\"Async via queue makes everything reliable.\" Queues trade immediate consistency for durability and retry. Without idempotency keys, dead-letter handling, and backpressure, they create duplicates and unbounded lag.",
+        "\"Multi-region is required for high availability.\" Single-region with multi-AZ already survives most failures at a fraction of cost. Multi-region buys regional survival but pays consistency complexity most products do not need yet.",
+        "\"The interviewer wants the textbook architecture.\" They want reasoning. Two candidates can pick opposite databases and both pass if each justifies the pick from load and consistency needs and names what would change their mind."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use what — and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Default choices by workload shape, with the condition that flips them.",
+      "headers": [
+        "Pattern",
+        "Use when",
+        "Do not use when"
+      ],
+      "rows": [
+        [
+          "Cache-aside + TTL",
+          "Read-heavy, cacheable, tolerance for seconds of staleness",
+          "Strong-consistency reads or write-heavy with low hit rate — cache becomes cost with no gain"
+        ],
+        [
+          "CDN + object storage",
+          "Large static blobs, global reads, upload once read many",
+          "Small dynamic payloads where invalidation churn exceeds origin savings"
+        ],
+        [
+          "Queue + async workers",
+          "Bursty writes, tolerable delay, need retry and rate control",
+          "User is waiting synchronously for the result or ordering across partitions is strict"
+        ],
+        [
+          "Range sharding by key",
+          "Dataset exceeds single node and access is key-scoped",
+          "Workload is small or needs cross-shard transactions — you pay scatter-gather on every query"
+        ],
+        [
+          "Read replicas",
+          "Read scale dominates and slight replication lag is acceptable",
+          "Writes dominate or replicas would serve stale money or inventory balances"
+        ],
+        [
+          "Leader election / coordination service",
+          "Exactly-once scheduling, distributed locks, membership truly required",
+          "A database constraint, idempotency key, or single scheduler would suffice — coordination is the heaviest tool"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**\"Give me the scale and consistency target, I will quantify QPS and storage, fix the data model, draw the simplest path that meets it, then solve the one bottleneck that breaks at 10x — naming what I trade away at each step.\"**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:08:01.961Z",
+    "problems": []
+  }
+}

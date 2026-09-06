@@ -1,0 +1,315 @@
+{
+  "slug": "long-polling-vs-web-sockets",
+  "title": "Long Polling vs Web Sockets",
+  "summary": "Long polling fakes server push on top of request-response; WebSockets keep one full-duplex socket open. Pick by update frequency, directionality, and whether you can afford stateful connections.",
+  "kind": "HLD",
+  "problemSlug": "long-polling-vs-web-sockets-91-183",
+  "topic": "System Design Tradeoffs",
+  "difficulty": "Medium",
+  "coverEmoji": " F50C",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "hld",
+    "real-time",
+    "tradeoffs"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "10-polling-vs-websockets.md - GitHub",
+      "url": "https://github.com/handbook-academy/engineering-handbook/blob/main/content/hld/trade-offs/10-polling-vs-websockets.md",
+      "source": "github.com",
+      "kind": "article"
+    },
+    {
+      "title": "HTTP Long Polling vs WebSockets - by David Mosyan - Medium",
+      "url": "https://medium.com/@dmosyan/http-long-polling-vs-websockets-dadab8f7f26f",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Long Polling vs WebSockets: What's best for realtime at scale?",
+      "url": "https://ably.com/blog/websockets-vs-long-polling",
+      "source": "ably.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Long polling is still **client-driven pull with the server stalling for time**. WebSockets are **server-driven push over a persistent full-duplex channel**. If updates are rare and mostly one-way down to the client, holding an HTTP request is cheaper operationally. If updates are frequent *or* the client also talks back continuously, re-establishing HTTP context on every event is pure waste  2 pick the socket and pay the statefulness tax."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Long polling: the client issues a normal HTTP `GET` with a cursor like `last_seen_id` or a timestamp. The server does **not** answer immediately. It parks that request  2 up to 20-30 seconds  2 waiting for an event. If an event arrives, it responds with it. If the timeout fires first, it returns empty and the client **immediately** re-issues. From the outside it looks like push. Underneath it is a tight loop of held requests and reconnects, each one a full HTTP request-response cycle with new headers, new load-balancer routing decisions, and new server-side handling. The win is compatibility: it is just HTTP, so it passes through every proxy, firewall, and browser fetch stack with no special protocol."
+    },
+    {
+      "type": "paragraph",
+      "text": "WebSocket: the client starts with HTTP and asks to leave HTTP. It sends `Upgrade: websocket` plus a handshake key. The server replies `101 Switching Protocols` and from that point the TCP connection stops being HTTP at all. It becomes a framed message stream where **either side can send at any time** with ~2-14 bytes of framing, no headers, no re-handshake, no re-auth per message. That is why latency drops and per-message cost collapses. The price is state: that socket is pinned to one specific server process for minutes to hours. Your load balancer, your deploy strategy, your auth refresh, and your horizontal scale story all have to deal with long-lived pinned connections instead of stateless independent requests. Choose it when you need true bidirectionality or high-frequency fan-out, not because it sounds more modern."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism on the wire"
+    },
+    {
+      "type": "mermaid",
+      "title": "Request loop vs persistent socket",
+      "caption": "Long polling reconnects on every event or timeout; WebSocket handshakes once.",
+      "code": "flowchart TD\n  subgraph LP[\"Long Polling - repeated held requests\"]\n    A[\"Client: GET /updates + last_seen_id\"] --> B[\"Server: park request up to T sec\"]\n    B -->|event arrives| C[\"Server: 200 + events\"]\n    B -->|timeout| D[\"Server: 200 empty\"]\n    C --> E[\"Client: process, immediate re-GET\"]\n    D --> E\n    E --> B\n  end\n  subgraph WS[\"WebSocket - one persistent socket\"]\n    F[\"Client: GET + Upgrade websocket\"] --> G[\"Server: 101 Switching Protocols\"]\n    G --> H[\"Open full-duplex frame stream\"]\n    H -->|either side anytime| H\n  end"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk the long-polling loop carefully because the failure modes live in the gaps. Client sends request N with cursor 42. Server holds it. Event 43 arrives 200ms later, so the server responds and closes request N. The client processes 43, then sends request N+1 with cursor 43. That gap between response and re-request is the danger window: anything published in those tens of milliseconds is missed unless the server keeps a replay buffer keyed by cursor. Timeouts exist for a second reason beyond freeing threads: proxies and browsers will silently kill an idle HTTP request after 30-60 seconds, so you must return empty *before* the infrastructure kills you, typically 25-30 seconds. WebSockets invert this. After the 101, there is no request N+1. There is just frames. Idle connections are kept alive with protocol-level `ping/pong`, and a missed `pong` is how you detect a half-open socket. Reconnection means re-handshake, re-auth, and re-subscribe with a cursor  2 which is why production WebSocket clients always carry the same `last_seen_id` logic long polling uses. The trade-off: long polling pays HTTP setup cost per event batch, WebSockets pay connection-state management cost for the lifetime of the client."
+    },
+    {
+      "type": "mermaid",
+      "title": "WebSocket connection lifecycle",
+      "caption": "The steady state is OPEN; most bugs are in RECONNECTING.",
+      "code": "stateDiagram-v2\n  [*] --> CONNECTING: HTTP Upgrade\n  CONNECTING --> OPEN: 101 response\n  OPEN --> OPEN: ping/pong + frames\n  OPEN --> RECONNECTING: TCP drop or LB timeout\n  RECONNECTING --> CONNECTING: backoff retry\n  CONNECTING --> [*]: auth fail\n  OPEN --> [*]: close frame"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Head-to-head on what actually costs you in production.",
+      "headers": [
+        "Dimension",
+        "Long polling",
+        "WebSocket"
+      ],
+      "rows": [
+        [
+          "Direction",
+          "Client-initiated only; server can only reply. Client-to-server updates need a separate POST.",
+          "Full-duplex; either side sends anytime on the same socket."
+        ],
+        [
+          "Per-message overhead",
+          "High: ~800B-2KB HTTP headers + TLS + TCP setup per cycle, even for an empty timeout.",
+          "Low: 2-14B framing per message after one handshake."
+        ],
+        [
+          "Latency",
+          "One extra round trip per event plus reconnect gap; typically 100ms-seconds depending on hold and retry.",
+          "Near-TCP latency; no re-handshake on the hot path."
+        ],
+        [
+          "Server resources",
+          "Thread or async slot held per waiting client plus reconnect churn. Cheap at low fan-out, brutal at 100k+ waiting clients.",
+          "One file descriptor + memory per open socket. Lower CPU per message but hard cap on concurrent connections per box."
+        ],
+        [
+          "Ordering and delivery",
+          "Hard: overlapping reconnects can race; requires server-side sequence IDs and client dedup.",
+          "Easier on one socket (FIFO), still needs app-level sequence IDs across reconnects."
+        ],
+        [
+          "Infrastructure",
+          "Trivial: stateless, any load balancer, any autoscaler, blue-green safe.",
+          "Painful: needs sticky routing or a pub-sub backplane, connection draining on deploy, idle-timeout tuning."
+        ],
+        [
+          "Traversal",
+          "Works everywhere HTTP works.",
+          "Mostly works on 443 but some corporate proxies and L7 firewalls strip Upgrade; needs fallback."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Do the byte math once and you never forget it. A long-poll cycle that returns one 200-byte chat message still moves roughly a kilobyte of headers each way plus TLS record overhead, and it does a fresh load-balancer decision on every reconnect. At one message per minute per client that is noise. At ten messages per second across 50,000 clients it is a self-inflicted DDoS: millions of request setups per minute just to shuttle tiny payloads. WebSockets flip the cost. The handshake is heavier once, then each message is nearly free on the wire. That is why chat, live dashboards, multiplayer position ticks, and telemetry ingestion all converge on sockets. But the socket forces your backend to become stateful. Ten thousand idle sockets each holding 64KB of buffers is 640MB of RAM doing nothing, and a deploy that kills the box drops all ten thousand at once unless you drain. Long polling lets any box answer any reconnect; WebSockets require either pinning plus a backplane like Redis pub-sub or Kafka so the box holding socket A learns about events arriving at box B. You trade bandwidth waste for architectural coupling. Name that explicitly in the interview."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "table",
+      "caption": "Failure, symptom, and root cause for each pattern.",
+      "headers": [
+        "Failure",
+        "What you see",
+        "Why it happens"
+      ],
+      "rows": [
+        [
+          "Long-poll thundering herd",
+          "Periodic CPU and accept-queue spikes every 30s even with no user traffic.",
+          "All clients used the same timeout, so they all reconnect in the same second. Fix with jittered timeouts."
+        ],
+        [
+          "Long-poll missed events",
+          "Clients skip sequence numbers after network blips; gaps never heal.",
+          "No server-side replay buffer keyed by cursor, or buffer TTL shorter than client retry delay."
+        ],
+        [
+          "Long-poll duplicate delivery",
+          "Same notification processed twice, double charge or double toast.",
+          "Client retried after server responded but before client persisted the new cursor; no idempotency on event IDs."
+        ],
+        [
+          "WebSocket connection leak",
+          "File-descriptor exhaustion, `too many open files`, new connections refused while CPU is idle.",
+          "Half-open sockets never reaped because `ping/pong` or TCP keepalive was disabled behind a load balancer that silently drops idle flows."
+        ],
+        [
+          "WebSocket deploy massacre",
+          "Mass disconnect spike and reconnect storm on every deploy.",
+          "No connection draining; all sockets closed at once and every client retries immediately with no backoff, hammering the fresh boxes."
+        ],
+        [
+          "WebSocket cross-box silence",
+          "User A sends, user B never receives, no errors anywhere.",
+          "Sockets pinned to different servers with no fan-out backplane; event published on box 1 never reaches the socket held on box 2."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "WebSocket scaling deserves a blunt paragraph because candidates wave it away. A single box tops out around tens of thousands to low hundreds of thousands of idle connections depending on memory, file-descriptor limits, and kernel tuning  2 and that is *idle*. The moment you add TLS termination, JSON parsing, and auth checks per frame, the practical number drops hard. Horizontal scaling does not help unless events can hop boxes. The standard fix is a backplane: each app server subscribes to a topic per room or per user on Redis pub-sub, NATS, or Kafka, and relays whatever arrives to its locally held sockets. That solves fan-out but adds a second system with its own lag, ordering, and partition behavior. Long polling sidesteps all of it by being stateless, which is exactly why teams with infrequent updates and small ops headcount should resist sockets. The operational simplicity is not laziness; it is a deliberate trade of per-message efficiency for deploy safety and debuggability with plain access logs."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The timeout trap",
+      "text": "Never set your hold timeout near your proxy idle timeout. If the load balancer kills idle at 60s and you hold for 60s, clients see random disconnects under load. Hold for **25-30s** behind a 60s idle timeout, add **+/- 5s jitter** so reconnects spread out, and always send a cursor the server can replay from. That trio fixes most long-polling incidents."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What the code looks like"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "long_poll.py",
+      "code": "from flask import Flask, request, jsonify\nimport queue, time, threading\n\napp = Flask(__name__)\nwaiters = []  # (cursor, queue) — in prod use Redis, not memory\nLOG = []      # append-only event log with increasing ids\n\n@app.post(\"/publish\")\ndef publish():\n    evt = {\"id\": len(LOG), \"body\": request.json[\"body\"]}\n    LOG.append(evt)\n    for cursor, q in waiters:\n        q.put(evt)  # wake only waiters behind this event\n    waiters.clear()\n    return {\"ok\": True}\n\n@app.get(\"/updates\")\ndef updates():\n    cursor = int(request.args.get(\"after\", -1))\n    # 1. Fast path: replay anything already in the buffer.\n    missed = [e for e in LOG if e[\"id\"] > cursor]\n    if missed:\n        return jsonify(missed)\n    # 2. Slow path: park up to 25s waiting for new events.\n    q: queue.Queue = queue.Queue()\n    waiters.append((cursor, q))\n    try:\n        evt = q.get(timeout=25)  # timeout -> empty list, client re-polls\n        rest = [e for e in LOG if e[\"id\"] > cursor]\n        return jsonify(rest)\n    except queue.Empty:\n        return jsonify([])"
+    },
+    {
+      "type": "code",
+      "language": "javascript",
+      "filename": "ws-client.js",
+      "code": "// WebSocket client must handle what the protocol omits: re-auth,\n// re-subscribe, replay, and backoff. The socket alone gives none of this.\nlet lastSeenId = -1;\nlet backoffMs = 1000;\n\nfunction connect() {\n  const ws = new WebSocket(\"wss://api.example/ws?token=\" + getToken());\n  ws.onopen = () => {\n    backoffMs = 1000;\n    // Re-subscribe WITH cursor so the server can replay the gap.\n    ws.send(JSON.stringify({ type: \"subscribe\", after: lastSeenId }));\n  };\n  ws.onmessage = (e) => {\n    const msg = JSON.parse(e.data);\n    if (msg.id <= lastSeenId) return; // dedup on overlapping reconnects\n    lastSeenId = msg.id;\n    render(msg);\n  };\n  ws.onclose = () => {\n    // Exponential backoff with jitter — never hammer the fleet.\n    const jitter = Math.random() * 1000;\n    setTimeout(connect, Math.min(backoffMs + jitter, 30000));\n    backoffMs *= 2;\n  };\n  // Send heartbeat so LBs and NATs do not silently kill idle sockets.\n  setInterval(() => { if (ws.readyState === 1) ws.send('{\"type\":\"ping\"}'); }, 25000);\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the two snippets as a contrast in where complexity lives. The long-poll handler is simple HTTP but it needs a replay buffer (`LOG` filtered by `after`) or gaps are permanent, and the in-memory `waiters` list is the lie you must call out: on one box it works, across ten boxes it silently drops wakeups unless replaced with a shared pub-sub. The WebSocket client is longer than most candidates expect because the protocol hands you a bare pipe. You must implement resume cursors, dedup by ID, token refresh on `onclose`, and jittered backoff yourself. In an interview, point at exactly that: long polling pushes complexity onto *bandwidth and request churn*, WebSockets push it onto *connection lifecycle and cross-box fan-out*. Senior answers pick based on which complexity the team can operate."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They ask for notifications or chat lite",
+          "text": "Say both options in one breath: long polling if updates are infrequent and mostly server-to-client, WebSocket if frequent or bidirectional. Give the threshold you would measure: messages per client per minute and concurrent clients."
+        },
+        {
+          "title": "They push on scale",
+          "text": "Show the math: header bytes times reconnect rate versus file descriptors times boxes. Then draw the WebSocket backplane: app servers subscribed to Redis or Kafka topics, relaying to pinned sockets. Long polling needs none of that."
+        },
+        {
+          "title": "They inject a failure",
+          "text": "Answer with cursor replay, idempotent event IDs, jittered timeouts for long polling; heartbeat, drain on deploy, and backoff for sockets. Interviewers promote candidates who design the reconnect path, not the happy path."
+        },
+        {
+          "title": "They ask about proxies and mobile",
+          "text": "Concede the socket weakness: corporate firewalls and some L7 proxies break Upgrade, mobile radios punish persistent connections with battery drain. Propose fallback: try WebSocket, degrade to long polling or SSE, negotiated at runtime."
+        },
+        {
+          "title": "They ask what you would ship first",
+          "text": "Pick long polling for an MVP with low-frequency updates because it ships on existing HTTP infrastructure with normal logs and autoscaling. Migrate to WebSockets when profiling proves reconnect overhead dominates. State the migration trigger explicitly."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**WebSockets are always faster.** Only on the hot path with frequent messages. For one update every few minutes, the handshake and idle-state cost buys you nothing over a held GET.",
+        "**Long polling is real-time push.** It is delayed pull. There is always a reconnect gap, and without a replay buffer that gap loses data.",
+        "**WebSockets guarantee delivery.** They guarantee order on one open socket, nothing more. Across a drop and reconnect you need app-level sequence numbers and replay, exactly like long polling.",
+        "**Long polling scales better because it is stateless.** It scales *operationally* better but *wastes* more CPU and bandwidth per message. At high fan-out the reconnect churn becomes the bottleneck.",
+        "**One technology must win.** Production systems ship both: sockets for active users, long polling or SSE as fallback behind hostile networks, plus webhooks for server-to-server. The fallback is part of the design.",
+        "**HTTP/2 or HTTP/3 makes this debate obsolete.** They reduce handshake cost but do not give you server-initiated bidirectional frames with the same semantics; you still choose between held requests, SSE, and WebSockets on top."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use which"
+    },
+    {
+      "type": "table",
+      "caption": "Decision guide by workload shape, not hype.",
+      "headers": [
+        "Scenario",
+        "Pick",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Admin alert feed, few events per hour, must work everywhere",
+          "Long polling",
+          "Trivial ops, zero socket state, normal autoscaling; overhead is negligible at this rate."
+        ],
+        [
+          "Chat, live collaboration, multiplayer ticks",
+          "WebSocket",
+          "Bidirectional and high-frequency; per-message header cost of polling would dominate and latency matters."
+        ],
+        [
+          "Corporate users behind strict proxies, quick MVP",
+          "Long polling first with socket upgrade later",
+          "Greatest compatibility now; add sockets behind a feature flag once volume justifies stateful infra."
+        ],
+        [
+          "1M idle subscribers, rare broadcasts",
+          "Neither alone — SSE or fan-out via push service",
+          "A million pinned sockets is an ops project; a million parked long-polls is a reconnect storm. Use broadcast-friendly push."
+        ],
+        [
+          "Server-to-server event delivery",
+          "Webhooks with retry queue, not either",
+          "Both patterns are client-to-server oriented; service-to-service wants durable queued delivery with signatures and backoff."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Use this heuristic and say it out loud: if the product needs the client to talk back continuously or the server emits more than roughly one event every few seconds per active client, take WebSockets and budget for sticky routing, a pub-sub backplane, heartbeats, drain-aware deploys, and a long-polling fallback. If updates are sparse, bursty, or overwhelmingly downstream, take long polling with a 25-second hold, jitter, cursor replay, and idempotent consumers, and keep your fleet stateless. The deciding inputs are measured fan-out, message rate, and directionality  2 not personal taste. Whoever names the backplane, the cursor, and the fallback in the first five minutes is the candidate who has operated one of these."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "**Long polling emulates push with held HTTP requests, which is simple and stateless but wasteful per event; WebSockets give true full-duplex push on one socket, which is efficient per message but forces sticky connections, heartbeats, replay cursors, and a cross-box fan-out backplane.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:28:59.087Z",
+    "problems": []
+  }
+}

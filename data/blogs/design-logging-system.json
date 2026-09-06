@@ -1,0 +1,433 @@
+{
+  "slug": "design-logging-system",
+  "title": "Design Logging System",
+  "summary": "Design a thread-safe, non-blocking logging library: level filtering, appenders, formatting, async drain with explicit drop policy, and rotation.",
+  "kind": "LLD",
+  "problemSlug": "design-logging-system-42-82",
+  "topic": "LLD Interview Problems",
+  "difficulty": "Medium",
+  "coverEmoji": " 3",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "logging",
+    "concurrency",
+    "system-design"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.glassdoor.com/Interview/Dcard-Machine-Learning-Engineer-Interview-Questions-EI_IE1991803.0,5_KO6,31.htm",
+      "title": "Dcard Machine Learning Engineer Interview Experience & Questions",
+      "source": "glassdoor.com",
+      "kind": "report",
+      "companies": [
+        {
+          "name": "Dcard",
+          "role": "Machine Learning Engineer",
+          "date": "25 Jul 2022",
+          "quote": "3. design logging system"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "Cracking the Machine Coding Round - Abhishek Deb - Medium",
+      "url": "https://abhishekdeb48.medium.com/all-about-machine-coding-round-8e56c866fe87",
+      "source": "abhishekdeb48.medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Distributed logger system design question. How would you answer it?",
+      "url": "https://www.reddit.com/r/cscareerquestions/comments/6xjmla/distributed_logger_system_design_question_how/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Master Back-of-the-Envelope Calculations for System Design ...",
+      "url": "https://javascript.plainenglish.io/master-back-of-the-envelope-calculations-for-system-design-interviews-with-a-real-instagram-706d242a7df8",
+      "source": "javascript.plainenglish.io",
+      "kind": "article"
+    },
+    {
+      "title": "Dcard Machine Learning Engineer Interview Experience & Questions",
+      "url": "https://www.glassdoor.com/Interview/Dcard-Machine-Learning-Engineer-Interview-Questions-EI_IE1991803.0,5_KO6,31.htm",
+      "source": "glassdoor.com",
+      "kind": "article"
+    },
+    {
+      "title": "Machine Coding Round: The Complete Frontend Guide (2026)",
+      "url": "https://www.greatfrontend.com/blog/machine-coding-round",
+      "source": "greatfrontend.com",
+      "kind": "article"
+    },
+    {
+      "title": "What and How of Machine Coding interview rounds. - LinkedIn",
+      "url": "https://www.linkedin.com/pulse/what-how-machine-coding-interview-rounds-banty-kumar",
+      "source": "linkedin.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "This is not a `print` wrapper. The hidden test is **can you build a hot-path library that never slows down the caller, never loses data silently, and never crashes the app when a sink is slow**. They want to see separation of concerns: fast level check on the caller thread, immutable event object, pluggable formatting, pluggable destinations, and a bounded async boundary with an explicit overload policy. If you put file I/O on the request thread or synchronize the whole `log()` method, you fail even if the demo works."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design an in-process logging library used by many threads at high throughput. Callers obtain a named `Logger` and emit events with a severity and a message. Each logger has a configured minimum `Level` and a set of `Appender` destinations such as console, rolling file, or network forwarder. The library must format events consistently, include timestamp, logger name, thread, level and correlation context, support hierarchical level inheritance, guarantee thread safety, and stay non-blocking under sink backpressure. Shutdown must flush buffered events with a bounded wait. The trade-off that dominates every decision is **caller latency vs durability**: anything that makes `log()` fast risks losing logs, anything that makes it durable risks stalling the application."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`Logger getLogger(String name)`  287 returns the same instance per name, creates on first use, supports hierarchy like `payments.gateway` inheriting level from `payments` unless overridden.",
+        "`void log(Level level, String message)` plus conveniences `debug/info/warn/error(msg)`  287 no-ops fast if `level` is below the logger effective level, never throws to the caller.",
+        "`void setLevel(Level level)` and `void addAppender(Appender a)`  287 level controls filtering, appenders control where formatted output goes. Removing or failing appenders must not break other appenders.",
+        "`void shutdown()`  287 stops background workers, flushes what is buffered within a timeout, then drops the rest and reports the drop count."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Read the contract twice",
+      "text": "Three details sink candidates: **level check happens before object allocation where possible**, **`log()` must never throw even if a sink is broken**, and **async means bounded**. An unbounded queue just moves the `OutOfMemoryError` from the sink to the logger. State your overload policy up front: block, drop-newest, drop-oldest, or sample."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Good candidates spend five minutes pinning scope because a logging library can sprawl into a distributed search system. You need to force the choice between an in-process library and a full pipeline, and between text logs and structured events. Ask in this order so each answer narrows the design without sounding evasive."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Library or pipeline?",
+          "text": "Am I building the client-side `Logger` library only, or also collection, transport, and search? Assume library plus local appenders unless told otherwise. Say explicitly you are not building indexed search."
+        },
+        {
+          "title": "Sync or async by default?",
+          "text": "Is `log()` allowed to do I/O on the caller thread? Push for async with a synchronous option for `ERROR` and above. This one decision drives the queue design."
+        },
+        {
+          "title": "What is the overload contract?",
+          "text": "When sinks fall behind, do we block the app, drop logs, or sample? Agree on drop-with-counter for all levels except fatal, which can block briefly. No silent loss without a metric."
+        },
+        {
+          "title": "Text or structured events?",
+          "text": "Is `String message` enough, or do we need `log(level, message, context map)` with JSON output and a correlation id? Agree on `LogRecord` carrying a context map from the start even if the first formatter is text."
+        },
+        {
+          "title": "Scale and durability?",
+          "text": "How many log calls per second, how many threads, how large is a message, file rotation size, retention? A few thousand per second fits a single queue; hundreds of thousands forces sharding, batching, and zero-allocation formatting."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Scope agreed before writing any code.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "`getLogger`, `log`, `setLevel`, `addAppender`, `shutdown` with hierarchy inheritance",
+          "Defines the API surface you will actually code"
+        ],
+        [
+          "Functional",
+          "Levels `DEBUG < INFO < WARN < ERROR < FATAL` with per-logger threshold",
+          "Filtering is the hot path, must be O(1)"
+        ],
+        [
+          "Functional",
+          "Pluggable `Formatter` and `Appender`: console, rolling file, wrapped async",
+          "Extensibility without touching `Logger`"
+        ],
+        [
+          "Functional",
+          "Context propagation: timestamp, thread, logger name, correlation id",
+          "Without correlation you cannot debug across services"
+        ],
+        [
+          "Non-functional",
+          "`log()` disabled path under ~20ns, enabled path without I/O on caller",
+          "Logging must not change application tail latency"
+        ],
+        [
+          "Non-functional",
+          "Thread-safe for concurrent loggers, appenders, and reconfiguration",
+          "Reconfiguration races are the classic bug"
+        ],
+        [
+          "Non-functional",
+          "Bounded memory, explicit drop policy, flush on shutdown",
+          "Prevents OOM and surprise data loss"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1  287 the naive synchronized printer"
+    },
+    {
+      "type": "paragraph",
+      "text": "The obvious answer is a global map of loggers, each holding a level, with `log()` doing `if (level < threshold) return` then `synchronized(lock) { file.write(format(msg)); }`. It passes a single-threaded demo and even handles filtering correctly. The trade-off is brutal: you bought simplicity by putting the slowest operation, formatted I/O under a global lock, directly on the business thread. Throughput collapses to the speed of the disk, tail latency spikes whenever the file blocks or rotates, one broken appender breaks all logging, and bursts either block every worker thread or exhaust memory if you naively add an unbounded queue later. This is why interviewers push throughput and failure questions immediately after the naive version."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NaiveLogger.java",
+      "code": "class NaiveLogger {\n    private Level level = Level.INFO;\n    private final PrintWriter out;\n    NaiveLogger(PrintWriter out) { this.out = out; }\n    public synchronized void log(Level l, String msg) {\n        if (l.severity < level.severity) return;\n        // BAD: formatting + I/O on caller thread under lock.\n        out.println(System.currentTimeMillis() + \" [\" + l + \"] \" + msg);\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Reject it explicitly in the interview: correctness is fine, performance isolation and fault isolation are missing. The lock serializes all application threads through disk speed, there is no backpressure story, no batching, no protection against a slow console or full disk, and no way to add a new sink without editing the logger. Name those four gaps, then pivot. That pivot is what earns the design round."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Split the path into two stages with a hard boundary between them. The **hot path** on the caller thread does only a volatile level check, captures time, and builds an immutable `LogRecord`. It never touches disk or network. The **drain path** on a dedicated worker pulls records from a bounded `BlockingQueue`, formats once, and fans out to each `Appender` with per-appender `try/catch` so one failure cannot poison the rest. `AsyncAppender` is just a decorator around any synchronous appender, which is why adding Kafka or a file later requires no logger change. The key trade-off: you trade a small risk of dropping buffered logs on crash for a hard guarantee that logging never blocks business logic beyond an `offer()` call. Make the drop visible with a counter and a periodic `dropped=N` diagnostic line."
+    },
+    {
+      "type": "mermaid",
+      "title": "Runtime data flow",
+      "caption": "Hot path vs drain path separated by a bounded queue.",
+      "code": "flowchart LR\n  App[App Thread] --> Logger[Logger]\n  Logger --> Filter{Level Enabled}\n  Filter -->|disabled| Drop[Return Fast]\n  Filter -->|enabled| Record[Create LogRecord]\n  Record --> Queue[Bounded Queue]\n  Queue --> Worker[Background Worker]\n  Worker --> Console[ConsoleAppender]\n  Worker --> File[FileAppender]\n  Worker --> Net[NetworkAppender]"
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The one sentence to say",
+      "text": "**Filter synchronously, format and write asynchronously, and bound everything.** Level check is a volatile read on the caller. Everything expensive happens after the queue. The queue is bounded, the overflow policy is explicit, and shutdown drains with a timeout. That sentence covers latency, isolation, and durability in one go."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Domain model"
+    },
+    {
+      "type": "mermaid",
+      "title": "Class structure",
+      "caption": "Logger depends on abstractions, never on files or sockets.",
+      "code": "classDiagram\n  class LoggerFactory\n  class Logger\n  class Level\n  class LogRecord\n  class Appender\n  class Formatter\n  class ConsoleAppender\n  class FileAppender\n  class AsyncAppender\n  LoggerFactory --> Logger\n  Logger --> Level\n  Logger --> Appender\n  Logger --> LogRecord\n  Appender <|-- ConsoleAppender\n  Appender <|-- FileAppender\n  Appender <|-- AsyncAppender\n  AsyncAppender --> Appender\n  Appender --> Formatter\n  Appender --> LogRecord"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape survives follow-ups: `Logger` owns filtering and fan-out only, so `ls`-style queries or level changes never touch I/O code. `LogRecord` is immutable, so it can cross threads without locks. `Appender` is an interface, so rotation, batching, retries, and sampling are all new classes, not `if` branches. `Formatter` is separate because the same event may need text for console and JSON for files. `AsyncAppender` as a decorator means any sink becomes non-blocking by wrapping it, and the overflow policy lives in exactly one place instead of being smeared across every appender."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "LoggingSystem.java",
+      "code": "import java.io.*;\nimport java.time.Instant;\nimport java.util.*;\nimport java.util.concurrent.*;\n\nenum Level { DEBUG(10), INFO(20), WARN(30), ERROR(40), FATAL(50);\n    final int severity; Level(int s) { this.severity = s; }\n    boolean enables(Level e) { return e.severity >= severity; }\n}\n\nfinal class LogRecord {\n    final long epochMillis;\n    final String loggerName;\n    final Level level;\n    final String message;\n    final String threadName;\n    final Map<String, String> context;\n    LogRecord(String loggerName, Level level, String message, Map<String,String> ctx) {\n        this.epochMillis = System.currentTimeMillis();\n        this.loggerName = loggerName;\n        this.level = level;\n        this.message = message == null ? \"null\" : message;\n        this.threadName = Thread.currentThread().getName();\n        this.context = ctx == null ? Map.of() : Map.copyOf(ctx);\n    }\n}\n\ninterface Formatter { String format(LogRecord r); }\n\nfinal class PatternFormatter implements Formatter {\n    public String format(LogRecord r) {\n        // Keep allocation obvious; JSON formatter is a drop-in replacement.\n        return Instant.ofEpochMilli(r.epochMillis) + \" [\" + r.threadName + \"] \"\n            + r.level + \" \" + r.loggerName + \" \" + r.message\n            + (r.context.isEmpty() ? \"\" : \" \" + r.context);\n    }\n}\n\ninterface Appender extends Closeable {\n    void append(LogRecord r); // must never throw to caller\n}\n\nfinal class ConsoleAppender implements Appender {\n    private final Formatter fmt;\n    ConsoleAppender(Formatter fmt) { this.fmt = fmt; }\n    public void append(LogRecord r) {\n        try { System.out.println(fmt.format(r)); }\n        catch (Exception ignored) { /* never propagate */ }\n    }\n    public void close() { System.out.flush(); }\n}\n\nfinal class RollingFileAppender implements Appender {\n    private final Formatter fmt;\n    private final long maxBytes;\n    private final String basePath;\n    private PrintWriter out;\n    private long written;\n    RollingFileAppender(String basePath, long maxBytes, Formatter fmt) throws IOException {\n        this.basePath = basePath; this.maxBytes = maxBytes; this.fmt = fmt;\n        this.out = new PrintWriter(new BufferedWriter(new FileWriter(basePath, true)), false);\n    }\n    public synchronized void append(LogRecord r) {\n        try {\n            String line = fmt.format(r);\n            if (written + line.length() > maxBytes) rotate();\n            out.println(line); out.flush(); // flush per batch in real code\n            written += line.length() + 1;\n        } catch (Exception ignored) { }\n    }\n    private void rotate() throws IOException {\n        out.close();\n        new File(basePath).renameTo(new File(basePath + \".\" + System.currentTimeMillis()));\n        out = new PrintWriter(new BufferedWriter(new FileWriter(basePath, false)), false);\n        written = 0;\n    }\n    public synchronized void close() { out.close(); }\n}\n\n// Decorator: makes any appender async with explicit drop policy.\nfinal class AsyncAppender implements Appender {\n    private final Appender downstream;\n    private final BlockingQueue<LogRecord> q;\n    private final Thread worker;\n    private volatile boolean running = true;\n    private final AtomicLong dropped = new AtomicLong();\n    AsyncAppender(Appender downstream, int capacity) {\n        this.downstream = downstream;\n        this.q = new ArrayBlockingQueue<>(capacity);\n        this.worker = new Thread(this::drain, \"log-worker\");\n        this.worker.setDaemon(true);\n        this.worker.start();\n    }\n    public void append(LogRecord r) {\n        if (!running) return;\n        // Trade-off: offer() never blocks caller; drop-newest keeps latency flat.\n        if (!q.offer(r)) dropped.incrementAndGet();\n    }\n    private void drain() {\n        try {\n            while (running || !q.isEmpty()) {\n                LogRecord r = q.poll(200, TimeUnit.MILLISECONDS);\n                if (r != null) {\n                    try { downstream.append(r); }\n                    catch (Exception ignored) { }\n                }\n            }\n        } catch (InterruptedException e) { Thread.currentThread().interrupt(); }\n    }\n    public long droppedCount() { return dropped.get(); }\n    public void close() throws IOException {\n        running = false;\n        try { worker.join(3000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }\n        // Best-effort drain of what is left within the timeout.\n        LogRecord r;\n        while ((r = q.poll()) != null) { try { downstream.append(r); } catch (Exception ignored) {} }\n        downstream.close();\n    }\n}\n\nfinal class Logger {\n    private final String name;\n    private volatile Level level;\n    private final CopyOnWriteArrayList<Appender> appenders = new CopyOnWriteArrayList<>();\n    Logger(String name, Level level) { this.name = name; this.level = level; }\n    public void setLevel(Level l) { this.level = l; }\n    public void addAppender(Appender a) { appenders.add(a); }\n    public void log(Level l, String msg) { log(l, msg, null); }\n    public void log(Level l, String msg, Map<String,String> ctx) {\n        if (!level.enables(l)) return; // hot path: single volatile read\n        LogRecord rec = new LogRecord(name, l, msg, ctx);\n        for (Appender a : appenders) {\n            try { a.append(rec); } catch (Exception ignored) { }\n        }\n    }\n    public void info(String m) { log(Level.INFO, m); }\n    public void error(String m) { log(Level.ERROR, m); }\n    public void debug(String m) { log(Level.DEBUG, m); }\n}\n\nfinal class LoggerFactory {\n    private static final ConcurrentMap<String, Logger> REG = new ConcurrentHashMap<>();\n    static Logger getLogger(String name) {\n        return REG.computeIfAbsent(name, n -> {\n            // Hierarchy: inherit from nearest dotted parent if present.\n            Level inherited = Level.INFO;\n            int dot = n.lastIndexOf('.');\n            if (dot > 0) {\n                Logger parent = REG.get(n.substring(0, dot));\n                if (parent != null) inherited = parent.level;\n            }\n            return new Logger(n, inherited);\n        });\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "logging_system.py",
+      "code": "import queue, threading, time, sys\nfrom dataclasses import dataclass\nfrom enum import IntEnum\n\nclass Level(IntEnum):\n    DEBUG=10; INFO=20; WARN=30; ERROR=40; FATAL=50\n\n@dataclass(frozen=True)\nclass LogRecord:\n    logger: str; level: Level; msg: str; thread: str; ts: float\n\nclass AsyncAppender:\n    def __init__(self, capacity=10000, sink=sys.stdout):\n        self.q: queue.Queue = queue.Queue(maxsize=capacity)\n        self.sink = sink; self.dropped = 0; self._run = True\n        self._t = threading.Thread(target=self._drain, daemon=True)\n        self._t.start()\n    def append(self, r: LogRecord):\n        try: self.q.put_nowait(r)  # never block caller: drop-newest\n        except queue.Full: self.dropped += 1\n    def _drain(self):\n        while self._run or not self.q.empty():\n            try: r = self.q.get(timeout=0.2)\n            except queue.Empty: continue\n            try: print(f\"{r.ts:.3f} [{r.thread}] {r.level.name} {r.logger} {r.msg}\", file=self.sink)\n            except Exception: pass\n    def close(self):\n        self._run = False; self._t.join(timeout=3)\n\nclass Logger:\n    def __init__(self, name, level=Level.INFO):\n        self.name=name; self.level=level; self.appenders=[]\n    def log(self, level, msg):\n        if level < self.level: return\n        rec = LogRecord(self.name, level, str(msg), threading.current_thread().name, time.time())\n        for a in list(self.appenders):\n            try: a.append(rec)\n            except Exception: pass"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Cost per operation. The queue bound is the whole story.",
+      "headers": [
+        "Operation",
+        "Time",
+        "Memory / note"
+      ],
+      "rows": [
+        [
+          "`log()` when disabled",
+          "O(1)",
+          "One volatile read, zero allocation if you guard message construction"
+        ],
+        [
+          "`log()` when enabled, async",
+          "O(A) appends where A = appender count",
+          "`offer()` is O(1); record holds one message reference plus small context map"
+        ],
+        [
+          "Drain + format",
+          "O(L) per record where L = message length",
+          "Formatting dominates; batch flush amortizes syscall cost"
+        ],
+        [
+          "`getLogger`",
+          "O(1) amortized",
+          "`ConcurrentHashMap` lookup; hierarchy walk only on creation"
+        ],
+        [
+          "Rotation",
+          "O(1) amortized, O(file size) on rotate",
+          "Rename + reopen; old files need retention and compression policy"
+        ],
+        [
+          "Shutdown drain",
+          "O(Q) where Q = queued records",
+          "Bounded by timeout; remainder counted as dropped, never unbounded wait"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency and the hardest follow-up: backpressure"
+    },
+    {
+      "type": "paragraph",
+      "text": "The interview turns here: **what happens when producers outrun the disk**. A synchronous logger propagates backpressure by blocking every application thread, which is durable but can halt the service during a log storm, exactly when you need the service alive. An unbounded queue hides the stall until the heap explodes. The defensible answer is a bounded queue with per-level policy: `offer()` and drop-newest for `DEBUG` through `WARN`, brief blocking with timeout or a separate overflow file for `ERROR` and `FATAL`, plus an atomic drop counter and throttled diagnostic. Ordering is best-effort FIFO per queue; if you shard by thread or hash by logger for throughput, you lose global ordering and must say so. Rotation must not hold the drain lock while compressing, reconfiguration uses `CopyOnWriteArrayList` so readers never block, and each appender is isolated by `try/catch` so a full disk or broken socket cannot kill console output. The trade-off to state aloud: stronger ordering and zero loss cost caller latency; flat latency and blast-radius isolation cost rare, but counted, loss."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Never say this",
+      "text": "**We will just make the queue bigger** is not a backpressure strategy. Bigger only delays the drop and increases crash loss. Name the policy, the bound, the metric, and who gets dropped first. Interviewers promote candidates who quantify loss instead of pretending it away."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Add correlation and structured logging",
+          "text": "Carry `traceId` and `requestId` in a `ThreadLocal` context map copied into each `LogRecord`, emit JSON. Cost is a small map copy per event; benefit is joinable traces across threads without string parsing."
+        },
+        {
+          "title": "Add sampling and rate limiting",
+          "text": "Token bucket per logger and level, e.g. keep 1 in 100 `DEBUG` from a hot loop but always keep `ERROR`. Trade steady-state volume for completeness during storms."
+        },
+        {
+          "title": "Add batching and compression",
+          "text": "Flush file appender every N records or T milliseconds, gzip rotated segments. Batching cuts syscalls by orders of magnitude; cost is up to T seconds of crash-window loss."
+        },
+        {
+          "title": "Add remote shipping without blocking",
+          "text": "Second async stage that batches records to a collector with retries and local spill file. Network failure degrades to local files, never to blocked requests."
+        },
+        {
+          "title": "Add querying without building a database",
+          "text": "Do not add search to the library. Ship structured files plus correlation ids and let the existing collector index them. Saying no to scope creep is graded positively."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Null or multi-megabyte message: cap length, truncate with `...[truncated]` marker, never allocate unbounded strings on the hot path.",
+        "Message construction cost when disabled: offer `isEnabled(level)` and lambda overloads so string concatenation never runs.",
+        "Exception in one appender must not skip siblings: loop with per-appender `try/catch` and per-appender error metric.",
+        "Reconfiguration race: `setLevel` is volatile, appender list is copy-on-write; never synchronize `log()`.",
+        "Shutdown with full queue: drain with timeout, then report `flushed` vs `dropped`; daemon worker must not prevent JVM exit silently.",
+        "Disk full or permission revoked mid-run: catch, count, back off, keep console alive; never throw to business code.",
+        "Clock skew and timestamp format: capture `epochMillis` once, format off-thread, use ISO-8601 in UTC.",
+        "Logger hierarchy surprise: child created before parent must still inherit at creation; document that later parent changes do not retroactively cascade unless you add a listener.",
+        "Recursive logging: appender failure must not itself call `log()` on the same logger or you deadlock the drain thread.",
+        "Context leak across thread-pool reuse: clear `ThreadLocal` correlation map after each request or trace ids bleed into unrelated logs."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak vs strong signals for this round.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Filtering",
+          "Formats then checks level, or checks inside lock",
+          "Volatile check first, zero work when disabled, lazy message construction"
+        ],
+        [
+          "Isolation",
+          "File I/O on caller thread under `synchronized`",
+          "Bounded queue + worker, per-appender error isolation, no throw to caller"
+        ],
+        [
+          "Backpressure",
+          "\"Use bigger queue\" or blocking forever",
+          "Bounded queue, explicit drop/sample policy, drop counter, flush-on-shutdown"
+        ],
+        [
+          "Extensibility",
+          "Hardcoded file + console branches",
+          "`Appender` + `Formatter` interfaces, async as decorator, JSON without logger edits"
+        ],
+        [
+          "Concurrency",
+          "\"Add synchronized everywhere\"",
+          "Immutable record, volatile level, copy-on-write appenders, lock only inside file rotation"
+        ],
+        [
+          "Operations",
+          "No rotation, retention, or shutdown story",
+          "Size/time rotation, retention, batching, correlation id ready"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Your 45-minute plan",
+      "text": "0-5 clarify library vs pipeline and overload policy. 5-10 lock API and hierarchy semantics on the whiteboard. 10-15 show naive code and kill it on caller latency and fault isolation. 15-30 build the real design: record, level check, appender interfaces, async decorator with bounded queue. 30-38 write the Java `Logger.log` plus `AsyncAppender` exactly as above. 38-45 handle backpressure, rotation, shutdown flush, then volunteer two follow-ups: correlation ids and sampling. Close by restating the trade-off: flat caller latency for counted, bounded loss."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:33:50.368Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,269 @@
+{
+  "slug": "eg-book-my-show-irctc-hotel-booking",
+  "title": "Eg: Book My Show, IRCTC, Hotel Booking",
+  "summary": "Booking HLD is not inventory CRUD. Empathy is designing for contention, failure, and rigid rules so users never pay for your race conditions.",
+  "kind": "HLD",
+  "problemSlug": "eg-book-my-show-irctc-hotel-booking-148-324",
+  "topic": "User Empathy, User Experience, Future Proofing & Realistic Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🎟️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "booking-systems",
+    "user-empathy",
+    "system-design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "IRCTC double bedded room booking rules - Facebook",
+      "url": "https://www.facebook.com/groups/BangalirBerano/posts/2452922391638985/",
+      "source": "facebook.com",
+      "kind": "article"
+    },
+    {
+      "title": "IRCTC Hotel Experience: Comfort, Convenience, and Memorable ...",
+      "url": "https://www.youtube.com/watch?v=oCUW6VB0PA0",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "In **BookMyShow / IRCTC / hotel booking**, user empathy is not a nicer UI. It is **never making the user pay for contention**. Every painful moment — sold-out after payment, money debited but no ticket, rigid rule blocking a valid family — is a concurrency or state-machine decision you deferred to the user. Design the hold, the timeout, and the failure message first. *Trade-off: you buy user trust with server-side complexity and held inventory that lowers sell-through.*"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "User empathy in high-level design means modeling the system around **what the user fears**, not what the database stores. For booking systems the fears are concrete: *Will I lose my seat while I pay? Will I be charged without getting a room? Will a rule I cannot see reject me at the last step? Will I know what to do next when it breaks?* Future-proofing means the same flow survives new property types, new payment methods, new cancellation policies, and 10x traffic without a rewrite. Realistic design means you admit limits: you cannot hold inventory forever, you cannot show perfectly fresh availability to everyone, and you cannot automate every hotel-specific request."
+    },
+    {
+      "type": "paragraph",
+      "text": "This is why booking is not shopping-cart CRUD. A cart tolerates oversell and eventual correction. A seat, berth, or hotel room for a fixed night **does not**. Two users want the same indivisible unit for the same time window, and only one can have it. The design must answer three questions precisely: *when does a unit become unavailable to others, for how long, and what happens if the holder disappears?* If you cannot answer those, your talk about personalization, recommendations, or microservices is padding. *Trade-off: strict correctness (no double-booking) forces you to serialize or partition inventory, which costs latency and availability during peaks.*"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from tap to confirmed stay"
+    },
+    {
+      "type": "mermaid",
+      "title": "Booking flow with holds",
+      "caption": "Search never reserves. Hold reserves temporarily. Payment confirms.",
+      "code": "flowchart LR\n  U[User Search] --> A[Availability Service]\n  A --> S[Select Seat / Room]\n  S --> H[Hold Service: TTL 5-10 min]\n  H --> P[Payment Service]\n  P --> C[Booking Confirm]\n  C --> V[Venue / Hotel Adapter]\n  H -->|expire| A"
+    },
+    {
+      "type": "paragraph",
+      "text": "The only flow that respects users under load has four distinct states: **search, hold, pay, confirm**. Search reads from a fast, slightly stale replica optimized for filtering by date, price band, location, and meal plan. It never locks anything. Selection requests a **time-bound hold** — a row or key that says *unit X is invisible to others for N minutes for token T*. Payment runs only against a valid hold token. Confirmation converts the hold into a booking and notifies the supplier asynchronously. If payment fails or the timer fires, the hold releases automatically and the user gets a specific retry path, not a generic error. *Trade-off: holds create great UX (no race at pay time) but create spoilage — users abandon holds and inventory sits unsellable until TTL expires.*"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Where empathy lives in that flow"
+    },
+    {
+      "type": "paragraph",
+      "text": "Each stage is an empathy decision. In search, show **total price with taxes and inclusions up front** and state what is *room-only vs. room-with-breakfast* as different rate plans, not as fine print after payment. Rate-per-room vs. rate-per-person, check-in windows, and extra-bed charges must be part of the availability response, not a phone call to the property. In hold, tell the user *you have 08:00 minutes, this is why, and what happens after*. In payment, never debit before the hold is validated; use idempotency keys so a double-click or retry cannot double-charge. In confirmation, return a **supplier reference plus your reference**, cancellation deadline, and exactly where to make special requests like bed type or early check-in if you cannot fulfill them online. *Trade-off: rich, honest responses bloat payloads and require normalizing supplier data that is messy and inconsistent.*"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Every UX win in booking has an infrastructure bill.",
+      "headers": [
+        "UX choice",
+        "What user gains",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Hold seat/room before pay (5-10 min TTL)",
+          "No oversell at payment; time to complete UPI/cards",
+          "Held-but-unpaid inventory wasted; need sweeper + shorter TTL at peak"
+        ],
+        [
+          "Show live availability on every search",
+          "No disappointment after selection",
+          "Hot-partition reads; cache stampede on popular events / stations"
+        ],
+        [
+          "Allow guest checkout without registration",
+          "Faster conversion, fewer drop-offs",
+          "No history for refunds; fraud and duplicate bookings harder to link"
+        ],
+        [
+          "Free cancellation on select rates",
+          "Confidence to book early",
+          "Higher cancel rate; need overbooking model or stricter inventory"
+        ],
+        [
+          "Strict business rules (occupancy, group caps)",
+          "Prevents misuse, protects supplier",
+          "Rigid rejections that feel absurd; support load + lost bookings"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The interview signal is whether you **name the bill** when you propose the kindness. A hold timer is kind, but you must say how you enforce it without a cron that collapses: TTL keys with lazy expiry plus a reaper, and dynamic TTL compression when contention spikes. Guest checkout is kind, but you must say how refunds reconcile without a user ID: phone plus booking ID plus payment reference as composite key, with manual review queue. Free cancellation is kind, but you must say you track cancellation rate per rate plan and feed it back into searchable inventory. If you list features without costs, you are doing product theater, not design."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Booking systems fail in three predictable ways, and users see each one before your dashboards do. First, **stuck holds and phantom sold-outs**: your hold release path depends on payment callback, the callback never arrives, and rooms stay invisible. Symptom: users see *sold out* while the property is empty, and your conversion drops to zero for one hotel or one show. Fix is expiry owned by the hold store itself, not by downstream success. Second, **money debited, booking failed**: you charged before confirming supplier allocation, or you retried payment without idempotency. Symptom: support tickets that read *amount deducted, no ticket, refund in 5-7 days* — which is you externalizing your race condition onto the user's cash flow. Fix is *hold -> pre-authorize -> confirm -> capture*, with reconciliation jobs that auto-refund unconfirmed captures. Third, **opaque rule rejections**: occupancy logic, day-use bans, or group-size caps rejects at submit time with no explanation. *Trade-off: fixing each failure adds a background worker (expiry, reconciliation, rule-explanation) that you must operate.*"
+    },
+    {
+      "type": "list",
+      "items": [
+        "User sees *payment succeeded, booking pending* forever — cause: confirm worker blocked on supplier API with no timeout or outbox.",
+        "User sees *price changed at pay step* — cause: search cache stale and hold did not freeze price/rate plan.",
+        "User double-pays on retry — cause: no `Idempotency-Key` on payment intent; client retry creates second charge.",
+        "Users in different cities see different availability for same show — cause: uncoordinated regional caches with no version or single source of truth for count.",
+        "Group or family blocked from sensible combination — cause: server validates persons-to-rooms with fixed mapping instead of capacity + property override."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Rigid rules are an empathy bug",
+      "text": "Consider the classic retiring-room complaint: **three travelers on one reservation cannot take one double room, but one traveler alone can**. That is technically consistent — occupancy policy says headcount must map to beds — but experientially broken. The design validated the *shape* of the request, not the *intent*. A realistic design separates hard constraints (fire capacity, one unit cannot be double-sold) from soft preferences (suggested bed mix) and explains the latter in plain language with an alternative: *this room sleeps 2, add an extra bed for guest 3 at property rate*. *Trade-off: flexible rules need per-property configuration and human override, which slows onboarding of new suppliers.*"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Future-proofing without over-engineering"
+    },
+    {
+      "type": "paragraph",
+      "text": "Future-proofing for booking means **versioning the things that change**: rate plans, cancellation policies, supplier adapters, and payment methods. Do not hard-code *room-only vs. breakfast-included* or *check-in at noon* as booleans. Model them as a rate-plan object with inclusions, refund window, and price components. Do not build one integration for one hotel chain; build a narrow supplier port — `checkHold`, `confirm`, `cancel`, `fetchPolicies` — with timeouts, retries with backoff, and circuit breakers, so a slow property cannot block your checkout. Add new payment rails by adding a new payment adapter behind the same idempotent intent, not by forking checkout. And partition inventory by the contention boundary: per show-per-screen, per train-per-date, per hotel-per-date. That is the shard key that lets you scale without distributed locks. *Trade-off: abstraction layers add latency and mapping bugs; keep the port tiny or suppliers will never conform.*"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "hold_service.py",
+      "code": "import uuid, time\n\nHOLDS = {}  # key: (unit_id, date) -> {token, expires_at}\nHOLD_TTL_SEC = 480\n\ndef try_hold(unit_id: str, date: str) -> str | None:\n    now = time.time()\n    key = (unit_id, date)\n    cur = HOLDS.get(key)\n    # Lazy expiry: owner of the store owns the timeout, not payment callback.\n    if cur and cur[\"expires_at\"] < now:\n        del HOLDS[key]\n        cur = None\n    if cur:\n        return None  # already held -> do NOT queue silently, tell user why\n    token = str(uuid.uuid4())\n    HOLDS[key] = {\"token\": token, \"expires_at\": now + HOLD_TTL_SEC}\n    return token\n\ndef confirm(token: str, unit_id: str, date: str, idempotency_key: str) -> bool:\n    # confirm must check token + expiry + idempotency_key before charging.\n    # On supplier timeout: keep booking PENDING, never auto-charge retry.\n    ..."
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet is the whole interview in miniature. The hold owns its own expiry, so a lost client or dead payment worker cannot leak inventory. Confirmation requires the token, so a stale page cannot steal someone else's hold. The missing piece you must narrate is the **idempotency store** for `confirm`: if the user retries, the same key returns the same result instead of a second charge. In production this is Redis with TTL or a database unique constraint on the idempotency key, plus an outbox table so supplier confirmation and your booking row commit together. *Trade-off: lazy expiry is simple and robust but means contended units appear held for the full TTL even if the user left in 10 seconds; active heartbeat or shorter peak TTL recovers sell-through at the cost of more UX pressure.*"
+    },
+    {
+      "type": "mermaid",
+      "title": "Booking state machine",
+      "caption": "Explicit states prevent money-without-ticket.",
+      "code": "stateDiagram-v2\n  [*] --> Searching\n  Searching --> Holding: select unit\n  Holding --> Paying: hold granted\n  Holding --> Searching: hold expired\n  Paying --> Confirmed: supplier ack + capture\n  Paying --> Searching: fail or timeout, auto-release\n  Confirmed --> Cancelled: cancel in window\n  Cancelled --> [*]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Realistic design: what to actually draw"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**API first:** `GET /search?location&date&guests`, `POST /holds {unit,date}`, `POST /payments {holdToken, idempotencyKey}`, `POST /bookings {paymentIntent}`, `POST /bookings/{id}/cancel`. Holds are first-class resources with `expiresAt` in every response.",
+        "Distinguish **availability replica** (fast, stale, filterable) from **inventory authority** (slow, correct, partitioned). Search hits the former; hold hits the latter.",
+        "Freeze **price + inclusions + cancellation deadline** at hold time. If supplier reprices, fail the hold with *price changed, re-hold?* — never silently overcharge.",
+        "Put **payment behind pre-auth**: validate hold, pre-authorize, confirm with supplier, then capture. Reconcile every pre-auth without a booking within minutes.",
+        "Explain every rejection: *which rule, whose rule, what alternative*. `OCCUPANCY_SOFT: room sleeps 2, extra bed available at property` beats `INVALID`.",
+        "Design for **supplier slowness**: timeouts, bounded retries, circuit breaker per hotel/venue, async webhook for late confirm with *pending* UI, not a spinner.",
+        "Log the user-visible trail: search version, hold token, payment attempt, supplier reference. Support cannot help without it."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "When this empathetic pattern helps, and when it hurts.",
+      "headers": [
+        "Use it when",
+        "Do NOT use it when"
+      ],
+      "rows": [
+        [
+          "Contention is real: same seat/room/date wanted by many at once",
+          "Inventory is effectively infinite (digital content, non-dated search)"
+        ],
+        [
+          "Money moves before service is delivered (prepaid booking)",
+          "Pay-at-property with no pre-auth — hold adds friction for no risk reduction"
+        ],
+        [
+          "Supplier rules vary (taxes extra, shuttle on call, special requests offline)",
+          "You control all inventory and fulfillment — enforce rules in code, not messages"
+        ],
+        [
+          "Peak bursts exist (festival sales, tatkal-like windows, weekend check-ins)",
+          "Steady low traffic where simple pessimistic locking is cheaper to run"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How interviewers test this"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They give you BookMyShow or hotel booking and watch what you clarify",
+          "text": "Strong candidates ask: hold duration? Can price change after hold? Guest checkout? Cancellation windows? Group size caps? Per-room or per-person pricing? Those questions are empathy made visible."
+        },
+        {
+          "title": "They inject a failure",
+          "text": "What if user pays but supplier times out? What if two users click the last room? Expected answer: hold token + idempotency + pending state + reconciler, not *retry payment*."
+        },
+        {
+          "title": "They add a future requirement",
+          "text": "Add breakfast-included rates, or extra-bed, or pay-by-wallet, or shuttle pickup. Expected answer: rate-plan object and adapter ports absorb it; core hold-pay-confirm flow does not change."
+        },
+        {
+          "title": "They push for scale",
+          "text": "10k concurrent users for one blockbuster show. Expected answer: partition by show, queue or lottery for holds, compress TTL, serve search from replica, protect inventory authority with rate limits."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "*Empathy means more features* — no, it means fewer dead ends. A shuttle note that says *call the hotel* with the number pre-filled beats a fake *Book Shuttle* button that never works.",
+        "Caching solves availability — cache makes search fast but lies about the last unit. Only the hold path tells the truth, and you must say so.",
+        "Payments are instant — they are distributed sagas. If you capture before supplier ack, you built a refund generator.",
+        "Validation messages are edge cases — in booking they are the product. *Why was I rejected and what can I do?* is the most-viewed screen after payment failure.",
+        "Future-proof means generic tables — generic `metadata JSON` without versioned rate plans and policy objects just moves breakage to runtime."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: ***I would freeze a time-bound hold before payment, charge only against a valid hold with an idempotency key, and explain every price and rule at hold time — because in booking, empathy is not letting contention or failure become the user's problem.***"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:40:00.540Z",
+    "problems": []
+  }
+}

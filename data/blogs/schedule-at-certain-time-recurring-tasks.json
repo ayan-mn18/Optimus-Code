@@ -1,0 +1,332 @@
+{
+  "slug": "schedule-at-certain-time-recurring-tasks",
+  "title": "Schedule at Certain Time + Recurring Tasks",
+  "summary": "One-shot and recurring schedules are promises to fire on user intent, not cron rows. Store the intent, expand occurrences just-in-time, and make firing idempotent.",
+  "kind": "HLD",
+  "problemSlug": "schedule-at-certain-time--recurring-tasks-148-323",
+  "topic": "User Empathy, User Experience, Future Proofing & Realistic Design",
+  "difficulty": "Medium",
+  "coverEmoji": "⏰",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "scheduling",
+    "recurring-tasks",
+    "user-empathy"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Time Spent on Recurring Tasks (2025 Research) - Clockify",
+      "url": "https://clockify.me/time-spent-on-recurring-tasks",
+      "source": "clockify.me",
+      "kind": "article"
+    },
+    {
+      "title": "10 Best Time Management Tools for 2026 (Tested) - Teamwork.com",
+      "url": "https://www.teamwork.com/blog/time-management-tools/",
+      "source": "teamwork.com",
+      "kind": "article"
+    },
+    {
+      "title": "Use recurring tasks - ClickUp Help",
+      "url": "https://help.clickup.com/hc/en-us/articles/6309885016471-Use-recurring-tasks",
+      "source": "help.clickup.com",
+      "kind": "article"
+    },
+    {
+      "title": "Recurring Tasks | Glossary - Time Tracking Library - My Hours",
+      "url": "https://myhours.com/time-tracking-glossary/recurring-tasks",
+      "source": "myhours.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A schedule is **a promise to fire at a human-meaningful moment despite restarts, edits, DST, and retries**. If you store `next_fire_at` as a dumb timestamp and poll it, you have built a bug, not a scheduler. Store **intent** (`09:00 in America/Chicago, every weekday`), derive fires deterministically, and make every fire **idempotent**. The trade-off: you pay complexity in expansion logic to buy correctness when everything else fails."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What \"schedule at a time\" actually means"
+    },
+    {
+      "type": "paragraph",
+      "text": "Precisely: a user declares an **intent** — `run once at T` or `run repeatedly per rule R starting at T` — and the system must produce **occurrences** that fire within seconds of the user's expectation, exactly once in effect, even across deploys, crashes, timezone moves, and edits to the series. An occurrence has four states: `scheduled`, `due`, `fired`, and `cancelled`. A recurring task is not N copies of a one-shot task. It is **one template plus a deterministic expansion function** plus a sparse set of **overrides**. Confuse the template with the occurrences and every follow-up — skip one instance, reschedule the series, change timezone, delete future but keep past — becomes a data migration. Separate them and those operations are single-row writes. That separation is why interviewers ask this: it tests whether you design for mutation, not just creation."
+    },
+    {
+      "type": "paragraph",
+      "text": "One-shot and recurring look identical at fire time but diverge everywhere else. A one-shot has no expansion, no DST recurrence problem, and deletion is trivial. A recurring task has unbounded future, user edits that apply retroactively vs. going forward, and per-instance state (`done`, `skipped`, `snoozed`). The correct model is: `RecurringSchedule{id, user_id, rrule, start_at, timezone, end_condition}` owns `Occurrence{series_id, occurrence_id, scheduled_for, status, idempotency_key}` where `occurrence_id` is deterministic like `series_id#2026-09-07`. The trade-off is storage vs. computation: you never persist the infinite series, you persist the rule and materialize a bounded window of occurrences. That is what lets you show a calendar, allow check-offs, and survive rule changes without rewriting history."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: never store the fires"
+    },
+    {
+      "type": "mermaid",
+      "title": "Schedule intent to fire pipeline",
+      "caption": "Intent is stored once, expanded to a bounded window, then claimed idempotently at fire time.",
+      "code": "flowchart LR\n  Client[\"Client API\"] --> Svc[\"Schedule Service\"]\n  Svc --> Store[(\"Schedule Store\")] \n  Store --> Expander[\"Expander\"]\n  Expander --> Window[(\"Occurrence Window\")] \n  Window --> Queue[\"Delayed Queue\"]\n  Queue --> Worker[\"Fire Worker\"]\n  Worker --> Outbox[(\"Outbox + Idempotency\")] \n  Outbox --> Notify[\"Notifier / Push\"]\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "The write path stores intent and validates it synchronously: parse the `RRULE`, reject impossible rules, normalize to UTC **plus** retain the original wall-clock and timezone. The read path for calendars expands the rule for the requested window only — typically now to now plus 30 to 90 days — and merges overrides. The fire path is separate: a dispatcher scans the materialized window for `due <= now+lookahead`, enqueues `(occurrence_id, fire_at)` into a delayed queue, and workers **claim by lease** before notifying. Why this split? Because correctness and latency have opposite needs. Intent storage must be strongly consistent and auditable; firing must be highly available and retry-safe. Coupling them — firing directly from the schedule table with `SELECT * WHERE next_fire < now` — forces your database to be both source of truth and job queue, which is why it collapses under load and double-fires on failover. The trade-off: an extra queue and claim protocol buys you at-most-once claiming with at-least-once delivery, which composes to effectively-once effect via idempotency keys."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Expansion: the core decision"
+    },
+    {
+      "type": "table",
+      "caption": "How you turn a rule into occurrences determines scale and editability.",
+      "headers": [
+        "Strategy",
+        "How it works",
+        "Wins",
+        "Loses"
+      ],
+      "rows": [
+        [
+          "Pre-materialize all",
+          "Insert N rows up front for a year of dailies",
+          "Trivial queries, trivial per-instance state",
+          "Explodes on edit: rescheduling 50 meetings rewrites 50 rows; unbounded rules impossible"
+        ],
+        [
+          "Just-in-time expansion",
+          "Compute on read from RRULE, persist nothing per instance",
+          "Zero write amplification, edits are free",
+          "Cannot attach state to an instance; calendar pagination and search get expensive"
+        ],
+        [
+          "Bounded hybrid",
+          "Materialize 30-90 day window, roll forward with a sweeper",
+          "Calendar is fast, edits touch only window, history stays immutable",
+          "Needs a roller and reconciliation; more moving parts to operate"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Choose the hybrid for anything human-facing. It is the only option that survives the realistic follow-up: *user moves Monday standup from 09:00 to 10:00 for all future instances*. With pre-materialization you run a bulk update that races with firers. With pure JIT you have nowhere to record that last Monday was skipped. With a bounded window you update the template once, regenerate the window from today forward, and leave past occurrences untouched. The trade-off you must name: you accept a background roller and a reconciliation job to gain cheap edits and stable history. No roller means your window silently empties and future reminders stop — a silent failure users notice before your alerts do."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Timezones are a UX problem, not a formatting problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Users think in wall-clock time: *9am every weekday no matter where I am, or no matter DST*. If you convert to UTC once and discard the timezone, you have silently changed the promise. In fall-back, 09:00 still means 09:00; in spring-forward, a 02:30 daily either does not exist or happens twice. The fix is to store three fields together: `wall_time`, `timezone`, and `anchoring_policy`. Most task products want **floating-by-default with opt-in fixed**: medication reminders stay at 09:00 local when the user flies from Chicago to London; a stock-market open reminder stays pinned to America/New_York. Why retain both? Because UTC alone cannot reconstruct intent after a timezone database update or a user move, and wall-time alone cannot order firings globally. The trade-off: storing intent plus resolved UTC costs a recomputation on every TZDB release and every user move, but it prevents the worst UX bug in scheduling — firing an hour late for a week after DST and looking incompetent."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Store `rrule + wall_time + timezone + created_tz_version`. Resolve to UTC at expansion time, not at creation time.",
+        "Default to **local wall-clock**: `FREQ=DAILY;BYHOUR=9` in `user_timezone`. Offer `pin_to_timezone` only when the event is anchored to a place.",
+        "On user timezone change, ask: **keep 9am local or keep the absolute moment?** Do not guess. Guessing is how you miss flights and medication.",
+        "Use IANA names (`America/Chicago`), never offsets (`-05:00`). Offsets cannot survive DST.",
+        "Cap expansion in user-local days, then convert. Expanding in UTC shifts daily boundaries for users ahead of UTC."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The 02:30 trap",
+      "text": "A daily at **02:30** fails twice a year in most US zones: it does not exist on spring-forward and occurs twice on fall-back. Decide and document: **skip-and-log** vs. **snap-forward to 03:30** vs. **fire once**. Interviewers probe this because it separates people who have shipped from people who have only used cron. Say your policy out loud; any consistent policy beats hand-waving."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Editing, deleting, and skipping: where naive designs die"
+    },
+    {
+      "type": "paragraph",
+      "text": "Creation is 10% of the design. Mutation is 90%. Users edit one instance (*skip this Friday*), this-and-following (*new time from now on*), or the whole series (*delete everything*). If occurrences are just computed dates, you cannot record *skipped* without forking the rule. The production answer is **exceptions as first-class rows**: `Override{series_id, occurrence_id, action: skipped|rescheduled|edited, new_time, new_payload}` that overlay the expansion. Expansion becomes `base_dates(rule) - skipped + rescheduled`. Why this shape? Because it makes the three edit scopes trivial: single-instance writes one override, this-and-following splits the series into two templates at the cut date, all-future rewrites the template and drops window rows after now. The trade-off: reads must merge two sources every time, so you pay a join on calendar fetch to buy O(1) edits that never corrupt history."
+    },
+    {
+      "type": "code",
+      "language": "json",
+      "filename": "schedule.json",
+      "code": "{\n  \"series_id\": \"ser_9f2\",\n  \"user_id\": \"u_114\",\n  \"rrule\": \"FREQ=WEEKLY;BYDAY=MO,WE,FR;BYHOUR=9;BYMINUTE=0\",\n  \"timezone\": \"America/Chicago\",\n  \"anchoring\": \"floating\",\n  \"start_at\": \"2026-09-08T09:00:00\",\n  \"end\": { \"type\": \"count\", \"value\": 100 },\n  \"overrides\": [\n    { \"occurrence_id\": \"ser_9f2#2026-09-11\", \"action\": \"skipped\" },\n    { \"occurrence_id\": \"ser_9f2#2026-09-14\", \"action\": \"rescheduled\", \"new_time\": \"2026-09-14T10:30:00-05:00\" }\n  ]\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Note what this schema buys you for future-proofing: the `rrule` stays RFC-5545 compatible so you can import/export to calendar apps later, `anchoring` lets you add fixed-time semantics without migration, and `end.count` bounds the series so a runaway `FREQ=MINUTELY` cannot DOS your expander. Enforce limits at the API boundary: max occurrences per series, max window size, reject `INTERVAL=1 MINUTELY` without an end. The trade-off is paternalism vs. reliability — power users complain about caps, but one unbounded per-minute series from a script can starve the roller for everyone else. Rate-limit series creation per user and validate expansion cost before accepting the write."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Firing exactly once (enough)"
+    },
+    {
+      "type": "paragraph",
+      "text": "You cannot achieve true exactly-once delivery over a network that can partition, so stop promising it. Promise **exactly-once effect**: fire at least once, deduplicate everywhere else. The pattern is claim-check plus idempotency key. The dispatcher inserts `(occurrence_id, fire_at)` into the delayed queue. Workers acquire a short lease with `UPDATE occurrences SET claimed_by=X, lease_until=now+30s WHERE occurrence_id=Y AND status='due' AND (claimed_by IS NULL OR lease_until < now)`. Only the lease holder sends the push, then marks `fired` with the same `idempotency_key = series_id#date#v1` propagated to the notifier. Retries reuse the key, so a crashed worker that already sent but died before marking still converges to one visible notification. Why a lease and not a delete-from-queue? Because queues redeliver and processes crash between send and ack. The trade-off: you add 30-60 seconds of worst-case duplicate suppression window and a sweeper for orphaned leases, but you eliminate the classic double-push on deploy that destroys trust in reminders."
+    },
+    {
+      "type": "mermaid",
+      "title": "Occurrence lifecycle",
+      "caption": "Leases make double-fire impossible in effect, even when delivery retries.",
+      "code": "stateDiagram-v2\n  [*] --> Scheduled\n  Scheduled --> Due: fire_at reached\n  Due --> Claimed: lease acquired\n  Claimed --> Fired: notify acked\n  Claimed --> Due: lease expired\n  Due --> Skipped: override skipped\n  Scheduled --> Cancelled: series deleted\n  Fired --> [*]\n"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not poll the primary schedule table every second from every app server. That query — `WHERE next_fire <= now LIMIT 100 FOR UPDATE SKIP LOCKED` — works to a few thousand schedules, then becomes a hot row hotspot at the top of every minute and hour. Realistic design uses a two-tier dispatch: a single elected scheduler (or sharded schedulers by `hash(series_id)`) loads the due window and pushes to a delayed queue like SQS delay, Redis sorted set, or Kafka with delayed delivery. App servers only consume. The trade-off is operational: you must run leader election or consistent hashing for the dispatcher tier, but you remove N-way polling thunder and get natural sharding when 09:00 spikes 100x normal load."
+    },
+    {
+      "type": "table",
+      "caption": "Pick your firing substrate by scale, not by fashion.",
+      "headers": [
+        "Option",
+        "When it fits",
+        "Failure mode"
+      ],
+      "rows": [
+        [
+          "DB poll + `SKIP LOCKED`",
+          "Under ~10k active schedules, single region, MVP",
+          "Minute-boundary hotspot; missed fires if poller stalls; clock skew across pollers"
+        ],
+        [
+          "Redis sorted set (`ZADD` fire_at)",
+          "Medium scale, need sub-second precision, bursty",
+          "Lose persistence unless AOF + replica; big ZRANGEBYLEX on :00 spikes"
+        ],
+        [
+          "Delayed queue / scheduler service",
+          "High scale, multi-region, need retry + DLQ",
+          "More infra; must handle queue redelivery idempotently anyway"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Double notification at deploy:** two workers both think they own `due` because the lease was in memory. Symptom: user gets 09:00 standup twice. Fix: DB-backed lease + downstream idempotency key, not in-memory dedup.",
+        "**Silent stop after DST or TZDB update:** resolved UTC times cached in window are now an hour off and never recomputed. Symptom: all reminders an hour late for a week. Fix: version TZDB, recompute window on version bump.",
+        "**Midnight thundering herd:** 80% of dailies set for 00:00 or 09:00. Symptom: queue depth explodes, p99 fire latency 4 minutes. Fix: jitter non-critical fires by ±5 min, shard dispatcher, autoscale workers on queue depth — not CPU.",
+        "**Orphaned window:** roller crashes, window empties, no new occurrences enqueued. Symptom: no errors, just no reminders. Fix: alert on `min(fire_at) - now < 7 days` per shard; roller is a critical service.",
+        "**Edit race:** user reschedules series while occurrence is `claimed`. Symptom: old time still fires. Fix: version the series; claim checks `series_version`, stale claims abort before send."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The midnight spike deserves emphasis because it is an empathy failure disguised as an infra failure. Users pick round times, so load is never uniform — it is a Dirac comb at :00 and :30. If you promise *within a minute* for every reminder, you must provision for that comb or break the promise daily. Mature systems cheat honestly: user-visible countdowns keep exact timing for the next 15 minutes, background dailies get small jitter disclosed in UX as *around 9am*. The trade-off you state in the interview: precision costs capacity. Offer two SLAs — exact for imminent, fuzzy for distant — and save 5-10x workers. That is realistic design, not over-engineering."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What to build for the interview"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not start with tables. Start with the contract and the edit scopes, then let the schema fall out. Interviewers grading User Empathy want to hear timezone anchoring, skip-vs-delete, and what happens on failure before they hear Kafka vs. Postgres. Draw intent store, expander, delayed queue, and idempotent firer, then go deep on one hard part — usually DST or exactly-once effect — rather than listing every AWS service. The trade-off to voice: breadth impresses juniors, depth convinces seniors."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "expander.py",
+      "code": "from dateutil import rrule, parser\nimport zoneinfo\n\ndef next_occurrences(wall_start: str, tz: str, rule_str: str, after_utc, n=5):\n    # Store intent in wall-clock + IANA tz; resolve to UTC at expansion.\n    # Trade-off: recompute on every read to survive DST/TZDB changes.\n    zone = zoneinfo.ZoneInfo(tz)\n    start = parser.isoparse(wall_start).replace(tzinfo=zone)\n    rule = rrule.rrulestr(rule_str, dtstart=start)\n    # dateutil handles missing 02:30 on spring-forward by shifting forward;\n    # log it so UX can disclose \"moved to 03:30 due to DST\".\n    out = []\n    for dt in rule.xafter(after_utc, count=n, inc=False):\n        occurrence_id = f\"ser_9f2#{dt.astimezone(zone).date().isoformat()}\"\n        idempotency_key = f\"{occurrence_id}#v1\"  # bump on payload change\n        out.append((occurrence_id, dt.isoformat(), idempotency_key))\n    return out"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Clarify the promise",
+          "text": "One-shot or recurring? What precision — second, minute, around? What timezone semantics — floating or pinned? What edit scopes — one, following, all? State limits: max frequency, max horizon."
+        },
+        {
+          "title": "Define template vs. occurrence",
+          "text": "Draw the two entities and the override table. Show occurrence_id as deterministic. This answers skip, snooze, and history in one move."
+        },
+        {
+          "title": "Walk a fire end-to-end",
+          "text": "API → store intent → expand window → delayed queue → lease-claim → idempotent notify. Name the trade-off at each hop: consistency for intent, availability for firing."
+        },
+        {
+          "title": "Go deep on one failure",
+          "text": "Pick DST 02:30 or double-fire on deploy. Show lease SQL or idempotency key flow. Explain symptom the user sees, not just the backend log."
+        },
+        {
+          "title": "Close with scale and empathy",
+          "text": "Name the 09:00 herd and your jitter SLA, the roller lag alert, and the UX copy for timezone moves. Future-proofing is versioned series + RFC-5545 rules so calendar sync is additive later."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Cron is a scheduler.** Cron is a single-box fire list with no leases, no idempotency, no timezone intent. It double-fires on failover and silently skips on downtime. Fine for internal jobs, wrong for user promises.",
+        "**Store UTC and forget.** UTC tells you when, never what the user meant. Without wall-time + timezone you cannot survive DST or a user move.",
+        "**Exactly-once delivery is achievable.** It is not. Settle for at-least-once delivery plus exactly-once effect via deterministic idempotency keys.",
+        "**Materialize the whole series.** A daily with no end is infinite. Materialize a rolling window or one unbounded rule will page you at 3am.",
+        "**Polling the DB from every server scales.** It scales until the top of the hour, then every server contends on the same due rows. Shard dispatch, consume from a queue.",
+        "**Skipping equals deleting.** Deleting rewrites history and breaks audit. Skipping is an override that preserves the fact the instance existed and was intentionally missed."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Match the machinery to the promise you actually made.",
+      "headers": [
+        "Use this design when",
+        "Do NOT use it when",
+        "Why"
+      ],
+      "rows": [
+        [
+          "User-visible reminders, tasks, calendar events",
+          "Internal cron that can slip 10 minutes unnoticed",
+          "Human trust needs leases and idempotency; internal jobs need simplicity"
+        ],
+        [
+          "Recurrence with edits, skips, timezone moves",
+          "Fixed one-shot webhooks with no edits",
+          "Overrides and templates only pay off when mutation is frequent"
+        ],
+        [
+          "Scale past one box or past one region",
+          "Prototype with <1k schedules",
+          "Dispatcher + queue is operational overhead; DB poll wins under 10k"
+        ],
+        [
+          "Need audit / history / snooze / analytics",
+          "Fire-and-forget emails",
+          "Per-occurrence rows give you state to query; otherwise they are dead weight"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Store **user intent as rule plus wall-clock plus timezone**, expand a **bounded window** merged with **overrides**, and fire via **leased claims with idempotent keys** — so edits stay cheap, DST stays correct, and retries never double-notify."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:21:08.622Z",
+    "problems": []
+  }
+}

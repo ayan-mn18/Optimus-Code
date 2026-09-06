@@ -1,0 +1,430 @@
+{
+  "slug": "print-zero-even-odd",
+  "title": "Print Zero Even Odd",
+  "summary": "Design turn-taking across zero, odd, and even threads with semaphores, prove termination, and survive spurious wakeups and follow-ups.",
+  "kind": "LLD",
+  "problemSlug": "print-zero-even-odd-44-84",
+  "topic": "Concurrency Interview Problems",
+  "difficulty": "Medium",
+  "coverEmoji": "🧵",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Multithreading",
+    "Synchronization"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.desiqna.in/8311/cisco-sde-3-recent-interview-experiences-2022-set-8",
+      "title": "Cisco | SDE 3 | Recent interview experiences | 2022 | Set-8 - Desi QnA",
+      "source": "desiqna.in",
+      "kind": "report",
+      "companies": [
+        {
+          "name": "Cisco",
+          "role": "SDE 3",
+          "date": "Oct 12, 2022",
+          "quote": "then asked to write ODD-EVEN famous question using two thread. https://leetcode.com/problems/print-zero-even-odd/"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "LeetCode 1116 — Print Zero Even Odd",
+      "url": "https://leetcode.com/problems/print-zero-even-odd/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "Medium. Resolved through the LeetCode API, not guessed from the slug."
+    },
+    {
+      "title": "Cisco | SDE 3 | Recent interview experiences | 2022 | Set-8 - Desi QnA",
+      "url": "https://www.desiqna.in/8311/cisco-sde-3-recent-interview-experiences-2022-set-8",
+      "source": "desiqna.in",
+      "kind": "article"
+    },
+    {
+      "title": "1116. Print Zero Even Odd - In-Depth Explanation - AlgoMonster",
+      "url": "https://algo.monster/liteproblems/1116",
+      "source": "algo.monster",
+      "kind": "article"
+    },
+    {
+      "title": "I was asked #1 \"Check if the integer is even or odd\" in an interview once ...",
+      "url": "https://news.ycombinator.com/item?id=17044756",
+      "source": "news.ycombinator.com",
+      "kind": "article"
+    },
+    {
+      "title": "How to Print Zero, Even and Odd - Medium",
+      "url": "https://medium.com/@sirimanna.akash/how-to-print-zero-even-and-odd-552ff4b756ea",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Print Zero Even Odd Interview Question - Join Taro Premium",
+      "url": "https://www.jointaro.com/interviews/questions/print-zero-even-odd/",
+      "source": "jointaro.com",
+      "kind": "article"
+    },
+    {
+      "title": "Print Zero Even Odd | Concurrency Interview - AlgoMaster.io",
+      "url": "https://algomaster.io/learn/concurrency-interview/print-zero-even-odd",
+      "source": "algomaster.io",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the interviewer is really testing",
+      "text": "Not whether you can print `010203`. That is trivial single-threaded. The test is: **can you impose a deterministic global order on non-deterministic threads without busy-waiting, deadlock, or lost wakeups?** Your choice of primitive, your invariant, and how you shut the extra threads down is the entire interview. The output string is just the oracle."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "You get `n >= 1`. Three threads share one instance. Thread A repeatedly calls `zero(printNumber)`, thread B calls `even(printNumber)`, thread C calls `odd(printNumber)`. You must coordinate them so the visible output is exactly `0 1 0 2 0 3 ... 0 n` — that is `2*n` prints total, always starting with `0` and strictly alternating zero and counting number. Threads start in arbitrary order and the scheduler can preempt anywhere. `printNumber` itself is not thread-safe for ordering; you supply the ordering."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`ZeroEvenOdd(int n)` — stores the bound. `n` is the last number to print, not a count of zeros. For `n=1` output is `01`.",
+        "`void zero(printNumber)` — called in a loop `n` times by its thread. Must print `0` exactly `n` times, once before each `i`.",
+        "`void even(printNumber)` — called in a loop by its thread. Must print `2,4,6,... <= n` in order, one at a time, each preceded by a `0`.",
+        "`void odd(printNumber)` — called in a loop by its thread. Must print `1,3,5,... <= n` in order, one at a time, each preceded by a `0`.",
+        "Constraint that matters: only one thread may be *logically runnable* at a time. Zero runs, then exactly one of odd/even runs, then zero again. Two number threads must never both proceed on the same slot."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Strong candidates spend three minutes pinning the contract because every ambiguity becomes a race or a hang later. Do not assume LeetCode's harness. In a real codebase `n` can be zero, threads can be interrupted, and `printNumber` can throw. Lock those answers in, then the state machine is forced."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Who loops, and how many times?",
+          "text": "Confirm each method contains its own loop: `zero` loops `n` times, `odd` loops over odd `i <= n`, `even` loops over even `i <= n`. You do not get one call per print from outside. This decides where termination logic lives."
+        },
+        {
+          "title": "What primitives am I allowed?",
+          "text": "Ask: `Semaphore`, `ReentrantLock + Condition`, `synchronized + wait/notify`, or only `Mutex`? Say you prefer semaphores for turn-taking because they encode permits directly, but you can do it with one lock plus state. Interviewers who ban semaphores want the condition-variable version."
+        },
+        {
+          "title": "How do non-participating threads exit?",
+          "text": "If `n=5`, the `even` thread has nothing to do on the last slot. Does it just return, or must it still participate in handshakes to avoid stranding `zero`? Agree that every thread must release the next owner even when it has no work, or that loops are bounded so extra threads terminate early without blocking others."
+        },
+        {
+          "title": "Interrupt and spurious wakeup policy?",
+          "text": "Confirm methods may throw `InterruptedException` and that `wait()` must be in a `while` loop rechecking a predicate. If you state this upfront you earn the right to write `while (!myTurn) await()` without being challenged."
+        },
+        {
+          "title": "Output and visibility guarantees?",
+          "text": "Confirm `printNumber` is the only output path and that happens-before between release and acquire is sufficient. You need shared state (`current i`, turn flag) to be guarded by the same lock or made volatile. Do not let the counter be a plain `int` read outside synchronization."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Scope agreed with the interviewer before writing any code.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Emit 0,i for i=1..n in order, total 2n prints",
+          "Any deviation is a wrong answer, not a performance issue"
+        ],
+        [
+          "Functional",
+          "Zero prints exactly before each i, never twice in a row",
+          "This forces alternation, not just mutual exclusion"
+        ],
+        [
+          "Functional",
+          "Odd thread prints only odd i in order; even only even i",
+          "Prevents both number threads racing for the same slot"
+        ],
+        [
+          "Liveness",
+          "No deadlock, no missed signal, clean thread exit",
+          "Most failures are hangs on last iteration, not wrong digits"
+        ],
+        [
+          "Non-functional",
+          "No busy spin; block in OS primitives",
+          "Spin-wasting CPU is a fail at senior level"
+        ],
+        [
+          "Non-functional",
+          "O(n) prints, O(1) extra memory, O(1) work per handoff",
+          "Coordination must not dominate the work"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the naive approach and why it fails"
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive instinct is a single `synchronized` method plus a shared counter and an `if (turn == MINE)` check: each thread locks, checks if it is its turn, prints, bumps state, unlocks. Or worse, a `volatile boolean` with a `while` spin. It looks correct in a single happy-path trace and it passes if you test with sleeps. It collapses under a real scheduler. The trade-off you are ignoring is **simplicity vs. correctness under preemption**: without blocking and rechecking, you either burn CPU or lose ordering the moment two threads interleave between check and act."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "BrokenAttempt.java",
+      "code": "class Broken {\n  private int cur = 1;\n  private final int n;\n  Broken(int n) { this.n = n; }\n  // BROKEN: no blocking, no loop-around-wait, racy check-then-act.\n  public synchronized void zero(IntConsumer out) {\n    for (int i = 0; i < n; i++) {\n      if (cur % 2 == 1) { // supposed to mean odd turn? meaningless\n        out.accept(0);\n      }\n      // what if odd/even hasn't consumed cur yet? We just overwrote order.\n      // what if we notify nobody? Threads spin or sleep forever.\n    }\n  }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Exactly why naive breaks",
+      "text": "Three concrete failures: **1. Check-then-act race** — two threads both see `myTurn` true before either flips it. **2. No blocking** — a thread that arrives early either spins (100% CPU) or returns and drops its print. **3. No termination handshake** — when `n` is odd, `even` never runs last, so if `zero` blindly signals `even`, the permit dies and the system hangs. You need *permits*, not just exclusion, and the permit for slot `i` must go to exactly one number thread."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design — turn-taking with three semaphores"
+    },
+    {
+      "type": "paragraph",
+      "text": "Model this as a token ring with a branch. `zeroSem` starts with 1 permit, `oddSem` and `evenSem` start with 0. `zero` acquires its own permit, prints `0`, then hands off to *exactly one* successor based on the upcoming `i`: if `i` is odd release `oddSem`, else release `evenSem`. That successor acquires, prints `i`, and releases `zeroSem` back. The trade-off is explicit: **three semaphores cost two extra objects versus one lock plus an int, but they make illegal states unrepresentable** — `odd` and `even` can never both be runnable because only one ever holds a permit. With a single lock you must encode that invariant by hand with `if/else` and you will get it wrong on the last iteration."
+    },
+    {
+      "type": "mermaid",
+      "title": "Permit flow",
+      "caption": "Only one permit exists in the system at a time; zero routes it by parity.",
+      "code": "flowchart TD\n  Z[\"zero: acquire zeroSem\"] --> P[\"print 0, release oddSem if i odd else evenSem\"]\n  P --> O[\"odd/even: acquire own sem, print i\"]\n  O --> R[\"release zeroSem\"]\n  R --> Z"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why `zero` owns the routing decision: `zero` is the only thread that runs on every slot, so it is the only place that sees the full sequence `1..n`. Letting `odd` and `even` decide among themselves requires shared peek logic and an extra wakeup — more context switches and a classic lost-wakeup window. Centralising the branch in `zero` costs one conditional per iteration and buys deterministic handoff. The counter `i` itself is only touched by `zero` to choose the branch and by number threads to print in order, so sequence order falls out naturally if each number thread iterates its own arithmetic progression."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Class structure"
+    },
+    {
+      "type": "mermaid",
+      "title": "Structure",
+      "caption": "State is permits plus bound; no queue, no map, no extra threads.",
+      "code": "classDiagram\n  class ZeroEvenOdd {\n    -int n\n    -Semaphore zeroSem\n    -Semaphore oddSem\n    -Semaphore evenSem\n    +ZeroEvenOdd(n : int)\n    +zero(printNumber : IntConsumer)\n    +even(printNumber : IntConsumer)\n    +odd(printNumber : IntConsumer)\n  }"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code — Java with semaphores"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ZeroEvenOdd.java",
+      "code": "import java.util.concurrent.Semaphore;\nimport java.util.function.IntConsumer;\n\nclass ZeroEvenOdd {\n  private final int n;\n  private final Semaphore zeroSem = new Semaphore(1); // zero starts\n  private final Semaphore oddSem = new Semaphore(0);\n  private final Semaphore evenSem = new Semaphore(0);\n\n  public ZeroEvenOdd(int n) {\n    this.n = n;\n  }\n\n  // zero runs n times: print 0, then wake exactly one number thread.\n  public void zero(IntConsumer printNumber) throws InterruptedException {\n    for (int i = 1; i <= n; i++) {\n      zeroSem.acquire();\n      printNumber.accept(0);\n      if ((i & 1) == 1) oddSem.release();\n      else evenSem.release();\n    }\n  }\n\n  public void even(IntConsumer printNumber) throws InterruptedException {\n    for (int i = 2; i <= n; i += 2) {\n      evenSem.acquire();\n      printNumber.accept(i);\n      zeroSem.release();\n    }\n  }\n\n  public void odd(IntConsumer printNumber) throws InterruptedException {\n    for (int i = 1; i <= n; i += 2) {\n      oddSem.acquire();\n      printNumber.accept(i);\n      zeroSem.release();\n    }\n  }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the termination carefully because that is where candidates hang. `zero` always acquires before printing, so it cannot overrun. Each number thread loops only over its own parity, so for `n=5` the `even` loop runs twice and then returns — it never acquires a third time, which is correct because `zero` never releases `evenSem` a third time. The final action of the whole system is `odd` (or `even` when `n` is even) releasing `zeroSem`, but `zero` has already finished its loop and nobody else acquires, so one stray permit sitting in `zeroSem` at the end is harmless. The trade-off versus a barrier or `join` scheme: **you accept one leaked permit at shutdown to avoid a fourth shutdown handshake**, and that is strictly simpler and deadlock-free because no thread ever waits after its last print."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Same idea in Python"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "zero_even_odd.py",
+      "code": "import threading\n\nclass ZeroEvenOdd:\n    def __init__(self, n: int):\n        self.n = n\n        self.zero_sem = threading.Semaphore(1)\n        self.odd_sem = threading.Semaphore(0)\n        self.even_sem = threading.Semaphore(0)\n\n    def zero(self, printNumber):\n        for i in range(1, self.n + 1):\n            self.zero_sem.acquire()\n            printNumber(0)\n            if i % 2 == 1:\n                self.odd_sem.release()\n            else:\n                self.even_sem.release()\n\n    def even(self, printNumber):\n        for i in range(2, self.n + 1, 2):\n            self.even_sem.acquire()\n            printNumber(i)\n            self.zero_sem.release()\n\n    def odd(self, printNumber):\n        for i in range(1, self.n + 1, 2):\n            self.odd_sem.acquire()\n            printNumber(i)\n            self.zero_sem.release()"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Cost of the semaphore handoff.",
+      "headers": [
+        "Dimension",
+        "Cost",
+        "Note"
+      ],
+      "rows": [
+        [
+          "Prints",
+          "O(n) calls, 2n values",
+          "Optimal — you cannot emit fewer"
+        ],
+        [
+          "Extra memory",
+          "O(1)",
+          "Three semaphores plus bound; no per-i allocation"
+        ],
+        [
+          "Per handoff",
+          "O(1) acquire + release",
+          "Two context switches per number; unavoidable for strict alternation"
+        ],
+        [
+          "CPU while waiting",
+          "O(1) blocked, zero spin",
+          "Trade-off vs spinlock: higher wake latency, near-zero wasted CPU"
+        ],
+        [
+          "Fairness",
+          "Deterministic by construction",
+          "Scheduler cannot reorder; permits force the sequence"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency correctness — the hardest follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "The interview pivots here: *do it with one `ReentrantLock` and two `Condition`s* or *prove no deadlock*. The semaphore version is deadlock-free by permit counting — there is always exactly one outstanding permit, held by whoever must run next, so no cycle is possible. But semaphores hide state, which is their weakness: you cannot inspect who should run without tracking `i`. The lock-plus-condition version makes the invariant explicit (`state = ZERO_TURN / ODD_TURN / EVEN_TURN` plus `current`) at the cost of more code and two classic traps. Trade-off to state out loud: **semaphores are shorter and less error-prone for fixed turn-taking; locks plus conditions generalise to arbitrary predicates like pause, reset, or multi-slot batching.** If the follow-up adds `reset()` or dynamic `n`, switch to the lock version without being asked twice."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ZeroEvenOddLock.java",
+      "code": "import java.util.concurrent.locks.*;\nimport java.util.function.IntConsumer;\n\nclass ZeroEvenOddLock {\n  private final int n;\n  private int cur = 1;\n  private boolean zeroTurn = true; // predicate guarded by lock\n  private final ReentrantLock lock = new ReentrantLock();\n  private final Condition cond = lock.newCondition();\n\n  ZeroEvenOddLock(int n) { this.n = n; }\n\n  public void zero(IntConsumer out) throws InterruptedException {\n    for (int i = 1; i <= n; i++) {\n      lock.lock();\n      try {\n        while (!zeroTurn) cond.await(); // while, not if: spurious wakeups\n        out.accept(0);\n        zeroTurn = false;\n        cond.signalAll(); // wake the one parity owner; broadcast is simpler\n      } finally { lock.unlock(); }\n    }\n  }\n\n  public void even(IntConsumer out) throws InterruptedException {\n    for (int i = 2; i <= n; i += 2) {\n      lock.lock();\n      try {\n        while (zeroTurn || (cur & 1) == 1) cond.await();\n        out.accept(i);\n        cur++; zeroTurn = true;\n        cond.signalAll();\n      } finally { lock.unlock(); }\n    }\n  }\n\n  public void odd(IntConsumer out) throws InterruptedException {\n    for (int i = 1; i <= n; i += 2) {\n      lock.lock();\n      try {\n        while (zeroTurn || (cur & 1) == 0) cond.await();\n        out.accept(i);\n        cur++; zeroTurn = true;\n        cond.signalAll();\n      } finally { lock.unlock(); }\n    }\n  }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Three traps that hang or corrupt",
+      "text": "`if` instead of `while` around `await()` dies on spurious wakeup — always recheck. `signal()` instead of `signalAll()` with two waiters can wake the wrong parity thread, which re-waits and nobody else is awake to signal — prefer `signalAll()` unless you keep two separate conditions. And printing while *not* holding the lock breaks happens-before on `cur` — either print inside the lock (simple, slightly longer critical section) or copy `i` to a local and publish via volatile. Pick one and justify it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "What if n is 10^9 or the stream is infinite?",
+          "text": "Permits still work; memory stays O(1). The bottleneck becomes two context switches per element. Propose batching: zero prints k zeros then releases k permits, number threads drain. Trade-off: higher throughput, weaker per-element alternation guarantee."
+        },
+        {
+          "title": "Add a fourth thread that prints primes?",
+          "text": "Do not add a fourth semaphore blindly. Generalise: zero routes by predicate to N conditions or a BlockingQueue of tasks. Semaphore-per-role scales as O(roles); a single lock plus state table scales better past three roles."
+        },
+        {
+          "title": "Handle interruption and cancellation?",
+          "text": "Use interruptible acquire/await, never swallow InterruptedException. On interrupt, release whoever is next before exiting so survivors do not hang. Show the finally-release pattern."
+        },
+        {
+          "title": "Prove ordering under test?",
+          "text": "Join all three threads, capture output in a synchronized StringBuilder, assert exact string for n=1,2,5,1000 and run with a stress loop plus Thread.yield. Mention testing with a barrier start so all threads race from the same instant."
+        },
+        {
+          "title": "Replace semaphores with lock-free code?",
+          "text": "Say no for strict alternation. Lock-free turn flags still need parking (LockSupport.park) to avoid spin, at which point you rebuilt a semaphore badly. Lock-free wins for throughput, not for deterministic sequencing."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`n=1`: even thread must exit immediately without acquiring. Your `for (i=2; i<=1)` loop does that — say so.",
+        "`n=2`: odd runs once, even runs once. Final releaser is `even`. No extra acquire after.",
+        "Threads started in any order: initial permits `(1,0,0)` guarantee zero goes first even if odd/even start first and block.",
+        "Interrupt mid-wait: declares `throws InterruptedException`; never convert to infinite retry without re-interrupt.",
+        "Permit leak at shutdown: one unit left in `zeroSem` is intentional and harmless because no further acquire exists.",
+        "`printNumber` throwing: permits are lost unless you release in `finally`. Wrap print-then-release so an exception does not deadlock survivors.",
+        "Reuse of the instance for a second run: semaphores are single-shot here. State it — a second `start()` needs fresh instance or explicit reset under lock."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak vs strong signals for this concurrency LLD.",
+      "headers": [
+        "Axis",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Primitive choice",
+          "\"Use synchronized everywhere\" with no justification",
+          "Picks semaphores for turn-taking, names trade-off vs lock+condition"
+        ],
+        [
+          "Invariant",
+          "Vague \"my turn\" flag, checked once",
+          "Single outstanding permit; zero routes by parity; stated as invariant"
+        ],
+        [
+          "Blocking",
+          "Busy spin or sleep-polling",
+          "Blocks in acquire/await; zero CPU while waiting"
+        ],
+        [
+          "Termination",
+          "Hangs on odd n; even thread waits forever",
+          "Loops bounded by parity; no acquire without matching release"
+        ],
+        [
+          "Correctness habits",
+          "`if (await)`, print outside lock on shared state",
+          "`while` recheck, happens-before explained, finally-release"
+        ],
+        [
+          "Follow-ups",
+          "Cannot adapt to 4 threads or reset",
+          "Switches to lock+state table when routing generalises"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "45-minute plan",
+      "text": "**0-5 min:** clarify loops, primitives, exit policy. **5-10 min:** draw the permit ring and state the invariant. **10-25 min:** write the three-semaphore Java cleanly, narrate routing and termination. **25-35 min:** stress edge cases (`n=1`, wrong start order, interrupt) and prove no deadlock by counting permits. **35-45 min:** volunteer the lock-plus-condition rewrite and the batching / N-role generalisation. Close by saying when you would *not* use semaphores."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:32:47.454Z",
+    "problems": []
+  }
+}

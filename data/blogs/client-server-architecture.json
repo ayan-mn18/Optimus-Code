@@ -1,0 +1,292 @@
+{
+  "slug": "client-server-architecture",
+  "title": "Client Server Architecture",
+  "summary": "Client-server is centralization on purpose: put state and authority on servers so dumb clients stay replaceable. This piece explains the request path, variants, trade-offs, failure modes, and how to defend the choice in an HLD interview.",
+  "kind": "HLD",
+  "problemSlug": "client-server-architecture-94-208",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "🖧",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "Client-Server",
+    "System Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Client-Server Architecture - System Design - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/client-server-architecture-system-design/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Client-Server Architecture Explained - AlgoMaster Newsletter",
+      "url": "https://blog.algomaster.io/p/client-server-architecture-explained",
+      "source": "blog.algomaster.io",
+      "kind": "article"
+    },
+    {
+      "title": "What Is Client-Server Architecture? - Supermicro",
+      "url": "https://www.supermicro.com/en/glossary/client-server-architecture",
+      "source": "supermicro.com",
+      "kind": "article"
+    },
+    {
+      "title": "Client Server Architecture | System Design Interview Basics - YouTube",
+      "url": "https://www.youtube.com/watch?v=yioOQ4ItYuo",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Client-server is **centralized authority with distributed presentation**. Clients own interaction, servers own truth. You accept a single logical choke point because it buys you one place to enforce correctness, security, and ordering — and you spend the rest of the design mitigating that choke point."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Client-server is a division of labor across a network: a **client** initiates requests and renders results, a **server** listens on a known address, executes logic against authoritative state, and returns a response. Communication is request-response over a transport like TCP, framed by an application protocol like HTTP, with naming resolved by DNS and identity established by TLS. The critical property is asymmetry. Clients can appear, disappear, crash, and lie. Servers must remain addressable, decide what is true, and serve many clients concurrently without letting one corrupt another."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why split it this way instead of letting every machine hold its own copy? Because shared mutable state cannot be coordinated without an arbiter. If two banking apps both decrement the same balance locally, you have no serial order and no audit trail. By forcing every mutation through a server, you get one serialization point, one access-control check, one place to persist durably. The trade-off is explicit: you gain consistency and control, you pay in network latency, server load, and fate-sharing — when the server is unreachable, no client can make progress on shared state."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from click to bytes"
+    },
+    {
+      "type": "paragraph",
+      "text": "A typical web interaction is six hops, and interviewers expect you to narrate all six without prompting. The client resolves the name to an IP, opens a TCP connection with a three-way handshake, negotiates TLS to authenticate the server and establish session keys, sends an HTTP request describing method, path, headers and body, waits while the server parses, authorizes, runs business logic and usually touches storage, then reads the HTTP response and renders it. Statelessness is what makes this survivable: each request must carry its own authentication and context, so any server process can handle any request. Anything the server remembers between requests is liability you must replicate, expire, and secure."
+    },
+    {
+      "type": "mermaid",
+      "title": "Request path",
+      "caption": "Full client-server exchange including naming, transport, and storage.",
+      "code": "flowchart LR\n  U[Client app / browser] --> D[DNS resolver]\n  D --> U\n  U -->|TCP + TLS handshake| S[Server listener :443]\n  S --> A[Request handler]\n  A --> DB[(Authoritative store)]\n  DB --> A\n  A -->|HTTP response| U"
+    },
+    {
+      "type": "paragraph",
+      "text": "Each layer exists to isolate a failure or scaling concern, not for ceremony. DNS decouples a stable name from unstable IPs so you can move servers without updating clients. TCP gives you ordered, retransmitted byte streams so application logic does not reimplement loss recovery. TLS gives you server authentication and confidentiality so passwords and tokens survive hostile networks. HTTP gives you verbs, status codes, and caching semantics so intermediaries can reason about the traffic. Remove any layer and you re-inherit its problem: skip TLS and you must defend against eavesdropping yourself; skip DNS and every server migration becomes a client release."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The three shapes you must know"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**2-tier: client talks directly to data tier.** Thick desktop app with embedded SQL, or browser hitting a single monolith that owns its database. Simple to build, brutal to evolve — schema changes leak to every client and you cannot scale logic and storage independently.",
+        "**3-tier / N-tier: client -> stateless logic tier -> storage tier.** The shape every interview expects. Presentation, API/application servers, and databases scale and deploy separately. Adds a hop but lets you put a load balancer in front of logic and a replication scheme behind storage.",
+        "**Thin vs. thick client.** Thin client (browser, dumb terminal) keeps almost no state and re-fetches; easy to update, chatty on the network. Thick client (mobile app with local cache, game engine) does validation, rendering, and offline work locally; responsive, but now you have two sources of truth to reconcile on sync."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Default to N-tier in an HLD interview unless the constraints force otherwise. The reason is operational, not aesthetic: it gives you insertion points. You can insert a cache between logic and storage, a queue between ingestion and processing, a load balancer in front of logic, read replicas behind the primary — none of that is cleanly possible when clients hold direct database connections. The extra hop costs sub-millisecond inside a data center and buys you independent scaling, independent deploys, and a clean trust boundary where auth happens once."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What centralization buys and what it charges.",
+      "headers": [
+        "Property",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Correctness",
+          "One serialization point for writes; ordering and constraints enforced in one codebase",
+          "Every write pays network round-trip; server is a contention point under write bursts"
+        ],
+        [
+          "Security and audit",
+          "Single policy enforcement point; credentials and PII stay off clients",
+          "Server is high-value target; breach scope is total, must harden, patch, and log centrally"
+        ],
+        [
+          "Operability",
+          "Deploy server once, all clients benefit; observe traffic in one place",
+          "Server fleet needs health checks, autoscaling, and capacity planning; clients need versioning"
+        ],
+        [
+          "Availability",
+          "Failover and replication hidden behind a stable endpoint",
+          "Central outage blocks everyone; need replicas, load balancing, and graceful degradation"
+        ],
+        [
+          "Consistency vs latency",
+          "Strong guarantees easy when reads go to authority",
+          "Distant clients pay latency; caching reintroduces staleness you must bound explicitly"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that table as a decision rule: choose client-server when shared truth matters more than autonomy. A collaborative document, a ledger, an inventory count — those need an arbiter. Do not choose it for work a client can safely do alone, like input validation, sorting an already-fetched list, or rendering. Pushing that to the server wastes capacity and adds latency for zero correctness gain. Senior answers always place logic where the cost is lowest: validate twice (fast feedback on client, authoritative check on server), compute near the data, render near the user."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Centralization concentrates failure. The server tier does not degrade gracefully by default — it queues, then times out, then cascades. The most common production death is not a crash, it is overload: thread pools saturate, connection pools exhaust, database CPU pins at 100%, latency climbs, clients retry, and retries double the load. From the outside this looks like intermittent slowness followed by a cliff. Second most common is stateful routing: sessions pinned to one machine, so one machine dying logs out a slice of users and autoscaling does not help because new machines lack the in-memory sessions."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Thundering herd on restart / cache cold start:** latency spikes to seconds, hit rate drops to near zero, database connections spike. Symptom: p99 explodes after every deploy.",
+        "**Connection exhaustion:** server accepts TCP but never gets a worker thread. Symptom: clients see connect success then read timeouts; server shows long accept queue and full pool.",
+        "**Sticky-session imbalance:** one server at 90% CPU, others idle. Symptom: autoscaler adds capacity but tail latency does not move.",
+        "**Cascading retries:** downstream slows 200ms, upstream timeout fires, every client retries twice. Symptom: traffic multiplies 3x exactly when capacity is lowest.",
+        "**Split trust:** client-side checks trusted as authoritative. Symptom: forged requests create invalid state that no server log can explain — because the check never ran on the server."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The fix is never just add more servers. Require idempotency keys so retries are safe, enforce timeouts plus bounded retries with jittered backoff so slowness does not amplify, externalize session state to a shared store or signed tokens so any server can serve any client, and shed load explicitly with queues and 429 responses rather than queuing unboundedly in memory. If you cannot name your backpressure policy, you do not have one — the network will impose one by dropping connections."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "server_stateless.py",
+      "code": "from http.server import BaseHTTPRequestHandler, HTTPServer\nimport json\n\n# Stateless handler: auth + context arrive on every request.\n# Any process can serve any client. That is the whole scaling trick.\nclass Handler(BaseHTTPRequestHandler):\n    def do_GET(self):\n        token = self.headers.get(\"Authorization\", \"\")\n        user = verify_token(token)  # no in-memory session lookup\n        if user is None:\n            self.send_response(401)\n            self.end_headers()\n            return\n        balance = db_read_balance(user.id)  # authoritative read\n        body = json.dumps({\"user\": user.id, \"balance\": balance}).encode()\n        self.send_response(200)\n        self.send_header(\"Content-Type\", \"application/json\")\n        self.send_header(\"Cache-Control\", \"private, max-age=5\")\n        self.end_headers()\n        self.wfile.write(body)\n\ndef verify_token(token: str):\n    # In production: verify signature / expiry, fetch minimal claims.\n    # Never trust a user id sent as a plain parameter.\n    return parse_and_verify(token)"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "client_retry.py",
+      "code": "import time, random, urllib.request\n\n# Client discipline matters as much as server capacity.\n# Timeout + idempotency key + jittered backoff prevents retry storms.\nfor attempt in range(4):\n    try:\n        req = urllib.request.Request(\n            \"https://api.example/internal/balance\",\n            headers={\"Authorization\": \"Bearer <token>\",\n                     \"Idempotency-Key\": \"op-550e-0001\"})\n        with urllib.request.urlopen(req, timeout=1.5) as r:\n            print(r.read()[:200])\n            break\n    except Exception:\n        sleep = (0.2 * (2 ** attempt)) + random.uniform(0, 0.2)\n        time.sleep(sleep)\nelse:\n    raise RuntimeError(\"degrade gracefully: show cached value\")"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Scaling the server side without lying"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are only two moves, and you must name when each stops working. Vertical scaling — larger machine, faster disks — helps for a few months and preserves your single-writer simplicity, but it has a hard ceiling and a single blast radius. Horizontal scaling — many identical stateless servers behind a load balancer, storage scaled separately with caching and read replicas — has no single ceiling but forces you to solve session placement, data partitioning, and distributed consistency. The hinge is statelessness: if request handling needs only the request plus shared storage, horizontal works. If it needs machine-local memory, horizontal just multiplies your broken state."
+    },
+    {
+      "type": "mermaid",
+      "title": "Scaled N-tier",
+      "caption": "Stateless logic tier behind a load balancer, storage scaled independently.",
+      "code": "flowchart LR\n  C1[Client A] --> LB[Load balancer]\n  C2[Client B] --> LB\n  C3[Client C] --> LB\n  LB --> A1[App server 1]\n  LB --> A2[App server 2]\n  LB --> A3[App server 3]\n  A1 --> Cache[(Cache)]\n  A2 --> Cache\n  A3 --> Cache\n  A1 --> DB[(Primary DB)]\n  Cache --> DB"
+    },
+    {
+      "type": "paragraph",
+      "text": "That diagram is why interviewers push you from 2-tier to N-tier. The load balancer turns N unreliable machines into one reliable endpoint with health checks and even distribution. The cache absorbs read heat so the database sees only misses and writes. The primary remains the ordering authority for writes while replicas serve stale-tolerant reads. Each addition has a price — the balancer must itself be redundant, the cache introduces invalidation, replicas introduce lag — but each price is local and bounded, unlike the unbounded price of a single overloaded server."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Draw the baseline first",
+          "text": "Start with client, DNS, load balancer, stateless app tier, cache, primary store. Say the request path aloud in one pass. Do not start with microservices — start with this skeleton and let the interviewer force you to complicate it."
+        },
+        {
+          "title": "State your session strategy",
+          "text": "Declare token-based auth or externalized sessions up front. If you say sticky sessions, justify why and name the rebalancing cost. Most candidates lose points here by hand-waving state."
+        },
+        {
+          "title": "Quantify the choke point",
+          "text": "Estimate requests per second, average response size, and connections per server. Show where the first bottleneck appears — usually database writes or downstream latency — and what you would measure to confirm it."
+        },
+        {
+          "title": "Add one scaling lever at a time",
+          "text": "Cache for reads, read replicas for read scale, queue for bursty writes, CDN for static bytes. Each lever needs its consistency cost stated: TTL staleness, replica lag, at-least-once delivery."
+        },
+        {
+          "title": "Close with failure behavior",
+          "text": "Describe timeouts, retries with jitter, idempotency, rate limiting, and what the client sees when the server is saturated. Interviewers promote candidates who design the degraded experience, not just the happy path."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Server means one machine.** No — server is a role and an endpoint. Behind it can be hundreds of processes. If you reason about a single box, your capacity math is fiction.",
+        "**HTTP is the architecture.** HTTP is a protocol. The architecture is the authority split. You can build client-server over raw TCP, gRPC, or message buses and face identical trade-offs.",
+        "**Stateless means no state anywhere.** It means no per-client state on the app server between requests. Authoritative state lives in storage; ephemeral state lives in cache or tokens with explicit expiry.",
+        "**More tiers are always better.** Each tier adds latency, operational surface, and failure modes. Add a tier only when it scales or isolates something independently.",
+        "**Client validation is sufficient.** Client checks are UX, not security. Every invariant that matters — ownership, balance, permissions — must be rechecked on the server against authoritative data."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Fit check for client-server in HLD.",
+      "headers": [
+        "Use it when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Many untrusted clients share mutable state and need one arbiter",
+          "Single-user local work with no sharing — local-first is simpler and faster"
+        ],
+        [
+          "Central control, patching, and audit are required",
+          "Clients must work offline for long periods — you need sync, not remote calls"
+        ],
+        [
+          "Read-heavy workloads where caching and replicas help",
+          "Ultra-low-latency device-to-device coordination where a round-trip is unaffordable"
+        ],
+        [
+          "Heterogeneous clients (web, mobile, third-party) need one contract",
+          "All participants are equal and must survive central loss — consider peer-to-peer"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Client-server centralizes truth on servers so many untrusted clients can share state safely, trading latency and central load for consistency, control, and independent scaling of a stateless logic tier."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:06:02.256Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,384 @@
+{
+  "slug": "design-a-kv-store-on-relational-db-infinitely-scalable",
+  "title": "Design a KV Store on Relational DB (Infinitely Scalable)",
+  "summary": "Build an infinitely scalable KV on plain relational tables: hash-shard rows, separate routing from storage, scale reads with replicas and writes with splits.",
+  "kind": "HLD",
+  "problemSlug": "design-a-kv-store-on-relational-db-infinitely-scalable-92-302",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "🗄️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "KV-Store",
+    "Sharding"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.hellointerview.com/community/questions/key-value-store/cm8gcrkz800b7epmpcj06fkwk",
+      "title": "Design a Key-Value Store | Hello Interview",
+      "source": "hellointerview.com",
+      "kind": "aggregate",
+      "companies": [
+        {
+          "name": "LinkedIn",
+          "quote": "Asked at: LinkedIn Databricks G geico Microsoft + 3 more"
+        },
+        {
+          "name": "Databricks",
+          "quote": "Asked at: LinkedIn Databricks G geico Microsoft + 3 more"
+        },
+        {
+          "name": "geico",
+          "quote": "Asked at: LinkedIn Databricks G geico Microsoft + 3 more"
+        },
+        {
+          "name": "Microsoft",
+          "quote": "Asked at: LinkedIn Databricks G geico Microsoft + 3 more"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "Design A Key-value Store - ByteByteGo | Technical Interview Prep",
+      "url": "https://bytebytego.com/courses/system-design-interview/design-a-key-value-store",
+      "source": "bytebytego.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design a Key-Value Store | Hello Interview",
+      "url": "https://www.hellointerview.com/community/questions/key-value-store/cm8gcrkz800b7epmpcj06fkwk",
+      "source": "hellointerview.com",
+      "kind": "article"
+    },
+    {
+      "title": "System Design Interview: Design A Key-Value Store (I) - Medium",
+      "url": "https://rurutia1027.medium.com/system-design-interview-design-a-key-value-store-i-07833f019011",
+      "source": "rurutia1027.medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Choosing the right database in a system design interview ... - LinkedIn",
+      "url": "https://www.linkedin.com/posts/aiproddev_choosing-the-right-database-in-a-system-design-activity-7390502562598277120-prg1",
+      "source": "linkedin.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "This is not a **put/get API** question. It is a trap: can you make a **relational database do a NoSQL job** without losing what makes relational good? They want to hear you say *why* you keep MySQL/Postgres — operational maturity, transactions per shard, debuggability with SQL — and *what you give up* to get infinite scale: cross-shard transactions, global secondary indexes, and JOINs. If you propose Cassandra or DynamoDB, you failed the premise. If you propose one big MySQL table, you failed scale."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a key-value store backed **only by relational databases** that scales to effectively unbounded keys and throughput. The service exposes a simple byte-oriented interface over a sharded fleet of single-master relational instances. Keys are opaque strings up to ~256 bytes, values are opaque blobs up to ~1 MB with a target p99 of single-digit milliseconds for cache hits and <30ms for DB hits. You must support **automatic growth**: adding database hosts increases capacity and throughput with no downtime and no manual key moves. Durability is non-negotiable — acknowledged writes survive single-host and single-AZ loss. Consistency is tunable per request but defaults to strong reads from the primary shard."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`put(key, value, ttl?)` — upsert the blob for `key`. Returns success only after durable commit on the owning shard's primary and synchronous replication to at least one standby.",
+        "`get(key)` — return the blob or `NOT_FOUND`. Default path reads the owning shard's primary or a lag-bounded replica depending on consistency flag.",
+        "`delete(key)` — tombstone or hard delete with the same durability as `put`. Must be idempotent and safe to replay.",
+        "Ops contract: add/remove DB hosts without stopping traffic, split hot shards, rebalance virtual shards, and survive router, DB, and AZ failure without data loss."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you design"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "What is the value size and access shape?",
+          "text": "Pin this first. 10 KB values with 95% reads is a caching problem. 1 MB values with 50% writes is a bandwidth and replication-lag problem. Ask read/write ratio, key count, total bytes, and hot-key skew. Your shard size and replica strategy hinges on the answer."
+        },
+        {
+          "title": "What consistency do you actually promise?",
+          "text": "Ask if stale reads are allowed. Most KV workloads accept eventual reads for `get` but demand read-your-write for the writer's session. Agree on `CONSISTENT` vs `EVENTUAL` flags now — it decides whether routers can use replicas."
+        },
+        {
+          "title": "Do keys expire, and do you need range scans?",
+          "text": "TTL changes the schema to include `expires_at` and a sweeper. Range scans kill pure hash sharding. Force a decision: point lookups only, or ordered scans? If scans are needed, you need a second index or a different partition key."
+        },
+        {
+          "title": "What does infinitely scalable mean here?",
+          "text": "Confirm it means horizontal data and throughput scale by adding commodity DB hosts, not vertical upgrades. Agree on target: e.g., from 100 GB / 5k QPS to 100 TB / 500k QPS by adding shards and routers statelessly."
+        },
+        {
+          "title": "What are the durability and latency SLOs?",
+          "text": "Ask RPO/RTO and p50/p99. Synchronous intra-AZ standby commit buys zero data loss but adds ~2-5ms per write. Asynchronous cross-region replica buys disaster recovery but permits loss. Make the interviewer pick."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Agreed scope before drawing any boxes.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Point put/get/delete by primary key, TTL optional",
+          "Keeps relational schema trivial; no JOINs, no multi-row transactions"
+        ],
+        [
+          "Functional",
+          "Tunable read consistency per request",
+          "Lets you use replicas for scale without breaking strong-read use cases"
+        ],
+        [
+          "Scale",
+          "Add DB hosts to grow data + QPS linearly, zero downtime",
+          "This is the definition of done for infinite scale"
+        ],
+        [
+          "Non-functional",
+          "p99 get <30ms DB hit, <5ms cache hit; 99.95% available",
+          "Forces cache + replica reads + fast routing"
+        ],
+        [
+          "Non-functional",
+          "Durable commit: sync to standby before ack",
+          "You trade ~3ms write latency for no silent loss on crash"
+        ],
+        [
+          "Non-functional",
+          "Hot keys and hot shards must not collapse the fleet",
+          "Skew handling is where naive hash sharding dies"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the single relational table"
+    },
+    {
+      "type": "paragraph",
+      "text": "The obvious start is one table on one primary: `kv(k VARCHAR(255) PRIMARY KEY, v LONGBLOB, version BIGINT, expires_at TIMESTAMP)`. Routing is nothing — every request hits the same host. Reads scale a little with read replicas. Backups are trivial. Transactions are free. This is exactly why teams want to stay relational: you get mature replication, point-in-time recovery, and `EXPLAIN` for free. For 10 GB and 1k QPS it is the correct answer, and you should say so. The mistake is believing connection count, buffer pool, and single-write-master limits bend. They do not. Past ~50-100k writes per second or a few hundred GB per host, the primary's redo log, lock manager, and compaction become the ceiling. Adding replicas helps reads but does nothing for write throughput or data size. Vertical upgrades buy you one more step, then you are redesigning under outage pressure."
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "naive.sql",
+      "code": "CREATE TABLE kv (\n  k VARBINARY(256) PRIMARY KEY,\n  v LONGBLOB NOT NULL,\n  version BIGINT NOT NULL DEFAULT 1,\n  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP\n    ON UPDATE CURRENT_TIMESTAMP,\n  expires_at TIMESTAMP NULL,\n  INDEX idx_expires (expires_at)\n) ENGINE=InnoDB;\n-- get: SELECT v, version FROM kv WHERE k = ?;\n-- put: INSERT INTO kv(k,v,version) VALUES(?,?,1)\n--   ON DUPLICATE KEY UPDATE v=VALUES(v), version=version+1;"
+    },
+    {
+      "type": "paragraph",
+      "text": "The failure is structural, not tuning. One write master means write QPS is capped at what one InnoDB instance can fsync. One keyspace means data size is capped at what one host's disks can hold with headroom for compaction and replicas. Connection storms from stateless app servers exhaust `max_connections` long before CPU saturates. Even if you shard reads across five replicas, a single hot key still hammers one primary buffer-pool page and one replication stream — replica lag grows, stale reads spike, and failover becomes risky because the standby is behind. Trade-off named: single-table relational buys **simplicity and strong consistency** at the cost of **hard vertical ceilings on writes and bytes**. To break the ceiling you must partition the keyspace and make routing, not the database, responsible for location."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design — hash-sharded relational fleet"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep the per-shard schema dead simple, then scale by adding shards. Hash the key to a fixed virtual-shard space — say 4096 virtual shards — and map virtual shards to physical MySQL primaries via a versioned directory. Routers are stateless: hash, lookup directory in memory, open a pooled connection to the owning shard, execute a single-row primary-key statement. Virtual shards are the whole trick. Physical hosts come and go, but virtual shard IDs never change, so splits and moves copy one small range at a time instead of rehashing everything. Each physical shard is a standard primary plus one synchronous intra-AZ standby plus one or two asynchronous cross-AZ replicas for reads. Writes always go to the primary and commit synchronously to the standby — that is your durability. Eventual reads go to replicas or a look-aside cache. Hot keys are absorbed by a small replicated cache in front, not by scaling the database. Trade-off named: you trade **global transactions and flexible queries** for **linear write and capacity scale** — every cross-shard operation becomes application-level."
+    },
+    {
+      "type": "mermaid",
+      "title": "Sharded KV on relational DB",
+      "caption": "Stateless routers + versioned directory + independent MySQL primaries.",
+      "code": "graph TD\n  LB[Load Balancer] --> R1[Router 1]\n  LB --> R2[Router 2]\n  R1 --> D[Directory Cache]\n  R2 --> D\n  D --> M[Metadata Store]\n  R1 --> C[Lookaside Cache]\n  R1 --> P1[Shard A Primary]\n  R1 --> P2[Shard B Primary]\n  R1 --> P3[Shard C Primary]\n  P1 --> S1[Standby Sync]\n  P2 --> S2[Standby Sync]\n  P3 --> S3[Standby Sync]\n  P1 --> RR1[Replica Async]\n  P2 --> RR2[Replica Async]\n  C --> RR1\n  C --> RR2"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape wins: the database never knows about sharding, so each shard stays boring and operable — normal slow-query logs, normal backups, normal failover. The router never stores data, so it autoscales on CPU in seconds. The directory is tiny — 4096 integers plus a version — so it fits in memory and can be polled every second. Splits are online: mark virtual shard `MIGRATING`, dual-write, backfill with chunked `SELECT ... WHERE hash BETWEEN`, then flip the directory version. Replication lag is bounded by monitoring `seconds_behind_master` per replica and routing eventual reads away from lagging replicas. Cache invalidation is version-based, not TTL-guesswork: every `put` bumps `version` and deletes the cache key, so a stale cache hit requires both a lost invalidation and a replica lag — two independent failures. The cost you pay is operational: you now run a control plane for moves, plus per-shard connection pools that must be sized to avoid overwhelming primaries."
+    },
+    {
+      "type": "mermaid",
+      "title": "Control plane objects",
+      "caption": "Routing and ownership as explicit classes.",
+      "code": "classDiagram\n  class Router {\n    +put(key, value)\n    +get(key, consistency)\n    +route(key)\n  }\n  class Directory {\n    +version int\n    +getPhysical(virtualId)\n    +moveRange()\n  }\n  class Shard {\n    +primaryHost\n    +standbyHost\n    +replicaHosts\n  }\n  class KvRow {\n    +key bytes\n    +value bytes\n    +version int\n  }\n  Router --> Directory\n  Router --> Shard\n  Shard --> KvRow"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Code — schema and routing"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ShardedKvRouter.java",
+      "code": "public class ShardedKvRouter {\n  private static final int VIRTUAL_SHARDS = 4096;\n  private volatile Directory dir; // polled every 1s, versioned\n  private final Map<Integer, HikariPool> pools; // physShard -> pool\n  private final Cache cache;\n\n  private int vShard(byte[] key) {\n    long h = XXH3.hash64(key); // stable, fast, uniform\n    return (int) ((h & Long.MAX_VALUE) % VIRTUAL_SHARDS);\n  }\n\n  public byte[] get(byte[] key, boolean strongRead) throws Exception {\n    byte[] hit = cache.get(key);\n    if (hit != null) return hit;\n    int phys = dir.getPhysical(vShard(key));\n    String sql = \"SELECT v, version FROM kv WHERE k=?\";\n    DataSource ds = strongRead ? pools.get(phys).primary()\n                               : pools.get(phys).lagBoundedReplica();\n    try (Connection c = ds.getConnection();\n         PreparedStatement ps = c.prepareStatement(sql)) {\n      ps.setBytes(1, key);\n      ResultSet rs = ps.executeQuery();\n      if (!rs.next()) return null;\n      byte[] v = rs.getBytes(1);\n      cache.put(key, v, 30);\n      return v;\n    }\n  }\n\n  public void put(byte[] key, byte[] val, long ttlSec) throws Exception {\n    int phys = dir.getPhysical(vShard(key));\n    String sql = \"INSERT INTO kv(k,v,version,expires_at) VALUES(?,?,1,?) \" +\n      \"ON DUPLICATE KEY UPDATE v=VALUES(v), version=version+1, expires_at=VALUES(expires_at)\";\n    try (Connection c = pools.get(phys).primary().getConnection();\n         PreparedStatement ps = c.prepareStatement(sql)) {\n      ps.setBytes(1, key); ps.setBytes(2, val);\n      ps.setTimestamp(3, ttlSec > 0 ? expiresIn(ttlSec) : null);\n      ps.executeUpdate(); // sync standby commit via semi-sync replication\n    }\n    cache.invalidate(key); // delete, never update: avoids version race\n  }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "directory_rebalance.py",
+      "code": "VIRTUAL_SHARDS = 4096\ndef build_plan(load_per_vshard, phys_hosts, max_per_host):\n    # Greedy move: shed hottest virtual shards from overloaded hosts.\n    # Trade-off: greedy is O(N log N) and good enough; optimal bin-pack\n    # saves 5% imbalance but costs control-plane complexity.\n    plan = []\n    load = {h: sum(load_per_vshard[v] for v in shards)\n            for h, shards in phys_hosts.items()}\n    overloaded = sorted([h for h in load if load[h] > max_per_host],\n                        key=lambda h: -load[h])\n    for src in overloaded:\n        cand = sorted(phys_hosts[src], key=lambda v: -load_per_vshard[v])\n        for v in cand:\n            dst = min(load, key=load.get)\n            if load[src] - load_per_vshard[v] < load[dst] + load_per_vshard[v]:\n                break\n            plan.append((v, src, dst))\n            load[src] -= load_per_vshard[v]\n            load[dst] += load_per_vshard[v]\n            if load[src] <= max_per_host:\n                break\n    return plan"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity and capacity"
+    },
+    {
+      "type": "table",
+      "caption": "Costs are per single-row operation unless noted.",
+      "headers": [
+        "Operation",
+        "Cost",
+        "Notes"
+      ],
+      "rows": [
+        [
+          "get (cache hit)",
+          "O(1) + 1 RTT",
+          "Memcached/Redis look-aside; absorbs hot keys"
+        ],
+        [
+          "get (DB hit)",
+          "O(log R) on shard + 1 RTT",
+          "B-tree PK lookup; R = rows per shard, keep <50M"
+        ],
+        [
+          "put/delete",
+          "O(log R) + sync standby fsync",
+          "~2-6ms intra-AZ; cross-region async adds no latency"
+        ],
+        [
+          "Add host / split",
+          "O(rows in moved vshard)",
+          "Chunked copy 10k rows/batch; throttled to protect primary"
+        ],
+        [
+          "Memory",
+          "O(keys in cache) + O(4096) directory",
+          "Directory is KBs; cache only for hot ~5% keys"
+        ],
+        [
+          "Connections",
+          "O(routers x shards)",
+          "Pool per physical shard e.g. 20 conns; cap routers to bound fan-in"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency and the hardest follow-up — moves without loss"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two concurrency problems matter. First, per-key races: two writers to the same key on the same primary are serialised by InnoDB's row lock plus `version=version+1`, so last-writer-wins is safe and retries are idempotent. Do not use cache-aside update — always invalidate after commit, otherwise a slow `put` can repopulate stale bytes. Second, shard moves: the interviewer's killer follow-up is *show me a split with live traffic*. Answer with fencing and dual-write. The controller bumps the directory to version N+1 marking virtual shard V as `MIGRATING src->dst`. Routers on N+1 dual-write V to both src and dst but read from src. A backfiller copies chunks ordered by key with `WHERE vshard=V AND k > ? LIMIT 10000`, verifying `version` on dst is >= src. When lag is zero for two consecutive checks, the controller flips to `ACTIVE dst` as version N+2. Routers drain old pools, stale N readers self-heal by refetching the directory on version mismatch. Trade-off named: dual-write doubles write load on the moving range for minutes to gain **zero-downtime moves** — throttle it or the primary tips over. Global secondary indexes and multi-key transactions are explicitly unsupported; if asked, scope them out and offer async index builds or saga-style compensation instead of pretending 2PC across 100 primaries is viable."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Hot keys melting one shard?",
+          "text": "Answer: replicated cache + request coalescing in the router + replica reads. If still hot, split the value into chunks or push the counter to a dedicated aggregation path. Never answer add more shards — hashing does not fix skew."
+        },
+        {
+          "title": "Replica lag causing stale reads?",
+          "text": "Answer: lag-bounded routing. Each router tracks replica lag; if lag > 500ms, spill eventual reads to another replica or primary. Offer read-your-write stickiness via version token returned on put."
+        },
+        {
+          "title": "Need range scans or secondary lookup?",
+          "text": "Answer: hash sharding cannot scan. Add an async indexer that tails the binlog into a search store, or add a directory-sharded index table. State the cost: eventual index freshness."
+        },
+        {
+          "title": "Need multi-region active-active?",
+          "text": "Answer: last-writer-wins with vector versions per region, or single-region writes with global reads. True linearisable multi-master on MySQL is not worth the latency — say so directly."
+        },
+        {
+          "title": "Backups and TTL at scale?",
+          "text": "Answer: per-shard logical snapshots + binlog PITR, restored per shard in parallel. TTL via expires_at plus a low-priority deleter scanning the secondary index in chunks — never table scans."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Empty, oversized, or non-UTF8 keys; values over max blob size — reject fast at the router with `413`, never let MySQL truncate.",
+        "Hash collision vs key collision: virtual-shard hash decides location, full key is the PK — two keys sharing a vshard is normal.",
+        "Router with stale directory writes to old primary during a move — version check on response forces refetch and retry.",
+        "Cache invalidation lost on crash — read path validates `version` on miss and TTL bounds staleness to seconds.",
+        "Clock skew breaking `expires_at` — expire lazily on read plus sweeper; never rely on exact-second expiry.",
+        "Shard primary failover mid-put — client retries idempotent put; row lock + version increment makes replay safe.",
+        "Connection pool exhaustion under burst — per-shard queues with timeouts andhedged replica reads; shed load, do not queue unbounded.",
+        "Single virtual shard outgrowing memory — split threshold on rows *and* bytes; 20 GB or 30M rows per vshard is a practical trigger."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How you are graded"
+    },
+    {
+      "type": "table",
+      "caption": "Weak vs strong signals for this prompt.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Storage choice",
+          "\"Use NoSQL instead\" or one giant table",
+          "Justifies relational per shard: maturity, SQL ops, single-row transactions; scales via sharding"
+        ],
+        [
+          "Routing",
+          "Modulo N hosts, no plan for host changes",
+          "Fixed virtual shards + versioned directory; explains add/split without rehash storm"
+        ],
+        [
+          "Reads",
+          "\"Add replicas\" with no lag story",
+          "Strong vs eventual flag, lag-bounded replica selection, versioned cache invalidation"
+        ],
+        [
+          "Writes",
+          "Async ack before replica commit",
+          "Sync standby before ack, idempotent upsert, dual-write protocol for moves"
+        ],
+        [
+          "Ops",
+          "No rebalancing, no hot-key plan",
+          "Online split, throttled backfill, coalescing + cache for skew, per-shard backups"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Your 45-minute plan",
+      "text": "0-5: lock scope — sizes, QPS, consistency, TTL, scans. 5-10: kill the single table with numbers — write cap, byte cap, connection cap. 10-25: draw routers, directory, shards, standbys, replicas, cache; write the `kv` DDL and hash route. 25-35: go deep on one hard thing — online split with dual-write or lag-bounded reads. 35-42: handle hot keys, failover, TTL/backups. 42-45: close with trade-offs you accepted: no cross-shard transactions, no global indexes, ops burden of many primaries — and why it still beats switching stores."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:39:09.987Z",
+    "problems": []
+  }
+}

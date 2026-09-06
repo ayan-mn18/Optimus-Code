@@ -1,0 +1,283 @@
+{
+  "slug": "observer-design-pattern",
+  "title": "Observer Design Pattern",
+  "summary": "Observer is a one-to-many broadcast: subject owns state, observers own reaction. Cheap to add listeners, expensive to reason about ordering, reentrancy, and leaks.",
+  "kind": "LLD",
+  "problemSlug": "observer-design-pattern-36-76",
+  "topic": "Behavioral Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "👀",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Behavioral",
+    "Observer",
+    "Event-Driven"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Observer Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/observer-pattern-set-1-introduction/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "What is the Observer Pattern? (Software Design Patterns) - YouTube",
+      "url": "https://www.youtube.com/watch?v=lANfXJdXe34",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Observer pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Observer_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Observer · Design Patterns Revisited - Game Programming Patterns",
+      "url": "https://gameprogrammingpatterns.com/observer.html",
+      "source": "gameprogrammingpatterns.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**The subject never calls concrete observers. It calls a one-method interface, and it does not care who is on the other end.** That inversion is the entire pattern. State lives in one place, reaction lives in N other places, and `notify()` is the only coupling between them. If your subject imports an observer class, you have already failed."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "Observer defines a subscription contract between one state holder and an unbounded set of dependents. The subject exposes three operations: `attach`, `detach`, and a state-changing operation that triggers `notify`. Each observer exposes one operation: `update`. When state changes, the subject iterates its registry and invokes `update` on every entry. That is it. No broker, no topic routing, no persistence. The subject holds direct references to observer interfaces and performs the fan-out itself. Choose this shape when the set of interested parties is open-ended and changes at runtime, and when the subject must remain ignorant of what observers actually do — send email, redraw a widget, unlock an achievement, update a cache. The trade-off is immediate: you buy extensibility by accepting implicit control flow. Adding a new reaction costs one new class and one `attach` call, but no single file shows the full consequence of a state change."
+    },
+    {
+      "type": "paragraph",
+      "text": "The contract has two halves that interviews ignore and production punishes. On the subject side, registration must be explicit and revocation must be reliable. If `detach` is missing, awkward, or forgotten, you do not have Observer — you have a memory leak with a notification feature. On the observer side, `update` must be fast, non-blocking, and reentrancy-safe, because it executes in the subject's call stack in the naive implementation. The subject promises only *eventual invocation*, not order, not isolation, not delivery guarantees across crashes. If you need ordered delivery, exactly-once semantics, or cross-process fan-out, you need a queue or log, not an in-process listener list. Say that distinction out loud. It is what separates a Medium candidate from a Senior one."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "State change and notification are two phases of one logical transaction, and sloppy implementations fuse them. The disciplined sequence is: validate and commit new state first, then snapshot the observer registry, then iterate the snapshot and call `update`. Snapshotting before iteration is not an optimization — it is correctness. Observers detach themselves, attach new observers, or trigger nested state changes inside `update`. If you iterate the live list, you get skipped notifications or concurrent modification failures. The notification itself carries either the changed data (push) or a reference back to the subject (pull). Push is simpler for observers but freezes your event schema. Pull keeps the subject stable but lets observers query stale or half-updated state if you notify before commit. Always commit, then notify, then let observers pull. That ordering is the only one that keeps the invariant intact."
+    },
+    {
+      "type": "mermaid",
+      "title": "Static structure",
+      "caption": "Subject depends only on the Observer interface, never on concrete reactions.",
+      "code": "classDiagram\n  class Subject {\n    +attach(o: Observer)\n    +detach(o: Observer)\n    +notifyObservers()\n  }\n  class ConcreteSubject {\n    -state: Price\n    +setState(s: Price)\n    +getState(): Price\n  }\n  class Observer {\n    +update(s: Subject)\n  }\n  class PriceDisplay {\n    +update(s: Subject)\n  }\n  class AlertService {\n    +update(s: Subject)\n  }\n  Subject --> Observer : notifies\n  ConcreteSubject --|> Subject\n  PriceDisplay --|> Observer\n  AlertService --|> Observer\n  PriceDisplay --> ConcreteSubject : pulls state"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the diagram as a dependency rule, not just boxes. `ConcreteSubject` knows the `Observer` interface. `PriceDisplay` and `AlertService` know the `ConcreteSubject` only enough to read state. Nothing points from subject to concretes. That direction is why you can add a tenth observer without touching the subject file, and why you can test the subject with a single recording fake. Break the arrow — let the ticker import `EmailAlert` to pass it something special — and every new listener edits the subject. At that point delete the pattern and write sequential calls, because you are paying the indirection cost without getting the extension benefit."
+    },
+    {
+      "type": "mermaid",
+      "title": "Notification flow",
+      "caption": "Commit first, snapshot second, notify third. Order is correctness.",
+      "code": "flowchart TD\n  A[setState called] --> B[validate and commit state]\n  B --> C[snapshot observer list]\n  C --> D[pick next observer]\n  D --> E[call update]\n  E --> F{more observers}\n  F -->|yes| D\n  F -->|no| G[return to caller]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Push versus pull is the only design decision inside `update` worth arguing about. Push — `update(price)` — is faster to write and keeps observers decoupled from the subject type, but every new field changes the interface signature and forces recompilation of all observers. Pull — `update(subject)` followed by `subject.getState()` — keeps the interface stable for years and lets different observers read different slices, at the cost of a back-reference and the risk of observers seeing torn state if you notify mid-mutation. For interview code, use pull with a narrow read method like `getPrice()`. The trade-off favors evolution: subjects change less often than observers, so keep the subject interface frozen and push variation into observers. If notification volume is high and most observers ignore most events, add event filtering or typed `update` overloads — but admit you are drifting toward publish-subscribe."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every benefit of Observer bills you somewhere else.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Zero-touch extensibility: new observer needs no subject edit",
+          "Invisible control flow: no call site shows full blast radius",
+          "A one-line state change can trigger N side effects across the codebase"
+        ],
+        [
+          "Subject stays decoupled from concrete reactions",
+          "Temporal coupling: slow observer blocks the subject thread",
+          "One sluggish email sender stalls every other listener and the mutator"
+        ],
+        [
+          "Natural fit for UI, caches, and live views",
+          "No ordering, batching, or delivery guarantees",
+          "Observers cannot assume sequence; missed updates stay missed after a crash"
+        ],
+        [
+          "Simple in-process fan-out with no infrastructure",
+          "Lifetime management burden shifts to callers",
+          "Forgotten detach keeps dead objects alive and firing"
+        ],
+        [
+          "Uniform interface makes testing subjects easy",
+          "Uniform interface makes debugging observers hard",
+          "Stack traces show generic notify loop, not business intent"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not present loose coupling as free. Observer removes *compile-time* coupling and replaces it with *runtime* coupling that is harder to trace, harder to order, and harder to bound. That is the correct trade when listeners change frequently and reactions are lightweight and idempotent — view refreshes, metric increments, cache invalidations. It is the wrong trade when reactions are slow, transactional, or must happen in a defined order. In that case sequential calls or a durable queue are more honest, because they make cost and order explicit. If an interviewer asks why not just call methods directly, the answer is not elegance — it is that the set of callees is unknown at compile time and owned by different modules."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Observer fails in four repeatable ways, each with a distinct smell. First is reentrant notification: an observer calls `setState` inside `update`, which triggers a nested `notify`, which re-enters observers that assumed a single pass. Symptom is stack overflow, duplicated side effects, or an achievement unlocked twice. The fix is a guard — commit-then-notify, a reentrancy flag, or coalescing rapid changes — but the cheap fix is banning mutation inside `update` by convention and enforcing it in review. Second is the lapsed listener: a short-lived UI panel or request-scoped object attaches and never detaches. The subject holds a strong reference forever. Symptom is steadily climbing heap, `OutOfMemoryError` after days, and dead panels still receiving updates. The fix is weak references, explicit `close`/`detach` in lifecycle methods, or a subscription handle with try-with-resources semantics."
+    },
+    {
+      "type": "paragraph",
+      "text": "Third is the notification storm. A subject that fires per-keystroke, per-tick, or per-price-tick with hundreds of observers turns an O(N) loop into a latency cliff. Symptom is UI jank, p99 spikes correlated with write rate, and one slow observer dragging the mutator thread. The fix is throttling, coalescing, or moving to asynchronous dispatch — but each fix changes semantics, so name it: async means observers may see stale state and out-of-order delivery. Fourth is exception poisoning: one observer throws, the loop aborts, remaining observers starve silently. Symptom is partial updates where some views refresh and others freeze, with no error at the call site. The fix is per-observer try-catch with logging inside `notify`, never letting observer code break the fan-out. If you write `notify` without that guard, you have built a system where the least reliable listener determines reliability for all."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Heap grows while traffic is flat + dead views still logging → lapsed listener holding strong references.",
+        "p99 write latency tracks observer count → synchronous fan-out on the mutator thread.",
+        "Duplicate emails / double-counted metrics after one state change → reentrant `setState` inside `update`.",
+        "Half the dashboards refresh, half freeze, no exception at caller → one observer threw and aborted the notify loop.",
+        "UI flickers on every keystroke → per-change notify without debounce or dirty-flag coalescing."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The leak is the default",
+      "text": "In garbage-collected languages the subject outlives most observers. **Every `attach` without a paired `detach` is a leak.** Return a handle, require `close()`, or store `WeakReference`s. If your design has no story for unsubscription, it will fail in production within weeks."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Implementation that does not embarrass you"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "StockTicker.java",
+      "code": "import java.util.concurrent.CopyOnWriteArrayList;\n\ninterface TickerObserver {\n    void onPrice(StockTicker ticker); // pull model: observer reads what it needs\n}\n\nclass StockTicker {\n    private final CopyOnWriteArrayList<TickerObserver> observers = new CopyOnWriteArrayList<>();\n    private volatile double price;\n\n    public AutoCloseable attach(TickerObserver o) {\n        observers.add(o);\n        return () -> detach(o); // caller must close; makes leak explicit\n    }\n\n    public void detach(TickerObserver o) {\n        observers.remove(o);\n    }\n\n    public double getPrice() {\n        return price;\n    }\n\n    public void setPrice(double next) {\n        if (Double.compare(price, next) == 0) return; // coalesce: no change, no storm\n        this.price = next; // 1. commit first\n        notifyObservers(); // 2. notify after commit\n    }\n\n    private void notifyObservers() {\n        // CopyOnWriteArrayList iterates over a snapshot: detach inside update is safe.\n        for (TickerObserver o : observers) {\n            try {\n                o.onPrice(this);\n            } catch (RuntimeException ex) {\n                // 3. isolate failures: one bad observer must not starve the rest\n                System.err.println(\"observer failed: \" + ex);\n            }\n        }\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three choices do the heavy lifting here, and each names its trade-off. `CopyOnWriteArrayList` gives snapshot iteration for free, so `detach` inside `onPrice` cannot corrupt the loop. The cost is copy-on-write: fine for few observers and infrequent attach, terrible for thousands of attaches per second — in that case copy the list manually under a lock. The pull signature `onPrice(ticker)` freezes the interface while letting observers evolve independently; the cost is a back-reference the observer must not abuse for mutation. Returning `AutoCloseable` forces the lifetime question into the API: callers see that subscription is a resource. The `try-catch` per observer trades silent isolation for debuggability — log aggressively, because swallowing exceptions hides bugs. The equality guard in `setPrice` is deliberate throttling: it prevents storms from repeated identical writes, at the cost of observers never seeing redundant sets."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Never hold a lock across notify",
+      "text": "Do not mark `setPrice` as `synchronized` and then call observers while holding the monitor. Any observer that calls back into the subject deadlocks or re-enters unpredictably. Commit under the lock, release it, then notify on a snapshot. **Lock the state, not the fan-out.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in interviews"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Warm-up: design a notification center",
+          "text": "They ask for `subscribe`, `unsubscribe`, `publish`. Write the interface version in under five minutes. Use pull, snapshot iteration, and per-observer exception isolation. Mention why you did each one — interviewers score the justification, not the loop."
+        },
+        {
+          "title": "Follow-up: YouTube channel / stock ticker / weather station",
+          "text": "Same skeleton, different state. The trap is pushing the full payload. Ask whether observers need all fields or a slice. Choose pull for evolving schemas, push only when the event is tiny and frozen. State the schema-evolution trade-off explicitly."
+        },
+        {
+          "title": "Follow-up: thread safety and unsubscribe-during-notify",
+          "text": "They will attach/detach from multiple threads or detach inside `update`. Answer with snapshot semantics: `CopyOnWriteArrayList` or copy-under-lock. Explain why iterating the live list breaks and why holding a lock across `update` deadlocks."
+        },
+        {
+          "title": "Follow-up: slow observer blocks publisher",
+          "text": "They describe UI freeze or p99 spike. Propose the async split: subject enqueues events to an executor, observers run off-thread. Name the cost immediately — loss of ordering, stale reads, need for backpressure — or you look like you think async is free."
+        },
+        {
+          "title": "Kill shot: Observer vs pub-sub vs polling",
+          "text": "They ask when you would not use Observer. Say: same-process, open-ended listeners → Observer; cross-service or durable delivery → broker-backed pub-sub; rare reads and cheap recompute → polling. One sentence each, with the delivery and lifetime guarantee as the discriminator."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Observer and publish-subscribe are the same.** They are not. Observer is direct, synchronous, in-process fan-out with no broker. Pub-sub inserts a topic and intermediary, which adds routing, durability, and cross-process reach at the cost of infrastructure and latency.",
+        "**Loose coupling means no coupling.** The subject still depends on timing, thread, and failure behavior of observers. A blocking or throwing observer couples everyone through the notify loop.",
+        "**Notify means ordered, reliable delivery.** It means best-effort invocation on a snapshot. Crash between commit and notify loses the event. Restart does not replay it. If you need replay, you need a log.",
+        "**More events means more responsive.** It usually means a storm. Per-keystroke or per-tick notify without coalescing or debounce melts the mutator thread. Batch, diff, or throttle.",
+        "**The subject should push everything observers might need.** That freezes your event schema on day one. Pull a narrow read method so observers evolve without breaking the subject interface."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use Observer for open-ended in-process reactions, nothing else.",
+      "headers": [
+        "Use it when",
+        "Avoid it when",
+        "Use this instead"
+      ],
+      "rows": [
+        [
+          "Set of dependents is unknown at compile time and changes at runtime (plugins, views, alerts)",
+          "Reactions must run in a strict order or transaction",
+          "Explicit pipeline or chain of responsibility with ordered stages"
+        ],
+        [
+          "Reactions are fast, idempotent view updates (redraw, invalidate cache, bump metric)",
+          "Reactions are slow, blocking, or fallible (email, network, disk)",
+          "Async dispatch to executor or durable queue with retry"
+        ],
+        [
+          "Single-process UI, game achievements, model-view sync",
+          "Listeners live in other processes or must survive restarts",
+          "Broker-backed pub-sub or event log with replay"
+        ],
+        [
+          "You control observer lifetimes and can enforce detach",
+          "Subscribers are short-lived and detach is unenforceable",
+          "Weak references, scoped subscription handles, or polling"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Observer lets an open-ended set of in-process dependents react to state changes through a one-method interface, trading explicit call order and delivery guarantees for zero-touch extensibility — so snapshot the list, commit before notify, and isolate slow or throwing observers.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:57:54.928Z",
+    "problems": []
+  }
+}

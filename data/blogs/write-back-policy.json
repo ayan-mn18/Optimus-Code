@@ -1,0 +1,272 @@
+{
+  "slug": "write-back-policy",
+  "title": "Write Back policy",
+  "summary": "Write-back acknowledges writes from cache and defers the authoritative store update, trading durability for speed and write coalescing.",
+  "kind": "HLD",
+  "problemSlug": "write-back-policy-95-214",
+  "topic": "Caching Mechanisms",
+  "difficulty": "Medium",
+  "coverEmoji": "💾",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Caching",
+    "Write-Back"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Cache Write Policies - System Design - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/cache-write-policies-system-design/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Write-back vs Write-Through caching? - Stack Overflow",
+      "url": "https://stackoverflow.com/questions/27087912/write-back-vs-write-through-caching",
+      "source": "stackoverflow.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is Write-Back? | Definition from TechTarget",
+      "url": "https://www.techtarget.com/whatis/definition/write-back",
+      "source": "techtarget.com",
+      "kind": "article"
+    },
+    {
+      "title": "Write-Through vs Write-Back Cache Explained - Computer Architecture",
+      "url": "https://www.youtube.com/watch?v=7vZwjMbn8U0",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Write-back **lies to the writer on purpose**: it ACKs as soon as the cache has the new value and syncs to the system of record later. You buy lower latency and fewer backend writes. You pay with a **durability window** where committed data exists in exactly one volatile place. If that place dies before flush, the write never happened."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Write-back is a cache write policy where a write updates only the cache on the hot path, marks that entry dirty, and returns success immediately. The backing store — database, origin, disk, main memory — is updated asynchronously on eviction, on explicit flush, on a timer, or when a dirty threshold is hit. Until that flush succeeds, cache and store disagree and the cache is authoritative. That is the entire contract. Reads for dirty keys must be served from cache, not the store, or you will serve stale data you already told the client was overwritten. The policy is almost always paired with write-allocate: on a write miss you bring the entry into cache first, then dirty it. Without allocation you cannot coalesce repeated writes to the same key, which is where most of the benefit comes from."
+    },
+    {
+      "type": "paragraph",
+      "text": "Contrast this with write-through, where every write goes to cache *and* store before ACK. Write-through keeps the two copies identical at the cost of paying backend latency on every write. Write-back decouples them. Ten overwrites to `cart:42` in two seconds become one backend write instead of ten, and the client sees cache latency (~sub-millisecond) instead of database latency (~milliseconds). The trade-off is explicit: **latency and backend load versus durability and simplicity**. If you cannot bound and survive the window where dirty data is cache-only, you picked the wrong policy."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**ACK early:** success means `durable in cache`, not `durable in store`. Callers must understand that distinction.",
+        "**Dirty bit per entry:** a boolean (or version + dirty flag) that means `cache is ahead of store`. Only dirty entries need flushing.",
+        "**Flush is a separate path:** eviction, TTL expiry, background sweeper, manual `flush(key)`, or shutdown hook. Flush failure must retain dirtiness, not drop it.",
+        "**Reads pin to cache:** a hit on a dirty entry must never fall through to the store. Bypass reads break the model.",
+        "**Ordering is not free:** without a log or version, concurrent writes + retries can flush in the wrong order and permanently regress the store."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk the lifecycle. On `PUT(k,v)`: check cache. On hit, overwrite the cached value, set `dirty=1`, update LRU position, return. On miss with write-allocate, fetch or create the slot (possibly evicting someone else first — and if the victim is dirty, flush it *before* reuse), then apply the write and mark dirty. On `GET(k)`: on hit return cached value regardless of dirty state. On miss, load from store, install as clean, return. Independently, a flusher scans for dirty entries and writes them back. On success it clears `dirty`. On failure it keeps `dirty`, backs off, and retries. Crash between ACK and flush loses data. Restart with a cold cache and no write-ahead log means the store never learns those writes existed. That is why production write-back is never just a hash map with a flag — it needs persistence for the dirty set, idempotent flushes, and a bounded staleness guarantee."
+    },
+    {
+      "type": "mermaid",
+      "title": "Write-back lifecycle",
+      "caption": "Writes complete in cache; the store is updated later by eviction or background flush.",
+      "code": "flowchart TD\n  W[\"Client PUT k=v\"] --> C{\"k in cache?\"}\n  C -- Yes --> U[\"Overwrite cache, set dirty=1, ACK\"]\n  C -- No --> A[\"Allocate slot, evict if needed\"]\n  A --> V{\"Victim dirty?\"}\n  V -- Yes --> F1[\"Flush victim to store first\"]\n  V -- No --> U2[\"Install k=v, set dirty=1, ACK\"]\n  F1 --> U2\n  U2 --> ACK[\"Return success\"]\n  U --> ACK\n  ACK --> FL[\"Later: evict / timer / explicit flush\"]\n  FL --> S[\"Write k to store\"]\n  S --> OK{\"Store ACK?\"}\n  OK -- Yes --> CL[\"Clear dirty=0\"]\n  OK -- No --> RT[\"Keep dirty=1, retry with backoff\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The dirty bit is doing two jobs and that is why it survives from CPU caches to distributed caches. First, it avoids useless work: clean evictions are free, only dirty evictions cost a backend write. Second, it enables coalescing: N writes to a hot key collapse into one flush if they land inside the same dirty window. That is the performance argument in one sentence. The cost is that eviction is no longer free — a burst of dirty evictions under memory pressure turns into a synchronized burst of backend writes at the worst possible moment. Size your cache, your dirty limit, and your flush concurrency together. A cache that holds 10x your flusher throughput in dirty bytes is a queue that will overflow exactly when traffic spikes. Bound it: max dirty bytes, max dirty age, and a backpressure signal that either blocks writers or degrades to write-through when the bound is hit."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "The sizing rule most people skip",
+      "text": "Flush throughput must exceed **sustained dirty generation rate**, not average write rate. Coalescing helps only if hot keys repeat. If every key is written once and evicted dirty, write-back adds latency *and* a loss window for zero backend savings. Measure key repeat rate before you claim a win."
+    },
+    {
+      "type": "table",
+      "caption": "Write-back trade-offs, no hand-waving.",
+      "headers": [
+        "Dimension",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Write latency",
+          "Cache-speed ACK, backend latency hidden from client",
+          "ACK is not durability; crash before flush = silent loss"
+        ],
+        [
+          "Backend load",
+          "Coalesces repeated writes; absorbs bursts",
+          "Dirty eviction storms can hammer backend worse than steady write-through"
+        ],
+        [
+          "Consistency",
+          "Read-your-write if all reads go through cache",
+          "Cache and store diverge by design; bypass readers see stale data"
+        ],
+        [
+          "Complexity",
+          "Simple hot path: update + flag",
+          "Hard cold path: flush retries, ordering, idempotency, recovery, backpressure"
+        ],
+        [
+          "Availability",
+          "Survives short backend outages by buffering dirty writes",
+          "Buffer is bounded; long outage means block, drop, or degrade — pick one upfront"
+        ],
+        [
+          "Cost",
+          "Fewer store writes, smaller provisioned backend",
+          "More cache memory held dirty + operational cost of sweeper, log, and monitoring"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Write-back fails in exactly the way its contract predicts: something destroys or bypasses the only copy. The classic is process crash or node loss with a memory-only dirty set. The client got `200 OK`, the cache died, the database has nothing. Symptom: writes that succeed and then vanish after a restart or failover, with no error in the store logs — because the store was never asked. The second classic is a stale bypass read: a job reads directly from the database for analytics or a second service path ignores the cache and republishes the old value, undoing the acknowledged write. Symptom: intermittent regression where a field flips back to an older value minutes after update. The third is flush failure handled wrong: flusher gets a timeout, assumes failure, retries, but the first attempt actually applied — without idempotency you double-apply a non-idempotent increment. Symptom: counters or balances drift upward after backend blips. The fourth is the dirty-eviction avalanche: memory fills, every eviction needs a synchronous flush, request threads block on flush, tail latency explodes. Symptom: p99 spikes correlated with high eviction rate and backend saturation, not with cache hit rate."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Lost ACKed writes after crash:** symptom is `PUT succeeded but GET after restart returns old value`. Fix is persist the dirty log or do not use write-back for that data.",
+        "**Stale bypass reads:** symptom is readers disagreeing — cache readers see v2, direct-store readers see v1. Fix is force all readers through cache or bound staleness and version every value.",
+        "**Out-of-order flush:** symptom is last-writer-wins violated; an older flush overwrites a newer value. Fix is per-key version or sequence number, flush in order, store rejects stale versions.",
+        "**Poison flush loop:** symptom is one bad key blocking the sweeper and growing the dirty backlog. Fix is dead-letter the key after N retries, alert, keep serving from cache.",
+        "**Unbounded staleness:** symptom is dirty age in hours because flush concurrency was sized for average. Fix is alert on `dirty_bytes` and `oldest_dirty_age`, shed or degrade explicitly."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Never ship memory-only write-back for money or inventory",
+      "text": "If the write affects billing, stock, auth, or anything you cannot recompute, either add a **write-ahead log on durable storage** before ACK or use write-through. A cache restart should be a performance event, not a data-loss event. Say this trade-off out loud in the design review."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes it concrete"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "write_back.py",
+      "code": "class WriteBackCache:\n    def __init__(self, store, max_dirty=10000):\n        self.cache = {}   # k -> (value, version)\n        self.dirty = {}   # k -> (value, version)\n        self.store = store\n        self.max_dirty = max_dirty\n        self.seq = 0\n\n    def put(self, k, v):\n        # Backpressure: bound the loss window instead of growing it.\n        if len(self.dirty) >= self.max_dirty:\n            self.flush_oldest()  # or raise / degrade to write-through\n        self.seq += 1\n        self.cache[k] = (v, self.seq)\n        self.dirty[k] = (v, self.seq)  # ACK happens here; store not yet updated\n        return True  # means durable-in-cache only\n\n    def get(self, k):\n        if k in self.cache:\n            return self.cache[k][0]  # must serve dirty values from cache\n        v = self.store.load(k)  # miss: install as clean\n        self.cache[k] = (v, 0)\n        return v\n\n    def flush(self, k):\n        if k not in self.dirty:\n            return\n        v, ver = self.dirty[k]\n        # Store must reject stale versions to preserve ordering.\n        self.store.compare_and_set(k, v, min_version=ver)\n        # Only clear if nobody overwrote during the flush.\n        if self.dirty.get(k) == (v, ver):\n            del self.dirty[k]\n\n    def flush_oldest(self):\n        k = next(iter(self.dirty))  # real code: oldest by seq, batched, concurrent\n        self.flush(k)\n\n    def evict(self, k):\n        # Never drop a dirty entry without a successful flush.\n        if k in self.dirty:\n            self.flush(k)\n        self.cache.pop(k, None)"
+    },
+    {
+      "type": "paragraph",
+      "text": "This toy omits what makes production work, and you should name those gaps in an interview. Real flushers are batched, concurrent, and idempotent; they carry a per-key sequence so a delayed retry cannot clobber a newer value. Real caches persist the dirty map to disk or a log before ACK if they promise survival across restarts. Real eviction does not synchronously flush on the request thread — it hands the dirty victim to a flush queue and either blocks with a timeout or reuses a reserved clean pool. The code above is useful for one reason: it shows where the policy lives. `put` never touches the store. `get` never bypasses a dirty entry. `evict` never discards dirt. Violate any of those three and you no longer have write-back, you have a lossy cache with extra steps."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Write-back above a single process"
+    },
+    {
+      "type": "paragraph",
+      "text": "In a distributed cache the same idea gets more dangerous because there are now two ways to lose: node loss and routing change. If key ownership moves while dirty data sits on the old owner, the new owner loads stale data from the store and serves it. The fix is sticky routing plus handoff of the dirty set, or a shared durable log that the new owner replays. This is why many teams use write-back only at the edge for coalescing (counter aggregation, session deltas, debounced counters) and keep the system of record behind a queue or log rather than a bare database row. The pattern that survives is: cache buffers, log durably orders, store applies idempotently. If you remove the middle term you are betting that cache memory is durable. It is not. Name the bet, bound the window with max dirty age, expose `dirty_count` and `flush_lag` as first-class metrics, and define the degraded behavior — block writes, drop with explicit error, or fall back to write-through — before the first outage forces the choice."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "State the contract in one line",
+          "text": "Say: ACK on cache write, store updated later on flush. Reads must hit cache for dirty keys. Staleness is bounded by flush policy, durability is bounded by crash survival of the dirty set."
+        },
+        {
+          "title": "Draw the flush triggers",
+          "text": "Name all four: eviction of dirty entry, background timer or size threshold, explicit invalidate or flush call, graceful shutdown. Interviewers promote you when you show flush is a separate subsystem with retries."
+        },
+        {
+          "title": "Quantify the win",
+          "text": "Do not say faster. Say: with repeat-write ratio R and flush batch B, backend writes drop by roughly R, p95 write latency drops from store RTT to cache RTT. If R is near zero, say write-back is pointless."
+        },
+        {
+          "title": "Close the loss window",
+          "text": "Propose WAL or replication of dirty entries, idempotent versioned flush, per-key ordering, and backpressure at max dirty bytes or age. This is where medium questions become senior questions."
+        },
+        {
+          "title": "Pick the degraded mode",
+          "text": "State what happens when the store is down or the dirty bound fills: block, degrade to write-through, or reject. Never say queue forever. Every buffer is bounded by memory."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Write-back means eventually consistent, so anything goes:** no. It means bounded staleness for cache-routed readers and unbounded staleness for anyone who bypasses the cache. Bypass is the bug.",
+        "**Dirty bit is an optimization:** it is the correctness mechanism. Without it you cannot tell which evictions need a store write or which flushes are safe to skip.",
+        "**Write-back is always faster:** only when writes repeat on hot keys or the backend is slow. Write-once workloads pay the flush cost anyway plus the loss risk.",
+        "**Flush on eviction is enough:** eviction-only flush gives unbounded staleness for hot keys that never evict. You need a timer or dirty-age bound.",
+        "**Retry is safe by default:** only if the store operation is idempotent and versioned. Retrying a blind overwrite or a non-idempotent increment corrupts data after timeouts."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "When write-back earns its keep — and when it does not.",
+      "headers": [
+        "Use it when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Hot keys are overwritten many times (counters, carts, sessions, aggregations)",
+          "Each key is written once and rarely reread — no coalescing to harvest"
+        ],
+        [
+          "Write latency is user-visible and backend is slow or bursty",
+          "Correctness requires store durability before ACK (payments, inventory decrement)"
+        ],
+        [
+          "You control all read paths through the cache and can version entries",
+          "Bypass readers exist that must see the latest value directly from the store"
+        ],
+        [
+          "You can bound dirtiness (max bytes, max age) and survive flusher lag",
+          "Flush path has no backpressure, no idempotency, no ordering — retries will corrupt"
+        ],
+        [
+          "Temporary backend outages must not block writes for seconds",
+          "Outages last longer than your dirty buffer can hold — you will drop or block anyway"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Write-back ACKs from cache and flushes dirty entries to the store later, which cuts write latency and coalesces hot overwrites at the cost of a bounded window where an ACKed write lives only in cache — so use it only with versioned idempotent flush, bounded dirty age, and explicit backpressure."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:39:10.035Z",
+    "problems": []
+  }
+}

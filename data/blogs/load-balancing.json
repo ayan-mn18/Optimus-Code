@@ -1,0 +1,313 @@
+{
+  "slug": "load-balancing",
+  "title": "Load Balancing",
+  "summary": "Load balancing decouples request routing from server capacity — how L4/L7, algorithms, health checks, and failure modes decide scalability.",
+  "kind": "HLD",
+  "problemSlug": "load-balancing-90-182",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "⚖️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Load Balancing",
+    "System Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is load balancing? | How load balancers work - Cloudflare",
+      "url": "https://www.cloudflare.com/learning/performance/what-is-load-balancing/",
+      "source": "cloudflare.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Load Balancing? - Load Balancing Algorithm Explained - AWS",
+      "url": "https://aws.amazon.com/what-is/load-balancing/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    },
+    {
+      "title": "Load Balancer Explained - YouTube",
+      "url": "https://www.youtube.com/watch?v=1fN2UDbtGDQ&vl=en",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is Load Balancing & How Do Load Balancers Work - Kemp",
+      "url": "https://kemptechnologies.com/what-is-load-balancing",
+      "source": "kemptechnologies.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**A load balancer lets you add and remove servers without clients ever knowing.** Everything else — algorithms, health checks, TLS, L4 vs L7 — is just how honestly you implement that decoupling. If your design still requires clients to know how many servers you have, you do not have load balancing, you have wishful thinking."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Load Balancing Actually Is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Load balancing is a control point that maps each incoming connection or request to one backend from a dynamic pool, while continuously pruning that pool to only healthy members. The client connects to a single stable endpoint — a virtual IP, a DNS name, an anycast address — and the balancer decides which real server does the work. That indirection is the whole value: backends become interchangeable, replaceable, and independently scalable. Without it, every scale-out is a client-visible migration. With it, scale-out is an operator-internal event: register a new backend, wait for health checks to pass, start receiving a share of traffic, and drain old backends without dropping in-flight work. The trade-off is immediate: you have inserted a critical middlebox into every request path. You gain elasticity and fault isolation, you pay with an extra hop, extra state to manage, and a new single point of failure you must now make highly available."
+    },
+    {
+      "type": "paragraph",
+      "text": "The reason this matters for scalability is that stateless request handling scales almost linearly, but only if distribution is even and failures are masked fast. A single server hits CPU, memory, connection, or NIC limits and then latency explodes — queueing delay dominates long before you hit 100% utilization. Ten servers behind a competent balancer do not just give you 10x throughput; they give you bounded tail latency under churn, because a slow or dead server stops receiving new work within seconds. That is why interviewers treat the balancer as mandatory for any read-heavy or request-parallel system: not because one server cannot handle the average load, but because averages lie. Bursts, deploys, AZ failures, and one hot partition will kill a statically mapped fleet. The balancer is what converts raw capacity into usable availability. The cost you accept in return is operational complexity — health semantics, session affinity, connection draining, and capacity-aware routing all live here now."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Where It Sits in the Request Path"
+    },
+    {
+      "type": "mermaid",
+      "title": "Load balancer request flow",
+      "caption": "Every request passes selection + health filtering before touching a backend.",
+      "code": "flowchart LR\n  Client[Clients] --> VIP[Load Balancer<br/>Virtual IP]\n  VIP --> Picker{Pick Backend}\n  Picker --> S1[Server A]\n  Picker --> S2[Server B]\n  Picker --> S3[Server C]\n  S1 -. Health .-> HC[Active Health Checks]\n  S2 -. Health .-> HC\n  S3 -. Health .-> HC\n  HC -. Prune .-> Picker"
+    },
+    {
+      "type": "paragraph",
+      "text": "Mechanically the balancer does four things on a loop: terminate or forward the client connection, filter the pool to backends that recently passed health checks, apply a selection policy to pick one, and proxy or redirect the traffic while tracking the outcome. In NAT or full-proxy mode it holds two TCP connections — client-to-balancer and balancer-to-server — so it can retry, buffer slow clients, and shield backends from connection churn. In direct-return mode the request goes through the balancer but the response bypasses it, saving balancer bandwidth at the cost of more network trickery. Health checking runs out-of-band: synthetic `GET /healthz` probes, TCP opens, or gRPC checks at 5-30 second intervals, with N consecutive failures to eject and M consecutive successes to re-admit. The critical trade-off is check aggressiveness: fast ejection cuts error rate during failures but causes flapping and mass ejection when the checker itself or the network blips. That is why production balancers use outlier detection plus active checks, not active checks alone."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "L4 vs L7: The Split That Decides Everything"
+    },
+    {
+      "type": "paragraph",
+      "text": "Layer-4 balancing routes bytes without understanding requests. It hashes source IP and port or tracks TCP/UDP flows and forwards packets to a backend, never parsing HTTP, never decrypting TLS unless you terminate at the edge. It is brutally fast, cheap per connection, and protocol-agnostic — the right choice when you need millions of concurrent flows, non-HTTP protocols like gaming, MQTT, or databases, or pass-through TLS where backends own certificates. The trade-off is blindness: it cannot do URL routing, header-based canaries, retries on a 500, or cost-aware shedding, because it never sees a request boundary. It balances connections, not work. If requests vary 100x in cost — one search query versus one static image — L4 will look balanced on connections and be wildly imbalanced on CPU."
+    },
+    {
+      "type": "paragraph",
+      "text": "Layer-7 balancing terminates the application protocol — usually HTTP/HTTPS or gRPC — parses method, path, headers, and body framing, then routes each *request*, not each connection. This is what enables path-based routing to different services, sticky cookies, request retries, header-based traffic splitting, rate limiting, and request-queue-aware least-loaded selection. The price is real: TLS termination costs CPU, buffering costs memory, parsing costs latency, and the balancer must now understand protocol upgrades, streaming, and large bodies correctly. Choose L7 when routing logic depends on content or when request costs are heterogeneous. Choose L4 when you need raw packet throughput or protocol opacity. Most serious systems use both: L4 at the edge for scale and DDoS absorption, L7 one hop inside for intelligent routing. Say that layering explicitly in an interview — it signals you have operated this, not just read about it."
+    },
+    {
+      "type": "table",
+      "caption": "Core load-balancing trade-offs, no free options.",
+      "headers": [
+        "Decision",
+        "If you pick X",
+        "If you pick Y",
+        "Trade-off"
+      ],
+      "rows": [
+        [
+          "L4 vs L7",
+          "L4: 5M+ flows, ~sub-ms added latency, protocol agnostic",
+          "L7: content routing, retries, per-request balancing",
+          "Speed and simplicity vs visibility and control; L7 costs CPU and becomes the bottleneck first"
+        ],
+        [
+          "Proxy vs Direct Return",
+          "Full proxy: retries, shielding, easy TLS",
+          "Direct return: backend replies direct, 2-3x less LB bandwidth",
+          "Reliability and features vs bandwidth cost and network complexity"
+        ],
+        [
+          "Round-robin vs Least-loaded",
+          "Round-robin: stateless, predictable, trivial to debug",
+          "Least-connections / least-latency: handles heterogeneous cost",
+          "Simplicity vs utilization; dynamic policies need accurate load signals or they herd"
+        ],
+        [
+          "Client-side vs Server-side LB",
+          "Server-side VIP: one policy, easy to change",
+          "Client-side: no hop, no choke point",
+          "Central control vs client complexity and stale config distribution"
+        ],
+        [
+          "Single LB vs Tiered LBs",
+          "Single tier: fewer hops, easier reasoning",
+          "Edge L4 + service L7 mesh: isolates blast radius",
+          "Latency and cost vs fault isolation and team autonomy"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Algorithms Are Policies on Top"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not recite algorithms as a list — explain what signal each one trusts, because that signal is what breaks. Static policies trust configuration. Dynamic policies trust measurements. Static is correct when backends are homogeneous and requests are uniform; dynamic wins when either varies. The failure mode flips accordingly: static policies overload a weakened server because they ignore weakness, dynamic policies thundering-herd onto the server that *looked* idle two seconds ago. My default opinion: start with weighted round-robin or least-connections with bounded load, add consistent hashing only for state, and distrust anything that claims to be latency-optimal without discussing measurement delay and herding."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Round-robin:** cycle `i = (i+1) % N` over healthy backends. Zero state, perfectly fair on *request count*. Fails when requests differ in cost or servers differ in size — fairness on count is unfairness on work.",
+        "**Weighted round-robin / weighted random:** assign capacity weights, send proportionally more to larger servers. Why: lets you mix instance sizes and drain a host by lowering weight. Trade-off: weights go stale after deploys or thermal throttling.",
+        "**Least-connections / least-outstanding-requests:** pick backend with fewest active flows. Why: approximates least-loaded without app cooperation. Fails with long-lived streaming or WebSocket connections that inflate counts without CPU cost.",
+        "**Least-latency / P2C + EWMA:** sample two backends, pick lower exponentially-weighted latency. Why: best utilization for heterogeneous work. Cost: needs careful probing or new backends get slammed — the classic herd.",
+        "**Consistent hashing (source IP, URL, key):** hash request key onto a ring so same key sticks to same backend. Why: preserves cache locality and in-memory session state. Trade-off: hot keys create hot servers; you must add bounded-load rejection or virtual nodes.",
+        "**Sticky sessions (`cookie` affinity):** L7 balancer pins client to backend via cookie. Why: avoids externalizing session state. Cost: destroys evenness, complicates draining, and masks the real fix — make state external."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Stickiness is debt",
+      "text": "Every sticky session is a bet that the pinned server will stay healthy for the session lifetime. It will not. Use stickiness only as a cache optimization on top of a correct shared-state design, never as the correctness mechanism. If a server death loses user carts, the balancer did not fail — your state placement did."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How It Fails in Production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Load balancers rarely die quietly — they amplify. The pattern to internalize is that balancer failures look like backend failures at first, which sends operators scaling backends while the balancer itself is saturated. Learn the symptoms cold, because in an interview the follow-up is always *what graphs would you check first?* You answer with balancer queue depth, backend unevenness, and health-check flapping, not CPU averages."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Balancer saturation:** symptom is rising `p99` with low backend CPU and growing LB queued-requests / dropped SYN. Cause: TLS handshakes, connection churn from mobile clients, or large-buffer L7 parsing. Fix is connection reuse, TLS session resumption, and scaling the LB tier — not adding backends.",
+        "**Health-check thundering:** symptom is mass ejection across AZs with backends reporting healthy locally. Cause: checker timeout too tight, `/healthz` doing deep dependency checks, or checker network partition. Fix: separate liveness from readiness, keep probes shallow and fast, require N failures before eject.",
+        "**Hot backend from hashing:** symptom is one server at 95% CPU while peers sit at 30%, request rate even. Cause: celebrity key or NAT-collapsed source IPs behind consistent hash. You see cache hit rate high on the hot host and low elsewhere. Fix: bounded loads + spillover, split hot keys, add virtual nodes.",
+        "**Retry storm via L7:** symptom is backend QPS 3-5x client QPS after a partial outage. Cause: balancer retries every 500/timeout aggressively with no budget. Fix: retry budgets (e.g., max 10-20% of active requests), idempotency keys, circuit breaking, hedged requests only for reads.",
+        "**Cross-zone imbalance + drain bug:** symptom is elevated 502s only during deploys. Cause: balancer sends traffic to a draining host, or zone-affinity pins 80% to one AZ. Fix: deregistration delay with real connection draining (30-90s), slow-start for newly registered hosts, verify zone spreading."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete Configuration"
+    },
+    {
+      "type": "code",
+      "language": "nginx",
+      "filename": "lb.conf",
+      "code": "upstream api {\n  least_conn;                    # dynamic: trust active-connection signal\n  server 10.0.1.11:8080 max_fails=3 fail_timeout=15s slow_start=30s;\n  server 10.0.1.12:8080 max_fails=3 fail_timeout=15s slow_start=30s;\n  server 10.0.1.13:8080 max_fails=3 fail_timeout=15s slow_start=30s;\n  keepalive 256;                # reuse backend conns, avoid handshake storm\n}\nserver {\n  listen 443 ssl;\n  location / {\n    proxy_pass http://api;\n    proxy_next_upstream error timeout http_502 http_503 non_idempotent off;\n    proxy_connect_timeout 2s;\n    proxy_read_timeout 5s;\n    health_check interval=5s fails=3 passes=2 uri=/healthz;\n  }\n  location /healthz { return 200; }  # LB liveness != app readiness\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet encodes four opinions. `least_conn` over round-robin because API requests vary in cost — trade-off is slightly less predictable debugging for better tail latency. `max_fails=3` with `fail_timeout=15s` instead of instant ejection because one timeout is noise, three is signal — fast enough to stop bleeding, slow enough to avoid flapping. `slow_start=30s` because a cold JVM or freshly warmed cache cannot take full share on second zero; without it every deploy creates its own latency spike. `keepalive 256` plus short connect timeouts because balancer-to-backend handshake churn is the silent killer at scale — you pay a little idle memory to save enormous CPU. Note what health checks do *not* do: they hit a shallow `/healthz`, not a deep DB ping. Deep checks couple LB membership to downstream fate and turn one slow dependency into a total ejection cascade."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Health Checking and Failure Detection"
+    },
+    {
+      "type": "paragraph",
+      "text": "Separate three concepts interviewers deliberately conflate: liveness (process alive), readiness (ready for new work), and load (how much more it can take). The balancer should consume readiness and load, never raw liveness. A server that just started should answer liveness OK but readiness FAIL until warmup completes; a server under GC pressure should keep readiness OK but advertise higher load so least-loaded routing avoids it. Passive detection — outlier ejection on consecutive 5xx, timeouts, or TCP resets — must complement active probes because probes lie during partial degradation: `/healthz` can return 200 while real requests time out on a saturated thread pool. The trade-off of passive ejection is false positives from a poison-pill request type that fails on every host; scope ejection per-route or per-code, and always pair it with a retry budget and a half-open probe before full readmission."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How This Shows Up in Interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start at the edge, not the algorithm",
+          "text": "Draw client → DNS → edge LB (L4) → L7 API LB → service instances. State where TLS terminates and why. Interviewers dock you for jumping to round-robin before placing the LB tier and its redundancy."
+        },
+        {
+          "title": "Justify L4 vs L7 from request shape",
+          "text": "Say: uniform static reads → L4 suffices; heterogeneous API with auth, routing, canary → L7. Name the cost: L7 adds 1-5ms and TLS CPU but buys per-request control. Never say both without saying where each lives."
+        },
+        {
+          "title": "Pick one algorithm and defend the signal",
+          "text": "Choose least-connections or P2C for mixed workloads, consistent hash only if you can name the state (cache, connection, shard). Explain what breaks it and your mitigation — bounded load, virtual nodes, slow-start."
+        },
+        {
+          "title": "Design health and draining, not just happy path",
+          "text": "Specify probe endpoint, interval, fail/pass thresholds, drain timeout, and slow-start. This is where medium becomes senior: anyone can draw boxes, few handle deploys without 502s."
+        },
+        {
+          "title": "Kill the single point of failure",
+          "text": "Show two+ LB instances with ECMP, anycast, or DNS failover, plus cross-AZ spreading. Quantify: N+1 capacity so loss of one AZ still meets peak with headroom. State the trade-off: active-active costs 2x but avoids failover delay."
+        },
+        {
+          "title": "Close with scaling math",
+          "text": "Estimate: 50k RPS × 10ms backend = 500 concurrent requests; per-host 500 threads is too hot, so 10 hosts at 50 concurrent each. Show LB must sustain 50k TLS handshakes/s on churn — that sizes the LB tier independently from backends."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions That Fail You"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**DNS alone is load balancing:** DNS has no health signal and caches for minutes to hours. It is endpoint discovery, not balancing. Use it to find LBs, not replace them.",
+        "**Round-robin evenly loads servers:** it evenly counts requests. Even counts with uneven costs or uneven servers is the definition of imbalance.",
+        "**More balancer retries always help availability:** unbounded retries multiply load exactly when the system is weakest. Retries without budgets and idempotency turn a blip into an outage.",
+        "**Sticky sessions remove the need for shared state:** they hide it until a deploy, crash, or scale-in deletes it. Externalize session or accept data loss — affinity is not durability.",
+        "**Active health checks are sufficient:** a green probe with a saturated worker pool is common. You need passive outlier detection on real traffic plus half-open readmission.",
+        "**The balancer is free:** every L7 feature costs latency, CPU, and a new failure domain. If backends are homogeneous and stateless, a simpler L4 plus client retries often wins."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to Use It and When Not To"
+    },
+    {
+      "type": "table",
+      "caption": "Use load balancing by default, but know the exceptions.",
+      "headers": [
+        "Scenario",
+        "Use LB?",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Stateless web/API fleet (3+ hosts)",
+          "Yes — L7 at service edge",
+          "Enables rolling deploys, AZ failover, and even tail latency; cost is justified immediately"
+        ],
+        [
+          "Mixed workloads / multi-tenant",
+          "Yes — least-loaded L7",
+          "Request costs vary 10-100x; static mapping guarantees hot hosts without dynamic signal"
+        ],
+        [
+          "Cache-heavy / stateful shards",
+          "Yes — consistent hash + bounded load",
+          "Preserves locality while capping hot-key damage; plain round-robin destroys hit rate"
+        ],
+        [
+          "Single small service, low traffic",
+          "Maybe — managed LB anyway",
+          "Even one host benefits from health-gated deploys, but do not over-engineer tiers; one managed LB suffices"
+        ],
+        [
+          "Ultra-low-latency intra-AZ RPC",
+          "Often no central LB — client-side or mesh",
+          "Extra hop adds measurable p99; client-side P2C with local load signals wins on latency"
+        ],
+        [
+          "Strongly consistent leader protocol",
+          "No — consensus routing, not LB",
+          "Writes must reach the leader; balancing them randomly breaks correctness — route by role, not load"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "**Place a redundant L7 balancer behind an L4 edge, route by least-loaded with health-gated membership and draining, and use hashing only for cache locality — because even distribution of *work*, not requests, is what scales.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:09:54.335Z",
+    "problems": []
+  }
+}

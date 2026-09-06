@@ -1,0 +1,287 @@
+{
+  "slug": "facade-design-pattern",
+  "title": "Facade Design Pattern",
+  "summary": "Facade is a single intention-revealing entry point over a messy subsystem. When to add one, what it must hide, and what it must not become.",
+  "kind": "LLD",
+  "problemSlug": "facade-design-pattern-37-77",
+  "topic": "Structural Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "🏛️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Structural Patterns",
+    "Facade"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Facade - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/facade",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Facade pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Facade_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Facade Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/facade-design-pattern-introduction/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Facade Pattern - Design Patterns - YouTube",
+      "url": "https://www.youtube.com/watch?v=fHPa5xzbpaA",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A **Facade owns a workflow, not objects**. If it does not decide order, defaults, cleanup, and error translation for a painful multi-step subsystem, it is just a pass-through — and pass-throughs rot into useless coupling magnets."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A Facade is a deliberately narrow, higher-level interface placed in front of a subsystem that is correct but painful to use directly. The subsystem might require five objects to be built in a strict order, conditional branches depending on input type, temporary resources that must be released, and low-level error codes that mean nothing to a business caller. The Facade collapses that entire procedure into one method like `encode(source, format)` or `placeOrder(cart, payment)` or `sendNotification(user, message)`. The client states intent; the Facade handles orchestration. That is why it belongs with structural patterns: it changes the shape of dependencies without changing what the subsystem can do."
+    },
+    {
+      "type": "paragraph",
+      "text": "Three properties separate a real Facade from a random helper class. First, it **depends inward only**: the client knows the Facade, the Facade knows the subsystem, the subsystem knows nothing about the Facade. Reverse that arrow and you have created a cycle that will freeze future changes. Second, it **reduces surface area by an order of magnitude**: if the subsystem exposes forty public methods and your Facade exposes thirty-eight, you failed. A good Facade covers the 2-3 workflows used by 90% of callers. Third, it **does not forbid direct access**. Advanced clients can still reach past it to the subsystem when they need control the simplified path cannot offer. A design that forces every caller through one choke point is not a Facade, it is a gatekeeper, and the trade-off is brittleness versus convenience."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "mermaid",
+      "title": "Facade structure",
+      "caption": "Client depends only on the Facade; subsystem classes remain decoupled from it.",
+      "code": "classDiagram\nclass Client\nclass VideoFacade {\n  +encode(source : String, format : String) : String\n}\nclass VideoDecoder {\n  +decode(file : String) : Frames\n}\nclass FilterEngine {\n  +apply(frames : Frames) : Frames\n}\nclass Encoder {\n  +encode(frames : Frames, format : String) : String\n}\nclass TempStore {\n  +alloc() : Handle\n  +release(h : Handle) : void\n}\nClient --> VideoFacade\nVideoFacade --> VideoDecoder\nVideoFacade --> FilterEngine\nVideoFacade --> Encoder\nVideoFacade --> TempStore"
+    },
+    {
+      "type": "paragraph",
+      "text": "The runtime behavior is orchestration with translation on both ends. On entry, the Facade validates context-specific inputs, fills in sane defaults the subsystem demands but callers should not have to know, and builds subsystem objects in dependency order. In the middle it sequences calls that are individually trivial but jointly fragile — decode, transform, encode, persist, notify — holding intermediate state that the client never sees. On exit it converts subsystem outcomes into caller-meaningful results: temp files deleted even on failure, three different low-level exceptions mapped to one domain exception, null-laden return structs replaced by a value object. The reason this layering is chosen over teaching every client the sequence is defect localization. When the library upgrades or the ordering constraint changes, exactly one class changes. The trade-off is that the Facade now owns correctness of that sequence, so a bug there breaks every client at once instead of just one."
+    },
+    {
+      "type": "mermaid",
+      "title": "Encode workflow through Facade",
+      "caption": "The client sees one call; the Facade owns ordering and cleanup.",
+      "code": "flowchart TD\n  A[Client calls encode source format] --> B[Validate inputs and resolve defaults]\n  B --> C[Decode source to frames]\n  C --> D[Apply filters and transforms]\n  D --> E[Encode to target format]\n  E --> F[Release temp handles]\n  F --> G[Return stored path or domain error]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What you gain and what you pay for a Facade.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Single entry method for a multi-step workflow",
+          "Callers stay small and readable; onboarding drops from days to minutes",
+          "Workflow knowledge centralizes, so the Facade becomes a high-blast-radius change point"
+        ],
+        [
+          "Hiding subsystem types from the signature",
+          "Clients decouple from third-party churn; swapping a library touches one file",
+          "Power users lose control; you must maintain an escape hatch to the raw subsystem"
+        ],
+        [
+          "Adding defaults and error translation",
+          "Domain errors that callers can actually handle; fewer leaked implementation details",
+          "Hidden behavior surprises debuggers; defaults chosen wrong become silent misbehavior"
+        ],
+        [
+          "Stacking multiple Facades over one subsystem",
+          "Each client group gets a coherent slice instead of one bloated interface",
+          "Overlapping Facades drift apart; same subsystem ends up with two conflicting orderings"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The central tension is **convenience versus transparency**. Every default you bake in and every exception you translate saves ten call sites from repeating the same guard clause, which is exactly why Facade pays off in large codebases where the same subsystem is touched from checkout, admin tools, and batch jobs. But each simplification also removes information the caller might need when something unusual happens — which codec failed, which step timed out, which retry is safe. Senior engineers resolve this by making the simple path simple and the detailed path possible: the Facade returns a domain result for the common case and exposes the underlying handles or a verbose variant for diagnostics. Choose opaque simplicity without an escape hatch and you trade short-term readability for long-term undebuggability."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Where Facades rot",
+      "text": "A Facade that keeps absorbing unrelated methods — billing, shipping, reporting — stops being a Facade and becomes a **God Object**. Split by workflow coherence, not by subsystem. One Facade per painful task, not one Facade per library."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The most expensive failure is **error swallowing disguised as simplification**. The subsystem throws `CodecNotFound`, `DiskFullDuringWrite`, and `CorruptHeader`; the Facade maps all three to `return null` or a generic `EncodingFailedException` with no cause chain. In production the symptom is maddening: dashboards show a rising failure rate for `encode()` with no partitioning by cause, retries hammer a disk that is already full, and alerts cannot distinguish a bad input file from an infrastructure outage. The fix is opinionated and non-negotiable: translate, do not erase. Map to one or two domain exceptions but always attach the step name, the subsystem code, and whether the operation is retryable. Observability is part of the Facade contract, not an afterthought, because the trade-off for hiding steps is that you must re-expose their failures in caller terms."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure is **lifecycle and ordering leakage under concurrency and version drift**. A Facade that caches a decoder instance for speed now shares mutable state across threads; under load you see intermittent corrupt outputs, temp-file collisions, and `IllegalStateException` deep inside a library that looked thread-safe. Separately, when the subsystem upgrades and adds a mandatory initialization step or changes the required call order, a thin Facade that merely forwarded calls breaks silently — outputs look valid but skip filtering, or resources leak until the host runs out of file descriptors. The production symptom is a slow bleed: memory or disk grows monotonically after a deploy, or a downstream consumer complains that 1% of videos have no audio. Prevent both by making the Facade own lifecycle explicitly — short-lived handles created per call or a documented pool — and by pinning subsystem interaction behind integration tests that assert order, cleanup, and failure mapping, not just the happy path."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Log line shows only `Facade.encode failed` with no step, input id, or cause — you cannot tell user error from platform error.",
+        "Temp directory grows without bound after traffic spike — cleanup lived in the client before, and the Facade forgot to adopt it.",
+        "Intermittent corruption under parallel load — a shared decoder or buffer escaped per-call isolation.",
+        "Upgrade of underlying library changes output with no Facade change — no contract test pinned the sequencing behavior.",
+        "Half the team bypasses the Facade and calls the subsystem directly — the Facade either hides too much or does too little to be worth using."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that earns the pattern"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "VideoFacade.java",
+      "code": "public final class VideoFacade {\n    private final VideoDecoder decoder;\n    private final FilterEngine filters;\n    private final Encoder encoder;\n    private final TempStore temps;\n\n    public VideoFacade(VideoDecoder decoder, FilterEngine filters,\n                       Encoder encoder, TempStore temps) {\n        this.decoder = decoder;\n        this.filters = filters;\n        this.encoder = encoder;\n        this.temps = temps;\n    }\n\n    // The only method 90% of callers need. Owns order + cleanup + translation.\n    public String encode(String source, String format) {\n        if (source == null || source.isBlank()) throw new BadRequestException(\"source required\");\n        if (format == null) format = \"mp4\"; // default lives here, not in 20 callers\n        TempStore.Handle h = temps.alloc();\n        try {\n            Frames frames = decoder.decode(source, h);\n            Frames cut = filters.apply(frames);\n            return encoder.encode(cut, format, h);\n        } catch (SubsystemException e) {\n            // Translate, do not erase: preserve step + retryability.\n            throw new EncodingFailedException(e.step(), e.getMessage(), e.isRetryable(), e);\n        } finally {\n            temps.release(h); // client can never forget this again\n        }\n    }\n\n    // Escape hatch: power users keep direct access. Facade does not forbid it.\n    public VideoDecoder rawDecoder() { return decoder; }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This shape is chosen for three reasons, each with an explicit cost. Constructor injection of subsystem pieces makes the Facade testable with fakes and makes the dependency direction visible — the trade-off is a slightly heavier construction site, solved once in composition root. The default for `format` lives inside the Facade so twenty callers do not each reimplement `if null then mp4` inconsistently; the trade-off is hidden behavior, mitigated by documenting the default in the method contract, not in a wiki. The `try-finally` around temp handles plus exception translation is the entire economic justification: resource discipline and meaningful errors are centralized. Direct subsystem access remains open through an accessor because closing it would force every edge case through the narrow method, turning convenience into a straitjacket."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "OrderClient.java",
+      "code": "// Without facade: every caller repeats order, defaults, cleanup.\nVideoDecoder d = new VideoDecoder();\nFilterEngine f = new FilterEngine();\nEncoder e = new Encoder(cfg);\nTempStore t = new TempStore(\"/tmp\");\nTempStore.Handle h = t.alloc();\ntry {\n    Frames raw = d.decode(path, h);\n    String out = e.encode(f.apply(raw), fmt, h);\n    t.release(h);\n    return out;\n} catch (SubsystemException ex) { /* what is retryable? */ throw new RuntimeException(ex); }\n\n// With facade: intent only. Churn in decoder/encoder touches one class.\nVideoFacade videos = new VideoFacade(d, f, e, t);\nString out = videos.encode(path, fmt);"
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Simplify this client mess",
+          "text": "You are given a client that builds four objects, calls them in order, and leaks temp files. Extract a Facade with one intention-revealing method. Say why the Facade owns ordering and cleanup — because duplication of lifecycle logic is where the defects live."
+        },
+        {
+          "title": "Defend the boundary",
+          "text": "Expect: why not just make it static? Why allow direct subsystem access? Answer: inject dependencies for testability, and keep the escape hatch because the simplified path cannot serve power users without bloating."
+        },
+        {
+          "title": "Handle failure honestly",
+          "text": "Design the error mapping. State which subsystem failures are retryable, what the Facade throws, and what context it attaches. Interviewers reject `return null` and swallowed causes on sight."
+        },
+        {
+          "title": "Resist the God Facade",
+          "text": "Follow-up adds billing and notifications to the same class. Split into `VideoFacade`, `BillingFacade`, possibly a coarse `CheckoutFacade` composing them. Explain the trade-off: one mega-Facade minimizes imports but couples unrelated change rates."
+        },
+        {
+          "title": "Name the seam for replacement",
+          "text": "Close by showing how swapping the video library touches only the Facade plus contract tests. That replaceability story is the hiring signal — it proves you built a seam, not a wrapper."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose marks"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Facade is the same as Adapter:** Adapter changes an interface to match what a client expects; Facade reduces many interfaces to one workflow. Adapter is about compatibility, Facade is about simplification.",
+        "**Facade hides a bad design so you never have to fix it:** it buys time and isolates churn, but if the subsystem ordering is incoherent, say so. A Facade over chaos needs contract tests or it becomes the place chaos hides.",
+        "**Facade must wrap the entire subsystem:** no — wrap one painful workflow. Covering everything recreates the complexity you were hired to remove.",
+        "**More logic in the Facade is always better:** business rules do not belong here. Defaults, ordering, cleanup, and translation belong here. Pricing, authorization, and domain invariants belong in domain services behind it.",
+        "**Facade makes the system loosely coupled by itself:** it decouples clients from subsystem churn, but the Facade itself is tightly coupled to the subsystem by design. That concentration is intentional — and must be tested."
+      ]
+    },
+    {
+      "type": "quote",
+      "text": "A facade defines a higher-level interface that makes the subsystem easier to use by delegating to subsystem objects and optionally adding its own coordination logic.",
+      "cite": "Design Patterns: Elements of Reusable Object-Oriented Software"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use Facade for workflow pain, not for every dependency.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Client needs 3+ subsystem objects in a fixed order with setup and cleanup",
+          "Use it",
+          "Orchestration duplicated across callers is the defect factory Facade eliminates"
+        ],
+        [
+          "Integrating a third-party SDK with dozens of options but 2 common paths",
+          "Use it",
+          "Insulates your codebase from vendor churn; replacement touches one seam"
+        ],
+        [
+          "Onboarding takes days because the subsystem has no obvious starting point",
+          "Use it",
+          "A named workflow teaches intent faster than any documentation page"
+        ],
+        [
+          "Subsystem has 1-2 stable classes with clear semantics",
+          "Do not use it",
+          "Extra layer adds indirection with no workflow to own; call it directly"
+        ],
+        [
+          "Each caller needs wildly different combinations and fine control",
+          "Do not use it",
+          "A single simplified path either blocks them or bloats back into full complexity"
+        ],
+        [
+          "You want to enforce access control or hide the subsystem entirely",
+          "Do not use Facade alone",
+          "That is a Proxy or a module boundary job; Facade by definition permits bypass"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "If asked, say: **\"I put a Facade in front of a multi-step subsystem so clients express intent in one call while the Facade owns ordering, defaults, cleanup, and error translation — accepting tight coupling inside the Facade to remove it everywhere else.\"**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:02:22.498Z",
+    "problems": []
+  }
+}

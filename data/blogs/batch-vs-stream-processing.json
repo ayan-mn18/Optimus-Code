@@ -1,0 +1,298 @@
+{
+  "slug": "batch-vs-stream-processing",
+  "title": "Batch vs Stream Processing",
+  "summary": "Batch reprocesses bounded snapshots for correctness and simplicity. Stream tracks progress over unbounded data for freshness at the cost of state, ordering, and late-data pain.",
+  "kind": "HLD",
+  "problemSlug": "batch-vs-stream-processing-91-201",
+  "topic": "System Design Tradeoffs",
+  "difficulty": "Medium",
+  "coverEmoji": "🌊",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "System Design Tradeoffs",
+    "Batch Processing",
+    "Stream Processing"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Batch vs. streaming data processing in Databricks",
+      "url": "https://docs.databricks.com/aws/en/data-engineering/batch-vs-streaming",
+      "source": "docs.databricks.com",
+      "kind": "article"
+    },
+    {
+      "title": "Batch Processing vs. Stream Processing: A Comprehensive Guide",
+      "url": "https://rivery.io/blog/batch-vs-stream-processing-pros-and-cons-2/",
+      "source": "rivery.io",
+      "kind": "article"
+    },
+    {
+      "title": "Batch vs Stream Processing: When to Use Each and Why It Matters",
+      "url": "https://www.datacamp.com/blog/batch-vs-stream-processing",
+      "source": "datacamp.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Batch assumes the input is finished. Stream assumes it never is.** That single assumption forces everything else: how you track progress, how you correct mistakes, and whether you optimize for *correctness per run* or *freshness per event*. If you remember nothing else, remember this: **batch re-reads, stream remembers.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What batch vs stream really means"
+    },
+    {
+      "type": "paragraph",
+      "text": "Batch processing takes a **bounded snapshot** of data that already exists and computes over all of it at once. The engine keeps no memory between runs about what it already saw. Every run starts cold, scans whatever partitions or tables are in scope, and produces a complete output. If the input changes, you just run it again and overwrite. Stream processing takes an **unbounded sequence** that keeps arriving and computes incrementally. The engine *must* remember progress — offsets, checkpoints, per-key state — because it will never see the whole dataset at once. Each run processes only the delta since the last checkpoint and appends or updates the result. The trade-off is brutal and unavoidable: **batch buys correctness and debuggability by paying recomputation cost and latency; stream buys freshness by paying state-management and correctness complexity.**"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not define them by latency alone. A batch job can run every five minutes and a streaming job can run in triggered micro-batches every hour — the wall-clock looks identical but the semantics are opposite. The real distinction is **progress tracking**. Batch says: *give me everything matching this predicate right now*. Stream says: *give me everything new since offset X, and promise you will not lose my place if I crash*. That is why batch is naturally **replayable and idempotent** — rerun the same query over the same snapshot and you get the same answer — while stream is naturally **stateful and order-sensitive**. Once you hold an aggregation like `sum` or `count` or `distinct users` across time, the order of arrival, duplicates, and late events change the answer unless you explicitly handle them. Choose batch when you can afford to wait for completeness. Choose stream only when waiting costs more than managing state."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How each one works"
+    },
+    {
+      "type": "paragraph",
+      "text": "A batch pipeline is dumb on purpose, and that is its strength. A scheduler wakes up on a cron or dependency signal, resolves input partitions — say `date=2026-09-06/hour=14` — reads them fully, runs a deterministic transform, and writes the output atomically, usually by **overwrite or partition swap**. There is no per-record cursor to maintain. Failure handling is coarse: retry the whole partition. This is why batch tolerates messy inputs well. If an upstream file arrives late, the next run simply includes it and overwrites yesterday's wrong answer with today's right one. The price is **redundant work**. To compute one hour of new events you routinely re-scan many hours of old events, reshuffle the same keys, and rewrite results you already wrote. You control cost by making partitions coarser and runs less frequent — which directly increases staleness. **Freshness and cost are the same knob in batch.**"
+    },
+    {
+      "type": "mermaid",
+      "title": "Batch execution model",
+      "caption": "Each run scans the full in-scope snapshot and overwrites.",
+      "code": "flowchart TD\n  S[Input Partitions] --> T[Scheduler Trigger]\n  T --> R[Read Snapshot]\n  R --> X[Transform]\n  X --> W[Overwrite Output]\n  W --> D[Done Until Next Trigger]"
+    },
+    {
+      "type": "paragraph",
+      "text": "A streaming pipeline never starts cold after the first run. It holds three things batch does not: a **progress cursor**, **keyed state**, and a **notion of time**. The cursor is an offset or transaction ID in a log or change feed — *I have processed up to position 88412*. Keyed state is the running `sum`, `count`, session buffer, or join window for each key, kept in a local store backed by a changelog so it survives restarts. Time is handled with **event time versus processing time plus watermarks**: the engine must decide when it has waited long enough for late events before emitting a windowed result. On each trigger it reads only the delta, updates state, and emits an incremental change — append, upsert, or retraction. The trade-off flips: **you do minimal I/O per trigger but carry maximal operational burden**. Checkpoints must be atomic with sink writes for exactly-once effects, state must be compacted and expired or it grows forever, and a stuck watermark silently freezes all windowed output while the job looks healthy."
+    },
+    {
+      "type": "mermaid",
+      "title": "Stream execution model",
+      "caption": "Each trigger advances a cursor and updates durable state.",
+      "code": "flowchart LR\n  L[Append-Only Log] --> P[Stream Processor]\n  P --> S[State Store]\n  S --> P\n  P --> K[Checkpoint]\n  P --> O[Incremental Sink]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Batch vs stream on the axes interviewers actually probe.",
+      "headers": [
+        "Dimension",
+        "Batch",
+        "Stream"
+      ],
+      "rows": [
+        [
+          "Progress tracking",
+          "None. Each run re-scans in-scope input.",
+          "Mandatory. Offsets and checkpoints per partition."
+        ],
+        [
+          "Cost per run",
+          "High. Reprocesses old data to get deltas.",
+          "Low. Processes only new records."
+        ],
+        [
+          "Latency",
+          "Minutes to hours. Bounded by schedule interval.",
+          "Seconds to sub-second. Bounded by arrival + state lookup."
+        ],
+        [
+          "Correctness on late data",
+          "Easy. Next rerun overwrites with full context.",
+          "Hard. Needs watermarks, allowed lateness, retractions."
+        ],
+        [
+          "State",
+          "Ephemeral. Dies with the job.",
+          "Durable and growing. Must expire, snapshot, restore."
+        ],
+        [
+          "Failure recovery",
+          "Retry partition. Simple and coarse.",
+          "Replay from checkpoint. Fast if state backend holds."
+        ],
+        [
+          "Operational load",
+          "Low. Scheduler plus warehouse compute.",
+          "High. Lag monitoring, backpressure, state sizing, poison pills."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why late and out-of-order data separates them"
+    },
+    {
+      "type": "paragraph",
+      "text": "This is where most hand-waving dies. Suppose you compute average order value per hour. An event stamped `14:05` arrives at `15:40` because a phone was offline. In batch, nothing special happens. The `14:00` partition job reruns or the `15:00` job reads a wider window, sees the full set of `14:00` events including the straggler, recomputes `sum / count`, and overwrites. The fix is free because you never threw away context. In streaming, the `14:00` window already fired and its inputs are gone from memory. To correct it you must have retained the partial `sum` and `count` for that window, accept the late record inside an **allowed lateness** period, update state, and emit a correction downstream — which means your sink must support **upserts or retractions**, not pure appends. If the record arrives after the watermark plus lateness, you either drop it and accept undercounting or route it to a side output for a batch reconciliation job. **That reconciliation job is the tell.** Almost every serious streaming system ships with a batch backstop because pure streaming cannot cheaply guarantee completeness. Say that in an interview and you sound senior."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Watermarks do not wait",
+      "text": "A watermark is a statement of *I will no longer wait for events older than T*. It bounds lateness so windows can close and state can be freed. Set it too aggressive and you silently drop late data. Set it too loose and state balloons and results stay provisional for hours. **There is no correct value — only a business decision about how much lateness you will pay to tolerate.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Batch fails loudly and slowly. The classic killers are **skew, small files, and upstream delay**. One hot key forces one reducer to process gigabytes while hundreds sit idle, so the job runs for hours and the dashboard shows a single straggler task at 99%. Thousands of tiny files from hourly writers turn every scan into a metadata storm — listing takes longer than reading, throughput collapses, and your fix is compaction, not more compute. Upstream lateness cascades: a delayed partition blocks every downstream dependency, and naive retries re-run the entire backfill, doubling load at the worst moment. The symptom is always the same shape: **missed SLA with high wasted compute**, visible as a flatline in output freshness followed by a sudden spike when the retry succeeds. Mitigation is architectural: idempotent partition overwrites, bounded lookback windows, and separate retry queues so backfills do not starve the current hour."
+    },
+    {
+      "type": "paragraph",
+      "text": "Stream fails quietly and fast. The four signatures to memorize are **lag, state blowup, stuck watermarks, and poison pills**. Lag is consumer offset falling behind producer offset — you see end-to-end latency climb from seconds to minutes while CPU looks fine, because the bottleneck is downstream sink throttling or garbage collection pauses, not ingestion. State blowup is unbounded key cardinality or sessions that never close: RocksDB size grows monotonically, checkpoint duration climbs from seconds to minutes, restarts take longer each time until recovery exceeds the retention window and data is lost. A stuck watermark is worse — one slow partition holds global time back, windows stop firing, output goes silent with no errors, and the only clue is `currentWatermark` frozen in metrics. Poison pills are malformed records that crash the deserializer on every replay, pinning the consumer at the same offset forever. **Every one of these looks healthy at the process level.** You only catch them with lag-per-partition, state-size-per-operator, watermark-delay, and dead-letter-queue rate. If you propose streaming without naming those four dashboards, you have not run streaming."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Batch symptom: SLA miss + full partition reprocessing cost. Check skewed task durations and file counts first.",
+        "Stream symptom: rising consumer lag with flat CPU. Check sink throttling and GC before adding parallelism.",
+        "Stream symptom: silent output with running job. Check watermark per input partition — one straggler blocks all windows.",
+        "Stream symptom: checkpoints getting slower every hour. Check state size and TTL — you are retaining keys forever.",
+        "Stream symptom: same offset replayed endlessly. Check deserialization errors — quarantine to a dead-letter queue, do not block the log."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Backpressure is the stream killer",
+      "text": "When the sink slows down, a good streaming engine propagates pressure upstream and sheds or buffers. A bad one buffers unboundedly and then dies with out-of-memory. **Always bound queues, spill state to disk, and define what you drop under pressure** — raw events, enriched results, or freshness itself. If you cannot answer what degrades first, you do not have a design."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes it concrete"
+    },
+    {
+      "type": "paragraph",
+      "text": "The code difference is smaller than people expect, which is exactly the point. Batch logic is a pure function over a snapshot. Streaming logic is the *same* function plus state lookup, watermark check, and a correction path. Read these two sketches and notice where complexity lives — not in the average, but in everything around it."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "batch_avg.py",
+      "code": "# Batch: recompute from scratch over a bounded partition.\n# Rerun is safe: same input -> same output.\ndef batch_hourly_avg(events):\n    # events: all records for hour H, already complete (or complete enough)\n    by_hour = {}\n    for e in events:\n        s = by_hour.setdefault(e.hour, [0, 0])  # [sum, count]\n        s[0] += e.amount\n        s[1] += 1\n    # atomic overwrite downstream; late data fixed by next rerun\n    return {h: total / cnt for h, (total, cnt) in by_hour.items()}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "stream_avg.py",
+      "code": "# Stream: incremental update with state + watermark + lateness.\n# State must survive restarts; sink must handle corrections.\nSTATE = {}  # (hour) -> [sum, count], backed by changelog in reality\nWATERMARK = \"14:00\"  # we declare: older than this is late\nALLOWED_LATENESS_HRS = 1\n\ndef on_event(e, now_watermark):\n    if e.hour < now_watermark and is_beyond_lateness(e, now_watermark):\n        emit_to_side_output(e)  # too late: reconcile in batch, do not block\n        return None\n    s = STATE.setdefault(e.hour, [0, 0])\n    s[0] += e.amount\n    s[1] += 1\n    checkpoint(STATE)  # atomic with sink write for exactly-once effect\n    # Upsert, not append: downstream must handle corrections for this hour\n    return (e.hour, s[0] / s[1], is_provisional(e.hour, now_watermark))"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Decision guide. Default to batch unless freshness pays for complexity.",
+      "headers": [
+        "Use batch when",
+        "Use stream when",
+        "Use both (stream + batch backstop) when"
+      ],
+      "rows": [
+        [
+          "Correctness matters more than seconds: billing, ledger, daily reporting.",
+          "Action must happen before the event goes stale: fraud block, alerting, live ranking.",
+          "Money or safety is involved *and* speed matters: count fast, settle in batch."
+        ],
+        [
+          "Late data is normal: mobile offline, partner dumps, replays.",
+          "Input is naturally a log: clicks, telemetry, transactions, sensor readings.",
+          "Sources are messy but users want live views: show provisional now, correct hourly."
+        ],
+        [
+          "Logic needs full context: joins over history, distinct counts, training.",
+          "Logic is per-event or short-window: filter, enrich, sessionize, short aggregate.",
+          "Windows are long: day-long sessions need incremental updates plus nightly recompute."
+        ],
+        [
+          "Team is small or on-call is thin. Simpler retries win.",
+          "You can staff state, lag, and exactly-once sink semantics.",
+          "You can afford a serving layer that merges real-time deltas with batch truth."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the requirement, not the engine.",
+          "text": "Ask: what freshness does the user actually need — seconds, minutes, hours? What happens if a result is provisional and corrected later? If corrections are unacceptable, you just eliminated pure streaming for that output."
+        },
+        {
+          "title": "Name the time semantics explicitly.",
+          "text": "Say event time vs processing time out loud, then pick watermarks and allowed lateness with a number. Interviewers award points for I will wait 10 minutes for late mobile events, then route older ones to a batch reconciliation table."
+        },
+        {
+          "title": "Draw state and progress, not boxes.",
+          "text": "Show the cursor, the state store, and the sink contract — append vs upsert vs retract. Explain checkpointing with the sink for effectively-once. This is what separates a diagram that parses from a design that works."
+        },
+        {
+          "title": "Quantify the trade-off.",
+          "text": "Estimate: events per second times state per key times retention equals state size. Lag times arrival rate equals replay buffer. Batch window times input size equals recompute cost. Even rough math beats adjectives like real-time or scalable."
+        },
+        {
+          "title": "Close with the backstop.",
+          "text": "Propose streaming for the live view plus scheduled batch to re-derive truth and compact state. Name the merge key and which side wins on conflict. That hybrid answer is what production systems actually ship."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "*Stream is always faster, therefore better.* Faster at delivering a first answer, slower at delivering a final correct answer. Freshness and completeness trade directly.",
+        "*Micro-batch equals streaming.* Trigger interval is not semantics. If the engine re-scans without a cursor and has no watermark, it is batch on a short timer.",
+        "*Exactly-once means no duplicates end to end.* It means effectively-once given an idempotent sink plus atomic checkpoints. Without that sink contract you have at-least-once with retries.",
+        "*More partitions fix lag.* They fix parallelizable lag. They do not fix a throttled sink, a hot key, a stuck watermark, or a poison pill — those just spread the same stall wider.",
+        "*Batch cannot handle late data.* Batch handles late data best — by overwriting. It is streaming that struggles, because it already emitted and must now retract.",
+        "*You must pick one.* Most mature designs run both: stream for provisional freshness, batch for authoritative correction and history rebuilds."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Default to batch for correctness and simplicity; add streaming only where seconds matter, and then budget for state, watermarks, upsert sinks, and a batch backstop — because freshness without a correction path is just fast wrongness.**"
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:32:00.474Z",
+    "problems": []
+  }
+}

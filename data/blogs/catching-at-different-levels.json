@@ -1,0 +1,286 @@
+{
+  "slug": "catching-at-different-levels",
+  "title": "Catching at different levels",
+  "summary": "Where you catch an error decides whether your system degrades or collapses. This concept page explains catching at client, edge, service, and data layers, and why retries, timeouts, and fallbacks must live where they have context.",
+  "kind": "HLD",
+  "problemSlug": "catching-at-different-levels-90-301",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "⚠️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Reliability"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Trade-offs between bycatch and target catches in static versus ... - PNAS",
+      "url": "https://www.pnas.org/doi/10.1073/pnas.2114508119",
+      "source": "pnas.org",
+      "kind": "article"
+    },
+    {
+      "title": "How to Teach Throwing and Catching Skills - The PE Specialist",
+      "url": "https://www.thepespecialist.com/throwing/",
+      "source": "thepespecialist.com",
+      "kind": "article"
+    },
+    {
+      "title": "Throwing And Catching Games For Elementary PE - PLT4M",
+      "url": "https://plt4m.com/blog/throwing-and-catching-games-for-elementary-pe/",
+      "source": "plt4m.com",
+      "kind": "article"
+    },
+    {
+      "title": "Throwing and Catching Games For PE - YouTube",
+      "url": "https://www.youtube.com/watch?v=qX4HPqG7i7s",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Catch where you can act, not where you can see.** Every layer in a distributed system sees the same failure differently. Only one layer has enough context to fix it without making scalability worse. Catch everywhere and you get retry storms and swallowed errors. Catch in exactly one accountable place per failure type and the system sheds load instead of amplifying it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Catching at different levels means **assigning each class of failure to the layer that owns the correct response**. It is not `try/catch` syntax. It is a routing decision: who classifies the error, who decides retry vs. fallback vs. fail-fast, and who propagates what to the caller. In a scalable stack there are five distinct catching points: **client SDK / mobile / browser**, **edge / API gateway / load balancer**, **service business logic**, **downstream RPC / data-access client**, and **async consumer / background worker**. Each has different visibility, different latency budget, and different blast radius. The design choice is deliberate asymmetry: low layers detect transport faults quickly but know nothing about user intent; high layers know intent but learn about faults late and coarsely. Scalability comes from exploiting that asymmetry instead of duplicating handling at every hop."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Level 1 — Client SDK:** owns user-facing timeout, cancellation, and degraded UI. It is the only place that knows if a retry is still wanted by a human. Trade-off: it has the worst signal about server health.",
+        "**Level 2 — Edge / gateway:** owns admission control, global timeouts, request hedging, and load-shedding. It sees aggregate health across replicas. Trade-off: it cannot distinguish business errors from transient faults without explicit error contracts.",
+        "**Level 3 — Service logic:** owns business fallbacks — stale cache, default value, partial response, queued-for-later. It is the only place that knows what *correct enough* means. Trade-off: it is the most expensive place to wait.",
+        "**Level 4 — Data-access / RPC client:** owns classification of downstream faults — timeout vs. refused vs. overloaded vs. corrupt — plus one bounded retry with jitter and a circuit breaker. Trade-off: it acts fast but blind to end-to-end deadlines.",
+        "**Level 5 — Async consumer:** owns poison-message handling, delayed retry, and dead-lettering. It trades latency for durability. Trade-off: retries here are cheap on latency but expensive on backlog and ordering."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this separation matters for scalability is simple math. If every level retries, attempts multiply. If no level catches, every transient blip becomes user-visible failure and forces the client to retry from scratch, re-traversing the most expensive path. The scalable pattern is **classify low, decide high, enforce globally**. The low layer tags the error precisely — `timeout`, `throttled`, `unavailable`, `invalid` — without policy. The accountable layer executes policy once. The edge enforces a global budget so local decisions cannot sum to overload. Get this wrong and adding capacity makes the outage worse, because added capacity just feeds more retries."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: how an error travels"
+    },
+    {
+      "type": "paragraph",
+      "text": "Follow one synchronous request: browser → gateway → service A → service B → database. Each arrow has its own timeout, and that timeout must shrink as you go down. The browser allows 5 seconds. The gateway allows 4. Service A allows 3 for its call to B. The DB driver allows 800ms. When the database stalls, the DB client times out first. It classifies the fault and either retries once on a different connection or returns a typed error upward. Service A catches that typed error and chooses a fallback — cached result, empty list, or explicit `503 + Retry-After`. The gateway catches only what Service A did not handle, and its job is not business logic but protection: cap retries, strip retry headers from untrusted clients, return a cheap static fallback. The browser catches last and decides whether the user still wants the result. No level re-interprets an error a lower level already handled. That single rule prevents amplification."
+    },
+    {
+      "type": "mermaid",
+      "title": "Error propagation across catching levels",
+      "caption": "Each level catches only what it owns; handled errors do not propagate as retryable.",
+      "code": "flowchart TD\n  Client[Client SDK] --> Edge[Edge Gateway]\n  Edge --> SvcA[Service A Logic]\n  SvcA --> RpcB[Downstream RPC Client]\n  RpcB --> DB[(Database)]\n  DB -. timeout .-> RpcB\n  RpcB -. classify and bound retry .-> SvcA\n  SvcA -. fallback or typed error .-> Edge\n  Edge -. shed load or cheap default .-> Client\n  Client -. user cancel or single retry .-> Edge"
+    },
+    {
+      "type": "paragraph",
+      "text": "What makes this work is that **each level sees a different signal and holds a different deadline**. The RPC client sees socket behavior — connect refused, TLS failure, first-byte timeout — within milliseconds. It can fail fast and pick another replica. The service sees semantics — *this user can tolerate stale recommendations but not a failed payment* — and can degrade correctly. The edge sees aggregates — *20% of replicas to Service B are timing out* — and can trip a breaker or shed low-priority traffic. The client sees intent — *the user navigated away, do not retry*. If you catch a socket timeout in service logic and blindly retry the whole business transaction, you throw away the cheapest information (which replica failed) and repeat the most expensive work. If you catch a business validation error at the edge and retry it, you burn capacity on a request that will never succeed. The mechanism is therefore two artifacts: a **typed error contract** that survives hop to hop, and a **deadline budget** that shrinks downward so inner timeouts always fire before outer ones."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Catching low vs. catching high — what you gain and what you pay.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Catch low in RPC / DB client",
+          "Fastest detection, replica-aware retry, keeps p99 tight under transient blips",
+          "No business context; risks retrying non-idempotent or doomed work; needs strict idempotency and error classification to be safe"
+        ],
+        [
+          "Catch mid in service logic",
+          "Correct fallback because you know invariants; can return partial success",
+          "Holds threads, memory, and upstream deadlines while deciding; too much logic here increases tail latency under load"
+        ],
+        [
+          "Catch high at edge / gateway",
+          "Global view; can enforce retry budgets, strip abusive client retries, shed load uniformly",
+          "Coarse signal; cannot fix semantics, only fail cheaply; misconfigured edge retries multiply every downstream retry"
+        ],
+        [
+          "Catch highest at client",
+          "Knows user intent and can cancel; avoids wasted server work after abandonment",
+          "Untrusted and heterogeneous; naive client retries cause thundering herds; must be constrained by server-issued budgets"
+        ],
+        [
+          "Catch late in async consumer",
+          "Durability; delayed retry and dead-letter preserve work without blocking users",
+          "Backlog growth, ordering hazards, and invisible latency; poison messages can wedge a partition if not quarantined fast"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "There is no universally best level — that is the point. **Low catches protect latency, high catches protect correctness, edge catches protect capacity.** The trade-off you are always managing is *information vs. authority*. Low has information but no authority to degrade the product. High has authority but stale information. The opinionated answer: default to **one bounded, jittered retry at the RPC client for idempotent, classified-transient faults only**, **one business fallback in service logic**, and **zero automatic retries at the edge for anything the service already classified as non-retryable**. Everything else should fail fast with a typed code. Any additional retry must spend from an explicit shared budget, not from a local constant. Violate that and your retry policy scales as the product of per-layer attempts, not the sum."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic scalability death is **retry multiplication**. Suppose client retries 3x, gateway retries 2x, service retries 3x, RPC client retries 3x. One slow database read becomes 3 × 2 × 3 × 3 = 54 backend attempts. You will see it as a cliff: CPU and connection pools saturate while downstream success rate is still 95%+, p50 stays flat while p99 explodes, and autoscaling adds replicas that immediately fill with retries. Logs show the same `request-id` dozens of times with increasing `elapsed` values. The second failure is **deadline inversion**, where the inner timeout exceeds the outer one. The DB driver waits 5s while the gateway timed out at 2s. Symptom: work completes after the caller gave up — wasted writes, duplicate side effects, threads blocked on abandoned requests. You see it as high server CPU with low client success rate and a spike in duplicate orders, charges, or messages. The third failure is **error flattening**: every layer maps everything to generic `500` or swallows exceptions and returns null. The edge can no longer distinguish *throttled, retry after 1s* from *bad request, never retry*. Symptom: dashboards go red uniformly, alerts cannot auto-remediate, and clients retry validation errors in a tight loop."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Symptom: p99 triples under 2% downstream loss.** Cause: uncoordinated retries at two or more levels. Check: count backend attempts per logical request-id; if >2-3x, budgets are not shared.",
+        "**Symptom: connection pool exhaustion while DB CPU is idle.** Cause: threads held by mid-layer catch-and-wait with no hedging or early fallback. Check: thread dumps show blocked waits past upstream deadline; inner timeout > outer timeout.",
+        "**Symptom: same validation error retried thousands of times per minute.** Cause: low layer retries non-transient errors or edge retries `4xx`. Check: retry logs contain `InvalidArgument` or `Conflict`; fix classification, not capacity.",
+        "**Symptom: queue lag grows monotonically after a partial outage.** Cause: async consumer catches and immediately requeues poison messages without backoff or dead-letter. Check: redelivery count histogram; top 0.1% of messages consume majority of deliveries.",
+        "**Symptom: outage gets worse when you add capacity.** Cause: new replicas accept more shadow retries instead of shedding. Check: edge `retry-after` and breaker state; if breakers are closed during overload, catching is in the wrong place."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Never catch blindly to keep the graph green",
+      "text": "Swallowing exceptions, catching `Throwable` / bare `Exception`, or returning a default for every failure hides the signal the edge needs to shed load. **A fallback must still emit a typed metric and a bounded error code.** If your catch block does not increment `fallback_used` and propagate `degraded=true`, you have not handled the error — you have delayed its discovery until the next cascading failure."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "layered_catch.py",
+      "code": "from dataclasses import dataclass\n\nclass Retryable(Exception): pass      # timeout, throttled, unavailable\nclass NonRetryable(Exception): pass  # invalid, auth, conflict\n\n# LEVEL 4: data-access client — classify fast, retry once, no business logic\ndef db_read(key, deadline_ms):\n    import random, time\n    for attempt in (1, 2):  # exactly one retry, only for Retryable\n        try:\n            return _db_call(key, timeout_ms=min(800, deadline_ms))\n        except Retryable:\n            if attempt == 2 or deadline_ms < 200:\n                raise  # let service decide fallback; do NOT loop forever\n            time.sleep(0.02 * attempt + random.uniform(0, 0.02))  # jitter\n        except NonRetryable:\n            raise  # never retry: trade-off is one wasted call vs. poison loop\n\n# LEVEL 3: service logic — one business fallback, with deadline awareness\ndef get_profile(user_id, deadline_ms):\n    try:\n        return db_read(user_id, deadline_ms)\n    except Retryable:\n        metrics.incr(\"profile.fallback.stale_cache\")\n        return stale_cache.get(user_id, degraded=True)  # authority to degrade\n    except NonRetryable as e:\n        raise_intentional_4xx(e)  # edge must NOT retry this"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this code is shaped this way: the DB client owns **classification and bound** — it knows a timeout is retryable and a constraint violation is not, and it caps attempts at two with jitter so tail latency does not explode. It does not choose a stale-cache fallback because it does not know if staleness is safe for this caller. The service owns **degradation** — it knows a stale profile is acceptable but a stale balance is not — and it converts the error into a typed signal the edge can enforce. The missing piece most candidates forget is deadline propagation: `deadline_ms` shrinks at each hop, guaranteeing the inner catch fires first. Without that parameter, layering is fiction and every timeout becomes deadline inversion."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "EdgePolicy.java",
+      "code": "// LEVEL 2: edge — enforce budget, never re-retry classified errors\n// Pseudocode for gateway filter: strip client retries, cap global attempts.\nboolean allowRetry(Request req, Response upstream) {\n    if (upstream.code() == 429 || upstream.code() == 503) {\n        // Only retry safe, idempotent GETs, and only if budget remains.\n        // Trade-off: we spend global capacity to smooth blips, but cap it.\n        return req.isIdempotentGet()\n            && retryBudget.hasTokens(\"edge\")\n            && !upstream.hasHeader(\"X-Handled-Fallback\");\n    }\n    return false; // 4xx, validated business errors: fail fast, no retry\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They give you a cascading failure vignette",
+          "text": "Design checkout, feed, or ride-matching. Then: *Service B slows down, what happens to A and the gateway?* They want you to name where timeouts fire and where retries live. Draw the five levels before you mention any technology."
+        },
+        {
+          "title": "They probe retry placement",
+          "text": "Should the gateway retry? Should the SDK? Good answer: *one retry at RPC client for idempotent transient faults, fallback in service, budget enforcement at edge, cancellation only at client.* Bad answer: *retry everywhere with 3 attempts.* Quantify amplification: 3x3x2 = 18x."
+        },
+        {
+          "title": "They test error contracts",
+          "text": "How does the edge know not to retry? Answer with typed errors — `retryable`, `non-retryable`, `throttled with retry-after` — propagated as codes or headers, not parsed log strings. Mention idempotency keys for any retried write."
+        },
+        {
+          "title": "They push on async and partial success",
+          "text": "What if the consumer fails? Expect dead-letter after N redeliveries with exponential backoff plus jitter, quarantine of poison messages, and idempotent handlers. Trade-off to state: durability costs ordering and visibility."
+        },
+        {
+          "title": "They ask what you would monitor",
+          "text": "Name four signals: attempts per logical request, fallback rate by cause, deadline-exceeded-after-abandon, and breaker state transitions. If you cannot see amplification, you cannot prove your catching strategy scales."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "What separates a pass from a strong hire is whether you **refuse to catch in two places for the same failure**. Average candidates list patterns — circuit breaker, bulkhead, fallback — without ownership. Strong candidates assign each pattern to a level and defend the assignment with a trade-off: *breakers live at the RPC client and edge because they need aggregate failure ratios; fallbacks live in service logic because only it knows safe defaults; dead-letter lives in the consumer because only it can trade latency for durability.* Say what you will not do: no gateway retry on `4xx`, no service retry on `NonRetryable`, no infinite consumer requeue."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail interviews"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**More catching means more reliability.** Opposite. Each extra catch that retries multiplies load. Reliability comes from fewer, better-placed catches with explicit budgets.",
+        "**Timeouts can be the same at every hop.** If inner equals outer, the outer always wins and inner work is wasted. Inner timeouts must be strictly smaller and derived from the remaining deadline.",
+        "**Retrying a write is safe if it timed out.** A timeout means *unknown*, not *failed*. Without an idempotency key, a low-layer retry creates duplicates. Catching without idempotency trades availability for correctness.",
+        "**Circuit breakers fix overload.** They limit calls to a sick downstream, but they do not create capacity. If the fallback itself calls the same downstream, the breaker is decorative. Break plus shed or degrade, not just break.",
+        "**Async queues absorb any spike, so catching there matters less.** Queues convert latency spikes into backlog spikes. An unbounded consumer retry looks healthy on error rate while lag grows until retention drops messages. That is silent data loss."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to catch where — and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Placement guide: use the level that can act correctly at acceptable cost.",
+      "headers": [
+        "Situation",
+        "Catch here",
+        "Do not catch here"
+      ],
+      "rows": [
+        [
+          "Idempotent GET, transient timeout to one replica",
+          "RPC client: one jittered retry on another replica + breaker",
+          "Edge or client: re-traverses full path for a fault one hop could fix"
+        ],
+        [
+          "Non-idempotent payment / order write",
+          "Service: idempotency key + exactly-once intent check; fail explicitly on ambiguity",
+          "RPC client blind retry: creates duplicates; trade-off is user-visible uncertainty over silent double-charge"
+        ],
+        [
+          "Downstream sustained slowness, partial outage",
+          "Edge: trip breaker, shed low priority, return 503 with Retry-After",
+          "Service tight retry loop: holds threads and deepens the pile-up"
+        ],
+        [
+          "Validation, auth, conflict",
+          "Service: return 4xx immediately; client: show message, do not retry",
+          "Any automatic retry layer: burns capacity on requests that can never succeed"
+        ],
+        [
+          "Poison message / failing background job",
+          "Consumer: delayed backoff, then dead-letter + alert after N attempts",
+          "Synchronous request path: blocks users on work that should be deferred"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The nuance interviewers reward: **catching placement changes with scale**. At ten requests per second you can afford service-level retries with generous timeouts and rich fallbacks. At ten thousand, the edge budget and client backoff dominate because even a 1% retry rate is a hundred extra requests per second hammering the hottest shard. That is why mature systems push classification down and policy up as they grow — fast, cheap detection near the fault, sparse, budgeted decisions at the perimeter. If you propose the same three-retries-everywhere for both regimes, you have not designed for scalability; you have designed for a demo."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Classify faults low where the signal is fresh, handle them once where the context is sufficient, and enforce a shared retry and deadline budget at the edge — so one transient fault costs at most one extra attempt, never the product of per-layer retries.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:20:47.363Z",
+    "problems": []
+  }
+}

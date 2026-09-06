@@ -1,0 +1,284 @@
+{
+  "slug": "strategy-design-pattern",
+  "title": "Strategy Design Pattern",
+  "summary": "Strategy isolates interchangeable algorithms behind one interface so the Context can swap behavior at runtime without branching or rewrites.",
+  "kind": "LLD",
+  "problemSlug": "strategy-design-pattern-36-76",
+  "topic": "Behavioral Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "🔀",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Behavioral",
+    "Strategy"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Strategy - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/strategy",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Strategy pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Strategy_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Strategy Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/strategy-pattern-set-1/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding the Strategy Design Pattern | by Eshika Shah | Medium",
+      "url": "https://medium.com/@eshikashah2001/understanding-the-strategy-design-pattern-in-software-engineering-8774086a1895",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Strategy is **delegation with a swappable contract**. The `Context` keeps no algorithm logic at all — it holds a reference to a `Strategy` interface and forwards the call. If you still have `if-else` on behavior type inside the caller, you did not apply the pattern. You just renamed the branches."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Strategy defines a family of algorithms that do the same job in different ways, puts each variant in its own class behind an identical method signature, and lets the caller substitute one for another at runtime. The Context class exposes the stable operation the rest of the system depends on — `buildRoute()`, `pay()`, `compress()`, `sort()` — while each ConcreteStrategy supplies a different implementation of that operation. The critical constraint is interchangeability: every strategy must accept the same inputs and honor the same postconditions so the Context can invoke it blindly. That is why the pattern only works when you can actually define a narrow, honest interface. If each algorithm needs wildly different data, you do not have a family. You have unrelated code pretending to share a contract, and forcing it into Strategy will create more coupling than it removes."
+    },
+    {
+      "type": "paragraph",
+      "text": "The selection decision lives outside the Context. The client, a factory, or configuration chooses which ConcreteStrategy to inject, and the Context never asks why. This separation is the entire point. The class that uses the behavior is closed to modification when a new behavior arrives; you add a new class that implements the existing interface instead of editing a growing conditional. The trade-off is indirection: you replace one obvious but brittle branching block with several small classes plus the wiring that picks between them. That trade is worth it only when variants change independently, arrive frequently, or must be tested and deployed in isolation."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Four roles cooperate, and each has exactly one job. The `Strategy` interface declares the algorithm signature and nothing else — no state, no selection logic, no defaults that leak a favorite implementation. Each `ConcreteStrategy` encapsulates one variant plus the data only it needs. The `Context` stores a `Strategy` reference, exposes `setStrategy()` or constructor injection, and delegates. The client or factory maps runtime input — user choice, file type, pricing tier — to a ConcreteStrategy instance and hands it to the Context. The Context never instantiates strategies by string name, never switches on enums to pick behavior, and never catches strategy-specific exceptions. The moment it does, the dependency has reversed and you are back to a monolith with extra files."
+    },
+    {
+      "type": "mermaid",
+      "title": "Strategy structure",
+      "caption": "Context delegates to an injected Strategy interface; new algorithms arrive as new classes.",
+      "code": "classDiagram\n  class Context {\n    -Strategy strategy\n    +setStrategy(Strategy)\n    +execute(input)\n  }\n  class Strategy {\n    <<interface>>\n    +execute(input)\n  }\n  class StrategyA {\n    +execute(input)\n  }\n  class StrategyB {\n    +execute(input)\n  }\n  class StrategyC {\n    +execute(input)\n  }\n  Context --> Strategy : delegates to\n  StrategyA ..|> Strategy\n  StrategyB ..|> Strategy\n  StrategyC ..|> Strategy"
+    },
+    {
+      "type": "paragraph",
+      "text": "At runtime the flow is deliberately boring: client resolves a strategy, injects it, calls `context.execute()`, and the Context forwards the call with no inspection. Switching behavior means injecting a different object, not branching. That simplicity is why composition beats inheritance here. A subclass hierarchy would bind the variant at construction time and multiply combinations — `CarNavigator`, `WalkingNavigator`, `CarNavigatorWithTraffic` — while Strategy binds it per call and keeps each axis of variation in one place. The cost is object churn and a wider interface surface: every strategy must be discovered, constructed with its dependencies, and given exactly the context data it needs without exposing the whole Context internals."
+    },
+    {
+      "type": "mermaid",
+      "title": "Runtime selection flow",
+      "caption": "Selection happens once outside the Context; execution never branches.",
+      "code": "flowchart TD\n  Client[Client request with input] --> Resolve[Resolve strategy]\n  Resolve --> HasCustom{Custom strategy supplied}\n  HasCustom -->|yes| Inject[Inject into Context]\n  HasCustom -->|no| Default[Use default strategy]\n  Default --> Inject\n  Inject --> Execute[Context execute]\n  Execute --> S[Strategy algorithm]\n  S --> Done[Return result]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What Strategy buys you and what it charges you.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Extract each algorithm into its own class",
+          "Single-responsibility variants that change, test, and review independently",
+          "More files and indirection; a one-variant case becomes harder to read than a plain function"
+        ],
+        [
+          "Program Context to an interface",
+          "Context stays closed when algorithm N+1 arrives; no merge hotspot",
+          "Interface design pressure — a wrong signature ripples across every strategy"
+        ],
+        [
+          "Inject strategy at runtime",
+          "Behavior can switch per request, per user, per config without redeploy",
+          "Someone must own selection and lifecycle; a sloppy factory just moves the if-else"
+        ],
+        [
+          "Keep strategies stateless where possible",
+          "Safe sharing, trivial concurrency, easy unit tests with fake inputs",
+          "Per-call parameters get fat; pushing shared state in creates coupling"
+        ],
+        [
+          "Allow stateful strategies",
+          "Each strategy can cache, batch, or hold connections tuned to its algorithm",
+          "Lifecycle and thread-safety become your problem; sharing instances is no longer free"
+        ],
+        [
+          "Combine with Factory or DI container",
+          "Selection logic is centralized and testable instead of scattered",
+          "Extra abstraction layer; debugging means tracing through factory plus strategy plus context"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pattern is an explicit bet: you accept more types and more wiring today to avoid editing a critical class tomorrow. That bet wins when algorithms evolve on different cadences — pricing rules change weekly while checkout flow changes yearly — or when different people own different variants. It loses when you have two stable branches that never grow. Then you paid the indirection tax for flexibility nobody exercises, and a future reader must open five files to understand what one conditional made obvious. Senior engineers smell this instantly, so never propose Strategy for a fixed two-way branch. Propose it when you can name the third variant that will arrive."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The most common failure is a leaky interface. One strategy needs an extra field — say, transit schedules need departure time while driving does not — so someone widens the shared method with nullable parameters or downcasts the Context to grab internals. Now every strategy depends on data it does not use, and adding a variant means auditing all callers for which parameters are actually populated. The symptom you see is defensive `null` checks and `instanceof` tests inside strategies, which is the original conditional reincarnated inside the abstraction that was supposed to kill it. Fix it by redesigning the parameter object: pass a rich input that each strategy reads selectively, or split the interface if the algorithms are not truly interchangeable."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Strategy explosion: dozens of near-identical classes differing by one constant. Symptom is a package with 40 strategies nobody dares delete. The missing piece is usually a parameterized strategy or configuration, not a new type per value.",
+        "Fat Context dependency: strategies reach back into the Context for database handles, caches, and feature flags. Symptom is circular dependencies and tests that must boot the whole Context to test one algorithm. Pass only what the method needs.",
+        "Selection logic scattered across controllers: every call site hand-picks `new CreditCardStrategy()` with its own conditionals. Symptom is inconsistent behavior per endpoint and duplicated mapping code. Centralize behind one factory with one tested mapping.",
+        "Stateful strategy shared across threads: a compression or pricing strategy caches intermediate state in a field for speed. Symptom is intermittent wrong results under load that vanish in single-threaded tests. Make strategies immutable or scope instances per request.",
+        "Silent default fallback: factory returns a default strategy when input is unrecognized instead of failing. Symptom is users silently charged, routed, or sorted the wrong way with no error in logs. Fail loudly on unknown selectors; defaults must be explicit."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The second systemic failure is observing that Context and strategies version independently but deploy together. You add a method to the interface for one new algorithm and break every existing strategy, or you change Context internals that two strategies secretly relied on. The defense is treating the `Strategy` interface like a public API: keep it minimal, version it deliberately, prefer adding a new parameter object over adding a new method, and cover each strategy with contract tests that assert the same preconditions and postconditions. If you cannot write one contract test that runs unchanged against all strategies, the interface is lying."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes it concrete"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "RoutingStrategy.java",
+      "code": "interface RouteStrategy {\n    Route buildRoute(Location from, Location to, RoutePrefs prefs);\n}\n\nfinal class DrivingStrategy implements RouteStrategy {\n    public Route buildRoute(Location from, Location to, RoutePrefs prefs) {\n        // Uses road graph + live traffic. Ignores transit timetables.\n        return RoadGraph.fastest(from, to, prefs.avoidTolls());\n    }\n}\n\nfinal class WalkingStrategy implements RouteStrategy {\n    public Route buildRoute(Location from, Location to, RoutePrefs prefs) {\n        // Uses pedestrian graph. Same signature, different cost model.\n        return FootGraph.shortest(from, to);\n    }\n}\n\nfinal class Navigator {\n    private RouteStrategy strategy;\n\n    Navigator(RouteStrategy strategy) { this.strategy = strategy; }\n\n    void setStrategy(RouteStrategy strategy) { this.strategy = strategy; }\n\n    Route navigate(Location from, Location to, RoutePrefs prefs) {\n        // No branching on mode. Delegation only.\n        return strategy.buildRoute(from, to, prefs);\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Notice what `Navigator` does not do: no enum switch, no `if mode == WALK`, no `new DrivingStrategy()` inside. Construction and selection happen outside, which is what keeps `Navigator` closed to modification. The interface takes a `RoutePrefs` value object rather than five loosely related arguments because strategies will disagree about which fields matter — driving reads toll preferences, walking ignores them — and a parameter object lets each strategy pick what it needs without changing the signature every time. The trade-off here is discoverability: a new reader cannot see which variants exist by reading `Navigator` alone. That is why the factory below is part of the design, not an optional extra. Without centralized creation, the pattern dissolves into ad-hoc instantiation."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NavigatorFactory.java",
+      "code": "final class NavigatorFactory {\n    private final Map<TravelMode, RouteStrategy> registry;\n\n    NavigatorFactory(Map<TravelMode, RouteStrategy> registry) {\n        this.registry = Map.copyOf(registry);\n    }\n\n    Navigator navigatorFor(TravelMode mode, RouteStrategy override) {\n        if (override != null) return new Navigator(override);\n        RouteStrategy s = registry.get(mode);\n        if (s == null) throw new IllegalArgumentException(\"unknown mode: \" + mode);\n        return new Navigator(s);\n    }\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They give you the conditional",
+          "text": "Expect a bloated method: `pay()` with card versus wallet versus netbanking branches, or a sorter with insertion versus merge versus quick branches. Your first move is to name the smell: one method changing for many independent reasons, merge conflicts on every addition."
+        },
+        {
+          "title": "They ask for a new variant live",
+          "text": "Add cycling routes, add a new discount rule, add GZIP beside ZIP. Do not edit the Context. Add one class implementing the existing interface and wire it in the factory. Narrate the open-closed payoff as you do it."
+        },
+        {
+          "title": "They probe runtime switching",
+          "text": "Can the behavior change per request without restarting? Show `setStrategy()` or per-call injection, and state the trade-off: mutable Context is convenient but needs synchronization; immutable per-request Context is safer under concurrency."
+        },
+        {
+          "title": "They attack the interface",
+          "text": "What if strategies need different parameters? This is the trap. Answer: if signatures diverge, they were never interchangeable — either widen to a parameter object, split the interface, or admit Strategy is the wrong tool. Never downcast."
+        },
+        {
+          "title": "They ask Strategy versus State versus Template Method",
+          "text": "State who owns selection: client owns it in Strategy, the object itself owns it in State. Template Method fixes the skeleton and varies steps via inheritance; Strategy varies the whole algorithm via composition. Pick composition when variants must combine freely at runtime."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers grade the wiring, not just the class diagram. Anyone can draw Context plus Strategy. Strong candidates say where selection lives, who owns strategy lifecycle, whether strategies are stateless singletons or per-request objects, and how they would test the contract once and run it against every implementation. Mention the failure modes unprompted: leaky parameters, scattered factories, stateful sharing. That signals production experience rather than textbook recall, and it invites the follow-up discussion you want instead of a trivia quiz."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions worth killing"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Strategy is not just removing `if-else`. If the factory still branches on raw strings in six places, you moved the smell. The win is one tested selection point plus a Context that never branches.",
+        "Strategy is not inheritance. Subclassing `Navigator` per mode freezes the choice at construction and explodes combinations. Composition plus injection is what buys per-request swapping.",
+        "More strategies do not mean better design. Ten strategies differing by one threshold should be one parameterized strategy fed by configuration. A type per value is over-engineering.",
+        "The Context must not pick the strategy based on its own state. That is State pattern territory. In Strategy the client or factory decides; the Context stays dumb on purpose.",
+        "A shared interface with `Object` parameters and casts is not a Strategy. Interchangeability requires the same meaningful contract. If callers must know the concrete type to build arguments, the abstraction has already failed."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Selection guide: Strategy earns its complexity only under variation pressure.",
+      "headers": [
+        "Use Strategy when",
+        "Avoid Strategy when"
+      ],
+      "rows": [
+        [
+          "Multiple algorithms for the same task arrive over time — payment methods, routing modes, compression codecs, pricing rules",
+          "You have one algorithm with minor tweaks — use parameters or configuration, not a new class"
+        ],
+        [
+          "Variants must swap at runtime per user, per request, or per feature flag",
+          "The choice is fixed at startup — a simple factory or conditional is clearer and cheaper"
+        ],
+        [
+          "Different teams own different variants and need independent testing and review",
+          "One person owns all branches and they change together — colocation beats indirection"
+        ],
+        [
+          "You need to test each algorithm in isolation with the same contract test suite",
+          "Algorithms need incompatible inputs or side effects — no common contract exists to honor"
+        ],
+        [
+          "You want to inject fakes for testing — a `FakePaymentStrategy` beats mocking conditionals",
+          "The branching logic itself is the domain rule and deserves to be visible in one place"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The rule of thumb is three and changing: two stable branches stay inline, three volatile ones earn the interface. Count not just current variants but arrival rate and ownership. If product keeps adding modes and different engineers keep colliding on the same file, extract early. If the branches have been untouched for a year, leave the conditional alone. Restraint is part of the pattern."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "Say: **Strategy puts each interchangeable algorithm behind one interface and injects it into a dumb Context, so new behavior arrives as a new class instead of an edit to shared branching logic.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:57:15.550Z",
+    "problems": []
+  }
+}

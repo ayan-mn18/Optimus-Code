@@ -1,0 +1,341 @@
+{
+  "slug": "single-point-of-failure-avoidance",
+  "title": "Single Point of Failure Avoidance",
+  "summary": "SPOF avoidance is blast-radius control: find every component whose death kills the system, then give it an independent twin and a fast path to switch over.",
+  "kind": "HLD",
+  "problemSlug": "single-point-of-failure-avoidance-90-182",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🧯",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Reliability"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Single Point of Failure (SPOF) in System Design - YouTube",
+      "url": "https://www.youtube.com/watch?v=Iy2YqgjXtRM",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Single Point of Failures? How can identify and avoid - Medium",
+      "url": "https://serifhaniskl.medium.com/what-is-single-point-of-failures-how-can-identify-and-avoid-02b04f4ad3f8",
+      "source": "serifhaniskl.medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is a Single Point of Failure (SPOF)? - Anomali",
+      "url": "https://www.anomali.com/blog/why-single-point-of-failure-is-scary",
+      "source": "anomali.com",
+      "kind": "article"
+    },
+    {
+      "title": "How to Avoid a Single Point of Failure: Key Mitigation Techniques",
+      "url": "https://www.tierpoint.com/blog/data-protection/single-point-of-failure/",
+      "source": "tierpoint.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A **single point of failure is not a weak component — it is a component with uncontained blast radius.** One load balancer, one primary database, one AZ, one DNS path: if its failure equals system failure, you do not have a reliability problem, you have an architecture problem. Fix it with **independent redundancy plus verified failover**, or you have not fixed it at all."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a single point of failure actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A single point of failure is any element — hardware, process, zone, or dependency — where **one fault forces total or critical loss of function** with no alternate path to serve traffic or preserve writes. The key test is counterfactual: remove that one element in your head and ask what still works. If the answer is *nothing*, you found a SPOF. It is not about how reliable the box is. A server with 99.99% uptime still gives you a hard ceiling of 99.99% system availability if everything funnels through it, and in practice less, because correlated failures, deploys, and config pushes turn small probabilities into certain outages. Scalability makes this worse because every new stateless replica you add behind a single stateful choke point increases load on that choke point while giving you false confidence that the system is distributed."
+    },
+    {
+      "type": "paragraph",
+      "text": "The usual suspects form a short list because systems converge on the same shape: a **single load balancer or ingress tier**, a **single primary database with no promoted replica**, a **single cache cluster that the request path cannot bypass**, a **single message broker or queue**, a **single availability zone or region for all copies**, and a **single control-plane dependency** such as DNS, service discovery, or a token issuer. Note why each qualifies. The load balancer qualifies because it owns the only routable entry point. The primary database qualifies because it owns the only durable write path. The zone qualifies because power, network, and rolling maintenance fail together. Interviewers care that you reason in terms of **failure domains**, not just process counts. Two database processes on the same rack, same switch, same disk array, or same operator runbook are one failure domain wearing two nametags."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: redundancy plus independent failure domains"
+    },
+    {
+      "type": "paragraph",
+      "text": "Elimination has three inseparable parts, and skipping any one leaves the SPOF in place. First, **replicate the critical state or capability** so more than one unit can do the job: standby load balancers, replica databases, multi-replica caches, multi-AZ workers. Second, **place replicas in independent failure domains** — separate hosts, racks, zones, regions, networks, and ideally separate rollout batches — so one event cannot kill all copies at once. Third, **build detection and switchover that actually runs under failure**: health checks, leader election or virtual-IP takeover, client retry to a new endpoint, and DNS or routing changes with known TTL behavior. Redundancy without independence is decoration. Independence without automated switchover is a runbook that will not execute at 3 AM. Switchover without rehearsal is fiction. That is why the design is chosen this way: you are buying **time-to-recovery**, not just extra hardware. The trade-off is immediate — every twin doubles operational surface, consistency work, and cost — and you accept it only where the blast radius justifies it."
+    },
+    {
+      "type": "mermaid",
+      "title": "SPOF vs redundant path",
+      "caption": "Left fails as one unit; right survives one loss because every layer has an independent twin.",
+      "code": "flowchart LR\n  C[Clients] --> LB1[Single LB]\n  LB1 --> A1[App 1]\n  LB1 --> A2[App 2]\n  A1 --> DB[(Single DB)]\n  A2 --> DB\n  C2[Clients] --> VIP[Virtual IP / Anycast]\n  VIP --> LB_A[LB Active]\n  VIP --> LB_B[LB Standby]\n  LB_A --> AppA[App AZ-a]\n  LB_B --> AppB[App AZ-b]\n  AppA --> DBP[(DB Primary AZ-a)]\n  AppB --> DBP\n  DBP -. replicate .-> DBS[(DB Replica AZ-b)]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the diagram as a before-and-after of blast radius. On the left, adding more app servers changes nothing: the load balancer and the database each remain a cut that severs every request. On the right, no single cut kills the system. Either load balancer can hold the virtual address, apps run in two zones so a zone loss leaves capacity, and the database has a live replica in the other zone with a defined promotion path. The reason this shape survives scale is that **failure handling stays O(1) per layer** — health check fails, traffic shifts, replica promotes — instead of requiring human triage while the queue builds. The trade-off you name here: you now pay for idle capacity, cross-zone replication traffic, and the complexity of split-brain prevention."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Four elimination patterns that work"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Active-passive with fast takeover for entry points.** Run two load balancers or gateways, one holds the virtual IP, the other watches via heartbeat and seizes it in seconds. Why this shape: entry routing must be simple and deterministic under partial failure. Trade-off: standby capacity sits idle and takeover can drop in-flight connections unless you drain.",
+        "**Active-active behind independent routing for stateless tiers.** Run app and API servers in N zones behind independent load-balancing paths with health-checked removal. Why: stateless capacity scales horizontally and any one replica loss is just reduced headroom. Trade-off: you must solve session, rate-limit, and cache-locality sharing or you reintroduce stickiness as a logical SPOF.",
+        "**Primary-replica with tested promotion for durable state.** Keep a synchronous replica in-region for zero-loss failover and an asynchronous replica cross-region for disaster survival. Why: writes cannot be served from thin air; someone must own the log. Trade-off: sync replication adds write latency and cross-region async means measurable RPO — pick one, you cannot have both minimal latency and zero loss at distance.",
+        "**Degrade and shed to survive dependency loss.** Make cache, search, recommendations, and non-critical writes optional: serve stale, serve reduced ranking, queue writes locally with backpressure. Why: a cache or downstream service should be an accelerator, never a gate. Trade-off: you accept temporarily worse answers and complex fallback code to protect availability.",
+        "**Spread and isolate by cell or region.** Partition users or tenants into cells with independent data, deploy, and scaling so a bad config or hot key kills one cell, not the fleet. Why: limits correlated failure from your own changes, which cause more outages than hardware. Trade-off: rebalancing, cross-cell queries, and capacity fragmentation get harder."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs: every replica bills you twice"
+    },
+    {
+      "type": "table",
+      "caption": "Each SPOF fix buys availability with a different currency.",
+      "headers": [
+        "Technique",
+        "What it buys",
+        "What it costs"
+      ],
+      "rows": [
+        [
+          "Standby LB / gateway + VIP takeover",
+          "Survives entry-point crash in seconds",
+          "Idle hardware, flapping risk, dropped connections on switchover"
+        ],
+        [
+          "DB sync replica in same region",
+          "Survives node loss with ~zero data loss",
+          "Added p99 write latency, 2x write cost, failover still needs fencing"
+        ],
+        [
+          "DB async replica cross-region",
+          "Survives regional loss",
+          "Seconds to minutes of RPO, replay and conflict handling, egress cost"
+        ],
+        [
+          "Multi-AZ stateless + health-check removal",
+          "Survives host and zone faults transparently",
+          "Cross-zone traffic fees, capacity headroom, health-check tuning"
+        ],
+        [
+          "Cache cluster + bypass-on-miss",
+          "Cache loss becomes latency, not outage",
+          "Thunder-herd on cold start, origin must be provisioned for full miss rate"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The honest trade is **consistency and latency against continuity**. Synchronous replication keeps replicas identical but forces every write to wait for the slowest acknowledgment, which directly inflates tail latency and makes the primary sensitive to replica slowness — you have traded a crash SPOF for a slowness SPOF unless you bound replica lag with timeouts and degrade explicitly. Asynchronous replication keeps writes fast but opens a loss window, so failover means choosing between refusing traffic until the log catches up or accepting that the last seconds of writes are gone. The second trade is **cost against probability**: triple-zone active-active looks clean on a whiteboard and triples your baseline bill plus inter-zone transfer. That is correct to pay for a checkout write path and incorrect for a thumbnail renderer. Say which path deserves the spend and why, with numbers for RTO and RPO, or the design is just redundancy theater."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Active-active does not mean failure-proof",
+      "text": "Two load balancers behind one static route, one DNS record with a long TTL, or one anycast advertisement from one router are still one SPOF. **Count failure domains, not processes.** If both copies share fate — same zone, same config push, same control plane — you duplicated cost without reducing blast radius."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Real SPOF deaths rarely look like a clean box dying. They look like **failover that never triggers, triggers too late, or triggers on both sides at once**. Health checks pass because they probe `/health` while the worker pool is wedged. The standby promotes but clients still pin to the old primary because connection pools never refresh DNS or the virtual IP sticks to a dead host due to ARP caching. The replica lags by twenty minutes and promotion either stalls or resurrects stale state that overwrites newer writes. Worse is the correlated kind: a config push restarts both load balancers together, a schema migration locks primary and replica, a zone evacuation takes the app tier and the quorum witness with it. Cash-register symptom is always the same shape — **flatline or cliff in success rate tied to one tier, with the rest of the fleet idle** — because traffic cannot route around the cut. If your dashboards show healthy CPU everywhere and zero served traffic, suspect the entry path or the write path, not the workers."
+    },
+    {
+      "type": "table",
+      "caption": "Failure, symptom, and where to look first.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "First check"
+      ],
+      "rows": [
+        [
+          "Single LB crashes",
+          "100% 502/timeout at edge, apps idle and healthy",
+          "VIP holder, heartbeat logs, edge connection counts"
+        ],
+        [
+          "Primary DB dies, no promotion",
+          "Writes queue then time out; reads stale or fail",
+          "Replica lag, leader lease, fencing state, pool wait time"
+        ],
+        [
+          "Split-brain promotion",
+          "Duplicate leaders, conflicting writes, unique-key violations",
+          "Quorum logs, fencing tokens, write-source distribution"
+        ],
+        [
+          "Cache fleet loss without bypass",
+          "Origin overload, latency cliff, cascading timeouts",
+          "Miss rate, origin queue depth, retry amplification"
+        ],
+        [
+          "Single NAT / egress link saturates",
+          "Cross-zone timeouts, partial packet loss, asymmetric traces",
+          "Egress bandwidth, conntrack table, route asymmetry"
+        ]
+      ]
+    },
+    {
+      "type": "list",
+      "items": [
+        "Success rate drops to near zero while downstream CPU and memory look normal — traffic is stuck *before* the workers.",
+        "Write latency jumps to timeout and queue depth grows monotonically — the durable path has one owner and it is gone.",
+        "After failover, error rate stays high with *old-host* connection errors — clients or pools are pinned and never re-resolved.",
+        "Replica promotion succeeds but users see resurrected old data — you failed over to a lagging copy without a lag gate.",
+        "Two nodes both claim primary within seconds of each other — fencing or quorum is missing and you now have divergence, not redundancy."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Cache is a soft SPOF until it is not",
+      "text": "Teams say *cache loss is fine, we fall through to the database*. Then the cache fleet restarts and the database receives 20x normal QPS in ten seconds and dies. **If origin cannot absorb 100% miss rate, the cache is a SPOF.** Provision origin for full miss, add request coalescing and staggered TTLs with jitter, or admit the dependency."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What the fix looks like as config"
+    },
+    {
+      "type": "code",
+      "language": "yaml",
+      "filename": "ha-layer.yaml",
+      "code": "# Two LBs share one virtual IP. Only the heartbeat holder serves.\n# Two DB copies in different zones. App never pins to one IP.\nload_balancer:\n  mode: active-passive\n  virtual_ip: 10.0.0.10\n  heartbeat_interval_ms: 500\n  dead_after_misses: 3\n  drain_timeout_s: 30  # let in-flight finish before takeover\n\ndatabase:\n  primary: db-a.zone-a.internal\n  sync_replica: db-b.zone-b.internal\n  replication: synchronous_with_timeout  # bound tail latency\n  replica_lag_gate_s: 5  # refuse promotion if lag exceeds this\n  fencing: required  # old primary cannot accept writes after loss of lease\n\nclient_policy:\n  endpoints: [db-a.zone-a.internal, db-b.zone-b.internal]\n  refresh_topology_s: 10\n  retry: { attempts: 3, backoff_ms: 100, retry_on: [timeout, connection-refused] }\n  hedged_read_ms: 50  # avoid tail pileup on one slow replica"
+    },
+    {
+      "type": "paragraph",
+      "text": "This file is small on purpose: it encodes the three non-negotiables. The heartbeat and drain settings define **how fast you detect and how cleanly you cut over** — too aggressive and you flap, too lax and your RTO is fiction. The lag gate and fencing define **what correctness you refuse to sacrifice** — promoting a replica twenty seconds behind without a gate trades an outage for silent data resurrection. The client policy defines **whether failover actually reaches the user** — topology refresh and retry on refusals matter more than server-side elegance because stale pools and cached DNS are where most takeovers die. Why config instead of more boxes: boxes without these behaviors are just additional ways to fail. The trade-off named here is operational strictness against speed of recovery; every timeout you add to protect consistency lengthens the window users see errors."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "failover_client.py",
+      "code": "import random, time\n\nENDPOINTS = [\"app.zone-a.internal\", \"app.zone-b.internal\"]\n\ndef fetch_with_failover(path, timeout=0.8, attempts=3):\n    # Shuffle so a dying primary does not herd all retries onto one host.\n    hosts = random.sample(ENDPOINTS, len(ENDPOINTS))\n    last_err = None\n    for i in range(attempts):\n        host = hosts[i % len(hosts)]\n        try:\n            return http_get(f\"https://{host}{path}\", timeout=timeout)\n        except (TimeoutError, ConnectionError) as e:\n            last_err = e\n            time.sleep(0.05 * (2 ** i))  # bounded backoff, not tight loop\n    raise last_err\n\ndef http_get(url, timeout):\n    ...  # raises TimeoutError / ConnectionError on failure"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Hunt the SPOFs out loud",
+          "text": "Walk the request path — DNS, edge, LB, app, cache, queue, DB, zone — and name each component whose solo death stops reads or writes. Draw failure domains, not just boxes. Interviewers promote candidates who find the non-obvious ones: single NAT gateway, single Kafka partition leader, single token service."
+        },
+        {
+          "title": "Rank by blast radius, not by likelihood",
+          "text": "Fix entry routing and durable writes first, then the zone story, then accelerators. State RTO and RPO per tier: seconds for LB takeover, seconds with possible loss for regional DB, minutes for cross-region. This ranking is the scalability link — write and routing bottlenecks cap throughput growth."
+        },
+        {
+          "title": "Propose the minimal twin for each",
+          "text": "Standby LB with VIP, sync replica in-region plus async out-of-region, stateless multi-AZ with health-checked removal, cache with bypass and coalescing. Give replica count and placement: 2 LBs across zones, 3 DB nodes for quorum, N+1 app capacity so one zone loss still holds peak."
+        },
+        {
+          "title": "Name the new failure modes you introduced",
+          "text": "Split-brain, lag-induced staleness, flapping health checks, retry storms. Then close each: fencing tokens and quorum, lag gates, successive-failure thresholds plus drain, bounded retries with backoff and circuit breakers. This is where medium becomes senior."
+        },
+        {
+          "title": "Prove it with verification",
+          "text": "Continuous health checks, chaos drills that kill the primary in staging, game days for zone loss, metrics on lag, takeover time, and miss-rate survivability. No rehearsal means no credit — an untested standby is an assumption, not redundancy."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "What separates a pass is quantification. Anyone can say *add a replica*. Strong candidates say *two load balancers in separate zones with 500ms heartbeats gives ~2s RTO and drops in-flight connections, so we drain for 30s and overprovision apps by 30% to absorb the shift; the DB keeps a sync replica in-region for zero-RPO node loss at +8ms p99 write cost and an async copy cross-region with 60s RPO for regional loss*. That sentence contains placement, timing, cost, and the accepted loss window — exactly the reasoning scalability questions test. Weak answers add replicas everywhere without stating what breaks next or what the client must do differently, which tells the interviewer the design has never survived contact with a real outage."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Misconceptions that get you downleveled"
+    },
+    {
+      "type": "list",
+      "items": [
+        "*More copies always means more reliable.* Only if copies fail independently and switchover works. Two replicas behind one switch, one deploy pipeline, or one config flag fail as one. Independence and fencing do the work; count does not.",
+        "*Active-active removes the need for failover logic.* It moves it. Clients, pools, and routers still need topology refresh, retry budgets, and load shedding, or traffic pins to the dead half and your active-active behaves as active-dead.",
+        "*Synchronous replication means no trade-off.* It means you chose latency and coupling over loss. A slow or partitioned replica now directly throttles or blocks the primary — bound it with timeouts or you swapped a crash SPOF for a gray-failure SPOF.",
+        "*Stateless tiers cannot be SPOFs.* They can, logically. Shared session affinity, a single connection-pool config pointing at one host, or a single feature-flag service that gates every request turns a fleet of clones into one logical gate.",
+        "*Monitoring replaces redundancy.* Alerts tell you the single load balancer is dead; they do not serve traffic. Detection without an alternate path and an automated cutover is just faster awareness of a total outage."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to kill the SPOF and when to live with it"
+    },
+    {
+      "type": "table",
+      "caption": "Redundancy is a budget. Spend it where loss hurts most.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Payment auth, write path, edge routing",
+          "Eliminate aggressively",
+          "Downtime equals lost revenue and broken trust; cost of twin is rounding"
+        ],
+        [
+          "Read-heavy catalog with tolerable staleness",
+          "Replicate reads, accept async lag",
+          "Availability matters more than freshness; lag gate keeps showed data bounded"
+        ],
+        [
+          "Internal admin tool, business-hours use",
+          "Leave single, back up + alert",
+          "Outage cost is minutes of internal delay; standby fleet wastes money"
+        ],
+        [
+          "Prototype finding product fit",
+          "Leave single, document RTO by restore",
+          "Speed of iteration beats uptime; invest in backups, not failover"
+        ],
+        [
+          "Single-region startup with global users",
+          "Fix zone first, defer multi-region writes",
+          "Zone loss is likely and cheap to cover; cross-region active writes add conflict and latency pain early"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The opinionated rule: **duplicate the write path and the entry path before you duplicate anything else, and leave deliberate singles everywhere the outage cost is lower than the operating cost of the twin.** A standby database you never promote and a cache fleet your origin cannot survive without are liabilities, not insurance. Every redundant pair needs an owner, a runbook that has actually been executed, and a dashboard showing lag, takeover time, and last successful drill. If you cannot point to the last time failover ran end to end, you still have a SPOF — it is just better hidden. That discipline is what lets a system grow: each scale increment adds capacity without adding a new way for one fault to stop the world."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Find every component whose solo failure stops serving or writing, give each an **independent twin in a separate failure domain with fenced, rehearsed failover and bounded RTO/RPO** — and accept the latency, cost, and consistency trade-off explicitly."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:11:32.781Z",
+    "problems": []
+  }
+}

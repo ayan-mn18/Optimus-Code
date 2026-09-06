@@ -1,0 +1,289 @@
+{
+  "slug": "cdn",
+  "title": "CDN",
+  "summary": "CDN as a distributed reverse-proxy cache: request routing, TTL and cache-key trade-offs, failure modes, and interview sizing.",
+  "kind": "HLD",
+  "problemSlug": "cdn-94-209",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "🌐",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "CDN"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Setting the Record Straight on Canada-U.S. Trade - TD Economics",
+      "url": "https://economics.td.com/ca-canada-us-trade-balance",
+      "source": "economics.td.com",
+      "kind": "article"
+    },
+    {
+      "title": "Canada | United States Trade Representative",
+      "url": "https://ustr.gov/countries-regions/americas/canada",
+      "source": "ustr.gov",
+      "kind": "article"
+    },
+    {
+      "title": "Canada's State of Trade 2025: Small and medium enterprises taking on ...",
+      "url": "https://international.canada.ca/en/global-affairs/corporate/reports/chief-economist/state-trade/2025",
+      "source": "international.canada.ca",
+      "kind": "article"
+    },
+    {
+      "title": "Canada–United States trade relations - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Canada%E2%80%93United_States_trade_relations",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A CDN does not make your origin faster. It **avoids your origin** by serving hot bytes from memory close to the user and absorbing bursts you could never provision for. Every decision after that is one trade-off: **proximity and offload versus freshness and correctness**. If you cannot state what stale data you are willing to serve to survive a flash crowd, you do not have a CDN design."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a CDN is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A CDN is a globally distributed network of reverse-proxy caches sitting in front of your origin. Clients never talk to your origin directly for cacheable traffic. They terminate TCP and TLS at a nearby Point of Presence, usually a cluster of edge servers with RAM and SSD cache, and that edge either serves the object immediately or fetches it once on behalf of thousands of clients. Behind edges sits a smaller set of regional shields or mid-tiers that aggregate misses, and only shield misses reach your origin. The origin remains the system of record; the CDN is authoritative for delivery, not for truth. That split is why you gain massive read scale and lower tail latency, and why you pay for it with delayed invalidation, key-management complexity, and a second control plane for routing, TLS, and purge."
+    },
+    {
+      "type": "paragraph",
+      "text": "What it is not: it is not hosting, it is not a database replica, and it is not WAN optimization magic for dynamic personalised responses. If the bytes are different per user or cannot tolerate seconds to minutes of staleness, the edge is just an expensive extra hop that terminates TLS well and reuses warm connections to origin. Use it for what caches well: immutable static assets with content hashes, video segments, large downloads, public API reads, and full pages you can explicitly version or serve stale with revalidation. Everything else should bypass cache or use the CDN only as a managed front door for TLS, WAF, and connection coalescing."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from DNS to bytes"
+    },
+    {
+      "type": "mermaid",
+      "title": "Cache-hit request path",
+      "caption": "Most requests should terminate at edge or shield and never reach origin.",
+      "code": "flowchart TD\n  Client[Client] --> DNS[DNS plus Anycast Routing]\n  DNS --> Edge[Edge PoP - Nearest Cache]\n  Edge -->|Cache Hit| Serve[Serve from RAM or SSD]\n  Edge -->|Cache Miss| Shield[Regional Shield Tier]\n  Shield -->|Shield Hit| Edge\n  Shield -->|Shield Miss| Origin[Origin]\n  Origin --> Shield\n  Shield --> Edge"
+    },
+    {
+      "type": "paragraph",
+      "text": "Routing is the first mechanism and most candidates hand-wave it. Two practical options dominate. **Anycast** announces the same IP from every PoP and lets BGP pull the client to the topologically nearest healthy site. Why choose it: failover is nearly instant and needs no client logic, and a dead PoP simply disappears from routing. Trade-off: you lose fine control, debugging is harder, and a BGP flap can shift millions of users at once. **DNS steering** answers the lookup for `cdn.example.com` with PoP IPs chosen by geolocation, load, and EDNS client-subnet. Why choose it: you can weight traffic, drain a PoP, and do latency-based steering per hostname. Trade-off: you inherit DNS TTL caching, stale resolver data, and an extra lookup on cold start. Production systems use both: anycast for the edge IP fabric, DNS for coarse mapping to a region and for fast drain during incidents."
+    },
+    {
+      "type": "paragraph",
+      "text": "Once routed, the edge terminates TLS, picks a cache key, and checks memory then SSD. The key is almost always `method + host + path + normalized query + Vary headers`, not the raw URL. That normalization choice determines your hit ratio. Include every query parameter and `hit ratio collapses` because `?utm_source` creates a new object per share link. Ignore query parameters that change the body and you serve the wrong image to everyone — a correctness bug, not a performance bug. TLS termination at edge is non-negotiable for latency: it allows session resumption, HTTP/2 and HTTP/3 coalescing, and a small pool of warm, multiplexed connections from edge to shield to origin instead of millions of short client connections hammering your load balancer. Trade-off: your private key or an automated equivalent must exist in every PoP, which expands your key-management and revocation surface."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Caching model: TTL, validation, and eviction"
+    },
+    {
+      "type": "paragraph",
+      "text": "TTL is the contract between origin and edge about how long a lie is acceptable. Origin says `Cache-Control: public, max-age=60, s-maxage=300, stale-while-revalidate=30, stale-if-error=300`. Edge serves from cache without contacting origin until `s-maxage` expires, then revalidates with `If-None-Match` or `If-Modified-Since`. If origin returns `304 Not Modified`, the edge refreshes metadata without refetching the body. `stale-while-revalidate` lets the edge serve the old object instantly while fetching the new one in background — lower p99 at the cost of guaranteed staleness. `stale-if-error` lets the edge keep serving during an origin outage — higher availability at the cost of serving minutes-old data while you are already degraded. Eviction is almost always approximate LRU or TinyLFU bounded by RAM then SSD; you do not control it per object except through TTL and explicit purge by URL, prefix, or surrogate key."
+    },
+    {
+      "type": "table",
+      "caption": "Core CDN trade-offs. Every row buys one property with another.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Long TTL plus explicit purge",
+          "95%+ offload, stable origin, low p99",
+          "Purge propagation delay and complexity; failed purge means prolonged poison"
+        ],
+        [
+          "Short TTL plus revalidation",
+          "Freshness within seconds, simple reasoning",
+          "Origin QPS stays high; ETag storms under load; higher tail latency"
+        ],
+        [
+          "Ignore marketing query params in key",
+          "High hit ratio, fewer objects, better compression",
+          "Risk of collapsing distinct variants if normalization is wrong"
+        ],
+        [
+          "Include Vary on encoding and device",
+          "Correctness for gzip, brotli, WebP variants",
+          "Key fragmentation; 3-4x object explosion if overused"
+        ],
+        [
+          "Serve stale on error or while revalidate",
+          "Survives origin outage, hides fetch latency",
+          "Users see stale data and you must expose age honestly"
+        ],
+        [
+          "Regional shield tier",
+          "Collapses 100 edge misses into 1 origin fetch",
+          "Extra hop on miss; added cost and operational tier"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Candidates who say *cache everything for an hour* fail. The correct posture is tiered by mutability: immutable hashed assets get `immutable` plus one year because the filename changes when the bytes change, so no purge path is needed. Public list responses get 10 to 60 seconds plus `stale-while-revalidate` because freshness matters but a few seconds of lag is invisible. Personalized or authenticated responses get `private, no-store` or `Vary: Cookie` with great care, because caching per user destroys hit ratio and risks leaking one user body to another if the key omits the session. The trade-off is explicit: longer TTL and broader normalization improve offload and cost, narrower keys and shorter TTL improve correctness and freshness."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is **thundering herd on expiry**. One hot object with a 60-second TTL expires, 20,000 edge requests miss at the same second, the shield collapses them imperfectly, and 500 fetches hit origin concurrently for a response that takes 800ms to render. Symptom you would see: periodic origin latency spikes aligned exactly to TTL boundaries, followed by 502s from saturated origin threads, while edge hit ratio graphs show a sawtooth dip every minute. Fix is request coalescing at edge and shield plus jittered TTLs and `stale-while-revalidate` so only one fetch goes forward. Without coalescing, your CDN is a load multiplier, not a shield."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure is **key fragmentation and poison**. A misconfigured `Vary: User-Agent` or unnormalized query string turns one logical object into 200,000 physical objects. Symptom: hit ratio drops from 97% to 35% overnight with no traffic change, SSD churn spikes, origin bandwidth bill doubles, and p50 latency actually improves while p99 worsens because misses queue behind fetches. Worse is poison: an error page or personalised response cached under a public key. Symptom: users report seeing someone else content or a stale error long after origin recovered, and purge by URL does not help because variants hide under different `Vary` combinations. Fix is strict key design, never caching non-2xx by default, and purge by surrogate key such as `product:123` so one publish invalidates all variants at once. Trade-off: surrogate keys require origin to emit correct tags on every response, which is application work, not CDN magic."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Symptom to memorise",
+      "text": "If origin CPU and 5xx spike **exactly when hit ratio dips**, you have a herd or an eviction storm, not an origin capacity problem. If hit ratio is low but origin is flat, you have fragmentation — too many keys, not too much traffic. Do not scale origin until you know which graph moved first."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Purge is not instant",
+      "text": "Purge is an eventually consistent distributed delete across hundreds of caches. Expect seconds to minutes, not milliseconds. Designs that require *write then immediately read-your-write globally* cannot use edge caching for that path — bypass cache or version the URL instead."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Config that matters more than vendor choice"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cache_key.py",
+      "code": "ALLOWLIST_QS = {\"w\", \"h\", \"fmt\", \"v\"}  # only params that change bytes\nIGNORED_QS = {\"utm_source\", \"utm_medium\", \"gclid\", \"fbclid\"}\n\ndef cache_key(method: str, host: str, path: str, qs: dict, headers: dict) -> str:\n    if method != \"GET\":\n        return \"BYPASS\"  # never cache POST by default: correctness over hit ratio\n    # 1. Normalise: lowercase host, strip trailing slash, sort allowlisted params\n    clean_qs = {k: v for k, v in qs.items() if k in ALLOWLIST_QS}\n    # 2. Vary only on encoding, never on User-Agent: fragmentation trade-off\n    enc = headers.get(\"accept-encoding\", \"identity\")\n    fmt = clean_qs.get(\"fmt\", \"auto\")\n    return f\"{host}{path}?w={clean_qs.get('w',0)}&h={clean_qs.get('h',0)}&fmt={fmt}&enc={enc}\"\n\n# Origin response headers for immutable vs mutable:\n# Immutable: Cache-Control: public, max-age=31536000, immutable\n# Mutable list: Cache-Control: public, s-maxage=30, stale-while-revalidate=15, stale-if-error=120\n# Surrogate-Key: product-123, category-shoes  # for single-publish purge"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet encodes the three decisions that control 90% of outcomes. First, the allowlist rejects tracking parameters from the key. Why: marketing tags create unbounded key cardinality with zero body change, so including them trades correctness you do not need for offload you desperately need. Second, it refuses to cache non-GET and refuses to `Vary` on `User-Agent`. Why: per-device keys quadruple storage and halve hit ratio; negotiate format via explicit `fmt` or `Accept` for images with only two or three variants. Third, origin emits `Surrogate-Key` tags. Why: purging `/images/*` is slow and dangerous, purging `product-123` is precise and lets you keep long TTLs without fear. Trade-off throughout is application discipline for operational safety: the CDN can only be as correct as the headers and keys you give it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Push vs pull and static vs dynamic"
+    },
+    {
+      "type": "paragraph",
+      "text": "Default to **pull**: edge fetches from origin on miss. Why pull wins: no pre-provisioning step, no stale pre-positioned objects, origin stays the source of truth. Trade-off: cold start miss latency and first-viewer penalty in a distant region. Use **push** only for known-hot large objects before a launch — pre-warm the final and the shield tiers by explicitly uploading or prefetching — because you trade operational toil and double invalidation work for guaranteed warm caches. For video, never cache multi-gigabyte files as one object; chunk into 2 to 6 second segments with separate keys so range requests and adaptive bitrate switching hit cache independently. For dynamic acceleration, be honest: there is no cache win, only TCP, TLS, and route optimization. Edge terminates slow client connections locally and forwards over a tuned backbone with BBR, larger initial windows, and keepalive reuse. That cuts handshake and loss recovery time, but every byte still comes from origin, so provision origin accordingly."
+    },
+    {
+      "type": "table",
+      "caption": "When a CDN helps and when it is the wrong tool.",
+      "headers": [
+        "Use CDN",
+        "Do not use CDN"
+      ],
+      "rows": [
+        [
+          "Immutable JS, CSS, fonts with hashed filenames",
+          "Per-user HTML or API responses without versioning"
+        ],
+        [
+          "Images and video segments with explicit width and format params",
+          "High-churn personalised feeds where freshness is measured in seconds"
+        ],
+        [
+          "Large downloads, game patches, software releases",
+          "Upload-heavy or bidirectional websocket traffic as cacheable paths"
+        ],
+        [
+          "Public GET APIs with short TTL plus stale-while-revalidate",
+          "Write-read globally consistent flows like balance checks or inventory decrement"
+        ],
+        [
+          "Failover static shell served stale-if-error during outage",
+          "Small low-traffic internal tools where extra hop adds latency and cost"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Sizing math you must do on the whiteboard"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers expect two numbers: origin offload and per-PoP footprint. Start from edge demand. Suppose 50,000 requests per second globally, average object 200 KB, so edge egress is 80 Gbps. With a 95% hit ratio, origin sees only 2,500 requests per second and 4 Gbps — a single well-tuned cluster survives. Drop to 80% hit ratio from key fragmentation and origin jumps to 10,000 requests per second and 16 Gbps, which saturates most origins and quadruples bandwidth cost. Storage is working-set times variants: 1 million hot objects times 200 KB is 200 GB before variants, times 3 encodings is 600 GB per shield, easily held on SSD but not in RAM, so expect RAM hits for the top 10% and SSD hits for the tail. State the trade-off: raising hit ratio by 1% at scale saves more origin capacity than doubling origin machines, which is why key normalization and shield tiers beat origin scaling every time."
+    },
+    {
+      "type": "mermaid",
+      "title": "Tiered shield design",
+      "caption": "Shields turn many edge misses into one origin fetch.",
+      "code": "graph LR\n  E1[Edge PoP A] --> S1[Shield Region US]\n  E2[Edge PoP B] --> S1\n  E3[Edge PoP C] --> S2[Shield Region EU]\n  S1 --> O[Origin]\n  S2 --> O"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design image serving for a marketplace",
+          "text": "Propose pull CDN with `w,h,fmt` allowlist, immutable hashed originals, 30-day edge TTL, shield in two regions, and surrogate-key purge on seller re-upload. Call out Vary fragmentation trade-off and why you never key on full User-Agent."
+        },
+        {
+          "title": "Handle a flash sale without killing origin",
+          "text": "Serve product pages stale-while-revalidate for 15 seconds, coalesce misses at shield, jitter TTLs to avoid herds, and serve stale-if-error for 5 minutes. State the staleness you accept: price may lag 15 seconds, inventory check bypasses cache entirely."
+        },
+        {
+          "title": "Add video without blowing the budget",
+          "text": "Chunk to short segments, long TTL per segment, separate audio and video renditions, and pre-warm only the first segments of trending titles. Explain why one large MP4 key destroys range-request hit ratio."
+        },
+        {
+          "title": "Make purge safe",
+          "text": "Reject URL-prefix purges for routine publishes. Emit Surrogate-Key per entity, purge by key, and version URLs for deploys. Admit purge takes seconds and design read-your-write flows to bypass cache."
+        },
+        {
+          "title": "Secure the front door",
+          "text": "Terminate TLS at edge with automated rotation, enforce HTTPS redirect at edge, sign URLs for premium content with short expiry, and validate at edge before shield fetch. Name the cost: key distribution to every PoP and clock-skew handling for signed URLs."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "More PoPs always means lower latency — false. Without high hit ratio and shield aggregation, more PoPs means more cold misses and worse p99. Density of hot data beats count of locations.",
+        "CDN caching makes dynamic APIs fast by default — false. Personalised responses have near-zero reuse. You gain only connection reuse and TLS offload unless you explicitly separate cacheable fragments from private data.",
+        "Setting a long TTL is an optimization — it is a correctness decision. Long TTL without a purge story is how error pages and private data live for hours. TTL length must follow mutability, not traffic.",
+        "Purge is instantaneous and atomic — it is neither. It propagates in seconds to minutes and can leave variants behind. If you need global read-your-write, version the object name instead.",
+        "HTTPS prevents caching — it does not. TLS is terminated at edge under your certificate precisely so the edge can cache. End-to-end encryption to origin without edge termination bypasses all caching benefits."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Put a pull CDN with regional shields in front of origin, key only on parameters that change bytes, cache immutable assets for a year and mutable reads for seconds with stale-while-revalidate, and purge by surrogate key — accepting bounded staleness to buy origin offload and p99."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:07:59.360Z",
+    "problems": []
+  }
+}

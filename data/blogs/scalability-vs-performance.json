@@ -1,0 +1,293 @@
+{
+  "slug": "scalability-vs-performance",
+  "title": "Scalability vs Performance",
+  "summary": "Performance is speed at a fixed load. Scalability is how that speed degrades as load grows. Confusing them builds systems that are fast until they cliff, or scalable but too slow to matter.",
+  "kind": "HLD",
+  "problemSlug": "scalability-vs-performance-91-201",
+  "topic": "System Design Tradeoffs",
+  "difficulty": "Medium",
+  "coverEmoji": "⚖️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "System Design Tradeoffs",
+    "Scalability",
+    "Performance"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Performance Vs Scalability in System Design - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/performance-vs-scalability-in-system-design/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Day 13 : Performance vs Scalability: What's the Difference and Why It ...",
+      "url": "https://medium.com/@shivanimutke2501/performance-vs-scalability-whats-the-difference-and-why-it-matters-e3f0253dca3e",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Differentiating Performance from Scalability - Dynatrace",
+      "url": "https://www.dynatrace.com/resources/ebooks/javabook/performance-and-scalability/",
+      "source": "dynatrace.com",
+      "kind": "article"
+    },
+    {
+      "title": "Performance vs Scalability in System Design: An In-Depth Analysis",
+      "url": "https://www.linkedin.com/pulse/performance-vs-scalability-system-design-in-depth-analysis-firoz-khan-iifmc",
+      "source": "linkedin.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Performance is a point measurement. Scalability is a curve.** Performance answers: at *this* load, what is `p99`, throughput, and cost per request? Scalability answers: when load goes 10x, what happens to that `p99` and what do you have to add to hold it? If you cannot state both, you have not designed anything."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "**Performance** is efficiency under fixed conditions: for a given request mix, concurrency, and dataset size, how fast and how cheap is each unit of work? Measure it with three numbers together, never one alone: **latency** (`p50`, `p99`, `p99.9`), **throughput** (requests per second the system sustains without violating the latency bound), and **resource cost** (CPU, memory, I/O, network per request). A cache lookup that returns in 2ms at 500 RPS using 10% CPU is a performance statement. Drop any of the three and the claim is meaningless, because 2ms at 5 RPS or at 95% CPU is a different system."
+    },
+    {
+      "type": "paragraph",
+      "text": "**Scalability** is the shape of performance as load and data grow. Formally: how much extra capacity must you add to keep latency and throughput-per-dollar constant when you multiply traffic, connections, writes, or stored bytes? A linearly scalable design holds `p99` flat while cost grows roughly linearly with load. A sublinear design forces you to add 4x machines for 2x traffic. A non-scalable design has a cliff: it looks fast until a shared resource saturates, then latency explodes and throughput collapses. That is why scalability is not speed. It is the **cost function of growth**."
+    },
+    {
+      "type": "paragraph",
+      "text": "The confusion comes from observing them at one load point. At 100 RPS, a single tuned machine with an in-process hash map will beat a sharded, replicated, stateless fleet on every latency benchmark. That does not make it more scalable. Push both to 20,000 RPS with 10x writes and the single machine queues, garbage-collects, exhausts connections, and dies, while the fleet degrades gracefully. **Trade-off:** every mechanism that makes the curve flatter — stateless services, partitioning, replication, async queues, coordination protocols — adds per-request overhead that makes the single point slower. You are buying future headroom with present latency."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: contention decides the curve"
+    },
+    {
+      "type": "paragraph",
+      "text": "Think in queues, not in boxes. Every request consumes time on some shared resource: a CPU core, a lock, a connection pool slot, a primary database, a network link. At low utilization, latency is just service time, so performance work — better algorithms, fewer allocations, keeping data in memory, collapsing network hops — wins directly. As utilization rises, queueing delay dominates. Once a single serial section saturates, adding load does not add throughput; it only adds wait time. This is the entire physics behind the trade-off: **performance optimization shortens service time, scalability work removes serial sections.** A system with one serial section can be extremely fast and completely unscalable at the same time."
+    },
+    {
+      "type": "mermaid",
+      "title": "Where scaling usually dies",
+      "caption": "Stateless app tier scales out, shared primary does not. The curve cliffs at the serial resource.",
+      "code": "flowchart LR\n    C[Clients] --> LB[Stateless LB]\n    LB --> A1[App-1]\n    LB --> A2[App-2]\n    LB --> A3[App-3]\n    A1 --> DB[(Primary DB)]\n    A2 --> DB\n    A3 --> DB\n    DB --> R[(Replica)]\n    R --> A1"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the diagram as a load story. The load balancer and app tier are horizontally scalable: double traffic, double instances, `p99` roughly holds. The trade-off is that each app instance is stateless, so every request pays a network hop and a serialization cost it would not pay with local state. The primary database is the serial section. Reads can fan out to the replica, writes cannot. At first the system looks both fast *and* scalable because the primary sits at 20% utilization. Past ~70-80% primary CPU, lock wait, or I/O, each new app instance makes things worse by adding connection churn and lock contention. Throughput flattens, `p99` goes vertical, retries amplify the load, and you get a cliff. The fix is never a faster app tier. It is partitioning the writes, accepting eventual consistency, queueing, or shedding load — all of which hurt single-request latency to rescue the curve."
+    },
+    {
+      "type": "table",
+      "caption": "Same goal, opposite costs. Every row is a trade-off, not a free win.",
+      "headers": [
+        "Play",
+        "What it buys",
+        "What it costs",
+        "When the bill arrives"
+      ],
+      "rows": [
+        [
+          "In-process cache, tuned GC, zero-copy, better algorithm",
+          "Lower p50/p99 and higher RPS per box at current load",
+          "Local state, affinity, harder to move or replicate work",
+          "The moment you add a second box: cold caches, skew, inconsistency"
+        ],
+        [
+          "Stateless service + load balancer",
+          "Near-linear scale-out of compute",
+          "Extra hop, serialization, no locality; p50 rises 1-5ms",
+          "Every request, forever — you pay latency tax for headroom"
+        ],
+        [
+          "Sync write to primary + read replicas",
+          "Simple reasoning, fast reads",
+          "All writes serialize on one node; replication lag",
+          "Write growth: lag grows, reads go stale, primary cliffs"
+        ],
+        [
+          "Partitioning / sharding",
+          "Removes the single serial section; scales writes and storage",
+          "Cross-partition queries become scatter-gather; rebalancing pain; hot keys",
+          "Day two: skewed keys, operational complexity, slower tail"
+        ],
+        [
+          "Async queue + backpressure",
+          "Absorbs bursts, protects downstream, smooths the curve",
+          "Higher end-to-end latency, needs idempotency, DLQ, ordering work",
+          "Failure and replay paths — exactly when you are paged"
+        ],
+        [
+          "Strong coordination (consensus, distributed lock)",
+          "Correctness under scale and failover",
+          "Round trips on the critical path; throughput cap per shard",
+          "p99 under contention: fast at low concurrency, brutal at high"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "**Failure 1: the fast cliff.** Single-node-optimized stack — big connection pool, shared in-memory structures under one lock, synchronous fan-out to a single primary — posts excellent staging numbers. In production, traffic doubles after a launch. Symptom: `p50` stays flat while `p99` detaches first, then throughput stops rising with offered load while CPU looks *not* saturated. You will see lock wait time, context switches, GC pauses, connection queue depth, and primary `active sessions` climbing together. Then timeouts trigger client retries, which add load without adding work completed, and the curve folds backward. Throughput actually drops as you push harder. The trade-off you mispriced: you bought service time and paid with a serial section."
+    },
+    {
+      "type": "paragraph",
+      "text": "**Failure 2: the scalable slug.** The opposite team overcorrects. Everything is partitioned, replicated, queued, and JSON-validated through three sidecars. It scales to 10x in a load test with a flat curve. Symptom: nobody is happy at 1x. `p50` is 180ms for a read that should be 12ms, tail is dominated by coordination and hop count, and cost per 1M requests is 5x budget. Under low load the system spends more time coordinating work than doing it. The trade-off you mispriced: you bought headroom before you had load, and paid with latency and dollars on every request. This is common when teams add caching layers, service meshes, and multi-AZ quorum writes to a workload that would fit on two boxes for a year."
+    },
+    {
+      "type": "paragraph",
+      "text": "**Failure 3: fake horizontal scale.** The app tier autoscales beautifully while the state tier does not. Symptom: during a spike the autoscaler adds instances, latency keeps rising, and the database shows the real signal — primary CPU pinned, replication lag growing monotonically, buffer hit ratio falling, deadlocks or pool exhaustion on the app side. Adding app boxes accelerates the collapse because each box opens more connections and sends more concurrent transactions to the same lock space. The dashboard lie is green app CPU with red database wait events. The trade-off to name: stateless compute scales only if the state path scales. If writes and hot keys do not partition, compute scale-out is theater."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Symptom to alert on",
+      "text": "Watch **throughput vs. offered load**, not just latency. If `p99` rises while completed RPS flattens as offered RPS rises, you have hit a serial section — stop adding stateless capacity and find the queue: lock, pool, primary, hot partition, or downstream dependency. If completed RPS rises linearly but `p50` is over budget at low utilization, you have a coordination tax — remove hops, colocate hot data, or weaken consistency on the critical path."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Where the trade-off lives in code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Counters are the smallest honest example. A single atomic counter is unbeatable at low concurrency: one cache line, one instruction stream, minimal latency. At high core count it becomes a serial section because every increment invalidates the same cache line on every other core. Sharding the counter across stripes is slower for one increment — hash, index, sum on read — but throughput scales with cores. Same logic as sharding a database, minus the network. Whenever an interviewer asks about performance versus scalability, this is the shape of answer they want: name the serial resource, price the fix per request, and describe how the curve changes."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "counter_tradeoff.py",
+      "code": "import threading\n\n# Fast at low contention, cliffs at high contention:\n# one lock / one cache line is the serial section.\nclass SingleCounter:\n    def __init__(self):\n        self._lock = threading.Lock()\n        self._n = 0\n    def incr(self):\n        with self._lock:\n            self._n += 1\n    def get(self):\n        with self._lock:\n            return self._n\n\n# Slower per op (hash + scatter), scales with threads:\n# throughput grows with stripes, read pays the sum.\nclass ShardedCounter:\n    def __init__(self, stripes=16):\n        self._stripes = stripes\n        self._locks = [threading.Lock() for _ in range(stripes)]\n        self._counts = [0] * stripes\n    def incr(self, key_hash: int):\n        i = hash(key_hash) % self._stripes\n        with self._locks[i]:\n            self._counts[i] += 1\n    def get(self):\n        total = 0\n        for i in range(self._stripes):\n            with self._locks[i]:\n                total += self._counts[i]\n        return total"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this clarifies the system choice: `SingleCounter.incr()` has the best latency when one thread calls it, and the worst throughput when 64 threads do. `ShardedCounter` adds work to every call and makes `get()` O(stripes), which is a real performance regression you can measure. In exchange it replaces one queue with sixteen, so offered load spreads and cache-line bouncing drops. **Trade-off stated plainly:** pay extra instructions and a slower read on every operation to remove the serial section that would cliff under growth. Database sharding, striped locks, partitioned queues, and per-core data structures are the same idea with bigger bills."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They give you an SLO and a growth number",
+          "text": "Example shape: `p99 < 200ms at 5k RPS today, 50k RPS next year`. Restate it as point versus curve: what must hold today, and what may degrade and by how much. If they will not give growth, propose two regimes — fit-on-few-boxes versus must-partition — and design the seam where you would switch."
+        },
+        {
+          "title": "They ask you to make one endpoint fast",
+          "text": "Start with service time: fewer hops, batch the database, add a cache with explicit TTL and invalidation, push work out of the request path. Then say the price: cache means staleness and cold-start skew; batching means larger failure blast radius. Never present a performance win without its consistency or operability cost."
+        },
+        {
+          "title": "They 10x your traffic mid-design",
+          "text": "Do not just add boxes. Name the first serial resource to saturate — usually connections, primary writes, hot key, or a downstream quota — and show the fix: read replicas, write partitioning by key, queue with backpressure, or load shedding. Explain which latency gets worse to keep availability flat."
+        },
+        {
+          "title": "They force a consistency choice",
+          "text": "Strong consistency protects correctness and taxes tail latency and write throughput. Eventual consistency flattens the write curve and pushes complexity to reads: versioning, repair, user-visible staleness. Pick by workload: money and inventory favor correctness; feeds, counts, and recommendations favor the curve."
+        },
+        {
+          "title": "They ask what you would measure first",
+          "text": "Answer with load-indexed metrics: latency histograms by endpoint and by partition, throughput versus offered load, saturation of each shared resource, and cost per 1M requests. One load point proves nothing. Show the curve, the knee, and which queue bends first."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**More servers means more scalable.** Only if the bottleneck is stateless compute. If writes serialize on one primary or one hot key, extra servers add contention, not capacity.",
+        "**Caching is a scalability strategy.** It is a performance strategy with a scalability side effect. It reduces load on the origin until invalidation, thundering herd, or memory skew becomes the new serial section.",
+        "**Microservices are more scalable by default.** Decomposition enables independent scaling, but each hop adds latency and failure modes. A distributed monolith with chatty synchronous calls is slower *and* harder to scale.",
+        "**Throughput and latency always trade against each other.** Batching raises throughput and raises latency, but removing a lock or partitioning a hot key can improve both. Name the mechanism instead of reciting a slogan.",
+        "**Vertical scaling is never correct.** For stateful single-writer workloads and early-stage traffic, a bigger box with simpler code often beats a sharded design on latency, cost, and operability — until the box size or blast radius forces partitioning."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to buy which"
+    },
+    {
+      "type": "table",
+      "caption": "Buy performance to meet today’s SLO cheaply. Buy scalability to survive tomorrow’s load without a rewrite.",
+      "headers": [
+        "Situation",
+        "Buy",
+        "Why",
+        "Concrete move"
+      ],
+      "rows": [
+        [
+          "Low traffic, strict latency SLO, known dataset",
+          "Performance",
+          "No curve to protect yet; extra coordination is pure tax",
+          "Tune query, keep hot set in memory, collapse hops, avoid async"
+        ],
+        [
+          "Bursty traffic, downstream with fixed cap",
+          "Scalability first",
+          "Bursts queue somewhere; you choose where",
+          "Bounded queue + backpressure + shedding; cache reads; isolate bulk"
+        ],
+        [
+          "Write-heavy, growing keys and data size",
+          "Scalability first",
+          "Single writer will cliff; rewrite later is 10x harder",
+          "Partition by natural key now; design the re-split and hot-key plan"
+        ],
+        [
+          "Read-heavy, tolerates seconds of staleness",
+          "Performance via caching",
+          "Hit rate converts directly to lower p99 and lower origin cost",
+          "TTL + versioned keys + single-flight + replica reads"
+        ],
+        [
+          "Correctness-critical state (payments, inventory)",
+          "Performance within strong consistency",
+          "Do not trade correctness for the curve",
+          "Single-writer per shard, idempotency keys, no cross-shard transactions on hot path"
+        ],
+        [
+          "Uncertain growth, small team",
+          "Performance now, scalability seam later",
+          "Premature sharding kills velocity",
+          "Stateless app, clean key that *can* partition, measured knee to trigger split"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The decision rule that ends arguments: estimate the knee before you build. Roughly size requests per second, read-write ratio, average and `p99` payload, working-set size versus memory, and connections per box. If 3x headroom fits on one primary and two app boxes, optimize service time and keep the design boring. If 10x breaks the primary, the connection pool, or a single hot key, spend latency budget early on partitioning, queues, and replica reads. In review, force both numbers on the whiteboard: **cost per request today** and **machines needed at 10x to hold the SLO**. A design that cannot state the second number is a performance demo, not an architecture."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Performance is latency, throughput, and cost at a fixed load; scalability is how much extra capacity I must add to hold those numbers as load grows — so I will spend per-request latency on statelessness, partitioning, and queues only where the curve would otherwise cliff.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:31:08.017Z",
+    "problems": []
+  }
+}

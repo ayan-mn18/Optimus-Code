@@ -1,0 +1,314 @@
+{
+  "slug": "http-https",
+  "title": "HTTP/HTTPS",
+  "summary": "HTTP is plaintext request-response semantics; HTTPS is identical semantics tunneled inside authenticated, encrypted TLS. This page explains the layering, handshake, and operational costs that matter in HLD interviews.",
+  "kind": "HLD",
+  "problemSlug": "httphttps-94-210",
+  "topic": "Networking",
+  "difficulty": "Easy",
+  "coverEmoji": "🔒",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "HTTP/HTTPS"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "HTTPS - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/HTTPS",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "What is HTTPS? | Learning Center - Cloudflare",
+      "url": "https://www.cloudflare.com/learning/ssl/what-is-https/",
+      "source": "cloudflare.com",
+      "kind": "article"
+    },
+    {
+      "title": "HyperText Transfer Protocol Secure - HTTPS - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/html/explain-working-of-https/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "HTTP & HTTPS Protocol Explained in 5 Minutes - YouTube",
+      "url": "https://www.youtube.com/watch?v=HyK2tu4nFRM",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**HTTP defines what you asked for. TLS defines who you are talking to and who else can read it.** HTTPS changes zero semantics — `GET` is still `GET` — it just runs those same bytes inside an authenticated, encrypted tunnel. If you remember the separation, every follow-up about ports, certificates, termination, and latency answers itself."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "HTTP is a stateless, text-oriented application protocol for request and response. A client sends a method, a target, a version, plus headers and an optional body; a server returns a status code, headers, and an optional body. Methods like `GET`, `POST`, `PUT`, `DELETE` have defined safety and idempotency semantics. Headers carry metadata: content type, caching directives, authentication, cookies, content negotiation. Nothing in that exchange is encrypted, authenticated, or integrity-protected. Any middlebox, proxy, or packet sniffer on the path sees the method, the full path, the headers, and the body in the clear."
+    },
+    {
+      "type": "paragraph",
+      "text": "HTTPS is the same HTTP message format, byte for byte, carried over Transport Layer Security. Think of it as a strict layering: HTTP on top, TLS in the middle, TCP underneath — or QUIC underneath for HTTP/3. TLS contributes three properties HTTP lacks: server authentication via an X.509 certificate chain that binds a public key to a hostname, confidentiality via a negotiated symmetric session key, and integrity via authenticated encryption that rejects any tampered byte. The `S` does not make your backend logic safer. It only protects data in transit and proves you reached the holder of the private key for that name."
+    },
+    {
+      "type": "paragraph",
+      "text": "The transport details matter because interviewers use them to separate memorisation from understanding. By convention HTTP defaults to port 80 and HTTPS to port 443, but those are just defaults — the security comes from TLS, not the port number. HTTP/1.1 runs one request at a time per connection and relies on keep-alive to amortise TCP setup. HTTP/2 multiplexes many streams over one TLS-protected TCP connection to kill head-of-line blocking at the HTTP layer. HTTP/3 replaces TCP with QUIC over UDP and folds the cryptographic and transport handshakes together. In all three, the HTTP semantics barely change. What changes is how bytes are framed and how quickly the encrypted channel can be established, which is why you must reason about handshake round trips, not just bandwidth."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Treat every HTTPS exchange as three sequential negotiations: reach the machine, agree on secrets with the name owner, then speak HTTP. Skip one and the design is broken. DNS gives you an IP, TCP gives you a reliable byte stream, TLS turns that stream into an authenticated encrypted channel, and only then does HTTP start. The reason for this order is deliberate: you cannot authenticate HTTP headers before you have a key, and you cannot negotiate a key safely without first authenticating the server certificate. That layering is also why TLS termination is such a loaded decision — wherever you cut the TLS layer, plaintext HTTP exists downstream of that point."
+    },
+    {
+      "type": "mermaid",
+      "title": "HTTPS establishment",
+      "caption": "DNS to TCP to TLS to HTTP — encryption is established before the first HTTP byte is sent.",
+      "code": "flowchart TD\n  A[Client parses URL: host, port, path] --> B[DNS resolve host to IP]\n  B --> C[TCP handshake: SYN, SYN-ACK, ACK]\n  C --> D[ClientHello: version, ciphers, key share, SNI, ALPN]\n  D --> E[ServerHello: chosen cipher, key share]\n  E --> F[Server sends certificate chain]\n  F --> G[Client verifies chain, expiry, hostname]\n  G --> H[Derive symmetric session keys]\n  H --> I[Encrypted HTTP request]\n  I --> J[Encrypted HTTP response]\n  J --> K[Keep-alive reuse or close]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The TLS 1.3 handshake is the version you should describe by default. The client sends a `ClientHello` with supported versions, cipher suites, an ephemeral key share, the Server Name Indication for the hostname it wants, and ALPN protocols such as `h2` or `http/1.1`. The server replies with its key share, its certificate chain, and a `Finished` message. Both sides derive the same symmetric session keys without ever transmitting them. The result is typically one round trip before application data can flow, down from two in TLS 1.2. The trade-off being made is explicit: asymmetric cryptography is used only for authentication and key agreement because it is far too slow for bulk data, then everything switches to fast symmetric AEAD ciphers like AES-GCM or ChaCha20-Poly1305 for the actual request and response bytes."
+    },
+    {
+      "type": "paragraph",
+      "text": "Certificate validation is where identity is actually decided, and most candidates hand-wave it. The leaf certificate binds a public key to a set of names in the Subject Alternative Name field. An intermediate authority signed that leaf, and a root already installed in the operating system or browser trust store signed the intermediate. The client checks signatures up the chain, checks expiry and hostname match against the URL, and checks revocation status. Revocation is the ugly trade-off: full CRL downloads are heavy, live OCSP lookups add latency and a privacy leak, so production systems use OCSP stapling where the server periodically fetches a signed freshness proof and staples it to the handshake. If any check fails, there is no HTTPS — the client must hard-fail rather than silently downgrade, otherwise authentication is meaningless."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Termination changes everything",
+      "text": "TLS ends wherever the private key lives. If a load balancer terminates TLS, the hop from balancer to application server is plain HTTP unless you re-encrypt. That is a deliberate trade-off — centralised certificates and hardware acceleration versus a plaintext segment inside your own network. Name it explicitly or you will misdiagnose redirect loops, lost client IPs, and `X-Forwarded-Proto` bugs."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What HTTPS buys and what it charges. There is no free option.",
+      "headers": [
+        "Property",
+        "Plain HTTP",
+        "HTTPS with TLS",
+        "Trade-off"
+      ],
+      "rows": [
+        [
+          "Confidentiality",
+          "None — path, headers, body visible on wire",
+          "Encrypted with negotiated session key",
+          "Must manage keys, ciphers, and session resumption"
+        ],
+        [
+          "Authentication",
+          "None — any imposter can answer",
+          "Server proves ownership of hostname via chain",
+          "Must obtain, renew, and serve a valid chain; rotation is now your problem"
+        ],
+        [
+          "Integrity",
+          "None — bytes can be modified silently",
+          "AEAD rejects tampering",
+          "Small per-record overhead plus failed handshakes on mismatch"
+        ],
+        [
+          "Connection setup latency",
+          "1 RTT for TCP",
+          "TCP + ~1 RTT for TLS 1.3, more for 1.2",
+          "Pay extra RTT on cold connections; mitigate with keep-alive, resumption, nearby termination"
+        ],
+        [
+          "CPU cost",
+          "Negligible framing",
+          "Handshake asymmetric ops plus per-byte AEAD",
+          "Handshake dominates; session reuse and hardware offload matter more than bulk cipher choice"
+        ],
+        [
+          "Operability and debugging",
+          "Trivial to inspect with any sniffer",
+          "Opaque without key disclosure or proxy interception",
+          "Deliberately lose visibility; must add structured access logs and tracing instead"
+        ],
+        [
+          "Caching and middleboxes",
+          "Transparent proxies can cache and inspect",
+          "Only endpoints see plaintext; CDNs need the key or delegated credentials",
+          "Trade end-to-end privacy against edge caching power"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not say TLS is free. Say where the cost moved. On modern hardware the per-byte encryption cost is noise; the real costs are an extra round trip on new connections, certificate lifecycle management, and loss of transparent inspection. That is why every serious deployment pairs HTTPS with persistent connections, session tickets or session IDs for resumption, and termination close to the user. You are trading a small, predictable latency and operational tax for authentication and privacy you cannot retrofit at the application layer. Accepting that trade-off is correct for anything browser-facing, and resenting it is how teams end up with plaintext internal traffic they later regret."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "HTTPS failures are binary and user-facing, which is what makes them painful. A certificate that expired overnight does not degrade gracefully — browsers show a full-page interstitial, API clients fail closed with certificate verification errors, and health checks that ignore TLS keep reporting green while real traffic drops to zero. The same cliff applies to an incomplete chain where the server forgot to send the intermediate, a hostname mismatch after a migration where the certificate covers the apex but not the new subdomain, or a clock-skewed client that believes a valid certificate is from the future. The symptom is always the same shape: TCP connects, the handshake aborts, and no HTTP request is ever sent."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Expired certificate: browsers block the page, `curl` reports certificate expired, monitoring that checks TCP only stays green. Fix is renewal automation plus expiry alerts at 30, 7, and 1 day.",
+        "Incomplete chain: works in some browsers that cache the intermediate, fails in fresh clients and mobile apps. Symptom is intermittent handshake failure. Fix is to serve leaf plus intermediates, not just the leaf.",
+        "Hostname mismatch: certificate valid for `example.com` but request goes to `api.example.com` without a SAN entry. Symptom is name-verification failure. Fix is wildcard or per-service names with automated issuance.",
+        "Mixed content: page loaded over HTTPS but fetches scripts, images, or API calls over HTTP. Browsers block active mixed content. Symptom is a blank page with console errors despite a valid certificate.",
+        "HTTP to HTTPS redirect loop: balancer terminates TLS and forwards plain HTTP, app thinks the request is insecure and redirects to HTTPS forever. Symptom is `ERR_TOO_MANY_REDIRECTS`. Fix is to trust `X-Forwarded-Proto` or terminate at the app.",
+        "Revocation or OCSP outage without stapling: handshake stalls waiting on a responder. Symptom is p99 latency spikes on new connections only. Fix is OCSP stapling plus soft-fail policy chosen deliberately."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Termination topology creates its own class of silent failures. Once TLS ends at the edge, the inner hop is ordinary HTTP, which means client IP, original protocol, and port must be re-injected via headers or proxy protocol. If the backend ignores those headers it generates wrong absolute URLs, marks secure cookies as insecure, or makes rate-limiting decisions on the balancer IP instead of the client. The trade-off is centralised simplicity versus loss of end-to-end guarantees: you gain one place to rotate certificates and one place to accelerate handshakes, but you must now defend the plaintext interior network and audit who can read it. Interviewers want to hear you state that boundary without prompting."
+    },
+    {
+      "type": "paragraph",
+      "text": "Performance failures look different from correctness failures. Watch for high time-to-first-byte on cold connections but fast subsequent requests — that is handshake latency, not application slowness. Common causes are distant termination, missing session resumption, oversized chains, and TLS 1.2-only clients doing two extra round trips. The symptom in traces is a long gap between TCP establishment and the first encrypted application byte. The fix is never to disable security; it is to reuse connections aggressively with keep-alive, enable resumption and HTTP/2 multiplexing, staple OCSP, and move termination to the edge. Every optimisation here trades memory or complexity for fewer round trips."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Config where it becomes real"
+    },
+    {
+      "type": "code",
+      "language": "nginx",
+      "filename": "edge.conf",
+      "code": "# Plain HTTP exists only to redirect. No content is served here.\nserver {\n  listen 80;\n  server_name example.com;\n  return 301 https://$host$request_uri;\n}\n\nserver {\n  listen 443 ssl http2;\n  server_name example.com;\n\n  ssl_certificate /etc/tls/fullchain.pem; # leaf + intermediates\n  ssl_certificate_key /etc/tls/privkey.pem;\n  ssl_protocols TLSv1.2 TLSv1.3;\n  ssl_prefer_server_ciphers on;\n  ssl_session_cache shared:SSL:50m;\n  ssl_session_timeout 1d;\n  ssl_stapling on;\n\n  add_header Strict-Transport-Security \"max-age=63072000; includeSubDomains\" always;\n\n  location / {\n    proxy_set_header X-Forwarded-Proto $scheme;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_pass http://app_upstream;\n  }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every line in that edge configuration encodes a decision. Port 80 does nothing but redirect so no one accidentally serves sensitive content in the clear. The certificate file must include intermediates or some clients will fail while your laptop works. Protocol floor at 1.2 with 1.3 preferred drops known-weak versions without breaking the long tail. The session cache plus stapling removes repeated asymmetric work and revocation lookups from the hot path. The `Strict-Transport-Security` header tells browsers to never attempt HTTP again for this host, which closes downgrade attacks but also means a certificate mistake locks users out until expiry — power paired with risk. The forwarded headers restore what termination destroyed: the backend needs the original scheme to build correct URLs and cookies."
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "filename": "debug.sh",
+      "code": "# See what the client sees: chain, protocol, handshake time\ncurl -v https://example.com/health\nopenssl s_client -connect example.com:443 -servername example.com -tls1_3\n# Check expiry and SANs without a browser\nopenssl x509 -in fullchain.pem -noout -dates -ext subjectAltName\n# Confirm redirect and HSTS header\ncurl -I http://example.com/\ncurl -s -D - https://example.com/ -o /dev/null | grep -i strict"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Draw the layers before anything else",
+          "text": "Start with client, DNS, TCP, TLS, HTTP. State that HTTP semantics do not change under TLS. This immediately frames certificate, latency, and termination questions and shows you think in layers rather than buzzwords."
+        },
+        {
+          "title": "Walk a first visit end to end",
+          "text": "URL parse, DNS lookup, TCP handshake, ClientHello with SNI and ALPN, certificate validation against trust store, key derivation, encrypted request, encrypted response. Call out the extra round trip and why asymmetric crypto stops after the handshake."
+        },
+        {
+          "title": "Answer why not just HTTP",
+          "text": "Use a concrete attack: open Wi-Fi sniffer reads session cookies and request paths. Then name the trade-off — you pay handshake latency and certificate operations to remove that visibility. Never say encryption alone; always add authentication and integrity."
+        },
+        {
+          "title": "Design termination for scale",
+          "text": "Propose edge termination for certificate centralisation and keep-alive reuse, re-encryption to origins if the interior network is untrusted, and header propagation for protocol and client IP. Explain the redirect-loop failure that follows if the backend misreads the scheme."
+        },
+        {
+          "title": "Close with hardening and performance",
+          "text": "Mention redirecting all HTTP to HTTPS, enabling HSTS deliberately, TLS 1.3 with resumption, OCSP stapling, and ALPN-driven HTTP/2. Each item should include its cost: HSTS pins mistakes, resumption costs server state, stapling needs automation."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "TLS makes the application secure: it does not fix injection, broken auth, or exposed APIs. It only protects bytes on the wire and proves server identity.",
+        "HTTPS means the site is trustworthy: a valid certificate proves control of the name, not honesty of the owner. Phishing sites use HTTPS routinely.",
+        "Encryption is the expensive part: the handshake and round trips dominate. Bulk AEAD on modern CPUs is cheap; managing chains and resumption is where teams bleed.",
+        "Switching ports gives security: security comes from a validated handshake, not from using 443. Plain HTTP on 443 is still plain HTTP.",
+        "HSTS and redirects are optional polish: without them, clients still make the first request over HTTP and can be downgraded. The redirect plus HSTS is the actual enforcement.",
+        "Internal traffic can stay on HTTP safely: it trades away authentication and auditability inside the network most breaches already inhabit. If you keep plaintext inside, say what compensates for it."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Default to HTTPS, but know what you are trading when you deviate.",
+      "headers": [
+        "Situation",
+        "Choice",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Any browser page, login, or personal data",
+          "HTTPS only, with HSTS",
+          "Privacy plus authentication plus downgrade protection outweigh all operational cost"
+        ],
+        [
+          "Public APIs and webhooks",
+          "HTTPS with automated rotation",
+          "Clients cannot be trusted to validate downgrades; token theft on plaintext is immediate"
+        ],
+        [
+          "Edge to origin across networks you do not control",
+          "Re-encrypt after edge termination",
+          "Interior path is as exposed as the internet; termination without re-encryption leaves a plaintext gap"
+        ],
+        [
+          "Service mesh or VPC interior",
+          "Mutual TLS or encrypted overlay if feasible",
+          "Identity between services matters more than raw speed; plaintext trades auditability for minor latency"
+        ],
+        [
+          "Local loopback development or sealed benchmark",
+          "Plain HTTP acceptable behind guardrails",
+          "No network adversary exists; forcing certificates adds friction with zero threat reduction"
+        ],
+        [
+          "Legacy device that cannot validate chains",
+          "Isolate, do not downgrade everything",
+          "Downgrading the whole site for one client sacrifices every other user; quarantine the exception instead"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**HTTPS is identical HTTP semantics run inside a TLS channel that authenticates the server by certificate chain and then encrypts and integrity-protects every byte — at the cost of handshake latency and certificate lifecycle you manage at the edge.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:09:09.522Z",
+    "problems": []
+  }
+}

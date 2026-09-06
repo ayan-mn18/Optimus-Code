@@ -1,0 +1,310 @@
+{
+  "slug": "factory-design-pattern",
+  "title": "Factory Design Pattern",
+  "summary": "Factory centralizes object creation behind an interface so clients never name concrete classes — when to use Factory Method vs Simple Factory vs Abstract Factory, and what it costs.",
+  "kind": "LLD",
+  "problemSlug": "factory-design-pattern-35-75",
+  "topic": "Creational Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "🏭",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Creational-Patterns",
+    "Factory"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Factory Method - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/factory-method",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Factory method pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Factory_method_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Factory method Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/factory-method-for-designing-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Factory is dependency control, not object creation.** The client says *I need something that can `send()`* and a dedicated method decides *which concrete class* satisfies that contract. If your code still imports `EmailNotification` at the call site, you do not have a Factory — you have a constructor with extra steps. The whole point is to make adding a new product type a localized change that does not force edits across business logic."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Factory actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A Factory replaces direct `new ConcreteType()` calls in client code with a call to a creation method that returns an abstraction — an interface or abstract base. The client depends on `Notification`, never on `EmailNotification` or `SMSNotification`. The decision of which implementation to build lives in exactly one place: either a subclass overriding a creation hook, a centralized `if-else` / map lookup, or a family-level factory. Why this shape? Because construction knowledge — config flags, environment, tenant type, file extension, payment provider — is volatile and tends to leak. Left inline, every new product type forces you to hunt down every `new` and every `switch` on type. Centralized, you change one method and the rest of the system keeps compiling. Trade-off: you add indirection and a new abstraction that must be maintained, in exchange for closing existing client code to modification when products grow."
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not use the word Factory for one thing. There are three distinct tools and interviewers will penalize you for conflating them. **Simple Factory** is a single class with a static or instance method like `create(type)` containing the conditional. It is not in the classic catalog, but it is what most codebases actually need. **Factory Method** defines an abstract `createProduct()` on a creator base class and lets each subclass override it to supply a different product — creation is delegated through inheritance. **Abstract Factory** provides an interface for creating *families* of related objects — `createButton() + createCheckbox() + createScrollbar()` for `DarkTheme` vs `LightTheme` — with a concrete factory per family. Choose by cardinality: one product axis means Simple or Method; two or more coordinated axes means Abstract. Trade-off: each step up in generality doubles the number of classes and makes the design harder to delete."
+    },
+    {
+      "type": "table",
+      "caption": "The three Factory variants — pick by how many dimensions vary.",
+      "headers": [
+        "Variant",
+        "Where the decision lives",
+        "Cost"
+      ],
+      "rows": [
+        [
+          "Simple Factory",
+          "`create(type)` method with conditional or registry map",
+          "One extra class; conditional must be updated per type"
+        ],
+        [
+          "Factory Method",
+          "Abstract creator + `ConcreteCreator.create()` override per product",
+          "One creator subclass per product; inheritance coupling"
+        ],
+        [
+          "Abstract Factory",
+          "One concrete factory per family, each building multiple products",
+          "Explodes classes; painful if families change often"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every variant has the same two roles. **Product** is the abstraction the client programs against: `Notification`, `Parser`, `PaymentProcessor`. It must expose the full behavior the client needs, because the client is forbidden from downcasting. **Creator** is whatever owns the `create` decision. In Factory Method, the base creator also contains the *template logic* that uses the product — `notifyUser()` calls `createNotification()` then `send()` — so subclasses inject the varying part without duplicating the workflow. That is why the pattern matters: it inverts the dependency. High-level workflow no longer names low-level classes; both depend on the product interface. Trade-off: the product interface freezes early. If each product needs a wildly different method signature, forcing a common interface produces either a fat interface full of unused methods or constant `instanceof` checks that defeat the purpose."
+    },
+    {
+      "type": "mermaid",
+      "title": "Factory Method structure",
+      "caption": "Creator defines workflow, subclasses supply the product.",
+      "code": "classDiagram\n    class Notification {\n        <<interface>>\n        +send(String) void\n    }\n    class EmailNotification {\n        +send(String) void\n    }\n    class SMSNotification {\n        +send(String) void\n    }\n    class NotifierCreator {\n        <<abstract>>\n        +createNotification() Notification\n        +notifyUser(String) void\n    }\n    class EmailNotifier {\n        +createNotification() Notification\n    }\n    class SMSNotifier {\n        +createNotification() Notification\n    }\n    Notification <|.. EmailNotification\n    Notification <|.. SMSNotification\n    NotifierCreator <|-- EmailNotifier\n    NotifierCreator <|-- SMSNotifier\n    NotifierCreator --> Notification : creates"
+    },
+    {
+      "type": "paragraph",
+      "text": "At runtime the flow is deliberately boring. The client holds a creator reference, invokes the business operation, the creator internally calls its own factory hook, gets back a product typed as the interface, and uses it without ever learning the concrete class. Polymorphism does the dispatch, not a conditional in business logic. The conditional still exists — it moved to factory selection at startup, config parsing, or dependency injection wiring — but it executes once per scope instead of once per call site. Why that placement matters: selection logic changes for different reasons (new deployment flag, new tenant) than usage logic (retry policy, formatting), so separating them reduces merge conflicts and test surface. Trade-off: debugging gets harder because the concrete type is invisible at the call site; you must log or expose which product was created."
+    },
+    {
+      "type": "mermaid",
+      "title": "Creation flow at runtime",
+      "caption": "Decision happens once; usage stays polymorphic.",
+      "code": "flowchart TD\n    C[\"Client: notifyUser(msg)\"] --> F[\"Creator.createNotification()\"]\n    F --> D{\"selection key?\"}\n    D -->|email| E[\"new EmailNotification()\"]\n    D -->|sms| S[\"new SMSNotification()\"]\n    E --> P[\"typed as Notification\"]\n    S --> P\n    P --> U[\"client calls send()\"]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What Factory buys you and what it charges.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "When it bites"
+      ],
+      "rows": [
+        [
+          "Open-closed extension: add product without editing clients",
+          "More classes and indirection per product",
+          "With 2-3 stable types, a plain conditional is cheaper"
+        ],
+        [
+          "Single place for construction complexity (pooling, config, validation)",
+          "Factory becomes a magnet for unrelated setup logic",
+          "When creation needs 10 dependencies, test setup balloons"
+        ],
+        [
+          "Testability: inject fake creators or fake products",
+          "Concrete type hidden, so failures are harder to trace",
+          "Without logging the created type, on-call debugging suffers"
+        ],
+        [
+          "Enforced consistency: every product goes through same validation path",
+          "Product interface tends to ossify",
+          "When products diverge in API, you get fat interfaces or downcasts"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Use Factory when construction is a decision, not just an allocation. If building the object requires choosing among implementations based on input, reading config, validating invariants, or assembling collaborators, centralizing that pays for itself within the second product type. If construction is just `new EmailNotification(smtpConfig)` with no variation, a Factory is pure overhead — you added a class, an interface, and a lookup to avoid typing `new`. My bias: prefer a Simple Factory backed by an explicit registry map over Factory Method inheritance unless the creator workflow itself varies per subclass. Inheritance locks you into one variation axis; a map plus `Supplier` lets you register new products without creating a parallel creator hierarchy. Trade-off stated plainly: registry is more flexible and composable, but it sacrifices compile-time exhaustiveness — a missing registration fails at runtime, not at build time."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Design heuristic",
+      "text": "If you cannot name the product interface without using the word `And` — `EmailAndSmsSender` — you do not have one product. You have two. Split the interface or step up to Abstract Factory for a family. Forcing unrelated products under one interface is how Factories rot into `switch` statements on the client side anyway."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The most common failure is conditional sprawl relocated, not removed. The Factory starts as a clean three-branch method, then grows to forty branches keyed on strings from config, tenant IDs, and feature flags. Nobody owns the keys, two teams register `\"sms\"` vs `\"SMS\"`, and creation starts throwing or — worse — silently falling back to a default product. The symptom you see is misrouted behavior, not a crash: users configured for push get email, invoices render with the wrong tax calculator, parsers accept a file then produce garbage. The second failure is lifecycle mismatch. The Factory returns a new instance every call, but the product holds an expensive connection, thread pool, or cached token. Under load you exhaust sockets or file handles because each request built a fresh client instead of reusing one. The symptom is latency climbing with traffic plus connection-refused errors, while CPU looks fine. Fix both at the Factory boundary: validate keys strictly and fail fast on unknown types, log the resolved concrete type per creation, and decide explicitly whether the Factory creates, caches, or pools. Trade-off: strict validation and pooling add code to the Factory, but that is exactly the code you do not want duplicated in ten call sites."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`IllegalArgumentException: unknown type` spikes after a config push — key mismatch between config and factory registry.",
+        "Wrong-channel delivery with no error — factory fell through to a default product instead of rejecting an unknown key.",
+        "Socket / file-handle exhaustion under load — factory constructs a new heavyweight client per call instead of sharing.",
+        "Flaky tests that pass solo and fail in suite — static factory holds mutable registry state leaked between tests.",
+        "Reflection-based `Class.forName()` creation failing after obfuscation or package rename — stack trace points at factory, root cause is unvalidated string-to-class mapping."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Production gotcha",
+      "text": "Never return `null` or a silent default from a Factory on an unrecognized key. **Fail fast with the bad key in the message.** A default that pages the wrong provider is an incident; an exception at creation is a deploy-time bug. Log `factoryKey -> concreteClass` at `INFO` on startup and at `DEBUG` per creation so on-call can correlate behavior to type."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that clarifies"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read this as the minimal honest Factory Method. The base class owns the workflow (`notifyUser` with retry), the subclasses own only the creation choice. The client method accepts a creator, not a string flag, so no conditional leaks into business logic. Note the return type is the interface — that is the entire contract."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NotificationFactory.java",
+      "code": "interface Notification {\n    void send(String message);\n}\n\nfinal class EmailNotification implements Notification {\n    private final String smtpHost;\n    EmailNotification(String smtpHost) { this.smtpHost = smtpHost; }\n    @Override public void send(String message) {\n        // use smtpHost to deliver; omitted\n    }\n}\n\nfinal class SmsNotification implements Notification {\n    private final String gateway;\n    SmsNotification(String gateway) { this.gateway = gateway; }\n    @Override public void send(String message) {\n        // use gateway to deliver; omitted\n    }\n}\n\nabstract class Notifier {\n    // Factory Method: subclasses decide which product.\n    protected abstract Notification createNotification();\n\n    // Template workflow shared by all creators.\n    public final void notifyUser(String message) {\n        Notification n = createNotification();\n        n.send(message);\n    }\n}\n\nfinal class EmailNotifier extends Notifier {\n    private final String smtpHost;\n    EmailNotifier(String smtpHost) { this.smtpHost = smtpHost; }\n    @Override protected Notification createNotification() {\n        return new EmailNotification(smtpHost);\n    }\n}\n\nfinal class SmsNotifier extends Notifier {\n    private final String gateway;\n    SmsNotifier(String gateway) { this.gateway = gateway; }\n    @Override protected Notification createNotification() {\n        return new SmsNotification(gateway);\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape and not a static `if-else`? Because the retry / formatting / audit workflow in `notifyUser` is written once and reused. Each new channel adds one small creator subclass instead of editing a shared conditional plus every call site. Trade-off: you now have two classes per channel. With two channels that feels heavy; with six channels plus per-channel config validation it is the only structure that stays readable. If the workflow does *not* vary and you just need `create(type)`, drop the hierarchy and use the registry version below — fewer classes, same decoupling."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NotificationRegistry.java",
+      "code": "import java.util.Map;\nimport java.util.concurrent.ConcurrentHashMap;\nimport java.util.function.Supplier;\n\nfinal class NotificationFactory {\n    private final Map<String, Supplier<Notification>> registry = new ConcurrentHashMap<>();\n\n    public void register(String key, Supplier<Notification> supplier) {\n        registry.put(normalize(key), supplier);\n    }\n\n    public Notification create(String key) {\n        Supplier<Notification> s = registry.get(normalize(key));\n        if (s == null) {\n            throw new IllegalArgumentException(\"unknown notification type: \" + key);\n        }\n        return s.get();\n    }\n\n    private static String normalize(String key) {\n        return key.trim().toLowerCase();\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "The registry is a Simple Factory done right: explicit `register`, normalized keys, fail-fast on unknown input, thread-safe map. Construction dependencies are captured in the `Supplier` lambda at wiring time, so the Factory never becomes a service locator that pulls config from globals. Trade-off versus Factory Method: you lose compile-time safety — a typo in a key compiles and fails at runtime — in exchange for zero new classes per product and the ability to register products from plugins or tests. In most backend services that trade is worth it. Mitigate the runtime risk with a startup check that asserts every expected key resolves, and never allow unvalidated external input to reach `create()` directly."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with the smell",
+          "text": "Interviewer shows client code littered with `new` and `if (type.equals(...))`. Name it: construction logic coupled to usage logic. State the fix: depend on an interface, isolate the decision. Do not write code yet."
+        },
+        {
+          "title": "Draw the split",
+          "text": "Sketch Product interface plus Creator, show one concrete per type. Say explicitly which variant you chose and why — Simple for one axis, Method when workflow is shared, Abstract when families must stay consistent."
+        },
+        {
+          "title": "Write the creation path",
+          "text": "Implement `create` plus one client workflow that uses only the interface. Handle the unknown key: throw, do not default. Normalize keys. This is where most candidates lose points."
+        },
+        {
+          "title": "Extend live",
+          "text": "Interviewer adds a product — Push, WhatsApp, PDF parser. Add it without touching client code. If you must edit the client, your abstraction leaked; say so and fix the interface."
+        },
+        {
+          "title": "Defend the cost",
+          "text": "Expect: why not just `new`? When would you delete this Factory? Answer with numbers: with N products and M call sites, inline conditionals cost N×M edit points; Factory costs N. Below N=3 and M=1, delete it."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "What is actually graded: whether you isolate variation behind an interface, whether unknown types fail loudly, and whether you can name the moment the pattern stops paying. Strong candidates volunteer deletion criteria and mention thread safety of the registry, key normalization, and lifecycle (new vs shared instance). Weak candidates draw three boxes, say it is extensible, and leave a `switch` on type in the client. If you remember one move, make it this: after adding the Factory, grep mentally for any remaining reference to a concrete product in client code. Any hit means the job is half done."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Misconceptions to kill"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Factory removes conditionals — false. It *relocates* them to one auditable place. Anyone promising zero `if` statements is hiding the map lookup.",
+        "Factory Method and Simple Factory are interchangeable — false. Method distributes creation across subclasses via inheritance; Simple centralizes it in one method. The extension mechanics and class counts differ completely.",
+        "More factories always means better design — false. Each factory adds indirection that must earn its keep. Two stable types used in one place do not justify a hierarchy.",
+        "Factory is for complex construction only — half true. Complexity is one trigger; *variation* is the other. Even trivial `new` calls deserve a Factory if the concrete type changes per tenant, config, or input.",
+        "Abstract Factory is just a big Factory Method — false. Method creates one product axis; Abstract enforces *consistency across a family* so you never mix a dark button with a light checkbox. Different invariant, different pattern."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use Factory for variation and construction policy; skip it for stable one-offs.",
+      "headers": [
+        "Use it when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Concrete type depends on input, config, tenant, or file type",
+          "Only one concrete type exists and none is on the roadmap"
+        ],
+        [
+          "Construction involves validation, pooling, defaults, or assembling collaborators",
+          "Construction is a single `new` with no decision and no invariant"
+        ],
+        [
+          "Multiple call sites would otherwise duplicate the same `switch` on type",
+          "One call site and two types — an `if-else` is clearer and deletable"
+        ],
+        [
+          "You need to enforce a family stays consistent (theme, OS, provider SDK)",
+          "Products have incompatible APIs that cannot share a clean interface"
+        ],
+        [
+          "Tests need to substitute products without touching business logic",
+          "The factory would need globals / statics that make tests order-dependent"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Rule of thumb I defend in reviews: introduce a Factory at the second product type or the second call site, whichever comes first — not before. The first type is speculation; the second is evidence. When you do introduce it, prefer the smallest variant that covers the variation, make unknown keys a hard error, and write the deletion test: if the product count collapses back to one, inline the Factory without guilt. Trade-off restated one last time: every Factory buys localized extension at the price of permanent indirection. That price is cheap when types churn and expensive when they do not."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "**Centralize the choice of concrete class behind a method returning an interface, so adding a product means adding a registration — not editing every client.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:54:42.881Z",
+    "problems": []
+  }
+}

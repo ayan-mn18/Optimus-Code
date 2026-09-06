@@ -1,0 +1,270 @@
+{
+  "slug": "abstraction",
+  "title": "Abstraction",
+  "summary": "Abstraction is choosing a stable contract and hiding everything else, so callers depend on intent rather than implementation. This write-up defines it precisely, shows the mechanism, and calls out where it pays and where it rots.",
+  "kind": "LLD",
+  "problemSlug": "abstraction-29-65",
+  "topic": "Object oriented Programming (OOPS)",
+  "difficulty": "Medium",
+  "coverEmoji": "🎭",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "OOPS",
+    "Abstraction"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Abstraction in Programming: A Beginner's Guide - Stackify",
+      "url": "https://stackify.com/oop-concept-abstraction/",
+      "source": "stackify.com",
+      "kind": "article"
+    },
+    {
+      "title": "Abstraction in OOP? Struggling to understand as so many different ...",
+      "url": "https://www.reddit.com/r/learnprogramming/comments/18vl56s/abstraction_in_oop_struggling_to_understand_as_so/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Abstraction - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Abstraction",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Abstraction explained with real-life examples and code! - C++ OOP ...",
+      "url": "https://www.youtube.com/watch?v=Ui7Dca5Kbvw",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Abstraction is not hiding code for tidiness. It is deciding what callers are allowed to depend on.** Get the boundary right and change stays local. Get it wrong and every change ripples. Everything else is syntax."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What abstraction actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Abstraction defines a narrow contract — names, inputs, outputs, and guarantees — and deliberately refuses to expose how those guarantees are produced. The caller knows *what* will happen and *what can fail*, never *how* it happens inside. That is the whole move. In OOP this contract is usually an interface or an abstract type, backed by one or more concrete classes that can be swapped without touching callers. The reason this matters for low-level design is dependency control. Without an abstraction, ten call sites each learn the details of storage, retries, validation, or pricing. With one, they learn a single verb like `charge`, `save`, or `route`, and the details live in exactly one place that owns them."
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not confuse abstraction with encapsulation, because interviewers will probe the gap. Encapsulation is about access control: making fields private, guarding invariants, forcing mutation through methods. Abstraction is about dependency direction: making callers depend on a stable idea instead of a volatile implementation. You can have perfect encapsulation with zero abstraction — a concrete class with all private fields and rich validation still forces every caller to depend on that concrete class. You can also have an abstraction with weak encapsulation — an interface whose implementations leak mutable internals. The two ideas pair well but solve different problems. Data abstraction hides representation, for example exposing a `Route` with `totalDistance()` instead of exposing the list of segments. Process abstraction hides execution, for example exposing `sendNotification(user)` instead of exposing SMTP retries, templates, and rate limits."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: contract in front, variation behind"
+    },
+    {
+      "type": "paragraph",
+      "text": "The mechanism has three parts and you should be able to name all three in an interview. First, a client-facing type that states the promise and nothing else. Second, one or more implementations that honor that promise in different ways. Third, a creation policy that decides which implementation the caller gets without letting the caller hard-code it — a factory, dependency injection, or a registry. If you skip the third part you have not finished the design. An interface that every caller instantiates as `new PostgresOrderStore()` is decoration, not abstraction, because the caller still knows the concrete choice. The trade-off here is indirection cost versus change cost. You pay one extra hop and one more concept to learn in exchange for the ability to change behavior, add a variant, or mock for tests without editing callers."
+    },
+    {
+      "type": "mermaid",
+      "title": "Abstraction dependency flow",
+      "caption": "Callers depend on the contract, not the concrete variants.",
+      "code": "flowchart TD\n  Client[Client code] --> Contract[Abstraction: OrderStore]\n  Contract --> A[PostgresOrderStore]\n  Contract --> B[InMemoryOrderStore]\n  Factory[Factory or DI container] --> A\n  Factory --> B\n  Factory --> Client"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the diagram by following the arrows of knowledge, not just calls. `Client` knows only `OrderStore.save()` and `OrderStore.findById()`. It does not know SQL, indexes, connection pools, or cache keys. The factory knows which concrete class to build for production versus tests, so that decision lives in one place. This is why adding a second implementation is the real test of your abstraction. If adding `CachedOrderStore` forces edits in five callers, your contract leaked. If it requires only a new class plus one factory line, the boundary held. The trade-off is that every abstraction freezes some axis of change and leaves others open, so you must pick the axis that actually varies."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What abstraction buys you and what it charges you.",
+      "headers": [
+        "Benefit",
+        "Cost you pay",
+        "When the cost wins"
+      ],
+      "rows": [
+        [
+          "Callers survive implementation swaps",
+          "Extra type plus indirection to trace while debugging",
+          "Only one implementation will ever exist and behavior is trivial"
+        ],
+        [
+          "Variation lives in one owned place",
+          "You must design error and edge-case semantics up front",
+          "Error modes differ so much per implementation that a shared contract lies"
+        ],
+        [
+          "Testing becomes substitution, not setup",
+          "Mocks can drift from real behavior if contract is vague",
+          "Contract has no stated guarantees around nulls, failures, retries, ordering"
+        ],
+        [
+          "Domain language gets sharper",
+          "Premature naming locks in the wrong vocabulary",
+          "You abstract before you have two concrete examples to generalize from"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The harshest trade-off is this: a good abstraction reduces cognitive load for readers but increases it for the designer. The reader sees three methods and moves on. The designer had to decide what belongs in those three methods, what failure looks like, what ordering and idempotency mean, and what is deliberately left out. That design work cannot be skipped by adding more interfaces. More layers without sharper guarantees just moves confusion around. Prefer one honest contract with documented failure modes over three speculative layers that promise flexibility nobody uses."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Abstractions fail in two predictable ways. The first is the leaky contract: the interface claims to be generic but callers must still know implementation details to use it correctly. Classic signs are boolean flags like `useCache`, methods like `flushSessions()` leaking through a generic `Store`, callers catching implementation-specific exceptions, or performance that collapses unless the caller batches calls just so. The second failure is the wrong-level contract: too high and it cannot express what callers actually need, so they work around it with downcasts and `instanceof`; too low and it just mirrors one implementation, so every new variant breaks the interface. Both failures have the same root cause — the contract was drawn from imagination instead of from two or three real use cases — and the same fix — shrink the promise to what you can guarantee for every implementation, and push the rest out."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Smell it in code review",
+      "text": "If callers branch on the concrete type behind the abstraction, the abstraction already failed. `if (store instanceof PostgresStore)` is not a workaround, it is a verdict. Fix the contract or delete it."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Symptom: callers pass implementation hints through generic methods, like timeouts, SQL hints, or cache flags. Means the contract hid the wrong thing.",
+        "Symptom: adding one implementation edits the interface and all existing implementations. Means you abstracted a union of details, not a shared promise.",
+        "Symptom: unit tests mock the abstraction but integration still breaks. Means failure modes, ordering, or null handling were never part of the contract.",
+        "Symptom: stack traces and logs show the abstraction name but hide which variant and why it was chosen. Means the creation policy is invisible when it needs to be observable."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Abstraction in code"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "OrderStore.java",
+      "code": "interface OrderStore {\n  void save(Order order);\n  Order findById(OrderId id) throws OrderNotFound;\n}\n\nfinal class OrderService {\n  private final OrderStore store;\n  OrderService(OrderStore store) { this.store = store; }\n\n  void place(Order order) {\n    store.save(order);\n  }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This is the shape you should defend. `OrderService` depends only on `save` and `findById`, including the one documented failure: missing order. It does not know whether storage is relational, in-memory, or cached. It does not know about connections, retries, or serialization. That ignorance is deliberate and it is why the design survives change. The trade-off is explicit: we spent one interface and constructor injection to buy substitution. Testing takes an in-memory variant, production takes a durable variant, and `OrderService` never changes. If you cannot point to that substitution benefit, you added ceremony for nothing."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "LeakyStore.java",
+      "code": "// Leaky: every caller must know which variant sits behind it.\ninterface LeakyStore {\n  void save(Order order, boolean flushImmediately, int sqlTimeoutMs);\n  Object rawHandle(); // forces callers to downcast\n}\n\nfinal class LeakyService {\n  void place(LeakyStore s, Order o) {\n    if (s instanceof PostgresBackedStore) {\n      s.save(o, true, 5000);\n    } else {\n      s.save(o, false, 0);\n    }\n  }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "The second snippet is what a failed abstraction looks like and you should call it out by name in an interview. The flags `flushImmediately` and `sqlTimeoutMs` belong to one implementation, not the idea of storing an order. `rawHandle()` is an admission that the contract is insufficient, and the `instanceof` branch proves callers now carry the variation the abstraction was supposed to absorb. The fix is not another layer. Either narrow the contract to `save` plus a uniform failure model and move tuning into construction, or admit you have two different concepts and model them separately. The trade-off of keeping the leaky version is short-term speed against permanent coupling: faster today, every future variant costs more."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Define the verb, not the class",
+          "text": "Start by stating the capability in one sentence: store and retrieve orders by id with exactly-once save semantics. If you start with fields, you are doing data modeling, not abstraction."
+        },
+        {
+          "title": "Name the variants you must survive",
+          "text": "Ask what varies: storage engine, notification channel, pricing rule. Design the contract around that axis. No known variation means no abstraction yet — say so."
+        },
+        {
+          "title": "Fix failures and edge cases in the contract",
+          "text": "State what happens on duplicate save, missing id, and timeout. Interviewers grade this more than method names. Vague contracts produce leaky mocks."
+        },
+        {
+          "title": "Show substitution",
+          "text": "Demonstrate with two implementations or a test double. If you cannot swap it without touching callers, you have not shown abstraction, only an interface."
+        },
+        {
+          "title": "State the cost and the limit",
+          "text": "Close with the trade-off: what you hid, what you froze, and when you would break this abstraction apart. That sentence is what separates senior answers from textbook ones."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Abstraction means making everything an interface. It does not. One stable contract beats five speculative ones. Abstraction without variation is just indirection.",
+        "Abstraction and encapsulation are the same pillar. They are not. Encapsulation guards state. Abstraction redirects dependencies. You need both words to mean different things.",
+        "Abstract classes exist to share code. That is the weakest reason to use them. Their design role is to fix a partial contract plus shared invariants, not to dump helpers.",
+        "More hiding is always better. It is not. Hiding error modes, ordering, or performance characteristics creates leaks that are harder to debug than explicit details.",
+        "If it compiles behind an interface, it is decoupled. False. Compile-time decoupling with run-time coupling through flags, downcasts, and ordering assumptions is still coupling."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to abstract and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use abstraction to contain real variation, not to predict the future.",
+      "headers": [
+        "Situation",
+        "Do this",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Two storage, payment, or notification variants exist now",
+          "Extract the narrow contract and inject it",
+          "Variation is real, so the indirection pays for itself immediately"
+        ],
+        [
+          "Callers need different policies, same verb",
+          "Abstract the policy, keep the verb stable",
+          "You isolate what changes without disturbing what is stable"
+        ],
+        [
+          "Only one simple implementation, no test pain",
+          "Keep the concrete class",
+          "An interface here adds navigation cost with zero substitution benefit"
+        ],
+        [
+          "Implementations cannot share failure semantics",
+          "Do not force one interface; model two concepts",
+          "A dishonest contract is worse than duplication — it lies to every caller"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The working rule is concrete: wait for the second example, then abstract the sameness. The first implementation teaches you the domain. The second reveals which details were accidental. Abstract on the third use only if the two prior cases agree on guarantees. This discipline avoids the two classic traps — the bloated base type that tries to cover every future case, and the anemic interface that covers none. And when you do abstract, document the non-obvious parts in the contract itself: idempotency, ordering, thread safety, and failure types. Those four lines are worth more than any hierarchy diagram because they are the parts callers cannot afford to guess."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Abstraction means callers depend on a small guaranteed contract, not on how it is implemented, so variation and change stay behind that contract.** Then prove it with a swap."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:51:28.902Z",
+    "problems": []
+  }
+}

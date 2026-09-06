@@ -1,0 +1,292 @@
+{
+  "slug": "peer-2-peer-architecture",
+  "title": "Peer-2-Peer Architecture",
+  "summary": "P2P trades central control for aggregate peer capacity — how overlay routing, DHTs, and churn handling decide if it survives.",
+  "kind": "HLD",
+  "problemSlug": "peer-2-peer-architecture-94-208",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "🕸️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "P2P",
+    "Distributed Systems"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Peer-to-Peer (P2P) Architecture - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/peer-to-peer-p2p-architecture/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Peer-to-peer - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Peer-to-peer",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding Peer-to-Peer Architecture - System Design School",
+      "url": "https://systemdesignschool.io/blog/peer-to-peer-architecture",
+      "source": "systemdesignschool.io",
+      "kind": "article"
+    },
+    {
+      "title": "What is P2P or Peer to Peer Architecture Explained #shorts",
+      "url": "https://www.youtube.com/shorts/iU_ZITrJz20",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "P2P is not \"no servers.\" It is **every user is the server**. You gain capacity that grows with demand, and you pay with loss of control — over availability, latency, trust, and where any given byte actually lives."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What P2P actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A peer-to-peer system is an **overlay network** where participants are symmetric: each peer both requests resources and provides storage, bandwidth, or compute to others. There is no mandatory central data path. A peer can join with only the address of one existing member, discover others, and start serving traffic within seconds. That symmetry is the whole point. In a client-server farm you provision for peak and eat the cost when idle. In P2P, raw capacity scales with the swarm itself — 10 peers bring 10 uplinks, 10,000 peers bring 10,000. The trade-off is immediate: you no longer decide who is online, how fast they are, how honest they are, or when they vanish. Coordination — finding *which* peer holds *what* — becomes the hard problem, not serving bytes."
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not confuse \"decentralized\" with \"no infrastructure.\" Almost every production P2P system keeps a small centralized foothold for the control plane: bootstrap nodes, trackers, identity issuance, software updates, abuse reporting. BitTorrent needed trackers and later DHT bootstraps. Blockchains need hardcoded seed nodes and checkpoint releases. The data plane is peer-to-peer; the *introduction* almost never is. If you draw a diagram with zero boxes you own, you are lying to the interviewer. Say explicitly what stays centralized and why: discovery needs a starting rumor, NAT traversal needs a rendezvous, and upgrades need a trust anchor. The design choice is **how little centralization you can get away with**, not zero versus one."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it works: overlay, discovery, routing"
+    },
+    {
+      "type": "paragraph",
+      "text": "Forget physical topology. Peers form a logical overlay — each node maintains connections to a small subset of others, selected by protocol rules, not by who is physically close. A message may hop 4 overlay steps that map to 12 router hops underneath. That indirection is deliberate. It lets you define distance mathematically — by keyspace, latency, or interest — and route without any peer knowing the full membership. Each peer stores three things: a **peer ID**, a **routing table** of neighbors, and a **slice of data or responsibility**. Links are usually persistent TCP or UDP with keepalives, hole-punched where possible. The reason overlay design dominates P2P interviews is that lookup cost, resilience to churn, and attack surface are all decided here, not in the file-transfer code."
+    },
+    {
+      "type": "mermaid",
+      "title": "Peer join and discovery",
+      "caption": "Bootstrap is the only centralized moment; everything after is gossip and overlay maintenance.",
+      "code": "graph TD\n  N[New Peer] --> B[Bootstrap Cache]\n  B --> C[Connect to Seed Peers]\n  C --> D[Exchange Peer Lists]\n  D --> E[Build Routing Table]\n  E --> F[Announce Keys Held]\n  F --> G[Start Serve and Lookup]\n  G --> H[Periodic Heartbeat]\n  H --> E"
+    },
+    {
+      "type": "paragraph",
+      "text": "Join works in four phases. **Bootstrap:** the newcomer contacts a well-known seed or cached peer list to get an entry point. No seed, no join — plan for seed overload and cache poisoning here. **Discovery:** it asks neighbors for *their* neighbors via gossip or random peer exchange until its routing table fills. **Publication:** it announces what it holds — file hashes, key-value pairs, stream chunks — to the peers now responsible for indexing it. **Maintenance:** it pings neighbors, evicts dead ones, and replicates data as members churn. Unstructured systems stop at gossip and flood queries. Structured systems go further and assign every peer and every key an ID in the same space, so routing becomes deterministic instead of hopeful. That determinism is why large systems pay the complexity of a DHT."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The three shapes you must compare"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are only three answers, and the interviewer wants you to pick with reasons. **Unstructured** networks connect randomly and search by flooding or random walks — simple, excellent for popular content and fuzzy queries, catastrophic for rare items because you may query the whole swarm and still miss. **Structured** networks enforce geometry, typically a hash ring or XOR tree, and guarantee `O(log N)` hops to the key owner — precise and load-balanced, but rigid under churn and useless for keyword search without a separate index. **Hybrid** networks cheat pragmatically: supernodes or trackers index, leaves serve. Skype-style supernodes and tracker-assisted torrents are hybrids. They cut lookup to one hop at the cost of reintroducing hotspots and trust concentration. If you propose pure flooding past a few thousand nodes, you have failed the scalability discussion. If you propose a DHT for full-text search, you have failed the workload discussion."
+    },
+    {
+      "type": "table",
+      "caption": "Pick the overlay by lookup pattern, not ideology.",
+      "headers": [
+        "Type",
+        "How lookup works",
+        "Price you pay"
+      ],
+      "rows": [
+        [
+          "Unstructured (flood / gossip)",
+          "Query neighbors, TTL-limited flood or random walk",
+          "No rare-item guarantee; bandwidth explodes with size"
+        ],
+        [
+          "Structured DHT (Chord / Kademlia)",
+          "Route by key distance, O(log N) hops to owner",
+          "Strict maintenance under churn; no fuzzy search"
+        ],
+        [
+          "Hybrid (supernode / tracker)",
+          "Ask index node, then connect directly to holder",
+          "Index is bottleneck and takedown target"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "A DHT deserves specifics because hand-waving it loses points. Take Kademlia, the workhorse behind most real deployments. Every peer and key gets a 160-bit ID. Distance is `XOR`, which is symmetric and maps neatly to a binary tree. Each peer keeps `k-buckets`: for each prefix length, up to `k` live contacts that share that prefix. Lookup is iterative: ask the `alpha` closest contacts you know for an ID, they return even closer contacts, repeat until no one returns anyone closer. Then fetch the value from the `k` closest. Replication to those `k` closest is what survives churn — no single holder is critical. Chord does the same on a ring with finger tables. The trade-off versus gossip is clear: you get bounded hops and automatic load spread via consistent hashing, but every join, leave, and failed ping triggers bucket refreshes and key republishing. Churn is no longer free."
+    },
+    {
+      "type": "mermaid",
+      "title": "Kademlia iterative lookup",
+      "caption": "No peer knows the whole swarm; closeness converges in log steps.",
+      "code": "flowchart LR\n  Q[Target Key] --> A[Pick Alpha Closest]\n  A --> B[Query Them in Parallel]\n  B --> C{Closer Peers Returned}\n  C -->|Yes| A\n  C -->|No| D[Closest K Found]\n  D --> E[Fetch or Store Value]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs: the honest ledger"
+    },
+    {
+      "type": "table",
+      "caption": "Every P2P win bills you somewhere else.",
+      "headers": [
+        "Claimed win",
+        "What you actually get",
+        "What it costs you"
+      ],
+      "rows": [
+        [
+          "Infinite scalability",
+          "Aggregate bandwidth and storage grow with users",
+          "Per-lookup latency rises; tail dominated by slowest peer"
+        ],
+        [
+          "No single point of failure",
+          "Survives server loss and regional cuts",
+          "Failure becomes diffuse: silent data loss, partitions, stale routes"
+        ],
+        [
+          "Cheap distribution",
+          "Origin offload, near-zero CDN bill for hot bytes",
+          "You pay in protocol chatter, replication overhead, and client complexity"
+        ],
+        [
+          "Censorship resistance",
+          "No single box to seize or block",
+          "No single box to patch, revoke, or hold accountable either"
+        ],
+        [
+          "Self-healing",
+          "Replication refills after churn automatically",
+          "Repair traffic competes with user traffic under heavy churn"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The central tension is **capacity versus predictability**. Client-server gives you SLOs because you own the slow parts. P2P gives you raw throughput because you own nothing. Throughput scales beautifully for popular, immutable, chunked content — each downloader becomes an uploader, so flash crowds help instead of killing you. Latency and availability do the opposite: a `log N` overlay lookup plus a fetch from a residential uplink will never beat a warm edge cache on p99. That is why serious designs split the workload: P2P for bulk transfer and cold storage durability, centralized edges or supernodes for metadata, search, and first-byte latency. If you promise both cheap and fast for interactive reads, you are promising a contradiction."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Churn is the killer, not code bugs. Peers do not gracefully deregister; phones sleep, laptops close, home routers reboot. Median session times in open swarms are measured in minutes. Every departure invalidates routing entries and deletes the only copy of some chunks. If republishing and repair are slower than departure rate, the network silently hollows out: lookups take more hops, then time out, then return *not found* for data that was present yesterday. The symptom you see in dashboards is a rising lookup failure rate and inflating hop count long before any crash. The fix is never \"assume stable peers.\" It is aggressive replication factor `k`, parallel queries, short timeouts with hedging, and erasure coding so any `m-of-n` fragments reconstruct. You trade storage and chatter for survival."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Churn collapse:** routing tables fill with dead contacts. Symptom: p99 lookup latency climbs 3-10x, then timeouts. Mitigation: liveness probing, parallel alpha queries, republish on timer.",
+        "**NAT and firewall partition:** 60-80% of peers sit behind NAT. Symptom: two peers both know each other but `CONNECT` never completes. Mitigation: hole punching via STUN, TURN relay fallback, prefer publicly reachable peers as relays.",
+        "**Freeriding and tragedy of commons:** most peers download and disable upload. Symptom: swarm speed collapses to seed uplink despite large peer count. Mitigation: tit-for-tat choking, contribution-weighted priority, signed bandwidth accounting.",
+        "**Poisoned and polluted data:** anyone can announce any key. Symptom: correct hash but unplayable file, or index entries pointing at dead ends. Mitigation: content addressing (hash is the name), publisher signatures, web-of-trust or reputation decay.",
+        "**Eclipse and Sybil:** attacker spawns thousands of IDs around a target key. Symptom: victim's routing converges only to attacker nodes; targeted censorship. Mitigation: ID generation cost (proof-of-work / stake), diversity constraints on buckets, anomaly detection on peer IDs."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Two failures deserve extra attention because juniors dismiss them. First, NAT traversal is not an edge case — it *is* the network. Without relay fallback, your beautiful DHT partitions into reachable islands that can route but cannot transfer. Budget relay capacity explicitly and say who pays for it. Second, security in P2P is not TLS to a server; it is key management without a server. Routing attacks work because peer IDs are cheap. If identity is free, Sybil is free. Production systems bind IDs to something scarce — IP prefix limits, computational puzzles at join, or long-lived keys with reputation — and they verify content by hash, never by *who told you*. If your design trusts the indexer, you rebuilt client-server with extra steps."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "kademlia_distance.py",
+      "code": "def xor_distance(a: bytes, b: bytes) -> int:\n    # WHY XOR: symmetric, unidirectional, maps to prefix tree.\n    # Closeness here means shared prefix, not geography.\n    return int.from_bytes(a, 'big') ^ int.from_bytes(b, 'big')\n\ndef select_closest(target: bytes, candidates: list, alpha: int = 3):\n    # Trade-off: larger alpha = faster + more robust, but more chatter.\n    # Production Kademlia uses alpha=3, k=20 for this reason.\n    ranked = sorted(candidates, key=lambda p: xor_distance(target, p.node_id))\n    return ranked[:alpha]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Frame the workload first",
+          "text": "Say what is stored, how big, mutable or immutable, and read/write ratio. P2P for 4KB mutable profiles is a different beast than P2P for 2GB immutable video chunks. Nail this before drawing boxes."
+        },
+        {
+          "title": "Commit to unstructured vs structured",
+          "text": "State the choice and the reason: flooding if fuzzy search and small swarm, DHT if exact-key lookup at scale, hybrid if you need one-hop discovery and accept an index hotspot. No fence-sitting."
+        },
+        {
+          "title": "Walk a lookup end to end",
+          "text": "Trace publish then fetch: hash content, route to k-closest, parallel alpha queries, fetch fastest fragment. Give the hop bound O(log N) and where timeouts and retries live."
+        },
+        {
+          "title": "Design for churn and NAT explicitly",
+          "text": "Name k-replication, republish interval, heartbeat eviction, hole punching plus TURN fallback. Interviewers fail candidates who assume peers stay online and reachable."
+        },
+        {
+          "title": "Close with security and incentives",
+          "text": "End on Sybil cost, content hashing, publisher signatures, and tit-for-tat. This is what separates a textbook DHT sketch from a system that could ship."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "\"P2P means zero servers\" — false. You still need seeds, NAT rendezvous, identity roots, and update channels. Name them.",
+        "\"DHT gives me search\" — false. DHTs give exact-key lookup. Keyword, prefix, or semantic search needs a separate inverted index.",
+        "\"More peers always means faster\" — false past the point where lookup hops and slow uplinks dominate. Throughput scales; tail latency does not.",
+        "\"Encryption solves trust\" — false. Transport encryption hides bytes in flight; it does not stop poisoned content or Eclipse. You need content hashes and Sybil cost.",
+        "\"Gossip is infinitely scalable\" — false. Unbounded flooding is O(N) messages per query. Without TTLs, supernodes, or structure, the network drowns in its own queries."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to run away"
+    },
+    {
+      "type": "table",
+      "caption": "Use P2P where peer resources match the bottleneck.",
+      "headers": [
+        "Use P2P when",
+        "Avoid P2P when"
+      ],
+      "rows": [
+        [
+          "Distributing large immutable blobs to many receivers (updates, video, datasets)",
+          "Serving small, mutable, strongly consistent records with low-latency reads"
+        ],
+        [
+          "Aggregate uplink is the bottleneck and origin egress is expensive",
+          "p99 latency has an SLO and clients sit on fast edge caches already"
+        ],
+        [
+          "You need survival without infrastructure (offline mesh, disaster, censorship pressure)",
+          "You need access control, deletion guarantees, audit, or GDPR-style erasure"
+        ],
+        [
+          "Workload is naturally sharded and verifiable by hash",
+          "Queries are fuzzy, relational, or need transactions across keys"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "\"Use P2P when demand brings its own supply — large immutable distribution — with a DHT for `O(log N)` exact lookup, `k`-replication plus incentives to survive churn, and accept that you trade predictable latency and central control for aggregate capacity.\""
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:06:14.208Z",
+    "problems": []
+  }
+}

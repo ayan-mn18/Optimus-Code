@@ -1,0 +1,289 @@
+{
+  "slug": "throughput-vs-latency",
+  "title": "Throughput vs latency",
+  "summary": "Throughput is how much work you finish per second. Latency is how long one piece of work waits. You can have one cheap. Both costs idle capacity or faster work.",
+  "kind": "HLD",
+  "problemSlug": "throughput-vs-latency-91-183",
+  "topic": "System Design Tradeoffs",
+  "difficulty": "Medium",
+  "coverEmoji": "⚡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "System Design Tradeoffs",
+    "Throughput",
+    "Latency"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "The Latency/Throughput Tradeoff: Why Fast Services Are Slow and ...",
+      "url": "https://news.ycombinator.com/item?id=32635910",
+      "source": "news.ycombinator.com",
+      "kind": "article"
+    },
+    {
+      "title": "Throughput vs Latency - Difference Between Computer Network ... - AWS",
+      "url": "https://aws.amazon.com/compare/the-difference-between-throughput-and-latency/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    },
+    {
+      "title": "Latency vs Throughput vs Bandwidth: What They Mean and How ... - Kentik",
+      "url": "https://www.kentik.com/kentipedia/latency-vs-throughput-vs-bandwidth/",
+      "source": "kentik.com",
+      "kind": "article"
+    },
+    {
+      "title": "Latency and Throughput - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/latency-in-system-design/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Minimum latency **requires idle capacity**. Maximum throughput **requires full utilization**. You cannot have both at once because full utilization means queueing, and queueing is latency. Every design in this space is just choosing where on that curve to sit — and what breaks first when you slide too far."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What throughput and latency actually measure"
+    },
+    {
+      "type": "paragraph",
+      "text": "Throughput is completed work per unit time: requests per second, rows per second, bytes per second. It is a rate, measured over an interval. Latency is elapsed time for one unit of work, usually measured as round trip from issue to complete. Report it as a distribution — `p50`, `p99`, `p999` — never as a single average. The two are linked by concurrency through Little's Law: `concurrent work = throughput × latency`. If you hold 1,000 requests in flight and each takes 100ms, you are doing 10,000 requests per second whether you planned to or not. Latency itself decomposes into four parts: transmission time to push bits onto the wire, propagation delay from physics, queueing delay waiting for a busy resource, and service time doing the actual work. In datacenter systems the first two are mostly fixed. The last two are design choices. Queueing is where interviews live, because it is the only component that explodes non-linearly when you push utilization up."
+    },
+    {
+      "type": "paragraph",
+      "text": "Bandwidth is not throughput. Bandwidth is the theoretical ceiling — the widest pipe, the fastest NIC, the max IOPS the disk advertises. Throughput is what you actually achieve under your workload, your concurrency, your protocol overhead, and your contention. A 100 Gbps link carrying 20 Gbps of goodput because your single TCP connection never fills the window has high bandwidth and low throughput. Latency tells you how long the pipe is. Bandwidth tells you how wide it is. Throughput tells you how much water actually came out when you opened the valve with your bucket underneath. Confuse the ceiling with the outcome and you will propose adding capacity to fix a queueing problem, which makes utilization worse per node and hides the real bottleneck for another quarter. The correct question is always: is the work slow to do, or slow to get started?"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: utilization forces the tradeoff"
+    },
+    {
+      "type": "paragraph",
+      "text": "Model every server as a queue in front of a worker. Requests arrive at rate λ, the worker serves at rate μ. Utilization is `ρ = λ / μ`. When ρ is 0.3, an arrival almost always finds an idle worker and latency equals service time. When ρ approaches 1.0, arrivals almost always find a busy worker and latency equals service time plus everyone else's service time ahead of them. Queueing theory makes this brutal and exact: mean wait grows as `ρ / (1 - ρ)`. Going from 50% to 90% utilization does not add 40% more wait — it multiplies wait by 9x. Going to 95% multiplies it by 19x. That is why the fastest-feeling systems look wasteful on a dashboard. They are running at 30-40% CPU with threads parked, connections warm, and disks half empty. The tradeoff is not philosophical. It is arithmetic: to keep wait near zero you must pay for servers to do nothing most of the time. To keep servers busy you must make users wait. Batching, buffering, and deep queues all move you right on this curve on purpose, trading a bounded latency increase for a large throughput win by amortizing per-request cost."
+    },
+    {
+      "type": "mermaid",
+      "title": "Where latency comes from",
+      "caption": "Every millisecond is either service or wait. High throughput designs add wait on purpose.",
+      "code": "flowchart LR\n  Client --> NetIn[transmission + propagation]\n  NetIn --> Queue[queue wait]\n  Queue --> Worker[service time]\n  Worker --> Batch[batching delay]\n  Batch --> NetOut[response transfer]\n  NetOut --> Client"
+    },
+    {
+      "type": "paragraph",
+      "text": "The diagram looks trivial and that is the point. There is nowhere else for time to hide. If you want more throughput without faster hardware, you have exactly two moves: reduce per-unit service cost, or keep the worker busier. Reducing per-unit cost means batching — collect 100 writes and flush once, compress 64KB together, coalesce interrupts. That adds `Batch` delay by definition: the first item in the batch waits for the last. Keeping the worker busier means allowing a deeper `Queue` so the worker never idles between arrivals. That adds queue wait by definition. SSDs are the canonical example. Issue one 4KB read at queue depth 1 and you get ~80 microseconds. Issue 128 in parallel and total bytes per second goes up 20x, but each individual read now takes 2-5ms because it sat behind others inside the device. Same silicon, same firmware. Different operating point. The throughput win was bought with latency, and the device gave you no third option."
+    },
+    {
+      "type": "table",
+      "caption": "Every knob that helps one side hurts the other. Pick deliberately.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Deep buffers and large queues",
+          "High throughput, no idle gaps, absorbs bursts without dropping",
+          "Queueing delay dominates p99; bursts turn into sustained latency long after load drops"
+        ],
+        [
+          "Batching and coalescing",
+          "Amortizes syscall, I/O, and network overhead; 10-100x throughput for logs, queues, disks",
+          "First item waits for batch to fill; adds fixed floor to latency even when idle"
+        ],
+        [
+          "High concurrency and multiplexing",
+          "Hides I/O stalls, fills the pipe per Little's Law",
+          "Contention on CPU, locks, GC, and connection pools; tail latency spreads"
+        ],
+        [
+          "Compression and heavy encoding",
+          "More logical work per byte sent; saves bandwidth cost",
+          "CPU service time rises; p50 looks fine while p99 balloons on slow items"
+        ],
+        [
+          "Partitioning and sharding for parallelism",
+          "Aggregates throughput almost linearly with node count",
+          "Fan-out adds stitching latency; slowest shard dictates response time"
+        ],
+        [
+          "Overprovisioning andhedged requests",
+          "Lowest possible latency, immune to single slow node",
+          "Utilization collapses; you pay 2-3x hardware for the same throughput"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Four levers that trade one for the other"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Queue depth:** depth 1 minimizes latency, depth 128 maximizes device throughput. There is no depth that does both. Expose it as a tunable with a latency budget, not a fixed constant.",
+        "**Batch size and linger time:** larger batches mean fewer expensive operations per second. The cost is `linger.ms` added to every record even at 3am when traffic is zero. Set linger from the latency SLO backwards, not from the throughput benchmark forwards.",
+        "**Concurrency limits:** unbounded concurrency keeps throughput high until the shared resource saturates, then everything degrades together. A strict concurrency cap with fast shedding protects latency by sacrificing excess throughput explicitly instead of implicitly via timeout.",
+        "**Work placement:** colocate work to avoid network hops and you cut latency but cap throughput at one machine. Spread work to gain throughput but add a network round trip plus tail amplification. The tradeoff is hop count versus aggregate capacity."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The practical consequence is that tuning is choosing a failure mode. A log pipeline tuned for throughput uses 1MB batches and 100ms linger. It sustains millions of events per second on few brokers, but a single keystroke takes 100ms minimum to become visible. A trading or autocomplete path tuned for latency flushes every event immediately, pins hot data in memory, and runs brokers at 30% disk. It answers in single-digit milliseconds and costs three times more per million messages. Neither team is wrong. The wrong answer is the default configuration that batches a little, queues a little, and meets neither SLO. In design reviews, force the number: what p99 at what load, and what utilization cap enforces it? If no one can state both, the system will drift to 95% utilization and discover its latency budget in production."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "It fails as a cliff, not a slope. Up to ~70% utilization your dashboards look flat: p50 stable, CPU climbing linearly, everyone happy. Past ~85% the queue term dominates and p99 detaches from p50. p50 moves from 20ms to 30ms while p99 moves from 60ms to 800ms. That divergence is the signature. Clients see timeouts, so they retry. Retries are new arrivals that add load without adding goodput, which pushes utilization higher, which grows the queue further. This is the retry storm loop, and it converts a transient burst into a sustained outage. The second signature is bufferbloat: deep buffers hide loss so throughput graphs stay green while interactive latency goes to seconds. _Throughput stayed up_ becomes the misleading postmortem line. The fix is almost never more capacity alone. More capacity without bounds just moves the queue into the new servers. The fix is load shedding, bounded queues,hedged or timed-out fan-out, and backpressure that propagates queueing information upstream where it can be shed cheaply. Shed excess throughput early to protect latency of admitted work. That is the tradeoff made explicit at runtime."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Symptom to alert on",
+      "text": "Alert on **p99 minus p50 divergence plus queue depth**, not on CPU. If p50 is flat, p99 is 10x p50, and queue length or semaphore wait time is climbing, you are on the utilization cliff. Cap concurrency, shed or degrade, and drain before adding nodes."
+    },
+    {
+      "type": "mermaid",
+      "title": "The collapse loop",
+      "caption": "High utilization turns latency into more load.",
+      "code": "flowchart TD\n  HighUtil[high utilization] --> QueueGrows[queues grow]\n  QueueGrows --> LatSpike[p99 spikes]\n  LatSpike --> Timeouts[client timeouts]\n  Timeouts --> Retries[retries add load]\n  Retries --> HighUtil"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this loop is hard to see coming is that every local decision looks rational. The network team deepens buffers to avoid drops. The storage layer increases queue depth to hit IOPS targets. The RPC framework retries once because one retry is harmless at low load. Each choice buys throughput in isolation and pays latency globally. Monitoring must therefore join the two sides: track goodput versus offered load, queue wait versus service time, and timeout rate versus retry rate on the same dashboard. If service time is flat but queue wait is rising, you do not have a slow dependency — you have an oversubscribed one. The corrective tradeoff is to sacrifice throughput visibly: return `429` fast, drop batch size, or disable retries for idempotent reads. Fast failure keeps admitted latency bounded. Slow success for everyone is how you get zero success for everyone."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Make it concrete: measure both correctly"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "latency_throughput.py",
+      "code": "import statistics\n\ndef summarize(latencies_ms):\n    s = sorted(latencies_ms)\n    n = len(s)\n    pct = lambda p: s[min(n-1, int(p/100*n))]\n    return {\n        \"count\": n,\n        \"mean\": round(statistics.mean(s), 2),\n        \"p50\": pct(50),\n        \"p99\": pct(99),\n        \"p999\": pct(99.9),\n        \"max\": max(s),\n    }\n\ndef littles_law(throughput_rps, latency_s):\n    # concurrency you MUST sustain to hit that throughput at that latency\n    return throughput_rps * latency_s\n\n# Example: 10k rps at 100ms needs 1000 in flight.\n# Halve latency to 50ms and you need only 500 in flight\n# for the SAME throughput. Faster work buys capacity.\nprint(littles_law(10_000, 0.10))\nprint(littles_law(10_000, 0.05))\n\nlat = [12]*950 + [80]*40 + [900]*10  # p50 fine, tail awful\nprint(summarize(lat))"
+    },
+    {
+      "type": "paragraph",
+      "text": "The code makes two interview points executable. First, averages lie. The sample has a mean around 25ms that suggests a healthy service, but `p99` is 900ms and the top 1% of users are timing out. Always report `p50` alongside `p99` and `p999`, measured at the client, over the same window as throughput. Server-side latency hides queueing in the load balancer and lies during overload. Second, Little's Law cuts both ways. Most candidates recite it to size thread pools. Strong candidates use it backwards: making each request faster is a throughput strategy, because lower latency means fewer concurrent slots needed for the same rate. That is why profiling and removing one lock or one serialization pass can beat adding ten machines. Before partitioning for throughput, prove you are already on the performance envelope — no wasted CPU, no unnecessary coordination, no oversized batches. Only the remaining gap should be bought with queueing or parallelism, because only that gap truly requires the tradeoff."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Clarify which side the SLO cares about",
+          "text": "Ask: is this autocomplete at 50ms p99, or nightly log ingest at 1M events per second? Restate the priority in one sentence and name what you will sacrifice. Interviewers score this explicitly."
+        },
+        {
+          "title": "Estimate with Little's Law",
+          "text": "Convert the required throughput and latency SLO into required concurrency: slots, connections, partitions. Show that 20k rps at 200ms means 4,000 in flight, which already rules out single-node or single-connection designs."
+        },
+        {
+          "title": "Design the fast path first",
+          "text": "Sketch the minimum-latency path: cache hit, single shard, no fan-out, no batch wait. Then add throughput mechanisms — batching, queueing, sharding — and annotate each with the latency tax it adds and the bound you put on it."
+        },
+        {
+          "title": "Bound the queues",
+          "text": "State depth limits, timeouts, concurrency caps, and shed policy. Say what happens at 2x burst: fast 429 plus autoscale, not unbounded queue growth. Unbounded queues are an automatic fail."
+        },
+        {
+          "title": "Close with the operating point",
+          "text": "Give the utilization target and the scaling trigger: run hot shards at 40% for latency, cold ingest at 75% for cost, scale when p99-p50 gap widens or queue wait exceeds service time. That proves you can operate the tradeoff, not just draw it."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**\"Higher bandwidth fixes latency.\"** No. A wider pipe does not shorten it. Latency is dominated by distance plus queue wait. Upgrading the NIC while queues are full just lets you queue faster.",
+        "**\"Async and more threads always improve latency.\"** They improve throughput by overlapping waits. Under contention they worsen tail latency via context switches, GC pressure, and lock convoying. Concurrency past saturation is a tax.",
+        "**\"Batching is a free optimization.\"** Batching is a loan against latency. Someone pays the linger interval. If the SLO is milliseconds, the batch interval must fit inside it or batching is disallowed on that path.",
+        "**\"p99 and median move together.\"** They diverge at high utilization. Optimizing the mean while ignoring the tail produces systems that look fast in tests and time out in production. Flattening the tail often costs a little median — take that trade deliberately.",
+        "**\"You must always trade one for the other.\"** Only on the efficiency frontier. Sloppy code, chatty RPCs, and needless coordination hurt both. Fix waste first. Trade off only what remains after each request is already as fast as reasonable."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to optimize which"
+    },
+    {
+      "type": "table",
+      "caption": "No universal answer. Match the operating point to the user pain.",
+      "headers": [
+        "Workload",
+        "Optimize for",
+        "Why this side wins"
+      ],
+      "rows": [
+        [
+          "Interactive reads: search, feed, checkout",
+          "Latency p99, cap utilization at 30-50%",
+          "User waits inline; abandonment tracks tail, not average throughput"
+        ],
+        [
+          "Ingest and analytics: logs, metrics, ETL",
+          "Throughput, large batches, deep queues",
+          "No human blocking; cost per byte dominates and delay is tolerable"
+        ],
+        [
+          "Mixed APIs with SLO tiers",
+          "Isolate paths: fast lane plus bulk lane",
+          "One queue cannot serve two SLOs; bulk bursts would starve interactive p99"
+        ],
+        [
+          "Fan-out reads across shards",
+          "Latency via hedged requests and deadlines",
+          "Slowest shard sets response; extra parallel work is cheaper than waiting"
+        ],
+        [
+          "Background replication and backups",
+          "Throughput with throttling",
+          "Must not steal queue slots from foreground; throttle to protect foreground latency"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The mature answer is isolation, not compromise. Do not tune one shared queue to be half-fast and half-cheap. Split the workload: a low-utilization, small-batch, deadline-bound lane for interactive traffic, and a high-utilization, large-batch, heavily queued lane for bulk traffic, with strict priority and separate concurrency budgets. That costs more machinery — two pools, two autoscalers, admission control between them — and that cost is the honest price of serving both masters. Where isolation is impossible, state the priority order in the SLO: protect p99 latency up to X rps, then shed throughput beyond X. A system that degrades by dropping excess load fast is operating correctly. A system that degrades by making everyone slow together never chose at all."
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**\"Throughput is rate, latency is wait, and high utilization buys the first with the second — so I will cap utilization and bound queues to protect p99, batch only inside the latency budget, and shed excess throughput fast rather than queue it.\"**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:28:43.986Z",
+    "problems": []
+  }
+}

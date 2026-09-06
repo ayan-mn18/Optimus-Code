@@ -1,0 +1,281 @@
+{
+  "slug": "raft-algorithm",
+  "title": "Raft Algorithm",
+  "summary": "Raft trades a single leader bottleneck for understandable crash-fault consensus: majority quorums, randomized elections, and leader-only writes that guarantee one ordered log.",
+  "kind": "HLD",
+  "problemSlug": "raft-algorithm-97-218",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Medium",
+  "coverEmoji": " 32 28 63",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Raft",
+    "Consensus",
+    "Fault-Tolerance"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Raft Consensus Algorithm",
+      "url": "https://raft.github.io/",
+      "source": "raft.github.io",
+      "kind": "article"
+    },
+    {
+      "title": "Raft (algorithm) - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Raft_(algorithm)",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding Raft Algorithm: Consensus and Leader Election",
+      "url": "https://medium.com/@jitenderkmr/understanding-raft-algorithm-consensus-and-leader-election-explained-faadf28fd047",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Raft is majority rule applied to an ordered log.** One leader sequences all writes, a majority must durably store each entry before it commits, and elections only succeed if the winner is at least as up-to-date as a majority. Everything else  2d randomized timeouts, terms, heartbeat replication  2d exists to enforce those two invariants without a human operator. If you remember nothing else: **no majority, no progress; no log completeness, no leadership.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Raft is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Raft is a crash-fault-tolerant protocol for building a replicated state machine. You give `2F+1` identical servers a deterministic log of commands, and Raft guarantees they all execute the *same commands in the same order*, even while `F` servers are crashed, partitioned, or slow. That guarantee is linearizable for the committed prefix: once an entry is committed at index `N`, no server will ever commit a different entry at `N`, and every future leader will contain it. It does not solve Byzantine faults, it does not make writes faster than one round-trip to a majority, and it does not allow two leaders to make progress in the same term. Its deliberate trade-off is to centralize sequencing in a single leader to make the correctness argument  2d and the debugging  2d tractable, at the cost of forcing all writes through one node."
+    },
+    {
+      "type": "paragraph",
+      "text": "Raft was designed by decomposition because monolithic consensus is unteachable and unimplementable. It splits the problem into three nearly independent subproblems: **leader election** picks at most one leader per term, **log replication** forces followers 27 logs to converge to the leader 27s, and **safety** restricts who can become leader and what they can commit so old committed entries are never overwritten. The reason this split works is that replication is trivial if you assume a single stable leader, and election is trivial if you assume logs are comparable by freshness. Raft defines freshness mechanically with `(term, index)` pairs, so a voter can reject an out-of-date candidate without understanding the application. The trade-off for that clarity is extra RPC chatter  2d heartbeats and `AppendEntries` even when idle  2d and a hard dependence on timing for liveness."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every server is always in one of three roles: `Follower`, `Candidate`, or `Leader`. Time is divided into monotonically increasing `terms`, each identified by a 64-bit integer that only moves forward. Terms are logical clocks, not wall clocks: they exist so a server that partitioned away and comes back can be told *your information is stale* in one comparison. Followers are passive; they respond to RPCs and reset an election timer on any valid contact from a current leader. Candidates are transitory; they exist only to run an election. The leader is the sole writer sequencer. Clients never write to followers in the core protocol  2d a follower that receives a write must forward or reject  2d because allowing concurrent appends from multiple sources would require a conflict-resolution protocol, which is exactly the complexity Raft chose to eliminate by electing a sequencer."
+    },
+    {
+      "type": "mermaid",
+      "title": "Raft role transitions",
+      "caption": "Randomized timeouts break symmetry; terms force old leaders to step down.",
+      "code": "stateDiagram-v2\n  [*] --> Follower\n  Follower --> Candidate: election timeout\n  Candidate --> Candidate: split vote, new term\n  Candidate --> Leader: majority votes\n  Candidate --> Follower: hears valid leader\n  Leader --> Follower: sees higher term\n  Follower --> Follower: sees higher term"
+    },
+    {
+      "type": "paragraph",
+      "text": "Leader election is a majority vote constrained by log freshness, and the subtlety is entirely in preventing livelock. When a follower 27s election timeout (typically `150-300ms`, randomized per server per term) fires without a heartbeat, it increments its term, votes for itself, and sends `RequestVote` in parallel to all peers. A peer grants the vote only if it has not already voted in this term *and* the candidate 27s last log entry is at least as fresh as its own, comparing `lastTerm` first, then `lastIndex`. That second check is the whole safety argument: it bars a partitioned minority member with a short log from winning. Randomization is not an optimization; without it, all followers would time out together, split the vote forever, and no leader would emerge. The trade-off is nondeterministic election latency: you accept occasional `300-500ms` stalls to guarantee eventual termination without manual coordination."
+    },
+    {
+      "type": "mermaid",
+      "title": "Write path and commit",
+      "caption": "A write commits only after a majority durably stores it in the leader's term.",
+      "code": "flowchart TD\n  C[Client write] --> L[Leader appends to own log]\n  L --> R1[AppendEntries to follower 1]\n  L --> R2[AppendEntries to follower 2]\n  L --> R3[AppendEntries to follower 3]\n  R1 --> Q{Majority stored?}\n  R2 --> Q\n  R3 --> Q\n  Q -->|yes| CMT[Leader advances commitIndex]\n  CMT --> APP[Apply to state machine]\n  APP --> ACK[Acknowledge client]\n  CMT --> NXT[Piggyback commitIndex on next heartbeat]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Log replication is leader-driven overwrite, not peer-to-peer reconciliation. The leader accepts a client command, appends it to its own log with the current term, then issues `AppendEntries` RPCs containing `prevLogIndex`, `prevLogTerm`, and the new entries. A follower accepts only if its log exactly matches at `prevLogIndex` and `prevLogTerm`; otherwise it rejects, and the leader decrements `nextIndex` for that follower and retries with older entries. This backward search converges because at worst it replays from the last common entry. Once the entry is stored on a majority *including the leader*, the leader advances `commitIndex` and applies it to its state machine, then informs followers via the next heartbeat. Followers apply lazily, which is why a follower can be behind on *applied* state while being current on *stored* log. The trade-off is write amplification: every write costs `N-1` RPCs and one majority round-trip, so throughput is capped by the leader 27s network and disk, but recovery is mechanical  2d no vector clocks, no merge logic."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Safety guarantees that actually hold"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two invariants do the heavy lifting. **Election Safety** guarantees at most one leader per term, because two majorities in the same term must intersect on at least one server, and that server votes only once per term. **Log Matching** guarantees that if two logs contain an entry with the same `(index, term)`, then all preceding entries are identical, because `AppendEntries` consistency checks chain backward to the start. Combined with the voter freshness rule, they yield **Leader Completeness**: any committed entry from a prior term must be present in the log of every future leader. Note what is *not* guaranteed: an entry from an old term is not considered committed just because it sits on a majority. A new leader cannot commit it by counting replicas; it must commit a *new* entry in its own term, which implicitly commits the prefix. Implementations that advance `commitIndex` by counting old-term replicas violate safety and will lose acknowledged writes after a leader change. That is why correct leaders only advance commit on entries from their current term."
+    },
+    {
+      "type": "table",
+      "caption": "Raft's core trade-offs. Every benefit is paid for somewhere else.",
+      "headers": [
+        "Design choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Single leader sequences all writes",
+          "Trivial reasoning about order; no conflicts to resolve",
+          "Leader is throughput and latency bottleneck; all writes fail during election"
+        ],
+        [
+          "Majority quorum for commit and election",
+          "Survives minority crash or partition with no data loss",
+          "No progress without majority; 3-node cluster tolerates only 1 failure"
+        ],
+        [
+          "Randomized election timeouts",
+          "Breaks split votes without operator intervention",
+          "Nondeterministic unavailability window, typically hundreds of ms"
+        ],
+        [
+          "Leader-only log overwrite",
+          "Simple follower logic; fast convergence after partition",
+          "Leader must retain full log; slow follower forces repeated AppendEntries"
+        ],
+        [
+          "Strong leader completeness rule",
+          "Committed reads and writes never roll back",
+          "Cannot commit old-term entries directly; needs no-op entry after election"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Raft never returns wrong data when configured correctly; it fails by stalling, thrashing, or silently losing availability on one side of a partition. The failure mode you must internalize is that Raft prioritizes safety over liveness, so every operational mistake shows up as *writes blocked* or *elections flapping*, not as corruption. Disk stalls are the most common culprit: if the leader 27s `fsync` latency spikes, heartbeats queue behind replication, followers time out, and you get dueling leaders. Clock and scheduling pauses do the same thing without any network fault. The second class is configuration: an even node count, a learner counted as a voter by mistake, or a joint-consensus membership change left half-applied will leave you with two simultaneous majorities or no majority at all. Both look like intermittent `LeaderNotAvailable` errors that clear on retry, which tempts teams to add client retries that then overload the new leader."
+    },
+    {
+      "type": "table",
+      "caption": "Production failure to symptom mapping. Check in this order.",
+      "headers": [
+        "Failure",
+        "Client-visible symptom",
+        "What to verify first"
+      ],
+      "rows": [
+        [
+          "Leader disk slow or fsync blocked",
+          "Write latency p99 spikes, then all writes timeout for 1-2 election windows",
+          "Leader disk await and fsync latency; follower election timeout fire rate"
+        ],
+        [
+          "Network partition isolating leader with minority",
+          "Minority side reports no leader; majority side elects new leader and keeps serving",
+          "Quorum reachability matrix; terms diverging on each side"
+        ],
+        [
+          "Asymmetric partition or flaky heartbeat link",
+          "Rapid leader flapping, term number climbing fast, no stable writes",
+          "Heartbeat RTT vs election timeout; packet loss on leader egress"
+        ],
+        [
+          "Follower far behind with truncated log",
+          "Leader CPU and bandwidth saturated, commit latency grows linearly",
+          "Follower nextIndex lag; snapshot transfer rate vs AppendEntries retry loop"
+        ],
+        [
+          "Membership change misapplied",
+          "Cluster reports two leaders or zero leaders despite healthy nodes",
+          "Committed configuration index; whether old and new quorums overlap"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Two structural limits deserve explicit callouts because interviewers probe them. First, the leader bottleneck is fundamental, not an implementation bug. Since every write fans out from one node, a 5-node cluster does not give you 5x write throughput; it gives you *lower* write throughput than a single node, in exchange for survival of two failures. If your workload is write-heavy and partitionable by key, Raft per shard or a leaderless quorum is the honest answer. Second, Raft assumes crash faults, not malice or bit corruption. A buggy leader that sends conflicting entries to different followers can force followers to thrash, and without checksums and term validation on storage, a torn write replayed after a crash can break the log-matching invariant. The trade-off is deliberate: adding signatures and verification to every entry would raise CPU cost and protocol complexity for a threat model most internal systems do not have."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "raft_core.py",
+      "code": "import random\n\nELECTION_BASE_MS = 150\nELECTION_JITTER_MS = 150\nHEARTBEAT_MS = 50  # must stay << min election timeout\n\ndef fresh_election_timeout() -> float:\n    # Randomization is correctness, not tuning.\n    # Identical timeouts -> repeated split votes -> no leader.\n    return (ELECTION_BASE_MS + random.randrange(ELECTION_JITTER_MS)) / 1000.0\n\ndef grant_vote(voted_for, candidate_term, candidate_last, voter_last) -> bool:\n    # voter_last / candidate_last are (last_term, last_index)\n    if voted_for is not None:\n        return False  # one vote per term: Election Safety\n    # Candidate must be at least as up-to-date: Leader Completeness\n    return candidate_last >= voter_last\n\ndef should_step_down(current_term: int, rpc_term: int) -> bool:\n    if rpc_term > current_term:\n        return True  # higher term always wins; stale leader steps down\n    return False\n\ndef can_commit(entry_term: int, leader_term: int, replicas: int, quorum: int) -> bool:\n    # Only entries from the current term commit by counting.\n    # Old-term entries commit indirectly via a new-term entry.\n    return entry_term == leader_term and replicas >= quorum"
+    },
+    {
+      "type": "paragraph",
+      "text": "The code above looks trivial, and that is the point to make in an interview. The freshness comparison `candidate_last >= voter_last` on `(term, index)` tuples is the entire Leader Completeness mechanism in four lines. The commit guard `entry_term == leader_term` prevents the classic bug of committing a replicated-but-uncommitted entry from a deposed leader. And the heartbeat bound `HEARTBEAT_MS << ELECTION_BASE_MS` is a liveness requirement: if heartbeats are not an order of magnitude faster than the election timeout, normal jitter will trigger false elections. When asked about timers, give numbers with justification: `50ms` heartbeat with `150-300ms` randomized election timeout works when p99 broadcast RTT is under `20-30ms`; stretch both proportionally across regions, and expect leader election to take `1-2s` cross-region. The trade-off is false-positive elections versus detection speed."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design a highly available key-value store or lock service",
+          "text": "Start with replicated state machine framing: Raft orders the operation log, the state machine just replays `put` and `get`. State quorum size explicitly: 3 nodes tolerate 1 failure, 5 tolerate 2. Explain why you need an odd count  2d to avoid wasting a node that adds failure surface without adding fault tolerance."
+        },
+        {
+          "title": "Walk through a write end to end",
+          "text": "Trace client to leader, append, parallel AppendEntries, majority ack, advance commitIndex, apply, acknowledge. Emphasize that the client ack happens only after commit, and followers learn commit lazily on the next heartbeat. Draw the majority intersection that makes this safe."
+        },
+        {
+          "title": "Kill the leader mid-write",
+          "text": "Show the two cases: entry reached a majority before the crash (next leader must have it, will commit it via a new-term entry) versus entry reached only a minority (it is uncommitted and will be overwritten). This is where you prove you understand why old-term entries cannot commit by counting."
+        },
+        {
+          "title": "Split the network 3-2",
+          "text": "Majority side elects a leader and keeps serving; minority side cannot elect a leader with a complete log and cannot commit. Reads on the minority side must fail or redirect, otherwise you serve stale data. If asked about linearizable reads, offer ReadIndex or lease reads, and name their cost."
+        },
+        {
+          "title": "Handle membership change and snapshots",
+          "text": "Never switch directly from old to new quorum; use joint consensus or single-step monotonic change so old and new majorities overlap during transition. Bound log growth with snapshots plus `InstallSnapshot` RPC, and explain why a slow follower needs a snapshot instead of infinite AppendEntries retries."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail the round"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Majority means half the nodes.** No  2d it means `floor(N/2)+1`. In a 4-node cluster the majority is still 3, so you pay for an extra node without tolerating an extra failure. Use 3 or 5.",
+        "**Followers forward writes to the leader, so writes scale with cluster size.** Writes bottleneck on the leader 27s fan-out and fsync. Adding voters *reduces* write throughput and increases commit latency; it only improves fault tolerance and read fan-out.",
+        "**Once stored on a majority, any entry is committed.** Only current-term entries commit by counting. An old-term entry on a majority still needs a new-term entry to commit it indirectly. Skipping this loses data.",
+        "**Elections need clock synchronization.** Terms are logical, not wall-clock. What matters is that broadcast RTT stays well below the election timeout. Clock skew causes lease-read errors, not election incorrectness.",
+        "**Raft handles malicious nodes.** Base Raft trusts the leader completely and has no signatures. A corrupt leader or disk bit-rot without checksums breaks every guarantee. That threat model needs additional mechanisms."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use Raft when ordering and survival matter more than raw write speed.",
+      "headers": [
+        "Use Raft when",
+        "Avoid Raft when"
+      ],
+      "rows": [
+        [
+          "You need total order for a small critical state: metadata, locks, configuration, shard mapping",
+          "Write throughput must scale linearly with nodes; use partitioning or a leaderless quorum instead"
+        ],
+        [
+          "You can tolerate 100ms-scale write latency and brief unavailability during elections",
+          "You need sustained multi-region writes with local latency; single leader RTT will dominate"
+        ],
+        [
+          "Failures are crashes and partitions, nodes are operated by one team",
+          "Nodes are untrusted or adversarial; crash tolerance is insufficient"
+        ],
+        [
+          "Cluster fits 3 or 5 voters per shard, with snapshots bounding the log",
+          "State is terabytes with heavy scan workload; consensus log becomes pure overhead"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Raft keeps one ordered log across `2F+1` servers by letting a single leader sequence writes and committing only what a majority durably stores, so the cluster survives `F` crashes at the cost of routing every write through the leader.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:59:02.090Z",
+    "problems": []
+  }
+}

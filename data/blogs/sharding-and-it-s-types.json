@@ -1,0 +1,337 @@
+{
+  "slug": "sharding-and-it-s-types",
+  "title": "Sharding and it's types",
+  "summary": "Sharding splits one logical database into many independent physical databases by shard key. This guide explains hash, range, directory, and geo sharding, their trade-offs, failure modes, and what to say in HLD interviews.",
+  "kind": "HLD",
+  "problemSlug": "sharding-and-its-types-92-204",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "🧩",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "Sharding",
+    "Scalability"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Database Sharding - System Design - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/database-sharding-a-system-design-concept/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "What is Database Sharding? - YouTube",
+      "url": "https://www.youtube.com/watch?v=hdxdhCpgYo8",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Database Sharding? - Shard DB Explained - AWS",
+      "url": "https://aws.amazon.com/what-is/database-sharding/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    },
+    {
+      "title": "Sharding - System Design - Hello Interview",
+      "url": "https://www.hellointerview.com/learn/system-design/core-concepts/sharding",
+      "source": "hellointerview.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Sharding is not an optimization. It is an admission that **one machine can no longer hold your writes, your working set, or your write throughput** — so you permanently give up cheap global queries and ACID across rows to gain unbounded horizontal write scale. If you do not need write scale, do not pay that price."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What sharding actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Sharding takes one logical table and splits its rows across **N independent database instances** called shards. Every shard runs the same schema, but holds a disjoint subset of rows. Each row lives on exactly one primary shard — there is no overlap, no shared storage, no shared lock manager. From the application's view there is still an `orders` table. Physically there are `orders_0` through `orders_15` on different hosts, disks, and failure domains. The split is decided by a **shard key**: one column (or composite) such as `user_id`, `tenant_id`, or `order_id`. A routing layer maps `shard_key -> shard_id` on every read and write. Get the shard key wrong and every benefit collapses; get it right and reads and writes scale almost linearly because each shard handles only `1/N` of the traffic and data. That is why interviewers obsess over the key, not the number of shards."
+    },
+    {
+      "type": "paragraph",
+      "text": "Be precise about vocabulary because interviewers use it to test you. **Partitioning** splits data inside one database engine to make maintenance and pruning faster — Postgres table partitions still share one primary. **Sharding** splits data across machines with independent primaries, WALs, and buffer pools. **Replication** copies the same data to more machines to survive failure and scale reads. Sharding scales **writes and storage**; replication scales **reads and durability**. You almost always combine them: each shard has its own replica set. A 16-shard cluster with 3 replicas per shard is 48 database processes, 16 independent replication streams, and 16 independent failure and backup units. That operational multiplication is the real cost, not the routing code."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: where routing lives"
+    },
+    {
+      "type": "mermaid",
+      "title": "Shard request path",
+      "caption": "Every query must resolve shard key to shard before it touches storage.",
+      "code": "flowchart TD\n  App[App server] --> Router[Shard router / driver]\n  Router -->|lookup key| Config[Shard map / config service]\n  Router --> S0[Shard 0<br/>rows A-M]\n  Router --> S1[Shard 1<br/>rows N-Z]\n  Router --> S2[Shard 2<br/>geo / tenant]\n  S0 --> R0[(Replicas of 0)]\n  S1 --> R1[(Replicas of 1)]\n  S2 --> R2[(Replicas of 2)]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The only new component sharding adds is deterministic routing. The client (or proxy like Vitess, PgBouncer with sharding logic, Mongo mongos, or your own library) hashes or looks up the shard key, opens a connection to that one shard, and runs a normal single-node query. No scatter unless you force it. That is the whole performance trick: **a well-routed query touches one machine and behaves like the small-database case** — small indexes, small buffer pool pressure, fast commits. A query without the shard key is a **scatter-gather**: it fans out to all N shards, waits for the slowest, and merges in memory. One scatter query can cost more than 1000 routed queries. This is WHY shard key selection dominates the design: you are choosing which access pattern stays fast and which one becomes a full-cluster scan. Design for the query you run millions of times per minute, not the admin query you run once a day."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The four sharding strategies"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are only four ways to assign keys to shards, and each one trades distribution, locality, and operational pain differently. Every production argument about sharding is really an argument about which pain you prefer. Memorize all four with their failure mode, because the interview follow-up is always: *why not use one of the others here?*"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1. Hash / key-based sharding"
+    },
+    {
+      "type": "paragraph",
+      "text": "Apply `shard_id = hash(shard_key) % N` and rows spread pseudo-randomly. This is the default for a reason: write load distributes evenly even if keys arrive sequentially, no shard becomes the hot tail, and routing is stateless — no lookup service to fail. The trade-off is brutal and permanent: **you destroy locality**. Range scans on the shard key (`WHERE created_at BETWEEN ...`), tenant co-location (`all rows for user X`), and ordered iteration all become scatter-gather across every shard. Rebalancing is also painful with naive modulo hashing because adding shard `N+1` remaps almost every key. That is WHY serious systems replace modulo with **consistent hashing**: only `K/N` keys move when membership changes, at the cost of virtual nodes and uneven fill you must monitor. Choose hash sharding when access is point-lookup by key (`getUserById`, `getOrderById`) and write distribution matters more than range scans."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2. Range-based sharding"
+    },
+    {
+      "type": "paragraph",
+      "text": "Assign contiguous key ranges to shards: shard 0 holds `user_id 0-1M`, shard 1 holds `1M-2M`, or shard 0 holds `2024-Q1` orders. Routing is a range-table lookup. The win is **locality**: range queries and `ORDER BY key` prune to one or two shards and stay fast, and splitting a hot range is conceptually simple. The failure is predictability: real workloads are never uniform. Sequential IDs pile all fresh writes onto the last shard (the classic time-series hotspot), one large tenant pins a whole shard, and range boundaries go stale as data grows. You trade even distribution for query pruning, and you buy yourself a permanent background job: monitor shard sizes, split ranges, and migrate sub-ranges without downtime. Choose range sharding when your dominant query is a range scan on the shard key — time-series by timestamp, lexicographic listing — and you accept active rebalancing as an operational cost."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3. Directory-based sharding"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep an explicit lookup table: `shard_key -> shard_id`. Every write and read first consults the directory (usually cached aggressively in front of ZooKeeper, etcd, or a control-plane DB). Routing is fully flexible: put VIP tenants on dedicated shards, co-locate related entities, move a single key without rehashing the world. That flexibility is WHY multi-tenant SaaS loves it. The trade-off is that you just added a **stateful dependency on the critical read path**. If the directory is slow, everything is slow. If it is unavailable and caches expire, writes stop cluster-wide even though shards are healthy. You also own cache invalidation during moves: double-write, drain, flip directory, expire cache, in that order, or you split-brain a key across two shards. Choose directory sharding when placement policy cannot be expressed as a pure function — isolation tiers, manual tenant moves, heterogeneous shard sizes — and you are willing to operate a highly available metadata service to buy that control."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "4. Geographic sharding"
+    },
+    {
+      "type": "paragraph",
+      "text": "Pin rows to the region where they are written or must legally reside: EU users to EU shards, US users to US shards. The win is not throughput, it is **latency and compliance**. Writes stay local (single-digit ms instead of cross-ocean), reads avoid WAN, and data-residency rules become enforceable by topology rather than convention. The trade-off is threefold. First, distribution follows population, not hash uniformity — one region will be hot. Second, traveling users and global queries (leaderboards, fraud joins, analytics) become cross-region scatter with 100ms+ tail latency. Third, failover is political: you cannot simply promote a remote replica without violating the residency promise that justified geo-sharding in the first place. Choose geo-sharding when law or p99 latency forces it, then shard *within* each region by hash or directory. Never use geography as your only distribution function unless regulators make you."
+    },
+    {
+      "type": "table",
+      "caption": "Sharding strategies compared honestly.",
+      "headers": [
+        "Strategy",
+        "Routing",
+        "Strength",
+        "Weakness that kills you"
+      ],
+      "rows": [
+        [
+          "Hash / consistent hash",
+          "stateless `hash(key)`",
+          "Even write spread, no metadata SPOF",
+          "No range locality; every range scan fans out"
+        ],
+        [
+          "Range",
+          "range table",
+          "Range pruning, ordered scans stay fast",
+          "Hot tail on monotonic keys; constant splits"
+        ],
+        [
+          "Directory",
+          "lookup service + cache",
+          "Arbitrary placement, tenant isolation",
+          "Directory is critical path; move protocol is complex"
+        ],
+        [
+          "Geographic",
+          "region map",
+          "Local latency, data residency",
+          "Skewed regions; global queries are slow and expensive"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What sharding costs you"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not present sharding as free scale. Name the losses, because the interviewer is listening for them. You lose **cross-shard transactions**: two-phase commit across shards is slow and most teams ban it, so multi-shard writes become sagas with compensating actions and visible intermediate states. You lose **global secondary indexes and joins**: a join on a non-shard key is either denormalized away, served by a separate search index, or executed as scatter-gather. You lose **simple operations**: backups, schema migrations, and `COUNT(*)` now run N times and need an orchestrator. And you lose **elasticity**: adding shards requires moving data while serving traffic, which is the hardest part of the whole design. The benefit you buy — near-linear write and storage scale — is worth it only after vertical scaling, read replicas, and caching have demonstrably failed."
+    },
+    {
+      "type": "table",
+      "caption": "Sharding trade-offs with no sugar-coating.",
+      "headers": [
+        "What improves",
+        "What gets worse",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Write throughput + storage",
+          "Operational complexity (N× backups, monitors, migrations)",
+          "Each shard is an independent primary with its own replicas"
+        ],
+        [
+          "Point-query latency at scale",
+          "Non-key queries (scatter-gather tail latency)",
+          "Missing shard key forces fan-out to all shards"
+        ],
+        [
+          "Failure blast radius per shard",
+          "Cross-shard correctness",
+          "No cheap global ACID; sagas and idempotency required"
+        ],
+        [
+          "Hot-key isolation potential",
+          "Resharding risk",
+          "Moving live ranges needs double-write and verification"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Sharded systems do not fail like single databases. They degrade shard-by-shard, and the symptom is almost always skew or a missing key in the request. Learn to map symptom to cause, because that is what on-call and interview deep-dives both test."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Hot shard: one shard at 90% CPU while others idle.** Cause: bad key choice (sharding by `country` with 60% traffic in one value) or range tail on monotonic IDs. Symptom: p99 spikes correlated with specific key values, connection queue on one host. Fix: pick higher-cardinality key, add virtual nodes, or split the range — not add replicas, which only helps reads.",
+        "**Scatter-gather meltdown: p99 explodes after a new feature ships.** Cause: new query filters on non-shard key without the shard key. Symptom: every app server opens N connections per request, slowest shard dictates latency. Fix: denormalize, add covering lookup table, or force caller to supply shard key; cap fan-out with timeouts.",
+        "**Resharding double-write: duplicate or missing rows during scale-out.** Cause: backfill + live writes raced, directory flipped early, cache not invalidated. Symptom: row appears twice in analytics, or `get` returns not-found right after `create` succeeds. Fix: idempotent applier, verified backfill checksum per range, then flip, then expire cache — never flip on hope.",
+        "**Cross-shard saga stuck half-done.** Cause: second shard write failed after first committed, no compensating action. Symptom: order created but payment hold missing; manual cleanup queue grows. Fix: outbox table per shard, async relay, idempotency keys, explicit compensations — state this upfront in design."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The celebrity-key trap",
+      "text": "Even perfect hashing fails when **one logical key is hotter than a whole shard** — a viral account, a flash-sale SKU. No shard count fixes that because all its traffic hashes to one place. The answer is not more shards, it is **splitting the key itself**: replicate hot read keys, queue and serialize hot write keys, or composite the key (`item_id + bucket_id`). Say this in the interview before you are asked."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "shard_router.py",
+      "code": "import hashlib\n\ndef shard_for_key(key: str, num_shards: int) -> int:\n    # Stateless hash routing: no directory lookup, easy to scale.\n    # Trade-off: adding shards remaps keys unless you use consistent hashing.\n    h = int(hashlib.sha256(key.encode()).hexdigest(), 16)\n    return h % num_shards\n\ndef range_shard_for_user(user_id: int) -> int:\n    # Range routing: preserves order and prunes range scans.\n    # Trade-off: sequential IDs hotspot the last shard.\n    if user_id < 1_000_000:\n        return 0\n    elif user_id < 2_000_000:\n        return 1\n    return 2\n\n# Directory routing (sketch): cache first, then authoritative lookup.\n# directory = {\"tenant:acme\": 5, \"tenant:globex\": 2}\n# def directory_shard(tenant: str, cache, store) -> int:\n#     sid = cache.get(tenant)\n#     if sid is None:\n#         sid = store.lookup(tenant)  # critical-path dependency\n#         cache.set(tenant, sid, ttl=60)\n#     return sid"
+    },
+    {
+      "type": "mermaid",
+      "title": "Resharding without downtime",
+      "caption": "Moves must be online: backfill, double-write, verify, then flip.",
+      "code": "flowchart LR\n  A[Serve from Shard 0] --> B[Backfill range to Shard 3]\n  B --> C[Double-write live updates]\n  C --> D[Verify checksums]\n  D --> E[Flip directory / map]\n  E --> F[Drain old range]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from scale math, not buzzwords",
+          "text": "State writes/sec, storage GB/month, and retention. Say: single primary caps at X writes and Y TB, replicas do not add writes, so sharding is forced at Z. This justifies the complexity instead of assuming it."
+        },
+        {
+          "title": "Propose the shard key and defend it",
+          "text": "Nominate one key (usually `user_id` or `tenant_id`), show its cardinality, access pattern, and co-location win. Explicitly reject one alternative: why not `order_id` (scatters user queries) or `country` (low cardinality hotspot)."
+        },
+        {
+          "title": "Pick one strategy and name the sacrifice",
+          "text": "Hash for even spread, range for scans, directory for tenant control, geo for residency. Finish the sentence: we gain ___ but range queries / rebalancing / directory availability now costs ___."
+        },
+        {
+          "title": "Kill cross-shard illusions",
+          "text": "Declare: no cross-shard transactions, no joins on non-key columns. Show the workaround: denormalization, per-shard outbox + saga, async search index. Interviewers promote candidates who volunteer constraints."
+        },
+        {
+          "title": "Close with resharding and ops",
+          "text": "Describe split/move: monitors on size/QPS, backfill + double-write + verify + flip, per-shard backups and schema rollout. Mention celebrity keys and scatter limits. That is senior-level completeness."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail candidates"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Sharding and partitioning are identical** — partitioning lives inside one engine; sharding adds independent primaries and a router. Conflating them hides the operational cost.",
+        "**Sharding speeds up every query** — it speeds up routed point queries. Queries missing the shard key get slower due to fan-out and merge.",
+        "**More shards always means more speed** — each extra shard adds connections, metadata, and scatter cost. Oversharding increases tail latency and ops load.",
+        "**Hashing eliminates hotspots** — it eliminates distribution skew, not popularity skew. One viral key still melts its shard.",
+        "**Replicas are an alternative to sharding** — replicas scale reads and durability, never write throughput or total storage. You need both at scale.",
+        "**Auto-sharding means no design** — managed systems still force a shard key choice, and a bad key cannot be fixed without a full data move."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to avoid it"
+    },
+    {
+      "type": "table",
+      "caption": "Use sharding as a last resort, not a default.",
+      "headers": [
+        "Use sharding when",
+        "Avoid it when",
+        "Do this instead"
+      ],
+      "rows": [
+        [
+          "Single primary exceeds write IOPS / storage despite tuning",
+          "Reads are the bottleneck, writes fit",
+          "Add read replicas + cache; keep one primary"
+        ],
+        [
+          "Dataset exceeds practical single-node size / backup window",
+          "Dataset fits with headroom for 2-3 years",
+          "Scale vertically; partition tables locally"
+        ],
+        [
+          "Access is naturally key-partitionable (user, tenant, device)",
+          "Core queries join across keys globally",
+          "Keep relational core; offload analytics to warehouse"
+        ],
+        [
+          "Compliance or latency mandates region-pinned writes",
+          "Only need regional reads",
+          "Serve reads from CDN / replicas, keep single write region"
+        ],
+        [
+          "You can fund N× ops: backups, migrations, resharding",
+          "Team cannot run resharding drills",
+          "Stay unsharded; shard only the one hot table later"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Shard by the high-cardinality key your hottest point queries already carry, route every request to exactly one shard, and accept that everything without that key becomes a scatter you must design away.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:26:01.411Z",
+    "problems": []
+  }
+}

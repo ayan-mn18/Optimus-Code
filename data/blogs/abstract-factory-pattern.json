@@ -1,0 +1,304 @@
+{
+  "slug": "abstract-factory-pattern",
+  "title": "Abstract Factory Pattern",
+  "summary": "Abstract Factory enforces compatibility across families of related objects by making the client depend only on abstract products and a single factory interface.",
+  "kind": "LLD",
+  "problemSlug": "abstract-factory-pattern-35-75",
+  "topic": "Creational Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "🏭",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Creational-Patterns",
+    "Abstract-Factory"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Abstract Factory - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/abstract-factory",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Abstract Factory Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/abstract-factory-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Abstract Factory Design Pattern: The Ultimate Guide for Beginners",
+      "url": "https://medium.com/@kalanamalshan98/abstract-factory-design-pattern-the-ultimate-guide-for-beginners-4b0f97694b00",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Abstract Factory is a compatibility constraint disguised as a creation pattern.** You do not use it to avoid `new`. You use it to make mismatched combinations — Light button with Dark checkbox, Victorian chair with Modern sofa, AWS queue with Azure blob — **unrepresentable** in client code. One factory instance equals one consistent family. If you do not have a cross-product consistency rule to enforce, you do not need this pattern."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Abstract Factory defines two layers of abstraction. First, one interface per **product role** in the family: `Button`, `Checkbox`, or `Chair`, `Sofa`. Second, one interface for the **family itself**: `GuiFactory` with methods `createButton()` and `createCheckbox()`, or `FurnitureFactory` with `createChair()` and `createSofa()`. Each concrete factory — `DarkThemeFactory`, `VictorianFactory` — implements the family interface and returns only products from its own variant. Client code holds a reference to the abstract factory and the abstract products, never to `DarkButton` or `VictorianChair` directly. The reason for this indirection is control of the variation point: the choice of family happens once, at the composition root, and every object created downstream inherits that choice without further conditionals."
+    },
+    {
+      "type": "paragraph",
+      "text": "The phrase **factory of factories** confuses more than it clarifies. There is no runtime hierarchy of factories producing factories. There is one factory interface with multiple creation methods, and several implementations that differ in which product variants they instantiate. Think of it as **one coherent kit with swappable kits**: the application asks for a kit, the kit hands out parts that fit each other, and the application never learns which vendor supplied the kit. The trade-off is set at that moment: you gain freedom to swap entire families with a single assignment, and you pay by freezing the set of product roles that a family can supply."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Four participants carry the whole design. **Abstract products** declare what the client can do — `render()`, `sitOn()`, `send()` — without exposing variant behaviour. **Concrete products** implement one variant of one role. **Abstract factory** declares one creation method per role and returns abstract product types. **Concrete factories** bind one variant across every role. The client receives a concrete factory typed as the abstract factory, typically via constructor injection, and calls its creation methods to assemble a screen, an order, or a cloud resource graph. Because every product arrives from the same factory instance, mixing variants requires deliberate downcasting or a second factory, both of which are visible and reviewable. That is the enforcement mechanism: consistency by construction, not by convention or code review."
+    },
+    {
+      "type": "mermaid",
+      "title": "Abstract Factory structure",
+      "caption": "One factory instance supplies every product role, so the client cannot mix variants without trying.",
+      "code": "classDiagram\n    class GUIFactory {\n        <<interface>>\n        +createButton() Button\n        +createCheckbox() Checkbox\n    }\n    class LightFactory {\n        +createButton() Button\n        +createCheckbox() Checkbox\n    }\n    class DarkFactory {\n        +createButton() Button\n        +createCheckbox() Checkbox\n    }\n    class Button {\n        <<interface>>\n        +render()\n    }\n    class LightButton {\n        +render()\n    }\n    class DarkButton {\n        +render()\n    }\n    class Checkbox {\n        <<interface>>\n        +toggle()\n    }\n    class LightCheckbox {\n        +toggle()\n    }\n    class DarkCheckbox {\n        +toggle()\n    }\n    class Client {\n        -factory GUIFactory\n        +buildUI()\n    }\n    GUIFactory <|.. LightFactory\n    GUIFactory <|.. DarkFactory\n    Button <|.. LightButton\n    Button <|.. DarkButton\n    Checkbox <|.. LightCheckbox\n    Checkbox <|.. DarkCheckbox\n    LightFactory ..> LightButton : creates\n    LightFactory ..> LightCheckbox : creates\n    DarkFactory ..> DarkButton : creates\n    DarkFactory ..> DarkCheckbox : creates\n    Client --> GUIFactory : uses\n    Client --> Button : uses\n    Client --> Checkbox : uses"
+    },
+    {
+      "type": "paragraph",
+      "text": "Follow the object graph at runtime. Startup code reads configuration — theme preference, deployment target, tenant tier — and instantiates exactly one concrete factory. That instance is injected into every client that builds UI, provisions infrastructure, or assembles documents. When the client calls `factory.createButton()` and `factory.createCheckbox()`, dynamic dispatch selects the matching variant pair. Adding a third theme later means writing a third factory and its product classes; no client changes. Adding a fourth widget type means touching the abstract factory interface and every existing concrete factory, which is deliberately expensive. The pattern is optimised for **adding families**, not for adding product roles. Choose it only when the first axis dominates your roadmap."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Canonical implementation"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "GuiKit.java",
+      "code": "// Abstract products: one interface per role.\ninterface Button { void render(); }\ninterface Checkbox { void toggle(); }\n\n// Abstract factory: one creation method per role.\ninterface GuiFactory {\n    Button createButton();\n    Checkbox createCheckbox();\n}\n\n// One concrete family. Products here share theme tokens,\n// focus behaviour, and accessibility contracts.\nfinal class LightButton implements Button {\n    public void render() { System.out.println(\"light button\"); }\n}\nfinal class LightCheckbox implements Checkbox {\n    public void toggle() { System.out.println(\"light toggle\"); }\n}\nfinal class LightFactory implements GuiFactory {\n    public Button createButton() { return new LightButton(); }\n    public Checkbox createCheckbox() { return new LightCheckbox(); }\n}\n\nfinal class DarkButton implements Button {\n    public void render() { System.out.println(\"dark button\"); }\n}\nfinal class DarkCheckbox implements Checkbox {\n    public void toggle() { System.out.println(\"dark toggle\"); }\n}\nfinal class DarkFactory implements GuiFactory {\n    public Button createButton() { return new DarkButton(); }\n    public Checkbox createCheckbox() { return new DarkCheckbox(); }\n}\n\n// Client depends only on abstractions. No instanceof, no theme flag.\nfinal class SettingsScreen {\n    private final GuiFactory factory;\n    SettingsScreen(GuiFactory factory) { this.factory = factory; }\n    void build() {\n        Button b = factory.createButton();\n        Checkbox c = factory.createCheckbox();\n        b.render();\n        c.toggle();\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this exact shape matters: the client constructor takes `GuiFactory`, not a string or enum. That forces the branching decision — which theme, which vendor, which cloud — out of the screen code and into startup wiring. Inside `build()` there is no `if (dark)` check, so there is no place to accidentally pair a dark button with a light checkbox. The cost is visible too: each product role is a separate interface with its own lifecycle, and each family duplicates the factory boilerplate. That duplication is intentional isolation. If `DarkButton` needs an extra constructor argument such as a contrast palette, only `DarkFactory` changes; `SettingsScreen` and `LightFactory` are untouched. You are trading file count for blast radius."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Abstract Factory vs its neighbours"
+    },
+    {
+      "type": "table",
+      "caption": "Pick by what varies: one product, one family, or one assembly sequence.",
+      "headers": [
+        "Pattern",
+        "Answers",
+        "Use when"
+      ],
+      "rows": [
+        [
+          "Factory Method",
+          "Which class for one product role?",
+          "One product varies and subclasses decide the concrete type"
+        ],
+        [
+          "Abstract Factory",
+          "Which consistent set across several roles?",
+          "Multiple roles must vary together and stay compatible"
+        ],
+        [
+          "Builder",
+          "In what order to assemble one complex object?",
+          "Construction has steps, optional parts, or validation"
+        ],
+        [
+          "Simple factory / static creator",
+          "How to hide one conditional `new`?",
+          "Single call site needs a shortcut, no family constraint"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers probe this boundary hard. Factory Method gives you one creation method, usually overridden by subclasses; Abstract Factory gives you a **coherent set** of creation methods bound to one variant. If your example has only one product — just a button, just a parser — you have described Factory Method and overbuilt it. If the construction involves step ordering or partial configuration, that is Builder territory and a factory of any kind will leave validation scattered. Name the distinction explicitly: Factory Method varies one product along an inheritance axis, Abstract Factory varies several products along a family axis, and the two can compose — a concrete factory often implements each creation method as a Factory Method internally."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every benefit in this pattern has a matching invoice.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Family consistency by construction",
+          "Rigid product-role interface",
+          "Adding createTable() breaks every factory; plan the role set up front"
+        ],
+        [
+          "Single swap point for a whole theme or platform",
+          "Factory and product class explosion",
+          "N families x M products classes; small domains drown in boilerplate"
+        ],
+        [
+          "Client closed to family additions",
+          "Client open to nothing else",
+          "New variants are cheap, new roles are expensive — opposite of Strategy"
+        ],
+        [
+          "Testability via fake factories",
+          "Harder navigation and debugging",
+          "Stack traces point at interfaces; you must know which factory was injected"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The central trade-off is **which extension axis you optimise**. Abstract Factory makes the family axis cheap and the product axis costly. That is the right call for UI kits, cross-cloud resource sets, or document renderers where new themes, vendors, or output formats arrive regularly but the set of widgets, resources, or elements is stable. It is the wrong call for rapidly evolving domains where new operations appear every sprint — each addition ripples across the abstract factory and all concrete factories, producing the exact shotgun surgery the pattern was meant to prevent. When reviewers complain about interface bloat, they are usually observing a domain where the product set was never stable enough to justify the pattern."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The most common failure is leakage: a concrete type escapes the factory boundary and client code starts downcasting to reach a variant-specific method such as `setDarkContrast()`. Once one cast appears, the family guarantee is gone and the next developer adds a second cast for a different variant, recreating the conditional logic the factory removed. The second failure is lifecycle mismatch. Factories are typically stateless and cheap to share, but products often are not — a database connection, a rendered widget tree, a file handle. Sharing a single factory as a singleton is safe; caching and reusing its products across threads or requests is not, and produces stale state, cross-tenant leaks, or race conditions. The third failure is configuration drift: two subsystems each resolve their own factory from different config sources, so half the application renders light and half renders dark, or half provisions against one cloud API version and half against another."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`ClassCastException` or `instanceof` checks in client code — symptom that a product interface is missing an operation and callers are reaching around it.",
+        "Mixed-variant rendering or mixed-vendor resource graphs in the same request — symptom that two factory instances are active where one was assumed.",
+        "Every new product role touches a dozen files — symptom the role set was unstable and the pattern is now a tax rather than a guardrail.",
+        "Factory returning shared mutable products instead of fresh instances — symptom of confusing factory lifetime with product lifetime, shows up as flaky tests and cross-request contamination.",
+        "Startup `switch` on strings duplicated in five places to pick a factory — symptom the selection logic was never centralised in a provider or dependency-injection module."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The extension trap",
+      "text": "Adding a **new family** is one new class. Adding a **new product role** rewrites the abstract factory plus every concrete factory plus every fake used in tests. Before adopting the pattern, ask which change your roadmap actually contains. Teams that guess wrong spend months editing ten factories to add one method."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Wiring it without if-else soup"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "FactoryProvider.java",
+      "code": "final class FactoryProvider {\n    private final java.util.Map<String, GuiFactory> byName = java.util.Map.of(\n        \"light\", new LightFactory(),\n        \"dark\", new DarkFactory()\n    );\n    GuiFactory resolve(String theme) {\n        GuiFactory f = byName.get(theme.toLowerCase());\n        if (f == null) throw new IllegalArgumentException(\"unknown theme: \" + theme);\n        return f;\n    }\n}\n// Composition root: the ONLY place that knows concrete factory classes.\n// GuiFactory f = new FactoryProvider().resolve(config.getTheme());\n// SettingsScreen screen = new SettingsScreen(f);"
+    },
+    {
+      "type": "paragraph",
+      "text": "The selection conditional has to live somewhere, and the design goal is to confine it to exactly one place. A map-backed provider or an injection module owns the string-to-factory mapping; everything downstream receives an already-resolved `GuiFactory`. This is why Abstract Factory pairs naturally with dependency injection: the container becomes the provider, and tests substitute a stub factory returning in-memory fakes. Never inject the theme string into business code and let each class resolve its own factory — that recreates the coupling the pattern removes and guarantees the drift failure described above. If the family must change mid-request, such as per-tenant theming, scope the factory to the request rather than making it a global singleton."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Model the roles, not the variants",
+          "text": "Start by naming the product interfaces and the factory interface on the whiteboard. Say what each operation promises. Do not start with Light and Dark classes — starting with concretes signals you think in conditionals."
+        },
+        {
+          "title": "Show the swap",
+          "text": "Demonstrate the single assignment that changes families: construct the client once with LightFactory, once with DarkFactory. Interviewers grade this moment — it proves the client is closed to family changes."
+        },
+        {
+          "title": "Take the follow-up: add a product",
+          "text": "They will ask for a third widget or a new cloud resource. Walk through every file that changes and name the cost honestly. Then propose the mitigation: default methods, a separate factory, or admitting the pattern no longer fits."
+        },
+        {
+          "title": "Take the second follow-up: selection and lifetime",
+          "text": "Explain where the factory comes from and whether products are fresh, pooled, or shared. This separates candidates who memorised the diagram from those who have operated it."
+        },
+        {
+          "title": "Contrast with Factory Method",
+          "text": "Close by stating when you would downgrade to Factory Method or a simple creator. Choosing the smaller tool when no compatibility rule exists scores more than reciting benefits. "
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "It removes conditionals — it **relocates** them to one provider. Claiming zero `if` statements invites the interviewer to ask where theme selection happens.",
+        "It is the same as Factory Method with more methods — wrong axis. Factory Method varies one product via inheritance; Abstract Factory binds several products to one family instance.",
+        "One factory per product — inverted. One factory supplies **all roles** in a family; one factory per product is just a set of Factory Methods with no consistency promise.",
+        "More interfaces always means looser coupling — each interface is a commitment. A five-method factory interface couples every family to every role; small families may be better served by parameters or composition.",
+        "Singletons are required — factories are usually stateless and shareable, but products rarely are. Scope products to their use; scope the factory to the configuration that selects it."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Apply only when compatibility across roles is the dominant constraint.",
+      "headers": [
+        "Use it when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Client must consume a compatible set: theme kits, platform SDKs, OS-specific widgets, cloud-vendor resource bundles",
+          "Only one product varies — a single creator or Factory Method is less machinery"
+        ],
+        [
+          "Families change more often than roles: new themes, new vendors, new output formats against a stable widget or resource set",
+          "Product roles churn frequently — each addition rewrites every factory"
+        ],
+        [
+          "You need to swap an entire environment in tests with stub families",
+          "Variant behaviour differs by parameters, not by type — pass configuration instead of building parallel hierarchies"
+        ],
+        [
+          "Construction rules couple products: the sofa must match the chair, the queue client must match the blob client version",
+          "Team or codebase is small enough that a well-named conditional is clearer than twelve new types"
+        ]
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "\"Give the client one factory interface that hands out every related part, inject one concrete factory per environment, and the client stays consistent across families without ever naming a concrete product.\""
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:54:38.649Z",
+    "problems": []
+  }
+}

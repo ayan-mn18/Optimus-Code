@@ -1,0 +1,271 @@
+{
+  "slug": "migration-across-regions",
+  "title": "Migration across regions",
+  "summary": "Online database migration across regions without losing writes or forking history: backfill, tail, fence, flip, and rollback.",
+  "kind": "HLD",
+  "problemSlug": "migration-across-regions-92-205",
+  "topic": "Databases",
+  "difficulty": "Hard",
+  "coverEmoji": "🌍",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "Migration"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Migration Patterns Between Regions in the U.S. – 2024 Study - SmartAsset",
+      "url": "https://smartasset.com/data-studies/migration-patterns-between-regions-2024",
+      "source": "smartasset.com",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding Global Trends in South-South Migration",
+      "url": "https://dcid.sanford.duke.edu/project/understanding-global-trends-south-south-migration/",
+      "source": "dcid.sanford.duke.edu",
+      "kind": "article"
+    },
+    {
+      "title": "Fundamentals of Migration - IOM",
+      "url": "https://www.iom.int/fundamentals-migration",
+      "source": "iom.int",
+      "kind": "article"
+    },
+    {
+      "title": "Population & Migration | Economic Research Service - ERS.USDA.gov",
+      "url": "https://www.ers.usda.gov/topics/rural-economy-population/population-migration",
+      "source": "ers.usda.gov",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Migration is not copying data. It is **moving authority** from region S to region D without losing an acknowledged write and without ever having two primaries. If you can answer **where is the single source of truth at every second**, you pass. If you cannot, you built split-brain with extra steps."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Migration across regions is the online transfer of an authoritative dataset and its write traffic from a source region to a destination region under latency, failure, and consistency constraints. It has five parts: **bulk backfill** of the existing state, **change capture** of everything written during the backfill, **verification** that S and D agree, **cutover** where writes are fenced on S and enabled on D, and **rollback** until the commit point passes. Done means three measurable properties: no acknowledged write is lost, every read after cutover observes all writes acknowledged before cutover, and you can abort back to S with bounded loss until you deliberately destroy S."
+    },
+    {
+      "type": "paragraph",
+      "text": "This is different from backup-and-restore, and different from failover. Backup-and-restore accepts downtime and data loss bounded by backup age — the trade-off is simplicity for unavailability. Failover accepts possible loss because the old primary is assumed dead. Migration does not have that excuse: **both regions are alive**, the network between them is slow and can partition, and clients keep writing. That is why the design centers on replication lag convergence, fencing, and traffic control, not on how fast you can copy bytes. Throughput matters, but correctness during the flip is what gets judged."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: backfill, then tail, then flip"
+    },
+    {
+      "type": "paragraph",
+      "text": "You never migrate by stopping the world and copying. You start a replica in D from a consistent snapshot with a log position, then stream the source log forward while S keeps serving. In practice that means: provision D with matching instance shape and schema version, restore snapshot, attach logical or physical replication, and let D tail S. Reads can be shadowed to D early for verification, but writes stay on S. Only when lag is durably small, checksums agree, and D has passed load and correctness probes do you enter cutover: quiesce or fence writes on S, drain the last log records, promote D, bump a fencing epoch so stale writers to S are rejected, then shift traffic. The trade-off here is explicit: staying in replication mode longer costs cross-region transfer and operational patience, but it buys a short, predictable cutover. Rushing cutover buys speed and pays in lost writes."
+    },
+    {
+      "type": "mermaid",
+      "title": "Region migration pipeline",
+      "caption": "Snapshot, tail, gate, fence, promote. Authority has one owner at every step.",
+      "code": "flowchart TD\n    W[Writes in Source] --> P[Primary S]\n    P -->|snapshot plus WAL stream| R[Replica D]\n    R --> M[Lag and checksum monitor]\n    M -->|lag above threshold| P\n    M -->|lag below threshold| G[Cutover gate]\n    G -->|fence writes on S| F[Fencing token bump]\n    F -->|promote| N[New Primary D]\n    N --> T[Traffic shifted to D]\n    T --> O[Old S kept read-only for rollback]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The critical detail is how you close the tail. Asynchronous replication gives you low write latency on S — the trade-off is that D is behind by a variable lag, so a naive promote loses the tail. The standard answer is a two-gear approach: run async during the long backfill when lag does not matter, then tighten before cutover. Either briefly switch to synchronous replication for the final seconds, or stop accepting new writes on S, wait until `replay_lag = 0`, then promote. The first option costs a latency spike on S during the sync window. The second costs a short write freeze, typically seconds to a minute. Pick one and state it. Interviewers fail candidates who say “wait for lag to reach zero” while still accepting writes at full rate — under sustained write load, that condition never holds and cutover never happens."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Strategies: pick your downtime"
+    },
+    {
+      "type": "table",
+      "caption": "Four migration shapes. Only one is the sane default for large state.",
+      "headers": [
+        "Strategy",
+        "How cutover works",
+        "Downtime and loss",
+        "Trade-off, stated plainly"
+      ],
+      "rows": [
+        [
+          "Dump and restore",
+          "Stop writes on S, dump, copy, load into D, switch traffic",
+          "Minutes to hours downtime, loss bounded by freeze discipline",
+          "Simple to reason about but unacceptable for anything serving live writes; you trade availability for an afternoon of simplicity"
+        ],
+        [
+          "Async replica plus promote",
+          "Snapshot plus log tail, fence S, drain, promote D",
+          "Seconds of write freeze, zero loss if fenced correctly",
+          "Costs cross-region bandwidth and weeks of monitoring; buys minimal downtime — the default you should defend"
+        ],
+        [
+          "Dual-write from app",
+          "App writes to S and D, async reconciler fixes divergence",
+          "No freeze but unbounded reconciliation pain",
+          "Trades a clean cutover for application complexity and conflict resolution; only justified when S and D cannot replicate natively"
+        ],
+        [
+          "Proxy with shadow reads",
+          "Smart proxy routes writes to S, mirrors reads to D and compares",
+          "Near-zero user impact during verification",
+          "Trades extra proxy latency and engineering for early signal; excellent as a verification harness, terrible as the migration mechanism itself"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Default to **async replica plus promote** and say why: it keeps the database as the conflict resolver instead of pushing conflict resolution into your application. Dual-write looks attractive because it promises zero downtime, but the trade-off is brutal — you now own ordering, idempotency, and repair for every write path, and every bug creates divergent histories that no checksum will cleanly merge. Use dual-write only when the engines differ so much that native replication is impossible, for example a storage-engine change bundled with the region move. Even then, scope it to a narrow table set and put a reconciler with deterministic last-writer rules behind it. Otherwise you traded a solved infrastructure problem for an unsolved application problem."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Region migrations fail at the boundaries: the log, the clock, the schema, and the traffic layer. The bytes usually copy fine. What breaks is the assumption that D is caught up, that S is truly fenced, or that clients actually moved. Every failure below has the same root cause — two writers or two readers of truth — and every one is preventable with a gate that refuses to proceed. If your design has no explicit gate, you do not have a migration plan, you have a hope."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Lag never converges, cutover slips forever.** Symptom: `replay_lag` oscillates around seconds, promotion checklist stays red during peak. Cause: write rate exceeds cross-region bandwidth or D is undersized. You see growing replica delay dashboards and throttled replication threads. Fix is capacity or throttling writes, not retrying cutover.",
+        "**Split-brain after incomplete fencing.** Symptom: orders or balances diverge; both S and D accept writes for minutes. Cause: you flipped DNS or config but a stale client, queue consumer, or cron still holds a connection to S. You see monotonic IDs or timestamps interleaved from both regions. Fix is fencing tokens and firewalling S writes, not just routing.",
+        "**Schema or sequence divergence.** Symptom: replication breaks on `duplicate key` or D generates colliding IDs after promote. Cause: DDL applied only on S, or auto-increment offsets identical in both regions. You see replication worker errors and gaps in ID streams. Fix is schema-version gate and distinct sequence ranges during coexistence.",
+        "**Traffic never actually moves.** Symptom: cutover declared green but 10% of reads still hit S hours later. Cause: long DNS TTL, sticky connection pools, or edge cache pinned to S. You see cross-region read latency bimodal and S connection counts refusing to drop to zero. Fix is short TTLs before migration, connection draining, and a routing layer you control.",
+        "**Silent data mismatch.** Symptom: row counts match but balances differ by cents. Cause: non-deterministic functions, different collations, timezone or float handling between versions. You see checksum sampler firing on a small fraction of keys. Fix is logical checksums per range plus shadow-read comparison before cutover, not `SELECT COUNT(*)`."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The cutover gate: code that decides"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not let a human eyeball lag and call it good. The gate is a program that checks lag, schema version, error rate, and traffic drain, and only then fences and promotes. The trade-off is deliberate friction: automation slows the final minute but removes the most common cause of loss, which is optimistic promotion. Keep S alive read-only after promote for at least one retention window so rollback is a traffic flip, not a second migration."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cutover_gate.py",
+      "code": "def ready_for_cutover(src, dst, cfg) -> tuple[bool, str]:\n    lag = dst.replay_lag_seconds()\n    if lag > cfg.max_lag_seconds:  # e.g. 2.0\n        return False, f\"lag too high: {lag:.1f}s\"\n    if src.schema_version() != dst.schema_version():\n        return False, \"schema version mismatch\"\n    if dst.replication_errors() > 0:\n        return False, \"replication worker has errors\"\n    if shadow_mismatch_rate() > cfg.max_mismatch:\n        return False, \"shadow read mismatch too high\"\n    if src.open_write_txns() > cfg.max_open_txns:\n        return False, \"too many open write txns to drain\"\n    return True, \"ok\"\n\ndef cutover(src, dst, cfg):\n    ok, reason = ready_for_cutover(src, dst, cfg)\n    if not ok:\n        raise GateClosed(reason)\n    epoch = src.fence_writes()  # reject writes with old token\n    src.wait_for_drain(timeout_s=cfg.drain_timeout)\n    dst.wait_for_replay(lag_seconds=0, timeout_s=cfg.replay_timeout)\n    dst.promote(expected_epoch=epoch + 1)\n    # Keep src read-only; do NOT delete for cfg.rollback_window_hours"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Consistency during migration"
+    },
+    {
+      "type": "mermaid",
+      "title": "Verification without risking writes",
+      "caption": "Writes stay on S. Reads are mirrored to D and compared until mismatch rate is negligible.",
+      "code": "graph LR\n    C[Client] --> X[Routing layer]\n    X -->|writes| S[Source Primary]\n    X -->|real reads| S\n    X -->|shadow reads| D[Destination Replica]\n    S --> V[Comparator]\n    D --> V\n    V -->|mismatch rate| G[Go No-Go]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Until promotion, S is the linearizable owner and D is at best causally behind — the trade-off of async tailing is stale reads from D, which is why D must not serve real traffic before cutover. Route all writes to S, serve real reads from S, and send sampled or shadow reads to D for comparison only. After fencing, invert it: D becomes the owner, S becomes read-only history. Enforce ownership with a monotonically increasing fencing epoch stored alongside the data, not just in the proxy config. Any writer presenting a stale epoch gets rejected even if it somehow reaches the old primary. Without that token, a network partition during the flip gives you two acceptors and a merge you cannot perform. State this explicitly in the interview: routing prevents split-brain in the happy path, fencing prevents it in the partitioned path."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Pin the constraints",
+          "text": "Ask dataset size, write rate, acceptable downtime, acceptable loss, engine and version on both ends, and whether rollback must be instant. A 500 GB low-write Postgres with a 30-minute window is dump-and-restore. A 50 TB high-write store with seconds of freeze is replica-plus-promote. Say which one you are solving."
+        },
+        {
+          "title": "Propose the boring baseline",
+          "text": "Snapshot plus log tail, lag monitor, fenced promote, traffic shift, keep S read-only. Name the trade-off: bandwidth and time for safety. Do not open with dual-write."
+        },
+        {
+          "title": "Go deep on the tail and the flip",
+          "text": "Explain log position tracking, why lag may never converge, sync-vs-freeze for the last mile, fencing tokens, sequence offsets, and DNS versus proxy routing. This is where seniority is graded."
+        },
+        {
+          "title": "Prove it matches",
+          "text": "Describe range checksums, shadow reads, and the automated gate that blocks promotion. Explain what mismatch rate you tolerate and what you do when it fires — halt, not proceed."
+        },
+        {
+          "title": "Close with rollback and cleanup",
+          "text": "State the rollback window, what destroys S and when, and how you validate D under full production load before decommissioning. No cleanup plan means no migration plan."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**“Copy the data, then switch DNS.”** DNS is not fencing. Long TTLs, pooled connections, and background workers ignore it. You switched the sign on the door while writers still use the back entrance.",
+        "**“Row counts matched, so data matches.”** Counts hide swapped, truncated, and mistyped values. Compare checksums over ordered key ranges and sampled full rows, or you verified nothing.",
+        "**“Synchronous replication means zero risk.”** It means zero lag at the cost of write latency tied to inter-region round trips and availability tied to both regions. A partition now stalls writes instead of losing them — a different trade-off, not an absence of trade-off.",
+        "**“Dual-write avoids replication lag.”** It replaces lag with divergence. Two primaries accepting independent writes need conflict resolution for every key, and last-writer-wins silently discards someone’s acknowledged write.",
+        "**“Rollback means re-migrating.”** If you delete or rewrote S at cutover, yes, and that is the mistake. Keep S fenced and read-only for a full business cycle so rollback is a routing change plus a short tail replay."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to migrate and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Migration is a heavy tool. Use it for durable placement, not transient problems.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Permanent region exit, compliance residency, or latency gravity shift",
+          "Migrate",
+          "Placement is durable; the one-time bandwidth and verification cost amortizes over years of serving"
+        ],
+        [
+          "Active-active serving from both regions indefinitely",
+          "Do not migrate — redesign",
+          "That is multi-region ownership with conflict handling, not a move; a migration gate cannot solve permanent dual-write"
+        ],
+        [
+          "Short traffic spike or single incident in S",
+          "Do not migrate",
+          "Failover or shed load instead; migration trades weeks of risk for a problem that lasts hours"
+        ],
+        [
+          "Engine upgrade bundled with region move",
+          "Split them",
+          "Combining a version change with a placement change doubles the unknown; migrate identical versions first, then upgrade in place"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Backfill D from a snapshot, tail S with log replication, verify with checksums and shadow reads, then **fence S, drain the tail, promote D, and shift traffic** — keeping S read-only until rollback is no longer needed."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:28:34.642Z",
+    "problems": []
+  }
+}

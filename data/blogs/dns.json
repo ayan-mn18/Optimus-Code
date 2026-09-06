@@ -1,0 +1,305 @@
+{
+  "slug": "dns",
+  "title": "DNS",
+  "summary": "DNS as a delegated, cached naming system: how resolution works, why TTL controls everything, and where it breaks.",
+  "kind": "HLD",
+  "problemSlug": "dns-94-209",
+  "topic": "Networking",
+  "difficulty": "Easy",
+  "coverEmoji": "🌐",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "DNS"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Managed DNS trade-offs are really identity and resilience trade-offs",
+      "url": "https://nhimg.org/articles/managed-dns-trade-offs-are-really-identity-and-resilience-trade-offs/",
+      "source": "nhimg.org",
+      "kind": "article"
+    },
+    {
+      "title": "What is DNS? | Learning Center - Cloudflare",
+      "url": "https://www.cloudflare.com/learning/dns/what-is-dns/",
+      "source": "cloudflare.com",
+      "kind": "article"
+    },
+    {
+      "title": "Domain Name System (DNS) - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/computer-networks/domain-name-system-dns-in-application-layer/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**DNS is not a directory. It is a globally delegated, aggressively cached mapping with weak consistency.** Every record has an owner, every copy has an expiry, and every lookup trades freshness for speed. If you remember only one knob, remember `TTL`: it decides how fast you can change your mind and how hard you will get hit when you are wrong."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What DNS actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "DNS maps stable names like `api.example.com` to volatile facts like `203.0.113.44`, mail exchangers, text policies, and delegation pointers. The namespace is a tree rooted at `.`. Each level delegates a subtree to someone else: root delegates `com` to a TLD operator, `com` delegates `example.com` to whoever owns that domain, and that owner can further delegate `us-east.example.com` to a different set of nameservers. **Why delegation:** no single operator could hold or serve the whole namespace, so authority is partitioned by prefix. **Trade-off:** you get unbounded scale and local autonomy, but you pay in lookup latency and partial failure — a broken delegation anywhere on the path makes the name unresolvable even if the final server is healthy."
+    },
+    {
+      "type": "paragraph",
+      "text": "There are two completely different planes and conflating them is what fails interviews. **Authoritative servers** are the source of truth for a zone; they answer from disk and set the `TTL` on every answer. **Recursive resolvers** do the walking and the caching on behalf of clients; your laptop, your OS, your ISP resolver, `8.8.8.8` and `1.1.1.1` are all caches in front of the truth. **Why the split:** authoritatives can be simple, dumb, and highly available because they never do recursion, while recursives absorb 99% of query load so authoritatives do not melt. **Trade-off:** you get massive read scale for free, but clients never read the truth directly — they read a copy that may be stale by up to `TTL` seconds."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How resolution actually works"
+    },
+    {
+      "type": "mermaid",
+      "title": "Full recursive resolution",
+      "caption": "Stub asks a recursor; recursor walks root to TLD to authoritative, caching every step.",
+      "code": "flowchart TD\n  Stub[Stub resolver in app] --> OSCache[OS and browser cache]\n  OSCache --> Rec[Recursive resolver]\n  Rec --> Root[Root servers]\n  Root --> TLD[TLD servers for com]\n  TLD --> Auth[Authoritative for example.com]\n  Auth --> Rec\n  Rec --> OSCache"
+    },
+    {
+      "type": "paragraph",
+      "text": "A cold lookup for `api.example.com` is a walk down the delegation chain, not a single query. The stub resolver asks the recursive resolver. If the recursor has no cached answer and no cached delegation, it asks a root server, which does not know the answer but returns a referral to the `com` servers. It asks a `com` server, which returns a referral to the `example.com` authoritatives. It finally asks the authoritative and gets the `A` record plus its `TTL`. **Why referrals instead of redirects:** each parent only stores `NS` records for its children, so no parent needs to know the full tree. **Trade-off:** a cold name costs three to four round trips and is slow, but every intermediate referral is also cached, so the second lookup for any `*.example.com` skips straight to the authoritative and the second lookup for the exact name does not leave the recursor at all."
+    },
+    {
+      "type": "paragraph",
+      "text": "Caching happens at four layers and each one lies to you a little differently. Browser caches ignore `TTL` minimums to save time. OS caches in `nscd`, `systemd-resolved`, or the Windows resolver honor `TTL` but are flushed unpredictably. Recursor caches are shared across millions of users and are the reason DNS survives — a popular record with a 300-second `TTL` may be refreshed once while serving a million clients. Authoritative caches do not exist; they always answer fresh. **Why so many layers:** DNS over `UDP` is fast but every cache miss adds wide-area round trips, so each layer cuts tail latency. **Trade-off:** more layers mean lower p99 lookup time and lower authoritative cost, but longer and less predictable propagation when you change a record — your change is live only after the longest cache in the chain expires."
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "filename": "dns-lookup.sh",
+      "code": "# What the recursor actually sees. Note TTL in second column.\n$ dig api.example.com\napi.example.com.  300  IN  A  203.0.113.44\n\n# What the owner actually controls. $TTL is the default lie-duration.\n$ cat example.com.zone\n$TTL 300\n@   IN  SOA ns1.example.com. admin.example.com. ( 2024010101 7200 3600 1209600 300 )\n@   IN  NS  ns1.example.com.\n@   IN  NS  ns2.example.com.\napi IN  A   203.0.113.44\nwww IN  CNAME   api.example.com."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every DNS optimisation buys one property by selling another.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Hierarchical delegation",
+          "Unbounded scale, no central write bottleneck, local control of subtrees",
+          "Multi-round-trip cold lookups; one lame delegation breaks the whole branch"
+        ],
+        [
+          "Aggressive caching with TTL",
+          "Authoritative QPS drops 100-1000x; sub-millisecond repeat lookups",
+          "Weak consistency; changes propagate only after TTL expiry, unpredictable per client"
+        ],
+        [
+          "Low TTL e.g. 30-60s",
+          "Fast failover and traffic steering; safe migrations",
+          "10-50x more authoritative load; higher p99 latency; easier to DDoS your own control plane"
+        ],
+        [
+          "High TTL e.g. 3600-86400s",
+          "Cheap, fast, resilient to authoritative outages",
+          "You cannot steer traffic in an incident; rollback takes hours, not seconds"
+        ],
+        [
+          "UDP first, TCP fallback",
+          "One-packet queries, minimal latency and server state",
+          "Truncation, spoofing, and amplification risk; large DNSSEC answers force TCP retry"
+        ],
+        [
+          "Anycast authoritative",
+          "Global low latency and automatic survival of PoP loss",
+          "Harder debugging, anycast flaps can send users to the wrong region silently"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The `TTL` is the only consistency knob DNS gives you, so choose it by failure mode, not by habit. Use **short `TTL` (30-120s)** on anything you steer during incidents: active-passive failover `A` records, weighted migration records, CDN origins you might drain. You will pay real money and latency for it — expect authoritative query volume to scale roughly as `clients / TTL` — but that is the price of being able to move. Use **long `TTL` (3600s+)** on infrastructure that almost never moves: `NS` records, apex `A` records behind anycast, `TXT` verification strings. **The trap:** teams set a 86400-second `TTL` for performance, then discover during an outage that half the internet will ignore their failover for a full day. Lower the `TTL` *before* you need it — at least one old-`TTL` duration ahead of the migration — or the short `TTL` you just set does nothing for clients holding the old copy."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "DNS rarely returns an error. It returns the wrong answer confidently, or nothing at all, and every dependent system fails differently. In a high-level design review you score points by mapping each failure to its client-visible symptom and its time-to-recovery, because that is what determines whether a DNS choice is safe for failover, payments, or login flows."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Stale record after migration — symptom:** 5% of users hit the old IP for hours after you moved. Cause: long `TTL` cached in third-party recursors you do not control. Recovery is bounded by max old `TTL`, not by your deploy time.",
+        "**Lame delegation — symptom:** intermittent `SERVFAIL` in one region only. Cause: parent `NS` points at a nameserver that is no longer authoritative or no longer answers. Recursors that cached the good path work; cold resolvers fail.",
+        "**NXDOMAIN caching — symptom:** you create the record but new users still get does-not-exist for minutes. Cause: negative caching of the earlier miss per the `SOA` minimum. New names must be pre-created, not created during an incident.",
+        "**CNAME chain blowup — symptom:** p99 connect latency jumps 100-300ms on mobile. Cause: `www -> edge.cdn -> region.cdn -> origin` forces the recursor to resolve three names sequentially. Flatten to one `CNAME` or use provider `ALIAS` at the edge.",
+        "**DNSSEC validation failure — symptom:** domain vanishes only for validating resolvers while `dig +cd` works fine. Cause: expired signatures, broken key rollover, or clock skew. Looks like an outage everywhere except non-validating networks.",
+        "**Resolver overload or spoofing — symptom:** mass timeouts or users landing on the wrong PoP. Cause: `UDP` spoofing, cache poisoning attempt, or recursor throttling your authoritative because your `TTL` is too low and your QPS looks like an attack."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The classic outage",
+      "text": "Team runs on an 86400-second `TTL` for years. During a region outage they flip the `A` record to the standby and declare victory. Monitoring stays red for a day because large ISP resolvers honor the full 86400 seconds. **Rule: TTL is your recovery time.** If you need five-minute failover, you must already be living at a five-minute `TTL` and paying that query cost every day."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Records you must actually know"
+    },
+    {
+      "type": "table",
+      "caption": "The six records that cover 95% of system design questions.",
+      "headers": [
+        "Record",
+        "What it says",
+        "Where it bites you"
+      ],
+      "rows": [
+        [
+          "A / AAAA",
+          "Name to IPv4 / IPv6 address",
+          "The failover record. Low TTL here, or you cannot steer traffic."
+        ],
+        [
+          "CNAME",
+          "Name is an alias for another name",
+          "Needs a second lookup; forbidden at apex; never point a CNAME at another CNAME chain"
+        ],
+        [
+          "NS",
+          "Who is authoritative for this subtree",
+          "Wrong NS at parent or registrar means total invisibility; keep TTL long and stable"
+        ],
+        [
+          "MX",
+          "Where to deliver mail for this domain",
+          "Mail survives CNAME mistakes poorly; priority and fallback ordering matters"
+        ],
+        [
+          "TXT",
+          "Arbitrary text: SPF, DKIM, verification",
+          "Lets you prove ownership; 512-byte UDP limits and multi-string concatenation surprise people"
+        ],
+        [
+          "SOA + SOA MINIMUM",
+          "Zone version, retry timers, negative-cache TTL",
+          "Controls how long misses are cached; too high means new hostnames appear dead"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The interview-relevant distinction is `A` versus `CNAME` versus provider `ALIAS`. Use `A` when you own the IP and want one lookup and full control of `TTL` — database bastions, active-passive VIPs, failover switches. Use `CNAME` when someone else owns the target and may move it — CDN endpoints, managed load balancers, SaaS verification. **Trade-off:** `CNAME` delegates future moves to the target owner but costs an extra resolution and cannot exist at the apex (`example.com` itself) by protocol. That is why providers invented `ALIAS` or `ANAME`: it looks like an `A` to clients but is resolved server-side to a `CNAME` chain. Use it at the apex in front of a CDN or ELB, but know you are now trusting your DNS provider to resolve correctly and to cache sanely."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Managed versus self-hosted authoritative DNS"
+    },
+    {
+      "type": "table",
+      "caption": "Who runs your authoritative servers is an identity and resilience decision.",
+      "headers": [
+        "Approach",
+        "Use it when",
+        "Do not use it when"
+      ],
+      "rows": [
+        [
+          "Managed authoritative (anycast fleet)",
+          "You need global latency, DDoS absorption, and failover automation without running 24/7 DNS on-call",
+          "Record-update API becomes a privileged identity target; compromise means full domain hijack"
+        ],
+        [
+          "Self-hosted BIND / CoreDNS",
+          "You need split-horizon views, custom logic, or air-gapped resolution inside a VPC",
+          "You cannot absorb volumetric DDoS or match anycast latency; every patch and key roll is your outage"
+        ],
+        [
+          "Hybrid: managed public + self-hosted internal",
+          "Public names need resilience, internal names need speed and private views",
+          "You now run two sources of truth; zone-transfer drift causes internal-external inconsistency"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Default to managed anycast for anything public. Running authoritative DNS well means global anycast, DNSSEC signing and rollover, rate-limiting, and absorbing reflection attacks — undifferentiated heavy lifting with catastrophic blast radius if you get it wrong. Self-host only the internal split-horizon where the trade-off inverts: inside a VPC, a local CoreDNS with 5-second `TTL` views beats a public round trip, and the failure domain is contained to one cluster. **Trade-off to state out loud:** outsourcing resilience to a provider centralises risk in the provider API credentials, so you must treat DNS write access like production database access — scoped tokens, MFA, audit logs, and tested registrar lock — or the resilience you bought becomes the hijack path you gifted."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the planes",
+          "text": "Draw stub, recursor cache, root, TLD, authoritative. Say which boxes you control in this design and which are shared caches. Interviewers pass candidates who separate truth from cache in the first minute."
+        },
+        {
+          "title": "Pick TTLs with reasons",
+          "text": "State a number for every record you introduce: 60s for failover A, 3600s+ for NS, short during migration then raise after. Tie each TTL to recovery time and query cost explicitly."
+        },
+        {
+          "title": "Handle the follow-ups",
+          "text": "Expect: how do you migrate regions with zero downtime? How do you do blue-green with DNS? How do you survive authoritative failure? Answer with pre-lowered TTL, weighted records, and health-checked DNS failover — and admit DNS alone cannot drain long-lived TCP connections."
+        },
+        {
+          "title": "Call out what DNS cannot do",
+          "text": "DNS is eventually consistent and client-polled. It cannot guarantee cutover time, cannot load-balance precisely, and cannot revoke a cached lie. If the interviewer pushes for instant failover, pivot to anycast IP or client-side retry with multiple A records, not shorter TTL fantasies."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**DNS is like a phonebook lookup** — no, it is a delegated walk with referrals plus shared caches. There is no central table to query.",
+        "**Changing a record is instant** — no, change visibility is bounded by every cache that already holds the old value for up to old `TTL`. You deploy intent instantly; clients converge slowly.",
+        "**DNS does load balancing** — only crudely, via round-robin `A` sets or short-TTL steering. Clients pin answers, ignore weights, and cache unevenly. Real balancing needs anycast or L4/L7 proxies.",
+        "**CNAME can go at the apex** — protocol forbids `CNAME` alongside `SOA` and `NS` at `example.com`. You need provider `ALIAS` or an `A` record there.",
+        "**TTL=0 means no caching** — many recursors enforce a floor and many browsers ignore it. Design for at-least-seconds of stickiness even with `TTL 0`.",
+        "**DNSSEC gives you privacy or availability** — it gives integrity only, at the cost of larger answers, TCP fallback, and brittle rollovers. Encryption needs DoT or DoH; availability needs anycast and sane TTLs."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Apex trap",
+      "text": "Putting a `CNAME` at `example.com` to point at a CDN looks right and fails validation or silently breaks `MX`. Apex must be `A` / `AAAA` or provider `ALIAS`. Say this unprompted and you signal production experience."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**DNS is a delegated hierarchy of truth fronted by TTL-bounded shared caches, so design it by choosing TTLs from your recovery budget and never use it for promises it cannot keep like instant cutover or precise balancing.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:07:59.892Z",
+    "problems": []
+  }
+}

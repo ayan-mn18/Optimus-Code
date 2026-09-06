@@ -1,0 +1,310 @@
+{
+  "slug": "memento-design-pattern",
+  "title": "Memento Design Pattern",
+  "summary": "Memento saves and restores private state without breaking encapsulation — how undo works, why it costs memory, and where it breaks.",
+  "kind": "LLD",
+  "problemSlug": "memento-design-pattern-36-76",
+  "topic": "Behavioral Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": " F4BE",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Behavioral Design Patterns",
+    "Memento",
+    "Undo"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Memento pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Memento_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "The Memento Design Pattern in C#, Practically With Examples [2024]",
+      "url": "https://postsharp.net/blog/memento",
+      "source": "postsharp.net",
+      "kind": "article"
+    },
+    {
+      "title": "Memento - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/memento",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Memento Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/memento-design-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Memento is encapsulated rollback.** The object that owns the state decides what to save and how to restore it; everyone else holds an opaque token they can never read. If your caretaker can inspect or mutate the snapshot, you did not implement Memento — you implemented a public DTO with extra steps and you just destroyed the only reason to use the pattern."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Memento captures an object's internal state at a point in time and gives you a way to restore that exact state later, without ever exposing private fields to the outside. The capture is a black box: the requester says *save now* and *restore this one*, and the owner handles all serialization, copying, and validation internally. That boundary is the entire pattern. Everything else — stacks, undo, redo, checkpoints — is just bookkeeping around it."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why does that boundary matter? Because the naive undo implementation breaks encapsulation in one of two ways. Either you make fields public so some `HistoryManager` can copy them, which freezes your internal representation forever, or you put history logic inside the domain object itself, which pollutes `Editor` or `GameState` with stacks, limits, and eviction policy. Memento splits those jobs: the **Originator** owns state semantics, the **Memento** is an immutable snapshot, and the **Caretaker** owns retention policy. Each one can change without breaking the other two, and that separation is what you are being graded on."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Originator** — the object with state worth saving, e.g. `TextEditor`, `Canvas`, `OrderDraft`. It exposes only two operations: `createMemento()` and `restore(memento)`. It alone decides what constitutes state, whether the copy is deep or shallow, and what invariants must hold on restore.",
+        "**Memento** — an immutable snapshot of the originator at time T. Ideally it is opaque to everyone except the originator: no getters, no setters, no public fields. In Java this means a private inner class or a package-private type with no accessors; in Python this means an underscore-prefixed class the caretaker treats as opaque by convention.",
+        "**Caretaker** — the history owner, e.g. `UndoManager`, command invoker, transaction coordinator. It never reads the memento. It only stores it, orders it, bounds it, and hands it back. It decides *when* to snapshot, *how many* to keep, and *when* to discard — decisions the originator should never make."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The flow has exactly two paths and no shortcuts. On **capture**, the caretaker calls `originator.createMemento()` before a mutating operation and pushes the result onto its own stack. It does not look inside. On **restore**, the caretaker pops a memento and calls `originator.restore(m)`, and the originator replaces its own fields from the snapshot and re-establishes invariants. The trade-off is explicit: you buy clean separation at the cost of an extra allocation per checkpoint plus the discipline to snapshot *before* mutation, not after. Snapshot too late and your undo stack is just a log of already-corrupted states."
+    },
+    {
+      "type": "mermaid",
+      "title": "Memento capture and restore flow",
+      "caption": "Caretaker never inspects state; originator never manages history.",
+      "code": "flowchart TD\n  C[Caretaker: UndoManager] -->|1. createMemento before edit| O[Originator: Editor]\n  O -->|2. returns opaque Memento| C\n  C -->|3. push onto undo stack| S[(History Stack)]\n  U[User edits Editor] --> O\n  C -->|4. pop on undo| S\n  C -->|5. restore memento| O\n  O -->|6. replace internal state| O"
+    },
+    {
+      "type": "paragraph",
+      "text": "Opacity is not ceremony, it is forward compatibility. If the caretaker can read `memento.text` or `memento.cursor`, then every refactor of `Editor` — renaming a field, splitting `content` into `pieces`, switching from `String` to a rope or gap buffer — breaks the caretaker. When the memento is opaque, you can change representation freely because only `createMemento` and `restore` know the layout. The trade-off: debugging gets harder because the history stack is unreadable from outside, so you pay for encapsulation with worse observability. Accept it, and add a redacted `toString` or size estimate on the memento for operations, not full field dumps."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every benefit of Memento has a priced cost. Name both in the interview.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why the trade is usually worth it"
+      ],
+      "rows": [
+        [
+          "Encapsulation holds: private stays private",
+          "Extra copy on every snapshot; opaque snapshots are hard to inspect",
+          "Lets you refactor originator internals without rewriting history code, which is where naive undo rots"
+        ],
+        [
+          "Undo / redo / checkpoints become trivial caretaker logic",
+          "Caretaker must solve retention, ordering, and memory bounds",
+          "History policy is genuinely a separate concern; mixing it into domain objects creates god classes"
+        ],
+        [
+          "Single-object restore is atomic and simple",
+          "No help for cross-object consistency; restoring one object can orphan others",
+          "Correct for editor buffers and drafts; dangerously incomplete for graphs of related entities"
+        ],
+        [
+          "No dependency on originator's field layout",
+          "Full-state snapshots cost O(state size) per checkpoint",
+          "Predictable and correct by default; you optimize to deltas or commands only after profiling"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The dominant cost is copy semantics, and this is where most implementations silently fail. A shallow copy of a `List<Shape>` or `char[]` is not a snapshot — it is an alias, so later edits mutate your history and undo restores the present, not the past. You need a deep copy of every mutable structure reachable from the saved state, or an immutable data structure where sharing is safe by construction. The trade-off: deep copy is simple to reason about but costs CPU and memory proportional to state size on every keystroke; persistent or structural-sharing structures are cheap to snapshot but harder to write and unfamiliar to most teams. Default to deep copy for correctness, then bound frequency and size before you reach for clever structures."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Memento does not fail with a wrong answer. It fails with memory exhaustion, stale restores, and history that lies to the user. Every production incident I have seen traces to the same three sins: snapshotting too often, copying too shallowly, or restoring without re-validating invariants that changed since the snapshot was taken. Watch the symptoms, not the pattern diagram."
+    },
+    {
+      "type": "table",
+      "caption": "Failure modes, the symptom you would actually observe, and the cause.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Root cause"
+      ],
+      "rows": [
+        [
+          "Unbounded history",
+          "Heap grows linearly with session length, then long GC pauses and OOM on large documents",
+          "Caretaker pushes on every keystroke with no size or count limit"
+        ],
+        [
+          "Aliased snapshot",
+          "Undo appears to do nothing, or restores partially mutated text and broken formatting",
+          "Memento stored a reference to mutable buffer instead of a defensive copy"
+        ],
+        [
+          "Invalid restore",
+          "Undo crashes or leaves object in illegal state, e.g. cursor past end of buffer",
+          "Originator added validation after snapshots were taken; old mementos violate new invariants"
+        ],
+        [
+          "Cross-object skew",
+          "Editor text rolls back but selection, scroll, or attached comments stay in the future",
+          "Memento covered one object while UX state lived in three others with no coordinated checkpoint"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The unbounded-history failure is the most common because it looks harmless in a demo. A 2 MB document with a snapshot per keystroke hits 200 MB after a paragraph, and each snapshot also pins the old `char[]` so the garbage collector cannot help you. The fix is never *store less state* alone — it is *snapshot less often and evict aggressively*: snapshot on command boundaries like sentence end, paste, or explicit save, cap the stack at 50–100 entries or a byte budget, and compress or diff large buffers. The trade-off: you lose keystroke-perfect undo granularity to gain a process that survives a real editing session. Users never notice the difference; on-call does."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The memory bomb",
+      "text": "If you snapshot on every `setText` with no bound, you do not have undo — you have a memory leak with a keyboard trigger. Always ship the caretaker with a limit: max count *and* max bytes. When the limit hits, drop the oldest, merge, or checkpoint to disk. Say this unprompted in the interview."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that gets it right"
+    },
+    {
+      "type": "paragraph",
+      "text": "This Java version shows the non-negotiable properties: the memento is immutable and invisible outside the originator, the copy is defensive, restore re-validates, and the caretaker manages two stacks with a hard cap. Note what the caretaker *cannot* do: it cannot read `content`, it cannot construct a memento, it cannot half-restore. That inability is the design."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "EditorMemento.java",
+      "code": "public class Editor {\n    private StringBuilder content = new StringBuilder();\n    private int cursor;\n\n    public void type(String text) {\n        content.insert(cursor, text);\n        cursor += text.length();\n    }\n\n    // Memento is private: only Editor can see inside.\n    public final class Snapshot {\n        private final String contentCopy;\n        private final int cursorCopy;\n        private Snapshot(String c, int cursor) {\n            this.contentCopy = c;\n            this.cursorCopy = cursor;\n        }\n    }\n\n    public Snapshot save() {\n        // Defensive copy: String is immutable, so this is a true snapshot.\n        // If content held mutable refs, deep-copy them here.\n        return new Snapshot(content.toString(), cursor);\n    }\n\n    public void restore(Snapshot s) {\n        if (s == null) throw new IllegalArgumentException(\"null snapshot\");\n        this.content = new StringBuilder(s.contentCopy);\n        // Re-clamp: invariants may have tightened since snapshot was taken.\n        this.cursor = Math.min(s.cursorCopy, content.length());\n    }\n}\n\npublic class UndoManager {\n    private final Deque<Editor.Snapshot> undo = new ArrayDeque<>();\n    private final Deque<Editor.Snapshot> redo = new ArrayDeque<>();\n    private final int limit;\n    public UndoManager(int limit) { this.limit = limit; }\n\n    public void checkpoint(Editor e) {\n        undo.push(e.save());\n        redo.clear(); // new branch invalidates redo; standard trade-off\n        while (undo.size() > limit) undo.removeLast(); // oldest dies first\n    }\n    public void undo(Editor e) {\n        if (undo.isEmpty()) return;\n        redo.push(e.save()); // save present before rolling back\n        e.restore(undo.pop());\n    }\n    public void redo(Editor e) {\n        if (redo.isEmpty()) return;\n        undo.push(e.save());\n        e.restore(redo.pop());\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three decisions in that code deserve explicit justification. First, `Snapshot` is a non-static inner class with a private constructor, so no external code can forge or inspect history — you trade a hidden outer reference for airtight opacity. Second, `checkpoint` clears redo on a new edit, which discards the alternate future; that is the conventional text-editor semantic, and you should state it rather than discover it mid-demo. Third, eviction drops the oldest entry, which means very old undo just disappears; the alternative is spilling to disk, which preserves history at the cost of restore latency and serialization complexity. Pick the bound from a byte budget, not vibes: `limit * avgSnapshotBytes` must fit comfortably in heap with headroom."
+    },
+    {
+      "type": "paragraph",
+      "text": "When snapshots get large, stop storing full state and store the boundary where it matters. Snapshot on command completion rather than per keystroke, keep a byte counter in the caretaker, and for buffers over a threshold switch to keeping the full text only every Nth checkpoint with command inverses in between. The trade-off: pure Memento gives you simple, always-correct restore at high memory cost, while command-inverse or delta history gives you cheap storage at the cost of replay logic that can diverge. A pragmatic caretaker combines both: periodic full mementos as anchors plus deltas between them, so a corrupt delta only loses you N steps, not the session."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "caretaker_policy.py",
+      "code": "class Caretaker:\n    \"\"\"Caretaker owns WHEN to snapshot and HOW MUCH to keep.\n    It treats mementos as opaque tokens.\"\"\"\n    def __init__(self, max_entries: int = 100, max_bytes: int = 8 << 20):\n        self._undo: list = []\n        self._undo_sizes: list[int] = []\n        self._redo: list = []\n        self._bytes = 0\n        self.max_entries = max_entries\n        self.max_bytes = max_bytes\n\n    def checkpoint(self, originator) -> None:\n        m = originator.save()  # opaque; never inspected here\n        size = originator.snapshot_size(m)\n        self._undo.append(m)\n        self._undo_sizes.append(size)\n        self._bytes += size\n        self._redo.clear()\n        self._evict()\n\n    def _evict(self) -> None:\n        while self._undo and (len(self._undo) > self.max_entries\n                             or self._bytes > self.max_bytes):\n            self._bytes -= self._undo_sizes.pop(0)\n            self._undo.pop(0)  # oldest dies first; bounded memory wins\n\n    def undo(self, originator) -> None:\n        if not self._undo:\n            return\n        self._redo.append(originator.save())\n        originator.restore(self._undo.pop())\n        self._bytes -= self._undo_sizes.pop()"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Build basic undo for an editor",
+          "text": "Start with Originator plus opaque Memento plus Caretaker stack. Say aloud why the caretaker cannot read the snapshot — that sentence separates a pattern answer from a stack-of-strings answer. Snapshot before mutation, not after."
+        },
+        {
+          "title": "Add redo and branch semantics",
+          "text": "Keep a second stack. On new edit after undo, clear redo and defend the choice: keeping the branch doubles memory bookkeeping and confuses users. Most interviewers accept clearing; they reject silence on the decision."
+        },
+        {
+          "title": "Bound the history",
+          "text": "Impose max entries and max bytes, evict oldest first. Compute the budget live: 100 snapshots times 50 KB average is 5 MB — fine; times 5 MB is 500 MB — not fine. This is where Medium becomes Senior."
+        },
+        {
+          "title": "Fix the aliasing trap",
+          "text": "Interviewer will ask what happens if state holds a mutable list. Answer: defensive deep copy at save time, or immutable structures. Shallow copy means history mutates with the present, which makes undo a no-op. Write the copy explicitly."
+        },
+        {
+          "title": "Scale to multi-object or concurrency",
+          "text": "Admit Memento covers one object. For editor plus cursor plus comments, either a coarse composite memento coordinated by a single caretaker, or switch to Command with inverse ops. For threads, snapshot under a read lock and restore under a write lock; never hand a mutable memento across threads."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Memento is just a stack of old values.** No — the stack is the caretaker's policy. The pattern is the opacity contract. A `Stack<String>` where anyone can read history is not Memento, it is a public log.",
+        "**The memento should expose getters for convenience.** Every getter you add couples history code to internal representation and freezes refactors. If an operator needs visibility, expose a separate redacted summary, not the fields.",
+        "**Shallow copy is fine for performance.** It is fine until the first mutable field, then it is a correctness bug that presents as *undo does nothing*. Performance comes from snapshotting less often and bounding retention, not from sharing mutable guts.",
+        "**Memento handles multi-object transactions.** It does not. Restoring `Document` without restoring `Selection` and `Viewport` leaves a coherent object inside an incoherent session. That needs a composite snapshot or a different pattern entirely.",
+        "**More history is always better.** Unbounded history is a denial-of-service you ship to yourself. Cap by count and bytes, snapshot at command boundaries, and be able to say exactly how much heap your undo can pin."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, when to avoid it"
+    },
+    {
+      "type": "table",
+      "caption": "Use Memento for single-owner rollback; reach for something else when history is replay, audit, or cross-object.",
+      "headers": [
+        "Use it when",
+        "Avoid it when",
+        "What to use instead"
+      ],
+      "rows": [
+        [
+          "Single object's private state needs undo, checkpoints, or draft rollback",
+          "State is huge and changes every frame, e.g. game loop or video buffer",
+          "Command with inverse ops, or delta / event-sourced log with periodic anchors"
+        ],
+        [
+          "You must preserve encapsulation across refactors",
+          "Other components legitimately need to read history contents",
+          "Explicit immutable DTO or event log; stop pretending it is opaque"
+        ],
+        [
+          "Restore must be atomic and immediate, no replay",
+          "You need audit trail, time travel queries, or cross-session durability",
+          "Event sourcing with persisted events; mementos as compacted snapshots only"
+        ],
+        [
+          "Prototyping undo where correctness beats memory efficiency",
+          "Multiple related objects must roll back together atomically",
+          "Unit of Work / transaction coordinator with composite memento, or Command composite"
+        ],
+        [
+          "Redo branching semantics are simple: new edit kills redo",
+          "Users expect persistent branching history like version control",
+          "Persistent data structures or explicit version DAG, not two stacks"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Memento lets an object save and restore its own private state through an opaque snapshot that a separate caretaker stores and bounds — so say: originator owns semantics, memento is immutable and unreadable, caretaker owns retention, and I bound it by count and bytes with deep copies.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:00:25.051Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,344 @@
+{
+  "slug": "row-oriented-databases",
+  "title": "Row Oriented Databases",
+  "summary": "Row stores keep every field of a record together on disk to make single-row reads and writes cheap — at the cost of scanning useless data on analytics.",
+  "kind": "HLD",
+  "problemSlug": "row-oriented-databases-92-303",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "🗃️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "Storage Engine",
+    "OLTP"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Data orientation - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Data_orientation",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Why differentiate between row-oriented/column-oriented data ...",
+      "url": "https://www.reddit.com/r/dataengineering/comments/1dyie8v/why_differentiate_between/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Row-Based Storage vs Column-Based Storage - Medium",
+      "url": "https://medium.com/@DataWithSantosh/row-based-storage-vs-column-based-storage-a-beginners-guide-6e91dbadb181",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Row-oriented vs column-oriented databases: a head-to ... - ClickHouse",
+      "url": "https://clickhouse.com/resources/engineering/row-vs-column-database",
+      "source": "clickhouse.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A row store optimizes for **record locality**: all columns of one row live together so fetching or mutating one entity costs one page read and one B-tree probe. The trade-off is brutal and permanent — every wide scan pays to read columns it will immediately throw away."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a row store actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A row-oriented database maps a two-dimensional table into one-dimensional storage by laying out **entire tuples contiguously**. Row 1 with all its columns is written end-to-end, then row 2, then row 3. On disk that means a heap of fixed-size pages — **8 KB in Postgres** is the canonical example — each packed with tuples plus a small per-tuple header for visibility, length, and null bitmap. Logically you see tables and rows; physically you see pages full of opaque byte sequences that happen to decode into rows."
+    },
+    {
+      "type": "paragraph",
+      "text": "Indexes are separate structures, almost always **B-trees**, that map a key to a physical pointer such as a heap tuple ID or row ID. The table itself has no ordering guarantee. This separation is deliberate: the heap gives you dense, sequential record storage and cheap appends, while the B-tree gives you `O(log n)` point access without sorting the heap. Updates do not happen in place in any modern engine — MVCC creates a new tuple version and marks the old one dead — which is why a row store can sustain concurrent readers and writers without blocking on a single row latch."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: pages, heap, and indexes"
+    },
+    {
+      "type": "paragraph",
+      "text": "Writes go through three coordinated structures: a **write-ahead log (WAL)** for crash safety, the **heap** for the data itself, and the **B-tree** for lookup. An `INSERT` appends to the WAL first, then places the tuple into a buffer-pool page with free space, then inserts the key-to-pointer entry into each index. A point `SELECT ... WHERE id = ?` probes the B-tree to find the page, pins that page in the buffer pool, and returns the whole tuple in one shot. That is the entire performance argument — one logical entity equals roughly one physical I/O."
+    },
+    {
+      "type": "mermaid",
+      "title": "Row-store write and point-read path",
+      "caption": "WAL first, then heap and index. Reads are a B-tree probe plus one page fetch.",
+      "code": "flowchart TD\n  W[\"client INSERT / UPDATE\"] --> L[\"append to WAL\"]\n  L --> H[\"place tuple in heap page\"]\n  H --> I[\"insert key to B-Tree index\"]\n  I --> B[\"buffer pool holds 8KB page\"]\n  R[\"point SELECT by id\"] --> S[\"probe B-Tree O log n\"]\n  S --> B"
+    },
+    {
+      "type": "paragraph",
+      "text": "Scans are where the layout betrays you. A query that touches 3 columns out of 50 still reads all 50 from disk because the page has no column boundaries the storage layer can skip. The engine fetches full pages, extracts the 3 wanted fields per tuple in CPU, and discards the rest. Buffer-pool hit rate collapses on wide tables for exactly this reason: you evict useful pages to cache bytes you never use. TOAST-style out-of-line storage for large text or blobs mitigates this slightly by keeping fat fields off the main page, but the core amplification remains — row stores trade scan efficiency for record efficiency, with no middle ground."
+    },
+    {
+      "type": "mermaid",
+      "title": "Physical layout of a row store",
+      "caption": "Contiguous tuples per page. One page fetch returns whole records.",
+      "code": "flowchart LR\n  T[\"orders table\"] --> P1[\"Page 1 rows 101 to 102\"]\n  T --> P2[\"Page 2 rows 103 to 104\"]\n  Q[\"B-Tree on id\"] --> P1\n  Q --> P2"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "schema.sql",
+      "code": "-- The access pattern dictates the storage choice, not the schema.\n-- This table is natural in a row store: narrow, point-addressed, mutated one row at a time.\nCREATE TABLE orders (\n  id         BIGINT PRIMARY KEY,\n  user_id    BIGINT NOT NULL,\n  status     SMALLINT NOT NULL,\n  total_cents INTEGER NOT NULL,\n  updated_at TIMESTAMPTZ NOT NULL\n);\nCREATE INDEX ON orders (user_id, updated_at);\n\n-- Cheap in a row store: one B-tree probe + one heap fetch.\nSELECT * FROM orders WHERE id = $1;\n\n-- Expensive in a row store: reads every heap page to touch one column.\nSELECT sum(total_cents) FROM orders WHERE updated_at > now() - interval '90 days';"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs of storing rows together"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every advantage below is paired with a cost you cannot engineer away. If you claim a row store is simply faster or simply worse, you have missed the point. The layout decides which I/O is contiguous and which is scattered, and everything else — compression, concurrency, cache behavior — follows from that single decision."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of row orientation.",
+      "headers": [
+        "Property",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Point lookup",
+          "Single record in ~1 page read plus B-tree probe, sub-millisecond when cached",
+          "Secondary indexes duplicate keys and need maintenance on every write"
+        ],
+        [
+          "Single-row write",
+          "`O(log n)` insert/update/delete with row-level locking and MVCC",
+          "Wide secondary-index fan-out makes writes slower as indexes grow"
+        ],
+        [
+          "Transaction semantics",
+          "ACID across fields of one row is natural; row latch protects the whole entity",
+          "Cross-shard or multi-row transactions still need 2PC and get expensive"
+        ],
+        [
+          "Compression",
+          "Lightweight page compression, typically 1.5-3x",
+          "Mixed types inside a row kill run-length and dictionary encoding; 5-10x is unreachable"
+        ],
+        [
+          "Analytical scan",
+          "No rewrite needed; any query runs correctly",
+          "Read amplification: scanning 3 of 50 columns still reads ~100% of bytes and burns buffer pool"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why OLTP lives here"
+    },
+    {
+      "type": "paragraph",
+      "text": "OLTP workloads address data by entity: load user 48291, decrement inventory for SKU 778, append one order with four line items. The working set is tiny, the operation touches most columns of that row, and latency must be single-digit milliseconds under thousands of concurrent sessions. Row locality is exactly matched to that shape — the fields the transaction needs are adjacent in memory, locked together, logged together, and validated together. Constraint checks, foreign keys, and unique indexes all operate on whole-row images, so placing those images contiguously avoids assembling a record from half a dozen distant column files under a lock."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Narrow, selective access: `WHERE pk = ?` returning most of the row — one page does the job.",
+        "High-concurrency short writes: thousands of small inserts/updates per second with row-level MVCC instead of partition rewrites.",
+        "Strong per-record invariants: not-null, check, foreign-key, and uniqueness checks need the full row image at commit time.",
+        "Evolving schemas with secondary indexes: adding an index is a background build, not a full column-file rewrite."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Row stores do not fail on transactions; they fail when analytics sneaks onto the transactional cluster. The first symptom is always the same: buffer-pool hit ratio drops, p99 on point lookups spikes from 2 ms to 200 ms, and disk reads saturate even though transaction rate is flat. Someone added a dashboard doing `SELECT avg(...) GROUP BY day` over the orders table, and every execution drags the entire heap through the cache, evicting the hot working set. The second classic failure is index bloat — five secondary indexes on a write-heavy table turn one logical insert into six physical B-tree inserts plus WAL, and write throughput halves while autovacuum or compaction falls behind, leaving dead tuples to inflate every scan further."
+    },
+    {
+      "type": "table",
+      "caption": "Failure signatures you should recognize on call.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Fix that actually works"
+      ],
+      "rows": [
+        [
+          "Analytical scan on OLTP heap",
+          "Buffer hit ratio collapse, point-lookup p99 explodes, sequential reads dominate `pg_stat`",
+          "Move aggregation to replica, materialized view, or columnar store; never add more RAM as the first fix"
+        ],
+        [
+          "Index write fan-out",
+          "Insert latency climbs linearly with index count, WAL volume 3-5x data volume",
+          "Drop unused indexes, use covering indexes deliberately, batch writes"
+        ],
+        [
+          "Bloat from dead tuples",
+          "Table 3x larger than live rows, scans slow, vacuum never catches up",
+          "Tune vacuum thresholds, lower fillfactor on hot-update tables, partition by time"
+        ],
+        [
+          "Hot row contention",
+          "Lock waits and serialization failures on a single counter or status row",
+          "Split counter, use advisory batching, or move counter out of the relational row"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "TOAST is not a rescue plan",
+      "text": "Out-of-line storage for large fields keeps main pages narrow, but it adds a pointer chase per fat column. If your rows are wide because of five `TEXT` blobs, point lookups now cost two I/Os and scans still walk the main heap. Fix the model — split hot narrow fields from cold wide payloads — instead of hoping the storage engine hides it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Row vs column: pick by access pattern"
+    },
+    {
+      "type": "table",
+      "caption": "Head-to-head on the axes interviewers probe.",
+      "headers": [
+        "Axis",
+        "Row-oriented",
+        "Column-oriented"
+      ],
+      "rows": [
+        [
+          "Physical unit",
+          "Tuple: all columns of one row contiguous in 8 KB pages",
+          "Stripe: one column across many rows contiguous"
+        ],
+        [
+          "Best query",
+          "Point lookup and single-row CRUD, sub-millisecond cached",
+          "Aggregation over millions of rows touching few columns"
+        ],
+        [
+          "I/O on 3-of-50 column scan",
+          "~100% of bytes read; amplification ~16x",
+          "~6% of bytes read; only wanted stripes fetched"
+        ],
+        [
+          "Compression",
+          "1.5-3x typical, mixed types resist encoding",
+          "5-10x typical, up to 30x on low-cardinality columns"
+        ],
+        [
+          "Write path",
+          "In-place version via MVCC plus B-tree maintenance",
+          "Rewrite part, copy-on-write, or merge delta store"
+        ],
+        [
+          "Examples",
+          "Postgres, MySQL, Oracle, SQL Server",
+          "ClickHouse, DuckDB, Snowflake, BigQuery, Redshift"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Do the arithmetic out loud in an interview. A 50-column order row at 500 bytes per row over 100 million rows is ~50 GB on heap. A query summing one 8-byte column over the full table logically needs 0.8 GB, but the row store reads all 50 GB because pages cannot be vertically pruned. At 500 MB/s sequential throughput that is the difference between ~2 seconds and ~100 seconds before compression, and columnar compression widens the gap further because same-type values in one stripe encode far better than mixed-type bytes in a tuple. Say that number. It proves you understand that orientation is an I/O argument, not a fashion choice."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in interviews"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the workload first",
+          "text": "State read/write ratio, selectivity, and latency target before naming any database. OLTP with point access points to a row store; full-table aggregation points away from it."
+        },
+        {
+          "title": "Draw pages and the B-tree",
+          "text": "Sketch heap pages with 2-3 tuples each and a B-tree pointing at them. Show a point lookup as one probe plus one fetch, and a 1-column scan as full-page reads with discard."
+        },
+        {
+          "title": "Quantify the amplification",
+          "text": "Pick concrete numbers: columns touched versus columns stored, row width, table size. Compute wasted bytes. Interviewers promote candidates who turn trade-off into arithmetic."
+        },
+        {
+          "title": "Handle the hybrid pressure",
+          "text": "Answer the inevitable follow-up: replica for analytics, materialized aggregate, CQRS read model, or change-data-capture into a columnar warehouse. Never run OLAP scans on the OLTP primary."
+        },
+        {
+          "title": "Close with scaling limits",
+          "text": "Single-node row stores scale vertically and with read replicas. Past write limits, partition by tenant or time, or shard by key — and admit that cross-shard transactions are the cost."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`Rows versus columns is just a transpose` — no. It decides which bytes are contiguous on disk, which decides I/O, compression, and locking. Transposing at query time costs a full rewrite.",
+        "Indexing fixes scans — no. A B-tree avoids scanning only when the predicate is selective. A `SUM` over 90% of rows still walks the heap regardless of indexes.",
+        "Row stores cannot do analytics — they can, just wastefully. Correctness is never the issue; bytes-read-per-useful-byte is.",
+        "More RAM fixes a scan-heavy row store — it postpones the failure by one data doubling. The amplification ratio is structural and survives every cache upgrade.",
+        "CSV equals row database — CSV is row-*ordered* text with no pages, no indexes, no MVCC, and no crash recovery. Do not conflate a file format with a storage engine."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Selection rule: match orientation to dominant access path.",
+      "headers": [
+        "Use a row store when",
+        "Do not use it when"
+      ],
+      "rows": [
+        [
+          "Dominant pattern is keyed lookup or single-entity mutation with millisecond SLOs",
+          "Dominant pattern is full-table scans, rollups, or time-series aggregation over few columns"
+        ],
+        [
+          "You need row-level ACID, constraints, and concurrent short transactions",
+          "You need 5-10x compression and pruning on petabyte-scale event history"
+        ],
+        [
+          "Schema serves an application directly: users, orders, inventory, accounts",
+          "Workload is append-only telemetry queried by analysts, not by primary key"
+        ],
+        [
+          "Secondary indexes and evolving access paths matter more than scan speed",
+          "One table serves dashboards that always touch the same 2-3 columns out of 100"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Use a row store when the unit of work is **one record** — it stores whole tuples together for cheap point reads and writes, and accept that any wide scan will pay full-table I/O as the price."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:30:41.108Z",
+    "problems": []
+  }
+}

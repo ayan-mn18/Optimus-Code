@@ -1,0 +1,403 @@
+{
+  "slug": "design-search-autocomplete-system",
+  "title": "Design Search Autocomplete System",
+  "summary": "Design Search Autocomplete System from LeetCode 642 outward to production: trie with precomputed top-k, write-vs-read trade-offs, sharding, and concurrency.",
+  "kind": "HLD",
+  "problemSlug": "design-search-autocomplete-system-150-325",
+  "topic": "More Interview Problems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔍",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Trie",
+    "Autocomplete",
+    "System Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "LeetCode 642 — Design Search Autocomplete System",
+      "url": "https://leetcode.com/problems/design-search-autocomplete-system/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "Hard. Resolved through the LeetCode API, not guessed from the slug."
+    },
+    {
+      "title": "Google - Software Engineer Interview Questions | Onsites.fyi",
+      "url": "https://www.onsites.fyi/Google/Software%20Engineer",
+      "source": "onsites.fyi",
+      "kind": "article"
+    },
+    {
+      "title": "642. Design Search Autocomplete System - In-Depth Explanation",
+      "url": "https://algo.monster/liteproblems/642",
+      "source": "algo.monster",
+      "kind": "article"
+    },
+    {
+      "title": "[AskJS] Interview Question - implement a general search ...",
+      "url": "https://www.reddit.com/r/javascript/comments/q6h06c/askjs_interview_question_implement_a_general/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Machine Coding Round: The Complete Frontend Guide (2026)",
+      "url": "https://www.greatfrontend.com/blog/machine-coding-round",
+      "source": "greatfrontend.com",
+      "kind": "article"
+    },
+    {
+      "title": "Google - Software Engineer Interview Questions - Onsites.fyi",
+      "url": "https://www.onsites.fyi/Google/Software%20Engineer?Stages=Onsite",
+      "source": "onsites.fyi",
+      "kind": "article"
+    },
+    {
+      "title": "React Machine Coding Interview Guide: AutoSuggest Component",
+      "url": "https://medium.com/@sanjeev-singh/react-machine-coding-interview-guide-autosuggest-component-91b8b20494c8",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "LeetCode 642 is the *toy*. The real question is: **can you turn every prefix into an O(1) lookup without drowning in storage and invalidation cost?** Anyone can DFS a trie on every keystroke. Strong candidates precompute, defend the storage-vs-latency trade-off, then explain what breaks when that trie no longer fits on one box and when writes arrive concurrently."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a search autocomplete system seeded with historical data, then driven character-by-character. You are given `sentences` and parallel `times` — how often each sentence was searched in the past. After construction the system processes a stream via `input(c)`. If `c` is a normal character (letter or space), append it to the current prefix and return the top 3 hottest sentences with that prefix. Hotness is frequency descending, lexicographic ascending as tie-break. If `c` is `#`, the current prefix is a completed search: record it (increment its count by 1, or insert it if new), reset the current prefix to empty, and return an empty list. The current prefix always starts empty, and `#` never appears inside a sentence."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`AutocompleteSystem(String[] sentences, int[] times)` — build initial index. `sentences.length <= 100` and each sentence length `<= 100` in the LeetCode scope; production scope is billions of distinct queries.",
+        "`List<String> input(char c)` — if `c == '#'` persist current query and reset; else advance one character in the prefix and return up to 3 matches.",
+        "Ordering contract is strict: higher `times` first, then ASCII / lexicographic order. Get this wrong and every test with ties fails.",
+        "Characters are lowercase letters plus space (`27` symbols). That small alphabet is why a trie works — say it explicitly."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not start with the trie. The interviewer grades whether you pin down persistence, ranking, and scale first. Five questions separate a LeetCode recitation from a design discussion."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Where does frequency come from?",
+          "text": "Are `times` immutable history, or does every `#` mutate global counts? LeetCode says mutate. Production says distinguish personal history from global popularity. Agree: `#` increments a global counter that immediately affects future rankings."
+        },
+        {
+          "title": "What is k and is it fixed?",
+          "text": "LeetCode fixes `k = 3`. Real products use 5-10 and per-surface tuning. Fix `k` as a config constant so precomputation stays bounded, and state that larger `k` linearly inflates every trie node."
+        },
+        {
+          "title": "Single node or distributed?",
+          "text": "Ask whether the follow-up expects one-machine concurrency or a multi-shard service. Your answer changes from a lock around a trie to prefix sharding plus an offline aggregation pipeline. Ask now."
+        },
+        {
+          "title": "Latency and freshness targets?",
+          "text": "Autocomplete must respond in tens of milliseconds per keystroke or it feels broken. Freshness can lag by minutes for global trends but personal history should reflect instantly. That split justifies a fast read path plus an asynchronous write path."
+        },
+        {
+          "title": "Input alphabet and normalisation?",
+          "text": "Case-sensitive? Punctuation? Unicode? Empty prefix? For the interview assume exactly `a-z` plus space and no normalisation, but name the boundary where a real system would lowercase, trim, and collapse whitespace before lookup."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Agreed scope before any code.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "`input(c)` returns top-3 for live prefix, `[]` on `#`",
+          "The streaming contract; cursor state is the entire API"
+        ],
+        [
+          "Functional",
+          "Rank by frequency desc, lexicographic asc",
+          "Deterministic tie-break is testable and product-sensible"
+        ],
+        [
+          "Functional",
+          "`#` persists current prefix and resets cursor",
+          "Write path hidden inside a read API — the concurrency trap"
+        ],
+        [
+          "Non-functional",
+          "Per-keystroke read O(prefix) or O(1) after traversal",
+          "Typing cannot wait for a subtree scan"
+        ],
+        [
+          "Non-functional",
+          "Memory proportional to distinct prefixes, bounded hot lists",
+          "Naive candidate storage explodes"
+        ],
+        [
+          "Non-functional",
+          "Correct under concurrent readers and writers",
+          "Follow-up that kills lock-free hand-waving"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — brute force scan and sort"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep a hash map from sentence to count. On every normal character, scan all sentences, filter by `startsWith(prefix)`, sort matches by the ranking rule, take 3. On `#`, bump the map and reset. It is five lines, obviously correct, and exactly what you should describe first so you can reject it for concrete reasons. The trade-off is brutal: zero index maintenance cost in exchange for paying full scan cost on the hottest path — every keystroke."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Read cost is `O(N * L)` per keystroke where `N` is sentence count and `L` is average length, plus `O(M log M)` sort over `M` matches. At `N = 10^9` web queries this is dead on arrival.",
+        "No prefix sharing: `inter`, `interview`, and `interviewer` are compared independently every time, repeating the same prefix checks the trie would do once.",
+        "Sorting on read wastes work. The top-3 for `i love` does not change between `i lov` and `i love` unless a write intervened, yet brute force recomputes it from scratch.",
+        "It teaches the right lesson: autocomplete is read-heavy (hundreds of reads per write), so any design must shift work from read to write, even if that makes writes heavier."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Real design — precompute top-k at every trie node"
+    },
+    {
+      "type": "paragraph",
+      "text": "Build a trie over the 27-character alphabet. The root represents the empty prefix; each edge consumes one character; each node represents one distinct prefix. Every node stores the top-k hottest sentences in its subtree, maintained on every insert. Reads then become trie descent only: advance one edge per character and return the cached list — no scan, no sort. The trade-off you must state: you buy `O(1)`-per-keystroke reads with extra memory (`k` sentence references per prefix node) and heavier writes (`O(P * k log k)` to refresh every prefix of an inserted sentence, where `P` is sentence length). For autocomplete that is the correct side of the trade because reads outnumber writes by orders of magnitude."
+    },
+    {
+      "type": "mermaid",
+      "title": "Read path vs write path",
+      "caption": "Reads descend the trie and hit cached top-k. Writes go through ingestion and refresh every prefix node.",
+      "code": "flowchart LR\n  User[User keystroke] --> LB[Load balancer]\n  LB --> Svc[Autocomplete service]\n  Svc --> Cache[Prefix cache]\n  Cache -- hit --> Resp[Top-k response]\n  Cache -- miss --> Shard[Trie shard by prefix]\n  Shard --> Resp\n  Typed[Completed query on hash] --> Log[Write log]\n  Log --> Agg[Aggregator]\n  Agg --> Shard"
+    },
+    {
+      "type": "paragraph",
+      "text": "In production this splits into two paths. The synchronous read path is sharded by prefix hash so all queries for `inter*` land on the same shard, fronted by a small LRU of hot prefixes — the top 10k prefixes serve the majority of traffic. The asynchronous write path appends completed queries to a log, aggregates counts offline, and pushes refreshed top-k lists to the owning shards. That is why personal history is applied synchronously on the request path (small, per-user) while global counts update with a delay of seconds to minutes: freshness where it matters, batch efficiency where it scales. The trade-off is eventual consistency of global rankings in exchange for bounded write amplification."
+    },
+    {
+      "type": "mermaid",
+      "title": "In-memory index shape",
+      "caption": "Each trie node caches its hottest sentences so input() never searches.",
+      "code": "classDiagram\n  class AutocompleteSystem {\n    +root TrieNode\n    +current String\n    +cursor TrieNode\n    +input(c) List\n    +addSentence(s, delta) void\n  }\n  class TrieNode {\n    +children HashMap\n    +hot List\n  }\n  AutocompleteSystem --> TrieNode"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Why the node stores references, not copies"
+    },
+    {
+      "type": "paragraph",
+      "text": "Each node's `hot` list holds at most `k = 3` sentence identities ordered by the ranking rule, plus access to a global frequency map. You never duplicate full strings per node in the interview implementation — nodes point at shared strings. That keeps memory at `O(T + U * k)` where `T` is total trie nodes and `U` is distinct prefixes, instead of `O(U * k * L)`. The cost is that a frequency bump must revisit every prefix node of that sentence to re-sort its tiny `k`-list. With `k = 3` the sort is constant time, so the write stays `O(P)` trie steps. State this explicitly: tiny `k` is what makes per-node caching affordable; if the product ever asks for `k = 100`, this design needs rethinking."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "AutocompleteSystem.java",
+      "code": "import java.util.*;\n\nclass AutocompleteSystem {\n    private static final int K = 3;\n\n    private static class TrieNode {\n        Map<Character, TrieNode> children = new HashMap<>();\n        // Top-K sentences in the subtree, kept sorted by rank rule.\n        List<String> hot = new ArrayList<>();\n    }\n\n    private final TrieNode root = new TrieNode();\n    private final Map<String, Integer> freq = new HashMap<>();\n    private StringBuilder current = new StringBuilder();\n    private TrieNode cursor;\n\n    public AutocompleteSystem(String[] sentences, int[] times) {\n        cursor = root;\n        for (int i = 0; i < sentences.length; i++) {\n            addSentence(sentences[i], times[i]);\n        }\n    }\n\n    public List<String> input(char c) {\n        if (c == '#') {\n            addSentence(current.toString(), 1);\n            current = new StringBuilder();\n            cursor = root;\n            return Collections.emptyList();\n        }\n        current.append(c);\n        if (cursor != null) {\n            cursor = cursor.children.get(c);\n        }\n        if (cursor == null) return Collections.emptyList();\n        return new ArrayList<>(cursor.hot);\n    }\n\n    private void addSentence(String s, int delta) {\n        if (s.isEmpty()) return; // '#' on empty prefix records nothing\n        freq.put(s, freq.getOrDefault(s, 0) + delta);\n        TrieNode node = root;\n        for (char ch : s.toCharArray()) {\n            node = node.children.computeIfAbsent(ch, k -> new TrieNode());\n            refresh(node, s);\n        }\n    }\n\n    private void refresh(TrieNode node, String s) {\n        if (!node.hot.contains(s)) node.hot.add(s);\n        node.hot.sort((a, b) -> {\n            int fa = freq.get(a), fb = freq.get(b);\n            if (fa != fb) return Integer.compare(fb, fa); // hotter first\n            return a.compareTo(b);                        // lexicographic tie-break\n        });\n        if (node.hot.size() > K) node.hot.remove(node.hot.size() - 1);\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "autocomplete.py",
+      "code": "class _Node:\n    __slots__ = (\"children\", \"hot\")\n    def __init__(self):\n        self.children = {}\n        self.hot = []  # top-3 sentences in subtree, ranked\n\nclass AutocompleteSystem:\n    K = 3\n    def __init__(self, sentences, times):\n        self.root = _Node()\n        self.freq = {}\n        self.cur = []\n        self.cursor = self.root\n        for s, t in zip(sentences, times):\n            self._add(s, t)\n\n    def input(self, c: str):\n        if c == \"#\":\n            self._add(\"\".join(self.cur), 1)\n            self.cur = []\n            self.cursor = self.root\n            return []\n        self.cur.append(c)\n        if self.cursor is not None:\n            self.cursor = self.cursor.children.get(c)\n        return list(self.cursor.hot) if self.cursor else []\n\n    def _add(self, s: str, delta: int):\n        if not s:\n            return\n        self.freq[s] = self.freq.get(s, 0) + delta\n        node = self.root\n        for ch in s:\n            node = node.children.setdefault(ch, _Node())\n            if s not in node.hot:\n                node.hot.append(s)\n            node.hot.sort(key=lambda x: (-self.freq[x], x))\n            del node.hot[self.K:]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Costs for the precomputed trie with fixed k=3.",
+      "headers": [
+        "Operation",
+        "Time",
+        "Space",
+        "Note"
+      ],
+      "rows": [
+        [
+          "Build (N sentences, length P)",
+          "O(N * P * K log K)",
+          "O(total trie nodes + N)",
+          "K log K is constant for K=3"
+        ],
+        [
+          "`input` normal char",
+          "O(1) amortised",
+          "O(1)",
+          "One hash step, return cached list"
+        ],
+        [
+          "`input('#')` insert length P",
+          "O(P * K log K)",
+          "O(P) new nodes worst case",
+          "Touches every prefix node"
+        ],
+        [
+          "Per-node overhead",
+          "—",
+          "O(K) references",
+          "Reason small K is load-bearing"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency and the hardest follow-up — leaving one box"
+    },
+    {
+      "type": "paragraph",
+      "text": "On one machine the hazard is the `#` write racing concurrent `input` reads. The cursor (`current` plus `cursor` pointer) is per-connection state and must never be shared — each session gets its own. The shared structures are the trie and the frequency map. The pragmatic answer: guard the trie with a read-write lock (many concurrent descents, exclusive insert) or a per-node lock for insert-heavy workloads, and return a defensive copy of `hot` so a reader never observes a list being re-sorted mid-read. Copy-on-write of the tiny `hot` list is cheap and removes the most common race. At distributed scale the follow-up is sharding plus freshness. Shard the trie by first character or by prefix hash so each shard owns a disjoint prefix range; replicate hot shards and front them with a CDN or edge cache keyed by prefix. Completed queries flow through a durable log into a streaming counter, and only aggregated deltas refresh shards every few seconds. The trade-off: reads stay local to one shard with no fan-out, but cross-shard ranking (global top-k across shards) is approximate until the next aggregation cycle — acceptable because autocomplete tolerates slightly stale global order."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Per-session cursor: never store `current` in a singleton service bean. One instance per user session, or pass it as a request parameter.",
+        "Hot-prefix invalidation: bumping `i love you` must refresh nodes `i`, `i `, `i l`, ... — batch these refreshes or a viral query causes a write storm down one shard.",
+        "Thundering herd on viral prefixes: cache the top prefixes at the edge with a short TTL rather than letting every keystroke hit the shard.",
+        "Personal vs global: layer per-user history (small trie or recent list, applied at request time) over the shared global trie so personalisation needs no global lock."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The trap most candidates walk into",
+      "text": "DFS-ing the subtree on every `input` to collect candidates passes LeetCode but fails the interview the moment the follow-up mentions scale. Say upfront why you cache top-k at the node: keystrokes are 100x more frequent than completed queries, so write amplification is cheaper than read amplification. If you start with DFS, state it as a scaffold and replace it before the interviewer asks."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Real-time vs batch freshness?",
+          "text": "Answer: personal `#` applies instantly to that user's view; global counts propagate via the log every N seconds. Trade-off is immediate personal relevance against bounded global write load."
+        },
+        {
+          "title": "Typo tolerance and fuzzy match?",
+          "text": "Answer: keep the exact trie for the sub-50ms path, add a parallel edit-distance-1 expansion or a symspell index for the miss path. Trade-off is recall against latency — never put fuzzy search on the critical path."
+        },
+        {
+          "title": "Trending and time decay?",
+          "text": "Answer: replace raw counts with decayed scores (count in last hour weighted higher) computed offline. Trade-off is a background recompute job against static frequencies going stale during events."
+        },
+        {
+          "title": "Personalisation and privacy?",
+          "text": "Answer: per-user boost layer merged at rank time, stored separately with TTL and deletion support. Trade-off is extra merge cost per request against one global index leaking one user's queries to another."
+        },
+        {
+          "title": "Delete and moderation?",
+          "text": "Answer: tombstone the sentence, decrement or zero its frequency, and refresh its prefix chain. Trade-off is that delete is as expensive as insert — there is no cheap removal from precomputed lists."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`#` on an empty prefix: record nothing, just reset. Otherwise you insert an empty sentence into the root.",
+        "Unknown prefix mid-stream: once `cursor` becomes null, all further characters return `[]` until `#` — but keep accumulating `current` so the full string is recorded.",
+        "Tie-break order: equal frequencies must return lexicographic ascending. Write the comparator before the trie.",
+        "Spaces are characters: `i love` and `ilove` are different prefixes; do not trim or split.",
+        "Repeated `#` completions of the same new sentence must promote it through every prefix node's top-3 over time — good test of `refresh`.",
+        "Prefix that is also a full sentence: node must list the sentence itself alongside longer extensions, ranked by heat."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How you are graded"
+    },
+    {
+      "type": "table",
+      "caption": "Weak vs strong signals for this problem.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Ranking",
+          "Sorts all matches per keystroke or forgets tie-break",
+          "Precomputed top-k per node with explicit comparator"
+        ],
+        [
+          "State handling",
+          "Shares cursor across users or loses prefix after null node",
+          "Per-session cursor, keeps appending after miss, resets only on `#`"
+        ],
+        [
+          "Trade-offs",
+          "`Trie is faster` with no numbers",
+          "Quantifies read-vs-write, memory per node, why K=3 matters"
+        ],
+        [
+          "Concurrency / scale",
+          "Add a lock as an afterthought",
+          "RW-lock + copied hot lists; shard by prefix + log-backed refresh"
+        ],
+        [
+          "Follow-ups",
+          "Blank on fuzzy, decay, personalisation",
+          "Sketches each with its cost in one sentence"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "45-minute plan",
+      "text": "Minutes 0-5: pin API, ranking rule, and single-vs-distributed scope. 5-12: name brute force and kill it with `O(N)` per keystroke. 12-25: build the trie with per-node top-3 and the comparator — write the Java. 25-33: handle `#`, null cursor, and empty-prefix edge cases live. 33-42: concurrency (session cursor, RW-lock, copied lists) then scale-out (prefix shards, edge cache, log-backed aggregation). 42-45: close with two follow-ups you can sketch — decay and personalisation — each with its trade-off."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:46:18.227Z",
+    "problems": []
+  }
+}

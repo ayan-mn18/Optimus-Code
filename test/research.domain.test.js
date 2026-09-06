@@ -202,3 +202,32 @@ test('mapWithConcurrency preserves order and caps what is in flight', async () =
   assert.ok(peak <= 3, `never more than 3 in flight, saw ${peak}`);
   assert.ok(peak > 1, 'and it actually parallelised');
 });
+
+test('a truncated unicode escape is repaired rather than losing the article', async () => {
+  const { repairJson } = await import('../src/lib/llm.js');
+
+  // The real failure: "unexpected end of hex escape at column 11411" threw away
+  // a complete 35-block article over two stray characters.
+  const broken = '{"summary":"bad \\u12","blocks":[]}';
+  assert.throws(() => JSON.parse(broken));
+  assert.deepEqual(JSON.parse(repairJson(broken)), { summary: 'bad \\u12', blocks: [] });
+
+  // Valid escapes and ordinary content must survive untouched.
+  const fine = '{"a":"fine \\u0041 ok","b":"tab\\tsep"}';
+  assert.deepEqual(JSON.parse(repairJson(fine)), JSON.parse(fine));
+});
+
+test('a lone surrogate in scraped text does not 400 the whole request', async () => {
+  const { sanitiseForJson } = await import('../src/lib/llm.js');
+
+  // The real failure: one orphaned surrogate in a scraped page made
+  // JSON.stringify emit \ud800, which Meta rejected as "unexpected end of hex
+  // escape" — losing a complete article over an invisible character.
+  const damaged = 'interview text \uD800 more text';
+  assert.ok(JSON.stringify({ t: damaged }).includes('\\ud800'));
+  assert.ok(!JSON.stringify({ t: sanitiseForJson(damaged) }).includes('\\ud800'));
+
+  // Real pairs — emoji, CJK, accents — must survive untouched.
+  const fine = 'emoji 🗂️ CJK 日本語 accents café';
+  assert.equal(sanitiseForJson(fine), fine);
+});

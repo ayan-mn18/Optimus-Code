@@ -1,0 +1,391 @@
+{
+  "slug": "design-top-k-youtube-videos",
+  "title": "Design Top K youtube videos",
+  "summary": "Exact top-K over billions of daily views is a counting and windowing problem, not a sorting problem. This guide builds a bucketed-counter design that survives hot keys and sliding windows.",
+  "kind": "HLD",
+  "problemSlug": "design-top-k-youtube-videos-150-325",
+  "topic": "More Interview Problems",
+  "difficulty": "Hard",
+  "coverEmoji": " 83",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Top-K",
+    "Streaming",
+    "System Design"
+  ],
+  "evidence": [
+    {
+      "url": "https://interviewexperiences.in/experience/sap-labs/sap-labs-t2-interview-experience",
+      "title": "Sap Labs (t2) - Sap Labs | Interview Experiences",
+      "source": "interviewexperiences.in",
+      "kind": "report",
+      "companies": [
+        {
+          "name": "SAP Labs",
+          "role": "Developer, Fullstack",
+          "date": "April 27, 2026",
+          "quote": "Design Top-K YouTube Videos system"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "Sap Labs (t2) - Sap Labs | Interview Experiences",
+      "url": "https://interviewexperiences.in/experience/sap-labs/sap-labs-t2-interview-experience",
+      "source": "interviewexperiences.in",
+      "kind": "article"
+    },
+    {
+      "title": "Design a Likes System - Scale Interview",
+      "url": "https://scaleinterview.ai/learn/system-design/likes-system",
+      "source": "scaleinterview.ai",
+      "kind": "article"
+    },
+    {
+      "title": "System Design in a Hurry - Course Flix",
+      "url": "https://courseflix.net/course/system-design-in-a-hurry",
+      "source": "courseflix.net",
+      "kind": "article"
+    },
+    {
+      "title": "YouTube Top K - System Design - Hello Interview",
+      "url": "https://www.hellointerview.com/learn/system-design/problem-breakdowns/top-k",
+      "source": "hellointerview.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "Nobody cares if you can sort. They care if you can **count at 1M+ events/sec without melting, then serve top-K in milliseconds across sliding windows**. This is a test of three judgments: **exact vs approximate**, **write-sharding vs read-merging**, and **where you put time**. Get those right and every follow-up becomes easy. Get them wrong and you drown in hot keys."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a service that continuously ingests a firehose of video view events and answers one query fast: **what are the top-K most-viewed videos for the last hour, day, month, and all-time?** Each event is essentially a `videoId` plus a timestamp. Reads are `GET /top?k=10&window=1h` style. Writes dwarf reads by 1000:1 or more. The query must return in well under a second, stay available when a single video goes viral, and handle late, duplicate, and out-of-order events without corrupting ranks."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`recordView(videoId, timestamp, userId?)` — fire-and-forget ingest, idempotent against retries.",
+        "`getTopK(k, window)` — returns ordered list of `{videoId, count}` for `window` in `{1h, 24h, 30d, all-time}`, where `k <= 100` typically.",
+        "Windows are **sliding**, not calendar-aligned. A query at 14:37 for `1h` means `[13:37, 14:37)`. That one word changes the entire storage design."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Top-K is deliberately under-specified. Small answers fork the architecture completely, so force the decisions in the first five minutes. Do not start drawing boxes until you have these."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Exact or approximate?",
+          "text": "Do ranks have to be perfectly correct at every second? For leaderboards and monetisation, usually yes for small K and no for the tail. Exact costs 10x more. Propose exact for top-100 with bounded staleness (e.g. 1 minute) and say so explicitly."
+        },
+        {
+          "title": "What counts as a view?",
+          "text": "One play event? 30 seconds watched? Unique per user per day? Deduplication rule decides whether you need per-user state or can blindly increment. Agree: count qualified views only, dedupe by eventId at ingest."
+        },
+        {
+          "title": "Scale and K range?",
+          "text": "How many views per day, how many distinct videos, what K? Assume ~70B views/day (~800k avg rps, 2-3M peak), ~10B distinct videos over years, K <= 100. If the interviewer gives different numbers, redo the math out loud."
+        },
+        {
+          "title": "Freshness and latency SLO?",
+          "text": "Can top-K lag by 60 seconds? Can getTopK take 200ms p99? Almost always yes. That concession lets you move from online sorting to micro-batch precomputation — the core trade-off of the whole problem."
+        },
+        {
+          "title": "Which windows really slide?",
+          "text": "Is 1h sliding by the second, or tumbling every minute? True per-second sliding is brutally expensive. Most production systems quantise to 1-minute buckets and accept ~1 minute error. Get permission for that."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Scope agreed before drawing architecture.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Ingest view events at millions rps with at-least-once delivery",
+          "Volume dominates every other decision"
+        ],
+        [
+          "Functional",
+          "Serve getTopK(k, window) ordered by count, k up to 100",
+          "Small K enables heap-merge instead of global sort"
+        ],
+        [
+          "Functional",
+          "Support 1h / 24h / 30d sliding + all-time",
+          "Forces bucketed counters, not single totals"
+        ],
+        [
+          "Non-functional",
+          "p99 read < 200ms, freshness lag < 60s",
+          "Justifies precomputation over on-demand scan"
+        ],
+        [
+          "Non-functional",
+          "No hot-key collapse when one video gets 5% of traffic",
+          "Rules out naive single-row counter"
+        ],
+        [
+          "Non-functional",
+          "Tolerate duplicates, late and out-of-order events",
+          "Requires event IDs + watermarking"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the naive approach and why it dies"
+    },
+    {
+      "type": "paragraph",
+      "text": "The obvious answer is a relational table `views(videoId PRIMARY KEY, count)` plus `UPDATE views SET count = count+1 WHERE videoId=?` on every view, then `SELECT ... ORDER BY count DESC LIMIT K`. It is correct on a whiteboard and catastrophic in production for three independent reasons. First, the hot key: a viral video concentrates millions of writes per minute onto one row, serialising on a single partition and timing out everything behind it. Second, the sort: ordering billions of rows on every query is a full-table sort you cannot index your way out of, because the sort key mutates constantly. Third, windows: a single cumulative counter cannot answer last-hour vs last-day without storing history, so you either rescan raw events (too slow) or you have no answer at all. Trade-off named: **naive optimises for code simplicity and sacrifices write scalability, read latency, and time-travel — all three SLOs that actually matter**."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Never propose this without killing it",
+      "text": "If you draw a single SQL counter and a global ORDER BY, interviewers mark you down unless the next sentence is why it fails. Say it fast: **single-row increments cannot absorb viral skew, and global sorts cannot serve at read time**. Then move to sharded counting plus pre-aggregated buckets."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design: bucket, shard, pre-merge"
+    },
+    {
+      "type": "paragraph",
+      "text": "Stop thinking sort-then-limit. Think **count in small time buckets, then sum buckets and keep only the top-K**. Split time into fixed 1-minute buckets per video: `count(videoId, minute)`. A 1-hour window is the sum of 60 buckets; a 24-hour window is 1440 buckets. This turns a sliding-window problem into 60-1440 point lookups plus a merge, which is cheap if you only track candidates. Writes go through a durable log into a stream processor that increments bucket counters with sharded writers to defeat skew. Reads never touch the event stream — they hit a Top-K serving layer that maintains precomputed leaderboards refreshed every 30-60 seconds. Trade-off named: **you trade ~1 minute of freshness for 100x cheaper reads and immunity to hot keys**. That is almost always the right trade for a leaderboard."
+    },
+    {
+      "type": "mermaid",
+      "title": "End-to-end write and read paths",
+      "caption": "Writes are buffered and aggregated; reads are served from precomputed leaderboards.",
+      "code": "flowchart TD\n  C[Clients / Playback Events] --> G[API Gateway / Ingest]\n  G --> K[(Kafka - view-events)]\n  K --> S[Flink / Streaming Aggregator]\n  S --> B[(Cassandra - bucket counts)]\n  S --> R[(Redis - leaderboard cache)]\n  B --> T[Top-K Builder - periodic job]\n  T --> R\n  U[Dashboard / API] --> R\n  U --> B"
+    },
+    {
+      "type": "paragraph",
+      "text": "Ingest is a classic log-first pipeline. Playback servers emit `{eventId, videoId, ts}` to Kafka partitioned by `hash(videoId)` with extra salting for celebrities — append a random shard suffix to the key of the top 0.01% of videos so one partition does not saturate. Flink consumes with 10-30 second micro-batches, dedupes by `eventId` in a RocksDB state store, drops late events beyond a 5-minute watermark into a side output, and emits increments to Cassandra as `INCR bucket(videoId, minute)`. Cassandra is chosen because it absorbs massive counter writes and wide-row time ranges well; the trade-off is that its counters are hard to make exactly-once, which is why dedupe happens upstream in Flink, not in the database. A separate Top-K Builder runs every 30 seconds per window, scans only plausible contenders, computes sums with a bounded heap, and writes the frozen top-500 per window into Redis. Reads are a single Redis lookup plus an optional live-delta patch from the last partial minute."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Data model and storage choices"
+    },
+    {
+      "type": "paragraph",
+      "text": "Use two stores because no single store is good at both high-rate increments and ordered top-K serving. Cassandra holds history: row key `(videoId, window_granularity)`, clustering column `minuteTs`, value `count`. TTL the 1-minute buckets after 35 days so storage stays bounded; all-time totals live in a separate compacted table updated by batch rollup, not on the hot path. Redis holds serving state: `ZSET top:1h`, `ZSET top:24h` with score equal to window count, refreshed wholesale by the builder to avoid read-modify-write races. Back-of-envelope: 70B views/day is ~48M per minute across ~5M active videos. Storing one 16-byte counter per active video per minute is ~80MB/min of new counter data before replication — large but trivial for a Cassandra cluster, and reads only fetch the few thousand candidates tracked by the builder, not all 5M. Trade-off: **you pay 2-3x write amplification and duplicate storage to make reads O(K log N_candidates) instead of O(total videos)**."
+    },
+    {
+      "type": "mermaid",
+      "title": "Core services and stores",
+      "caption": "Separation of counting, history, and serving keeps each path independently scalable.",
+      "code": "classDiagram\n  class IngestAPI {\n    +recordView(eventId, videoId, ts)\n  }\n  class StreamAggregator {\n    +dedupe(eventId)\n    +aggregateBucket()\n  }\n  class BucketStore {\n    +incr(videoId, minute, delta)\n    +rangeSum(videoId, start, end)\n  }\n  class TopKBuilder {\n    +rebuild(window)\n  }\n  class TopKServing {\n    +getTopK(k, window)\n  }\n  IngestAPI --> StreamAggregator\n  StreamAggregator --> BucketStore\n  TopKBuilder --> BucketStore\n  TopKBuilder --> TopKServing\n  TopKServing --> BucketStore"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code — the only algorithm that matters"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers do not want Kafka configs. They want the merge logic that turns bucket sums into top-K without scanning every video. The pattern is: maintain a candidate set from the previous leaderboard plus recent heavy hitters, re-score only those, keep a min-heap of size K. Full rescoring of billions of keys never happens. Below is the builder core in Java and a sketch of the streaming bucket updater in Python. Both fit on a whiteboard and prove you understand why reads stay cheap."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "TopKBuilder.java",
+      "code": "import java.util.*;\n\npublic class TopKBuilder {\n    // Re-score only candidates: prevTop + heavyHitters. Never scan all videos.\n    // Trade-off: may miss a dark-horse video; fixed by admitting sampled tail.\n    public List<VideoScore> rebuildTopK(\n            Set<String> candidates,\n            BucketStore store,\n            long windowStart, long windowEnd, int k) {\n        PriorityQueue<VideoScore> heap =\n            new PriorityQueue<>(Comparator.comparingLong(v -> v.count));\n        for (String videoId : candidates) {\n            long c = store.rangeSum(videoId, windowStart, windowEnd);\n            if (c == 0) continue;\n            if (heap.size() < k) heap.offer(new VideoScore(videoId, c));\n            else if (c > heap.peek().count) {\n                heap.poll();\n                heap.offer(new VideoScore(videoId, c));\n            }\n        }\n        List<VideoScore> out = new ArrayList<>(heap);\n        out.sort((a, b) -> Long.compare(b.count, a.count));\n        return out;\n    }\n    record VideoScore(String videoId, long count) {}\n    interface BucketStore {\n        long rangeSum(String videoId, long start, long end);\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "aggregator.py",
+      "code": "from collections import defaultdict\n# Micro-batch aggregator: collapse 10s of raw events into one bucket write.\n# Trade-off: 10-30s extra lag for 100x fewer DB writes. Always take it.\nbuckets: dict[tuple[str, int], int] = defaultdict(int)\nseen_ids: set[str] = set()  # in prod: RocksDB + TTL, not memory\n\ndef on_event(event_id: str, video_id: str, minute_ts: int):\n    if event_id in seen_ids:\n        return  # dedupe retry / double-play\n    seen_ids.add(event_id)\n    buckets[(video_id, minute_ts)] += 1\n\ndef flush(store):\n    for (video_id, minute_ts), delta in buckets.items():\n        store.incr(video_id, minute_ts, delta)  # sharded write\n    buckets.clear()"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Costs are in buckets and candidates, never in total events.",
+      "headers": [
+        "Operation",
+        "Cost",
+        "Note"
+      ],
+      "rows": [
+        [
+          "Ingest one view",
+          "O(1) amortised",
+          "Batched in memory, one sharded counter write per bucket per flush"
+        ],
+        [
+          "Rebuild window W",
+          "O(C * B) + O(C log K)",
+          "C = candidates (~10k), B = buckets in window (60 / 1440)"
+        ],
+        [
+          "Serve getTopK",
+          "O(K) or O(log N + K)",
+          "Single Redis ZREVRANGE; no DB scan on hot path"
+        ],
+        [
+          "Storage, sliding windows",
+          "O(activeVideos * retention / bucketSize)",
+          "TTL minute buckets; all-time kept separately"
+        ],
+        [
+          "Memory in Flink",
+          "O(events in watermark window)",
+          "Dedupe state bounded by 5-min watermark + TTL"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency and the hardest follow-up: hot keys and exactness"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two failures kill most candidates. First, viral skew: one video doing 100k rps will saturate a single Kafka partition and a single Cassandra row if you key naively by `videoId`. Fix it with key salting — writers append `shard = random(N)` to the key (`videoId#shard`), Flink sums N shards at flush time, and no single writer or partition exceeds `total/N`. You pay N times more counter rows and a slightly more expensive read-merge; that is the price of surviving virality. Second, exactness under retries: at-least-once delivery plus blind increments double-counts. Fix it with idempotency upstream: every playback event carries a UUID, Flink dedupes within the watermark horizon, and Cassandra only sees collapsed bucket deltas. Late events past the watermark do not patch the frozen leaderboard — they land in the bucket store and appear at the next rebuild. State this bluntly: **true real-time exact top-K over a sliding window at YouTube scale does not exist; every production system is bounded-staleness plus bounded-candidate exactness**. Interviewers promote candidates who name that limit instead of hand-waving it."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The trap: true sliding windows",
+      "text": "If you sum 1-minute buckets, a query at 14:37:20 covers a partial first and last bucket. Either **pro-rate the edge buckets or accept ~1 minute of error** — say which. Candidates who claim per-second precision with minute buckets lose credibility instantly."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Per-country / per-category top-K?",
+          "text": "Do not multiply the whole pipeline. Add dimensions to the bucket key: (videoId, country, minute). Storage grows by cardinality of the dimension — say that cost out loud and suggest limiting to top countries only."
+        },
+        {
+          "title": "Unique viewers instead of raw views?",
+          "text": "Counting distinct users needs HyperLogLog per bucket, not counters. Merging HLLs gives ~1% error. Trade-off: exact uniques would require per-user sets — infeasible at this scale."
+        },
+        {
+          "title": "Fraud / view farming?",
+          "text": "Cap views per user per video per day in Flink, flag velocity anomalies, quarantine suspicious shards. Never let filtering block the hot path — do it as a side-output that subtracts."
+        },
+        {
+          "title": "All-time top-K for years?",
+          "text": "Do not sum minute buckets back to 2005. Maintain a separate cumulative table updated by daily batch rollup, rebuilt with a heap over monthly rollups. Different SLO, different pipeline."
+        },
+        {
+          "title": "Sudden spike alerts (trending)?",
+          "text": "Compare short-window rate vs long-window baseline per candidate. Reuse the same bucket store with a velocity ratio — no new ingest needed, just a second builder query."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Duplicate delivery: same `eventId` arrives twice — dedupe in stream state, never in Redis.",
+        "Late event past watermark: write to bucket store, skip frozen leaderboard, converge on next rebuild.",
+        "Partial edge buckets at query time: document pro-rating vs truncation.",
+        "Ties at rank K: deterministic tie-break by `videoId` so pagination is stable.",
+        "Video deleted or made private: tombstone in serving layer; filter at read, purge lazily from history.",
+        "Cold start: empty candidate set on deploy — seed from batch rollup, not from live traffic.",
+        "Clock skew across playback servers: bucket by event time, not processing time, with watermark grace."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak answers describe boxes. Strong answers quantify trade-offs.",
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Counting",
+          "Single SQL counter + ORDER BY",
+          "Sharded bucket counters + micro-batch collapse, names hot-key limit"
+        ],
+        [
+          "Windowing",
+          "One total per video",
+          "Fixed minute buckets summed per window, edge-bucket policy stated"
+        ],
+        [
+          "Serving",
+          "Sort on every read",
+          "Periodic heap-merge over bounded candidates into Redis ZSET"
+        ],
+        [
+          "Scale math",
+          "No numbers",
+          "70B/day -> ~1M rps, sizes bucket storage and rebuild cost"
+        ],
+        [
+          "Correctness",
+          "Ignores duplicates / late events",
+          "Event IDs, watermark, idempotent flush, staleness bound stated"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Your 45-minute plan",
+      "text": "0-5: pin exactness, view definition, K, freshness. 5-10: back-of-envelope (rps, storage, read QPS). 10-25: write path — Kafka, salted keys, Flink dedupe, Cassandra buckets. 25-35: read path — candidate heap-merge, Redis ZSET, live-delta patch. 35-45: hard follow-ups — hot keys, HLL uniques, per-country fan-out, fraud. Close with the honest line: **bounded staleness plus bounded candidates is how every real top-K ships**."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:45:49.185Z",
+    "problems": []
+  }
+}

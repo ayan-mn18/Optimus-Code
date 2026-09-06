@@ -1,0 +1,310 @@
+{
+  "slug": "sql-vs-nosql",
+  "title": "Sql vs NoSql",
+  "summary": "SQL vs NoSQL is a consistency, shape, and scale trade-off — not a product war. When joins and correctness matter, pay for SQL. When key-based scale and flexible shape matter, pay for NoSQL.",
+  "kind": "HLD",
+  "problemSlug": "sql-vs-nosql-91-200",
+  "topic": "System Design Tradeoffs",
+  "difficulty": "Medium",
+  "coverEmoji": " f5c4 ",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "System Design Tradeoffs",
+    "Databases",
+    "SQL",
+    "NoSQL"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Understanding SQL vs NoSQL Databases - MongoDB",
+      "url": "https://www.mongodb.com/resources/basics/databases/nosql-explained/nosql-vs-sql",
+      "source": "mongodb.com",
+      "kind": "article"
+    },
+    {
+      "title": "SQL vs. NoSQL Databases: What's the Difference? - IBM",
+      "url": "https://www.ibm.com/think/topics/sql-vs-nosql",
+      "source": "ibm.com",
+      "kind": "article"
+    },
+    {
+      "title": "SQL vs NoSQL: 5 Critical Differences - Integrate.io",
+      "url": "https://www.integrate.io/blog/the-sql-vs-nosql-difference/",
+      "source": "integrate.io",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "This is not a product comparison. It is a **contract choice**. **SQL promises: fixed shape, joins, and multi-row correctness — and charges you in scale and rigidity.** **NoSQL promises: flexible shape and linear, key-based scale — and charges you in query power and consistency.** If you cannot name what you are giving up, you have not made a design decision, you have picked a logo."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What SQL and NoSQL actually are"
+    },
+    {
+      "type": "paragraph",
+      "text": "SQL means the **relational model**. Data lives in tables with a declared schema, typed columns, primary keys, foreign keys, and constraints. You access it with a declarative language that lets you join, filter, aggregate, and transact across rows in one statement. The database owns correctness: it enforces uniqueness, referential integrity, atomicity, and isolation. The trade-off is explicit — you must decide the shape up front, and every write pays the cost of checks, index maintenance, write-ahead logging, and coordination. That is why SQL is strong where relationships and invariants matter and painful where shape changes weekly or traffic grows by orders of magnitude on a fixed schema."
+    },
+    {
+      "type": "paragraph",
+      "text": "NoSQL is not one thing. It is four different storage models hiding under one negative label: **document** stores (JSON-like objects keyed by ID, good for self-contained aggregates), **key-value** stores (opaque blobs by key, good for sessions, caches, and feature flags), **wide-column** stores (sparse, massive sorted maps partitioned by row key, good for time-series and high-write ingestion), and **graph** stores (nodes plus edges with index-free traversal, good for highly connected queries). What unites them is what they drop: no fixed global schema, no general joins, usually no multi-row ACID by default. What they buy with that sacrifice is **partitionability** — data that can be sharded by key hash with minimal cross-partition coordination, plus a write path tuned for throughput over immediate global truth."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: where the work happens"
+    },
+    {
+      "type": "mermaid",
+      "title": "Write path comparison",
+      "caption": "SQL serialises through constraints and a log; NoSQL hashes by key and acknowledges fast.",
+      "code": "flowchart TD\n  Client[App Write] --> R{Need joins + multi-row rules?}\n  R -->|Yes| S[SQL Leader / Primary]\n  S --> WAL[WAL + B-Tree + Constraint Checks]\n  WAL --> ACK1[Strong ACK after commit]\n  R -->|No| N[NoSQL Partition by Key Hash]\n  N --> LSM[Memtable + SSTable / LSM]\n  LSM --> Q{Quorum or Leader Ack?}\n  Q --> ACK2[Fast ACK, Repair Later]"
+    },
+    {
+      "type": "paragraph",
+      "text": "In a SQL engine the write path is a **correctness funnel**. The row arrives, the engine validates types, constraints, and foreign keys, appends to a write-ahead log for durability, updates B-tree pages and every secondary index, and holds locks or uses MVCC to isolate concurrent transactions. A commit means every replica rule and every declared invariant held at one logical instant. Reads can then ask arbitrarily hard questions — three-way joins, window functions, serializable transfers — because the data was normalised and indexed on write. The trade-off is that the leader, the lock manager, and the index fan-out become the bottleneck. Vertical scaling hides this for a long time; sharding exposes it brutally because a join that used to be local is now a scatter-gather across the network."
+    },
+    {
+      "type": "paragraph",
+      "text": "In most NoSQL engines the write path is a **distribution funnel**. The client key is hashed to find the owning partition, the write lands in memory and an append-only log, and the engine acknowledges as soon as a quorum or a partition leader has it — compaction, secondary indexing, and cross-replica convergence happen in the background via LSM merges, hinted handoff, or read repair. There is no global constraint check because there is no global to check against without killing availability and latency. Reads are then brutally fast *if* you ask by partition key and sort key, and brutally slow or impossible if you ask an ad-hoc relational question. You traded general query power for predictable single-key latency at massive concurrency and a near-linear add-nodes-get-throughput curve."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly stated"
+    },
+    {
+      "type": "table",
+      "caption": "Every row is a billed cost. Pick which bill you want to pay.",
+      "headers": [
+        "Dimension",
+        "SQL reality",
+        "NoSQL reality"
+      ],
+      "rows": [
+        [
+          "Schema",
+          "Fixed, enforced up front. Migrations are explicit and sometimes painful, but readers never guess field types.",
+          "Dynamic or schema-on-read. You ship fast, but validation moves to application code and silent shape drift becomes a bug class."
+        ],
+        [
+          "Query power",
+          "Declarative joins, aggregations, window functions across tables in one round trip. Best for unknown future questions.",
+          "Key-based gets and narrow range scans. Cross-entity questions require denormalisation, secondary indexes with caveats, or application-side joins."
+        ],
+        [
+          "Transactions",
+          "Multi-row ACID with isolation levels is native. Correctness for money, inventory, reservations is straightforward.",
+          "Single-key atomicity is common; multi-partition transactions are limited, slower, or absent. You implement sagas and idempotency yourself."
+        ],
+        [
+          "Scaling pattern",
+          "Vertical first. Horizontal via read replicas and sharding, but sharding breaks joins and transactions — the reason you chose SQL.",
+          "Horizontal by design via consistent hashing and partition ownership. Add nodes, rebalance token ranges, gain throughput almost linearly."
+        ],
+        [
+          "Consistency vs availability",
+          "Strong consistency by default. Under partition, writes block or fail rather than diverge. Latency tail grows with coordination.",
+          "Tunable: quorum, leader-lease, or eventual. Under partition, stays writable and diverges; you pay in stale reads and conflict resolution."
+        ],
+        [
+          "Operations",
+          "Mature tooling, query planner, backups, and a 40-year hiring pool. Failure modes are well understood.",
+          "Easier to scale out, harder to reason about. Compaction, hot partitions, tombstones, and secondary-index lag are new operational taxes."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The scaling row is the one interviewers probe because it inverts. SQL scales *reads* well with replicas but scales *writes* poorly once a single leader saturates IOPS or the working set outgrows memory — adding replicas does not add write throughput and sharding reintroduces the application-level routing, cross-shard transactions, and rebalancing pain you were trying to avoid. NoSQL scales writes well because there is no single serialisation point for unrelated keys, but it scales *query flexibility* poorly: every new access pattern that is not key-aligned forces a new index, a new denormalised table, or a full scan with a Spark job bolted on the side. State this inversion explicitly. It signals you understand that scale is not one axis — write throughput, data volume, and question complexity scale independently."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Horizontal does not mean infinite",
+      "text": "Saying **NoSQL scales horizontally** without qualification is a junior answer. It scales linearly *only* for uniform key distributions with no hot keys and no cross-partition transactions. A celebrity key, a monotonic timestamp prefix, or a secondary index with low cardinality will pin one partition and your p99 will collapse while average CPU looks idle. Always add: **partition strategy is the design**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "SQL systems rarely fail by losing data — they fail by **refusing to move**. The classic death is connection exhaustion plus lock contention: checkout latency climbs from 40ms to 4 seconds, the dashboard shows CPU at 30% but `active sessions` pegged, replicas lag because one long-running analytics query holds MVCC bloat, and autoscaling the app tier makes it worse by opening more connections against the same leader. The second classic is a sharding regret — after splitting by customer ID, the finance report that joined orders to refunds now fans out to 64 shards, times out, and gets moved to an overnight extract. Symptom to memorise: **low resource utilisation with high wait time** — locks, latches, WAL sync, and connection queues, not CPU."
+    },
+    {
+      "type": "table",
+      "caption": "Failure signature cheat sheet for on-call and interviews.",
+      "headers": [
+        "Failure",
+        "Symptom you observe",
+        "Root trade-off"
+      ],
+      "rows": [
+        [
+          "SQL leader saturation",
+          "Write p99 spikes, replica lag grows, app retries amplify load; CPU may look fine while lock waits explode",
+          "Strong consistency serialises unrelated writes through one log and lock manager"
+        ],
+        [
+          "SQL schema migration lock",
+          "Deploy hangs, `ALTER TABLE` blocks reads/writes for minutes on a large table",
+          "Fixed schema buys reader certainty, charges deploy-time coordination"
+        ],
+        [
+          "NoSQL hot partition",
+          "One node at 95% CPU and throttling while others idle; p99 keyed to one tenant or timestamp prefix",
+          "Hash partitioning assumes uniform keys; skew breaks the linear-scale promise"
+        ],
+        [
+          "NoSQL eventual-visibility bug",
+          "User posts, refreshes, post is gone; double-charge after retry; feed shows stale counts for seconds",
+          "Fast ACK before global convergence trades immediate truth for availability"
+        ],
+        [
+          "NoSQL index / denorm drift",
+          "Counts do not match, search shows deleted items, dual-write left orphan rows after partial failure",
+          "No joins means you pre-join in app code — every copy is a consistency liability"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "NoSQL systems fail the opposite way — they keep moving and **lie a little**. An eventually consistent document store will acknowledge a write on one replica and serve a stale read from another for hundreds of milliseconds; under retry storms without idempotency keys that becomes duplicate orders or double-applied ledger deltas. A wide-column store with tombstones and compaction lag will show deleted data resurrected after repair, or reads that get slower as SSTable count grows until compaction catches up. The operational tell is **divergence, not blockage**: dashboards green, error rate low, but business invariants violated — balances off by one, carts losing items, counters drifting. The fix is never just more nodes; it is quorum tuning, idempotent producers, single-writer-per-key discipline, and treating secondary indexes as best-effort rather than truth."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What the choice looks like in code and config"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "orders.sql",
+      "code": "-- SQL: shape and rules live in the database.\n-- Trade-off: strong invariants, but migrations are coordinated events.\nCREATE TABLE orders (\n  order_id   BIGINT PRIMARY KEY,\n  user_id    BIGINT NOT NULL REFERENCES users(user_id),\n  status     TEXT NOT NULL CHECK (status IN ('pending','paid','shipped')),\n  total_cents INT NOT NULL CHECK (total_cents >= 0),\n  created_at TIMESTAMPTZ NOT NULL DEFAULT now()\n);\n-- One statement enforces a cross-row business question atomically.\nBEGIN;\nUPDATE accounts SET balance_cents = balance_cents - 5000 WHERE user_id = 42;\nINSERT INTO orders(order_id, user_id, status, total_cents) VALUES (101, 42, 'paid', 5000);\nCOMMIT;"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "orders_denorm.py",
+      "code": "# NoSQL (document): shape lives in the app, access is by key.\n# Trade-off: fast key lookup + schema freedom, but no cross-doc ACID here.\norder_doc = {\n  \"_id\": \"order:101\",          # partition key: point lookup only\n  \"user_id\": 42,\n  \"status\": \"paid\",\n  \"total_cents\": 5000,\n  \"items\": [{\"sku\": \"kb-87\", \"qty\": 1}],  # denormalised: no join\n  \"v\": 3                        # app-owned version for CAS / idempotency\n}\n# collection.replace_one({\"_id\": \"order:101\", \"v\": 2}, order_doc)\n# Cross-entity transfer needs a saga + idempotency key, not BEGIN/COMMIT."
+    },
+    {
+      "type": "paragraph",
+      "text": "Read those two snippets as contracts, not syntax. The SQL version says the database will reject a negative total, reject an orphaned user, and roll back the debit if the insert fails — correctness centralised where every writer inherits it. The document version says any service can add a field tomorrow without a migration, and a point read by ID will be single-digit milliseconds at huge concurrency — but nothing stops two services writing incompatible shapes or leaving the account debit and the order insert half-applied. That is why experienced teams put validation schemas, version fields, and outbox tables around NoSQL writes: they are re-implementing, badly and partially, the guarantees they declined from the relational engine. Name that cost when you propose denormalisation."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They give you a workload, not a database question",
+          "text": "Design URL shortener, rate limiter, e-commerce checkout, social feed. Your first move is to extract access patterns: point lookups vs joins, read-write ratio, consistency need per operation. Never answer SQL or NoSQL before listing queries."
+        },
+        {
+          "title": "They force a scale number",
+          "text": "1M vs 1B rows, 100 vs 100K writes per second. Explain the knee: SQL leader handles the first comfortably; past the write or working-set knee you either shard SQL and lose its benefits or move hot-key paths to NoSQL. Quantify, do not hand-wave."
+        },
+        {
+          "title": "They add the painful query",
+          "text": "After you pick NoSQL for the feed, they ask for ad-hoc analytics or refunds-by-merchant joins. This tests whether you admit the miss and add a relational or warehouse sidecar with CDC, rather than pretending secondary indexes solve everything."
+        },
+        {
+          "title": "They inject a failure",
+          "text": "What if two users buy the last item? What if a retry double-submits? SQL answer is isolation plus constraints; NoSQL answer is conditional writes, idempotency keys, and single-writer or saga. They grade the mechanism, not the brand."
+        },
+        {
+          "title": "They ask for the final pick and the regret",
+          "text": "Close with: I pick X for paths A and B because of reasons, keep Y for path C, and my regret condition is Z — when data relationships or compliance force multi-row truth, I migrate that slice back. Designers who name their regret get hired."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**NoSQL is faster than SQL** — meaningless without a query. Faster for key lookups at scale, dramatically slower for ad-hoc joins and aggregations that SQL plans in milliseconds.",
+        "**SQL cannot scale** — it scales vertically a very long way and reads scale with replicas. It scales *writes and cross-shard relations* poorly. Precision here matters.",
+        "**NoSQL means no schema** — it means schema-on-read. Production NoSQL without JSON-schema validation, versioning, and compatibility tests becomes an unqueryable swamp within months.",
+        "**Eventual consistency is free availability** — it is deferred work: conflict resolvers, repair jobs, user-visible staleness handling, and support tickets about missing writes.",
+        "**Denormalisation is free performance** — every duplicated field is a future inconsistency. Each copy needs an owner, a backfill, and a repair path or it will drift.",
+        "**One database must win** — serious systems are polyglot. Checkout ledger in SQL, session and feed in NoSQL, search and analytics streamed off via change-data-capture. Arguing for purity is a red flag."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use which — and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Default rules you can defend, with the exception that proves each.",
+      "headers": [
+        "Use SQL when",
+        "Use NoSQL when",
+        "Do not do this"
+      ],
+      "rows": [
+        [
+          "Money, inventory, reservations — any invariant spanning rows must hold instantly",
+          "High-write ingestion keyed by ID or time: events, metrics, sessions, carts, feeds",
+          "Do not put a ledger in eventual storage to avoid a migration; the audit will find it"
+        ],
+        [
+          "Relationships are the product: joins, filters, reports you cannot enumerate yet",
+          "Shape evolves fast and reads are key-shaped: catalogs, profiles, content blobs",
+          "Do not model a graph traversal in SQL with 7 self-joins or in a KV store with N+1 gets"
+        ],
+        [
+          "Compliance needs provable transactions, constraints, and mature backups",
+          "You need elastic throughput and geo-local latency with partition tolerance",
+          "Do not shard SQL on day one for imagined scale; you pay the join tax before you have load"
+        ],
+        [
+          "Team is small and query flexibility beats raw throughput",
+          "Hot keys, huge cardinality, TTL-heavy or append-only workloads dominate",
+          "Do not use NoSQL as a queue or relational engine via secondary-index gymnastics"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The grown-up answer is almost always **both, with a boundary**. Keep the system of record that requires truth — payments, entitlements, core domain state — in a relational database where constraints and transactions are cheap relative to the cost of being wrong. Serve the paths that require speed and volume — session reads, personalised feeds, device shadows, high-cardinality events — from a key-partitioned store sized by quota per tenant to avoid hot partitions. Bridge them with change-data-capture or an outbox, not dual writes, so the NoSQL view is a derived cache you can rebuild rather than a second source of truth you must reconcile by hand. The trade-off you accept is operational surface: two systems to run, monitor, and back up — justified only because each workload gets the guarantee it actually needs."
+    },
+    {
+      "type": "mermaid",
+      "title": "Decision flow",
+      "caption": "Start from queries and invariants, not from product preference.",
+      "code": "graph TD\n  Start[New workload + queries] --> Q1{Multi-row joins or ACID invariants?}\n  Q1 -->|Yes, core| SQL[SQL system of record]\n  Q1 -->|No| Q2{Key access + huge write scale or flexible shape?}\n  Q2 -->|Yes| NOSQL[NoSQL serving store]\n  Q2 -->|No| SQL\n  SQL --> Q3{Both hot paths?}\n  Q3 -->|Yes| BOTH[SQL truth + NoSQL view via CDC]\n  NOSQL --> Q3"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Choose SQL when correctness across rows is the feature, choose NoSQL when key-based scale and shape flexibility is the feature — and split them with CDC when one workload needs both.** Then name your partition key, your isolation or quorum level, and what you lose."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:30:43.118Z",
+    "problems": []
+  }
+}

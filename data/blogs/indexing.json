@@ -1,0 +1,280 @@
+{
+  "slug": "indexing",
+  "title": "Indexing",
+  "summary": "Database indexing for HLD: what an index is, how B+ tree seeks work, clustered vs secondary trade-offs, and when indexes help or hurt.",
+  "kind": "HLD",
+  "problemSlug": "indexing-92-204",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "🗂️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "Indexing"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "How Does Indexing Work | Atlassian",
+      "url": "https://www.atlassian.com/data/databases/how-does-indexing-work",
+      "source": "atlassian.com",
+      "kind": "article"
+    },
+    {
+      "title": "Indexing in Databases - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/dbms/indexing-in-databases-set-1/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Database index - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Database_index",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "An index does not make your database faster. It makes **one class of reads cheaper by making writes and storage more expensive**. Every indexing decision is a bet that the reads you accelerate are worth the writes you slow down. If you cannot name both sides, you do not understand indexing."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "An index is a separate, maintained copy of a subset of your table — the **search key** columns plus a **row locator** — kept in a structure built for lookup instead of storage. The table holds complete rows in heap or clustered order. The index holds `(key, pointer)` pairs sorted or hashed so the engine can jump to matching rows without scanning every page. That separation is why it is powerful and why it costs you: there are now two structures to store, and every write to the table must also update every index that covers the changed columns, in the same transaction."
+    },
+    {
+      "type": "paragraph",
+      "text": "Two distinctions control the rest of the design. A **clustered index** defines the physical order of the table itself — the leaf pages *are* the rows. You get one per table, which is why you spend it on the primary access path, usually the primary key. Everything else is a **secondary index**: a separate structure whose leaves point back to the row, either by primary key or by physical locator. A **covering index** goes one step further and stores enough extra columns in its leaves to answer the query without touching the table at all. That choice — pointer-chase versus fat leaf — is a direct trade-off between read speed and write plus storage cost."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**B+ tree (the default):** sorted, balanced, supports equality *and* range scans plus `ORDER BY`. Choose this unless you have a reason not to.",
+        "**Hash index:** `O(1)` point lookups, useless for ranges and ordering. Narrow use: in-memory key-value lookups.",
+        "**Bitmap index:** one bit-vector per distinct value. Wins on low-cardinality columns (`status`, `region`) with heavy analytics reads. Loses on write-heavy OLTP because updates lock large bit ranges.",
+        "**Inverted / full-text index:** maps term to the list of rows containing it. Built for search predicates, not relational filters.",
+        "**Partial and expression indexes:** index only rows matching a predicate, or the result of a function like `lower(email)`. Smaller and faster, at the cost of matching only queries that use the identical predicate or expression."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: how a lookup avoids a scan"
+    },
+    {
+      "type": "paragraph",
+      "text": "Production relational systems converge on the B+ tree for one quantitative reason: **fanout**. Each node is a disk page holding hundreds of keys, so a tree of height 3–4 can address tens of millions of rows. A point lookup reads one page per level — typically 3–4 random reads — instead of scanning thousands of heap pages. Range scans are cheap for the same reason: once you find the start key, you walk the linked leaf chain in order. The internal nodes contain only keys and child pointers, which keeps them narrow and cache-resident. The leaves contain keys plus row locators. That shape is why B+ trees serve both `WHERE user_id = ?` and `WHERE created_at BETWEEN ? AND ? ORDER BY created_at` from the same structure, where a hash index would fail the second query outright."
+    },
+    {
+      "type": "mermaid",
+      "title": "Read path",
+      "caption": "Optimizer chooses index seek versus full scan based on selectivity.",
+      "code": "flowchart TD\n  Q[Query arrives] --> O[Optimizer estimates selectivity]\n  O --> S{Selective predicate on indexed column?}\n  S -->|Yes| I[Index seek: traverse B+ tree]\n  I --> H[Fetch heap rows via row pointers]\n  S -->|No| F[Full scan: read every page]\n  H --> R[Return rows]\n  F --> R"
+    },
+    {
+      "type": "paragraph",
+      "text": "The optimizer does not use your index because it exists. It uses it because the statistics say it is selective enough to beat a sequential scan. A predicate matching 0.1% of a large table is a clear index seek: a few leaf pages plus a handful of heap fetches. The same index on a predicate matching 40% of the table is correctly ignored, because random heap fetches for half the table cost more than one sequential pass. This is the trade-off most engineers miss: **the index only pays off when selectivity is high or the index covers the query**. Column order in composite indexes follows the same logic — put the equality column first, the range column last — because a range breaks the sortedness the engine relies on for everything after it."
+    },
+    {
+      "type": "mermaid",
+      "title": "B+ tree layout",
+      "caption": "Internal nodes route, leaves hold keys and row locators.",
+      "code": "graph TD\n  R[Root page] --> A[Internal page A]\n  R --> B[Internal page B]\n  A --> L1[Leaf keys + row pointers]\n  A --> L2[Leaf keys + row pointers]\n  B --> L3[Leaf keys + row pointers]\n  L1 --> L2\n  L2 --> L3\n  L1 --> H[Heap table pages]\n  L2 --> H\n  L3 --> H"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every benefit has a priced cost. Design is choosing which bill to pay.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Add B+ tree on filter column",
+          "Point and range reads drop from O(n) pages to O(log n)",
+          "Extra storage ~ key size x rows; every insert/update/delete does extra tree maintenance"
+        ],
+        [
+          "Covering index with INCLUDE columns",
+          "Eliminates heap fetch; fastest read path",
+          "Much wider leaves, slower writes, larger memory footprint in buffer pool"
+        ],
+        [
+          "Many secondary indexes",
+          "More query shapes are accelerated",
+          "Write amplification grows linearly; vacuum and replication lag grow with it"
+        ],
+        [
+          "Hash index",
+          "Fastest equality lookup, compact",
+          "No ranges, no ordering, no prefix search — wrong default for most workloads"
+        ],
+        [
+          "Bitmap on low-cardinality column",
+          "Tiny analytic scans with AND/OR across vectors",
+          "Write contention and expensive updates; poor fit for hot OLTP columns"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The write path is where the price is collected. An insert must place the row *and* insert one entry into every index on that table, potentially splitting leaf pages. An update to an indexed column is a delete-plus-insert inside each affected index. A delete must remove each entry. All of that happens inside the write transaction, which is why over-indexed tables show higher `INSERT` latency, larger write-ahead logs, and slower replicas — the followers replay every index maintenance operation. You trade bounded, visible read latency for diffuse, harder-to-attribute write cost. Measure both."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure one is the **missing or unusable index**. Symptom: `p99` for one endpoint climbs linearly with table size while CPU and I/O on the primary saturate during sequential scans. You confirm it with `EXPLAIN`: `Seq Scan` on a million-row table with `rows` far above the `LIMIT`, plus a filter that removes 99% of rows after reading them. Root causes are usually a function wrapped around the column (`WHERE lower(email) = ?` without an expression index), a type mismatch that defeats the seek, or a leading-wildcard `LIKE '%foo'` that no B+ tree can serve. The fix is not adding an index blindly — it is rewriting the predicate or adding the matching expression index so the seek is legal."
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure two is the **over-indexed hot table**. Symptom: reads are fast but writes stall, deadlocks spike on the same keys, and replicas lag behind the primary under load. Each additional secondary index adds maintenance work to the write path and widens the lock footprint during splits. I have seen write-heavy tables with seven secondary indexes where dropping three unused ones cut insert latency in half. The trade-off was explicit: three rare ad-hoc query shapes got slower so the common write path survived. Audit `pg_stat_user_indexes` or your engine equivalent for zero-scan indexes and delete them."
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure three is the **low-selectivity and bloat trap**. Symptom: the index exists and is used, yet the query is still slow, or performance degrades weeks after launch without traffic change. Indexing a boolean or status column with two values rarely helps — the engine still fetches half the heap at random. Worse, heavy update/delete churn fragments the tree and leaves dead entries until vacuum or rebuild reclaims them, so the index grows while buffer-pool hit rate falls. Fragmentation shows up as rising logical reads for the same query and an index far larger than `key size x live rows`. The honest fix is a partial index on the rare value, a covering index if heap fetches dominate, or admitting the query wants a different access path entirely."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "What to monitor",
+      "text": "Watch **sequential scans per query shape, index hit rate, index size versus table size, and write latency as you add indexes**. If a new index does not move `EXPLAIN` from `Seq Scan` to `Index Seek` on the target query in staging, do not ship it — you are buying cost with no benefit."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete form"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "schema.sql",
+      "code": "-- Equality first, range last. INCLUDE keeps leaves covering without widening the key.\nCREATE INDEX idx_orders_user_created\n  ON orders (user_id, created_at)\n  INCLUDE (status, total);\n\n-- Only the rows anyone filters on. Smaller, faster, cheaper to maintain.\nCREATE INDEX idx_orders_pending\n  ON orders (created_at)\n  WHERE status = 'pending';\n\nEXPLAIN (ANALYZE, BUFFERS)\nSELECT order_id, total FROM orders\nWHERE user_id = 42\n  AND created_at BETWEEN '2026-01-01' AND '2026-02-01';"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the plan, not the hope. `Index Only Scan using idx_orders_user_created` with low `Buffers` and `Heap Fetches: 0` proves the covering design worked — the engine never touched the table. `Index Scan` plus thousands of heap fetches means the index located rows but the table lookup dominates; widen the `INCLUDE` list or narrow the predicate. `Seq Scan` means the optimizer priced your index above a full scan: selectivity too low, statistics stale after a bulk load, or the predicate does not match the index definition. Run `ANALYZE` after large loads and re-check before assuming the schema is wrong."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the query pattern, not the schema",
+          "text": "Ask which queries must be fast: point lookup by ID, range by time, filter by status? State read-write ratio and growth. Say explicitly: I will pay write cost only for the top 2–3 read shapes."
+        },
+        {
+          "title": "Choose clustered then secondary",
+          "text": "Assign the single clustered index to the primary key or dominant range key. Propose B+ tree secondaries ordered equality-first, range-last. Justify why hash or bitmap is rejected for the stated predicates."
+        },
+        {
+          "title": "Handle the expensive predicates",
+          "text": "Show the composite, covering, or partial index for the hard query. Explain column order and what INCLUDE avoids. Name the storage and write trade-off of the wider leaf."
+        },
+        {
+          "title": "Prove it and bound it",
+          "text": "Describe the EXPLAIN you expect, the metric that validates it, and the guardrail: limit to 3–5 indexes per hot table, audit unused indexes, run ANALYZE after backfills."
+        },
+        {
+          "title": "Answer the scale follow-up",
+          "text": "For write“Yes, hotspots from monotonic keys cause page-split contention; hash-prefix or UUIDv7 spreads inserts at the cost of range locality. For analytics scale, say when you would move the scan to a columnar replica instead of adding more OLTP indexes."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**More indexes means faster database.** No — reads get more options, writes get strictly slower. Every index is a recurring tax.",
+        "**An index always beats a full scan.** Only when selective or covering. Fetching 30% of rows via random I/O loses to one sequential pass.",
+        "**Indexing a low-cardinality column fixes filtering.** Indexing `is_active` alone rarely helps. A partial index on the rare value, or a composite starting with a selective column, is the actual fix.",
+        "**Column order does not matter.** It determines everything after the first range. Equality columns first, range and sort columns last.",
+        "**Indexes and constraints are unrelated.** A unique index *is* the enforcement mechanism for uniqueness — that is why it exists even when no query needs it."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Apply the pattern where the trade-off wins; refuse it where it loses.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "High-selectivity filter, large table",
+          "Index it",
+          "Few pages read instead of full scan; write tax is justified"
+        ],
+        [
+          "Range + ORDER BY on time column",
+          "Composite B+ tree",
+          "One structure serves filter and sort; avoids filesort"
+        ],
+        [
+          "Need to avoid heap fetch on hot path",
+          "Covering index",
+          "Fastest reads; accept wider leaves and slower writes"
+        ],
+        [
+          "Rare status value queried often",
+          "Partial index",
+          "Small structure, cheap maintenance, matches only that predicate"
+        ],
+        [
+          "Tiny table, or predicate matches most rows",
+          "Do not index",
+          "Scan is cheaper; index adds cost with no seek benefit"
+        ],
+        [
+          "Write-heavy table with many ad-hoc filters",
+          "Do not add per-query indexes",
+          "Write amplification and lag dominate; push analytics to replica or search store"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Indexing stores sorted `(key, row locator)` copies so selective reads become tree seeks instead of scans, and you pay for each one with storage and slower writes — so index only the selective, frequent predicates, equality-first, and prove the win with `EXPLAIN`."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:25:18.696Z",
+    "problems": []
+  }
+}

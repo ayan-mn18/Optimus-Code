@@ -1,0 +1,289 @@
+{
+  "slug": "introduction-to-failure",
+  "title": "Introduction to Failure",
+  "summary": "Failure in distributed systems means partial, independent faults. Learn fault vs error vs failure, the standard failure models, and what each defense costs.",
+  "kind": "HLD",
+  "problemSlug": "introduction-to-failure-97-217",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Easy",
+  "coverEmoji": "💥",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "fault-tolerance",
+    "failure-models",
+    "reliability"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Introduction to Failure Analysis and Prevention - Springer Nature",
+      "url": "https://link.springer.com/article/10.1007/s11668-021-01324-2",
+      "source": "link.springer.com",
+      "kind": "article"
+    },
+    {
+      "title": "Failure Analysis - an overview | ScienceDirect Topics",
+      "url": "https://www.sciencedirect.com/topics/engineering/failure-analysis",
+      "source": "sciencedirect.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Failure Analysis? - Ansys",
+      "url": "https://ansys.synopsys.com/simulation-topics/what-is-failure-analysis",
+      "source": "ansys.synopsys.com",
+      "kind": "article"
+    },
+    {
+      "title": "Introduction to Failure Analysis and Prevention - ASM Digital Library",
+      "url": "https://dl.asminternational.org/handbooks/edited-volume/29/chapter/395396/Introduction-to-Failure-Analysis-and-Prevention",
+      "source": "dl.asminternational.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**A distributed system never fails as a unit. It fails in pieces while the rest keeps running.** That is the entire subject. If you design as if nodes crash together, you will build retry loops that amplify outages, timeouts that declare healthy nodes dead, and replication that splits into two masters. Start every answer from partial failure."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What failure actually is: fault, error, failure"
+    },
+    {
+      "type": "paragraph",
+      "text": "Use three words precisely, because interviewers use them to test whether you hand-wave. A **fault** is a dormant defect: a bit flip, a leaked file descriptor, a bad deploy sitting on one host, a network partition waiting to happen. An **error** is corrupt internal state caused by that fault: a replica whose log diverged, a queue with an unacknowledged message stuck at the head, a cache holding a stale leader address. A **failure** is externally visible deviation from the contract: a write that was acknowledged then lost, a read that returns 500ms late, two clients that both think they hold the lock. The chain is always `fault -> error -> failure`, and tolerance means breaking that chain by **detection** plus **masking** before the error escapes. If you cannot say where detection happens and what masks the error, you do not have fault tolerance, you have hope."
+    },
+    {
+      "type": "paragraph",
+      "text": "This distinction is why single-machine intuition breaks. On one box, faults tend to share fate: power loss kills everything, so fail-stop is a reasonable model. Across the network, faults are **independent and partial**. Node A is healthy while node B is paused in garbage collection, while the link between them drops 2% of packets and reorders the rest. There is no global clock and no reliable way to tell *slow* from *dead*. That forces you to make every remote dependency an explicit bet: how long do you wait before you declare it failed, what do you do with the in-flight work, and how does the caller tell a retry from a new request? Every pattern in this topic — timeouts, retries, idempotency keys, quorums, circuit breakers — exists to answer those three questions. The trade-off every time is **availability and speed versus correctness and cost**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: how a fault becomes an outage"
+    },
+    {
+      "type": "mermaid",
+      "title": "Fault to failure chain",
+      "caption": "Every tolerance mechanism breaks this chain at detection or masking.",
+      "code": "flowchart TD\n    A[Fault dormant defect] --> B[Error corrupt internal state]\n    B --> C{Detected and masked}\n    C -->|Yes| D[Masked no outage]\n    C -->|No| E[Failure visible to caller]\n    E --> F[Becomes fault for upstream]\n    F --> B"
+    },
+    {
+      "type": "paragraph",
+      "text": "The diagram loops for a reason: one layer's failure is the next layer's fault. A disk returns garbage, the replica serves a stale read, the application shows the wrong balance, the user double-submits. Masking means you have **redundancy plus a decision rule**. Redundancy without a rule is just more places to be wrong. Replication with majority vote masks a minority of bad replicas. Retries with idempotent receivers mask transient omission. Timeouts with bounded work mask a hung dependency. But each mask only covers the failure model it was built for. A crash-tolerant quorum does nothing against a node that lies. A retry masks a dropped packet and **amplifies** an overloaded server. That is why the first design decision is never the tool, it is the model: what misbehavior are you willing to pay to survive?"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The failure models you must name by heart"
+    },
+    {
+      "type": "table",
+      "caption": "Pick a model explicitly. Stronger models cost more replicas and more latency.",
+      "headers": [
+        "Model",
+        "What the node or link can do",
+        "What it costs to tolerate"
+      ],
+      "rows": [
+        [
+          "Crash-stop",
+          "Halts silently and never returns. The cleanest assumption.",
+          "Timeouts plus failover are enough. Cheap, but false in practice because processes pause and restart."
+        ],
+        [
+          "Crash-recovery",
+          "Halts then restarts with amnesia unless state was persisted.",
+          "Requires stable log, replay, and fencing on restart. This is why every stateful service needs write-ahead logging."
+        ],
+        [
+          "Omission",
+          "Drops or delays some messages, never sends a wrong one.",
+          "Requires retries, acknowledgments, and idempotency. Cheap for idempotent reads, expensive for non-idempotent writes."
+        ],
+        [
+          "Timing / performance",
+          "Responds correctly but too late, or with unbounded jitter.",
+          "Requires deadlines, hedged requests, and load shedding. You trade tail latency for extra load."
+        ],
+        [
+          "Byzantine",
+          "Sends conflicting or malicious data to different peers.",
+          "Requires 3f+1 replicas and signed quorums. Massive cost in complexity and throughput. Do not pay it unless you must."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Opinion: **default to crash-recovery with omission links, and say so out loud.** It matches commodity cloud reality: processes get OOM-killed and restart, disks survive, networks drop packets. If you assume pure crash-stop, your design will treat a 3-second garbage-collection pause as death, evict a healthy node, and trigger re-replication that makes the pause worse. If you assume Byzantine everywhere, you will over-engineer a session store into a consensus system and never finish the interview. Name the weaker model, justify it from the workload, and state what breaks if the assumption is violated. That sentence is what separates a junior list of tools from a senior design."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Core defenses and the price of each"
+    },
+    {
+      "type": "table",
+      "caption": "No defense is free. Every row buys availability with correctness risk or capacity.",
+      "headers": [
+        "Defense",
+        "What it buys you",
+        "What it costs you"
+      ],
+      "rows": [
+        [
+          "Timeout + deadline",
+          "Bounds the blast radius of a hung dependency. Turns infinite wait into a detectable error.",
+          "Too short kills healthy slow requests. Too long propagates slowness upstream. Must be tuned per percentile, not a magic 5s."
+        ],
+        [
+          "Retry with backoff and jitter",
+          "Masks transient omission without human action.",
+          "Multiplies load exactly when the system is sickest. Without idempotency and a retry budget it converts a blip into a storm."
+        ],
+        [
+          "Idempotency key",
+          "Makes retry safe by turning at-least-once delivery into effectively-once effect.",
+          "Forces receiver-side dedup state and key lifecycle. The trade-off is storage and API discipline for safety."
+        ],
+        [
+          "Replication + quorum",
+          "Masks minority crashes and keeps data durable if a node dies.",
+          "Costs 3x hardware and a round trip to a majority on writes. Reads can be cheap or correct, not both."
+        ],
+        [
+          "Circuit breaker + bulkhead",
+          "Stops a sick dependency from consuming all threads and connections.",
+          "Rejects work proactively, so you trade partial unavailability now to avoid total collapse later. Needs fallback semantics."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Notice the pattern: **redundancy buys masking, but coordination decides correctness.** Adding a second copy is easy. Deciding which copy is right during a partition is the hard part, and that is where timeouts, quorums, and fencing come in. A retry without an idempotency key is not tolerance, it is duplication. A failover without fencing is not recovery, it is split-brain. Always pair a masking mechanism with its guardrail: retry with idempotency and capped budget, failover with epoch fencing, replication with quorum reads or documented staleness. If you state only the first half, expect the interviewer to supply the failure that breaks it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic production failure is the **retry storm that turns a slow dependency into a total outage**. It starts innocently: service B's p99 jumps from 80ms to 800ms under load. Service A's fixed 200ms timeout starts firing. Each timed-out caller retries immediately, so B now sees 2x to 3x offered load while already saturated. Queues grow, latency grows further, more timeouts fire, more retries arrive. Dashboards show a cliff: caller success rate collapses, callee CPU and queue depth spike, network throughput looks healthy because everyone is doing useless duplicate work. The fix was never a bigger thread pool. It was jittered exponential backoff, a per-dependency retry budget like 10% of active requests, idempotent handlers, and a circuit breaker that fails fast once the error budget burns. Why this happens is load amplification: tolerance without backpressure exports the fault upstream and multiplies it."
+    },
+    {
+      "type": "paragraph",
+      "text": "The sneakier failure is the **gray failure and false suspicion**. A node is not dead and not healthy: it responds to heartbeats but drops real writes, or its disk is so slow that replication lags by minutes while health checks stay green. Your failure detector declares it alive because the probe succeeded, so the load balancer keeps sending traffic into a black hole. Symptom: a small slice of users sees persistent errors or stale data while aggregate metrics look fine, and a restart magically fixes it. This is the price of binary alive-or-dead thinking. Production-grade detection uses the same signals users care about — success rate on real work, replication lag, end-to-end deadline misses — and combines suspicion with fencing: do not just stop sending traffic, revoke the suspect's authority to act with an incremented epoch or lease so two writers cannot both believe they are primary."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Timeouts are a correctness decision",
+      "text": "A timeout does not make a request stop. It makes the **caller stop waiting** while the callee may still execute. Every timeout therefore creates uncertainty: did it happen or not? If the operation was not idempotent and fenced, you now have two possible worlds. Never set a timeout without answering: can this be retried safely, and who wins if both the original and the retry complete?"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "retry.py",
+      "code": "import random, time\n\ndef call_with_retry(op, idempotency_key, budget=3):\n    # WHY: backoff spreads retries, jitter prevents thundering herd,\n    # idempotency key lets the server dedup the amplified requests.\n    # TRADE-OFF: extra latency and server-side dedup state for safety.\n    base_ms = 50\n    for attempt in range(budget):\n        try:\n            # deadline per attempt, not just total: bounds slow-dependency bleed\n            return op(timeout_ms=200, idempotency_key=idempotency_key)\n        except TransientError:\n            if attempt == budget - 1:\n                raise\n            sleep_ms = base_ms * (2 ** attempt) + random.uniform(0, 50)\n            time.sleep(sleep_ms / 1000.0)"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Define the contract first",
+          "text": "Ask what a failure looks like to the caller: can a write be lost, duplicated, or reordered? Is stale read allowed and for how long? Interviewers expect you to pin down consistency and latency goals before naming tools."
+        },
+        {
+          "title": "Name your failure model",
+          "text": "Say explicitly: I assume crash-recovery plus omission links, not Byzantine. Explain why that fits the workload and what would break the assumption. This one sentence earns more credit than any diagram."
+        },
+        {
+          "title": "Walk one fault end to end",
+          "text": "Pick a concrete fault — leader crashes after acknowledging but before replicating — and trace detection via timeout or heartbeat, masking via election plus log replay, and guardrail via fencing. Vague I would replicate is a fail."
+        },
+        {
+          "title": "Show the guardrails",
+          "text": "For every retry, state idempotency and budget. For every failover, state fencing and quorum. For every cache, state invalidation or TTL staleness. The follow-up is always: what if both sides think they are active?"
+        },
+        {
+          "title": "Quantify the cost",
+          "text": "Close with numbers: 3 replicas tolerate 1 crash with majority writes, retries capped at X% to bound amplification, timeout set from p99 plus headroom. Trade-off stated plainly: we pay write latency and capacity for durability."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Retries make things more reliable.** Only idempotent retries with backoff, jitter, and a budget do. Blind retries multiply load during the exact moment capacity is scarcest.",
+        "**A timeout means the work did not happen.** It means you stopped waiting. The server may still complete it, which is why non-idempotent operations need keys and fencing.",
+        "**More replicas always means more availability.** Beyond quorum size, extra replicas add coordination delay and partition surface. Three well-fenced replicas beat five confused ones.",
+        "**Health checks equal failure detection.** Liveness probes catch crashes, not gray slowness or correctness divergence. Detect on user-meaningful signals like success rate and replication lag.",
+        "**Exactly-once delivery solves it.** Networks cannot guarantee it. What you build is at-least-once delivery plus idempotent receivers, which gives effectively-once effect at the cost of dedup state."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use what, and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Match the strength of the mechanism to the cost of being wrong.",
+      "headers": [
+        "Situation",
+        "Use",
+        "Do not use"
+      ],
+      "rows": [
+        [
+          "Idempotent reads, transient blips",
+          "Retry with backoff, jitter, and deadline. Cheap and correct.",
+          "Circuit breaking on first error. You would shed load that would have succeeded on retry."
+        ],
+        [
+          "Non-idempotent payments or inventory decrement",
+          "Idempotency keys plus server dedup and capped retries. Then quorum persistence.",
+          "Blind at-least-once retry. You will double-charge or oversell and call it reliability."
+        ],
+        [
+          "Single slow dependency threatening the whole request path",
+          "Timeout, bulkhead isolation, and breaker with fallback to degraded response.",
+          "Unbounded waiting or unlimited threads. One sick downstream should not exhaust your pool."
+        ],
+        [
+          "Durable state that must survive node loss",
+          "3-way replication with majority write and fenced leader election.",
+          "Async 2-copy with silent failover. Fast until a crash plus a partition deletes acknowledged writes."
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Failure tolerance means assuming independent partial faults, naming the failure model you will survive, and pairing every mask like retry or failover with its guardrail like idempotency or fencing — paying extra latency and capacity to keep a fault from becoming a user-visible failure.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:54:16.113Z",
+    "problems": []
+  }
+}

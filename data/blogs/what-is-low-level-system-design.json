@@ -1,0 +1,316 @@
+{
+  "slug": "what-is-low-level-system-design",
+  "title": "What is Low level System Design ?",
+  "summary": "Low Level Design is the set of in-process decisions — classes, interfaces, ownership, and invariants — that determine whether changing code is cheap or dangerous.",
+  "kind": "LLD",
+  "problemSlug": "what-is-low-level-system-design-5-9",
+  "topic": "Introduction to Low Level Design",
+  "difficulty": "Easy",
+  "coverEmoji": "🧱",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Introduction",
+    "OOP",
+    "Design Principles"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "How I Master Low Level Design. – The honest journey from total… - Medium",
+      "url": "https://medium.com/@himanshusingour7/how-i-master-low-level-design-0f61466c481b",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Learn Low-Level Design Systematically - AlgoMaster.io",
+      "url": "https://algomaster.io/learn/lld",
+      "source": "algomaster.io",
+      "kind": "article"
+    },
+    {
+      "title": "Low Level Design in a Hurry - Hello Interview",
+      "url": "https://www.hellointerview.com/learn/low-level-design/in-a-hurry/introduction",
+      "source": "hellointerview.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is low-level System Design? The skill every software engineer ...",
+      "url": "https://engineeringenablement.substack.com/p/what-is-low-level-system-design-the",
+      "source": "engineeringenablement.substack.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Low Level Design is how you make change cheap.** High-level design decides which services exist; LLD decides whether adding one business rule takes one hour or one week. If your classes have clear owners, narrow interfaces, and explicit invariants, the codebase stays calm under pressure. If they do not, every feature becomes surgery. That is the entire game."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What LLD is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Low Level Design is the detailed structure of code **inside** a service or module: what objects exist, what each one owns, what methods it exposes, how objects call each other, and what rules must never be violated. It covers classes and interfaces, composition versus inheritance, ownership and lifecycles, state transitions, concurrency control at the object level, and where validation, persistence, and external calls live. It does not cover load balancers, Kafka topics, database sharding, or regions. Those are high-level design. LLD starts where the architecture diagram stops — at the box labeled *Parking Service* or *Billing* — and answers: what is inside that box, and why is it shaped that way?"
+    },
+    {
+      "type": "paragraph",
+      "text": "Think of it as a contract for future developers. A good LLD tells the next engineer three things without them reading every line: **where does this logic belong, what can I depend on, and what will break if I change this?** That is why interviewers test it with bounded problems like parking lot, elevator, or splitwise. They are not checking whether you can build a parking lot. They are checking whether you can draw boundaries that survive the second and third requirement — *add EV spots, add dynamic pricing, add concurrency* — without collapsing the first design. LLD is judged by extensibility, not completeness."
+    },
+    {
+      "type": "table",
+      "caption": "HLD vs LLD — different questions, different failures.",
+      "headers": [
+        "Aspect",
+        "High-Level Design",
+        "Low-Level Design"
+      ],
+      "rows": [
+        [
+          "Core question",
+          "What components exist and how do they talk over the network?",
+          "What classes exist and how do they talk in memory?"
+        ],
+        [
+          "Example decision",
+          "Split trip-matching and payments into separate services with a queue",
+          "Split `Trip` from `FareCalculator` so pricing changes do not touch matching"
+        ],
+        [
+          "Failure mode",
+          "Outage, overload, data loss, cascading latency",
+          "Fragile code, shotgun edits, untestable god classes"
+        ],
+        [
+          "Scales by",
+          "Adding machines, replicas, partitions",
+          "Adding engineers without slowing everyone down"
+        ],
+        [
+          "Evaluated by",
+          "Throughput, availability, consistency trade-offs",
+          "Coupling, cohesion, clarity of ownership trade-offs"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from requirement to code that survives change"
+    },
+    {
+      "type": "mermaid",
+      "title": "LLD workflow",
+      "caption": "LLD is iterative: every new rule feeds back into entities and ownership.",
+      "code": "flowchart TD\n  REQ[Requirements] --> ENT[Entities and Value Objects]\n  ENT --> REL[Relationships and Ownership]\n  REL --> BEH[Behaviors and Interfaces]\n  BEH --> INV[Invariants and State Rules]\n  INV --> CODE[Maintainable Code]\n  CODE -->|New requirement| REQ"
+    },
+    {
+      "type": "paragraph",
+      "text": "The mechanism is always the same, whether on a whiteboard or in production. First you extract **nouns** that hold identity and lifecycle — `ParkingLot`, `Ticket`, `Vehicle` — and separate them from **values** that are just data — `Money`, `TimeRange`, `SpotId`. Then you assign **ownership**: who creates whom, who can mutate whom, and what is the one authoritative place for each fact. Then you place **behavior** next to the data it needs, behind narrow interfaces, so callers depend on *what* is done, not *how*. Finally you state **invariants** explicitly — *a ticket cannot exit before it enters, a spot holds at most one vehicle* — and enforce them in one place. The reason for this order is economic: ownership mistakes are ten times more expensive to fix than method-naming mistakes, so you settle ownership before you argue about method signatures. The trade-off is upfront thinking time versus later debugging time, and LLD deliberately spends the former to save the latter."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Entities and value objects:** entities have identity and lifecycle (`Booking`, `Account`); values are interchangeable and immutable (`Money`, `Slot`). Mixing them creates accidental mutation and bad equality checks.",
+        "**Relationships:** association, aggregation, and composition are not academic labels — they decide who deletes whom. Use composition when the child cannot outlive the parent, and the trade-off is simpler cleanup versus less reuse.",
+        "**Interfaces and dependencies:** depend on abstractions for volatile behavior like pricing, notification, or payment. The trade-off is one extra indirection versus shotgun edits when the rule changes.",
+        "**State and invariants:** model legal transitions explicitly (`AVAILABLE -> OCCUPIED -> RESERVED`), not with scattered booleans. The trade-off is slightly more code now versus impossible-to-test `if` soup later.",
+        "**Concurrency ownership:** decide which object owns the lock or the thread-safe boundary. The trade-off is coarser locking is simpler but kills throughput; finer locking is faster but easy to deadlock.",
+        "**Boundaries:** keep I/O, persistence, and domain rules in different classes. The reason is testability — business rules should be testable without a database or a network."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every LLD choice buys something and pays for it elsewhere.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Abstraction and interfaces",
+          "Open for extension without editing callers; easy mocking",
+          "Indirection, more files, harder to trace for beginners"
+        ],
+        [
+          "Composition over inheritance",
+          "No fragile base-class coupling; behavior assembled at runtime",
+          "More wiring code; cannot reuse protected helpers blindly"
+        ],
+        [
+          "Strict SRP / small classes",
+          "Clear owner for each change; fast code review",
+          "More classes to discover; risk of anemic objects with logic leaking into services"
+        ],
+        [
+          "Defensive validation + invariants",
+          "Fail fast with a clear culprit; fewer corrupt states",
+          "Duplicate checks if placed at every layer instead of one boundary"
+        ],
+        [
+          "Design patterns",
+          "Shared vocabulary for recurring problems like Strategy or Observer",
+          "Over-engineering tax when applied speculatively before the second use case appears"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The opinionated rule is this: **do not abstract for a future you cannot name.** A `PricingStrategy` interface is justified the moment the interviewer says *flat rate now, dynamic later* or production shows two pricing rules in one `if-else` chain, because the cost of the interface is one file and the payoff is zero edits to `Checkout` when rule three arrives. It is *not* justified for a one-off calculation you merely suspect might vary, because then you pay indirection on every read and get no change-resistance in return. The same logic applies to patterns: use Observer because three subscribers already need decoupled updates, not because *something might subscribe someday*. Good LLD is stingy with flexibility — it buys it exactly where change hurts most."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bad LLD rarely causes a dramatic outage. It causes a slowdown that looks like incompetence but is actually structural. The classic shape is the god service: one `BookingManager` that validates input, computes price, calls the payment gateway, writes to the database, and sends notifications. It works on launch. Six months later a *small* request — *waive fees for premium users on weekends* — touches twelve `if` branches, breaks refunds, and cannot be unit-tested without spinning up a database and a mock gateway. Engineers start copying the method instead of modifying it. Dead code piles up. Velocity drops while headcount stays flat. That divergence — same team, slower output — is the signature of LLD debt, not talent debt."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**God class + shotgun edit:** symptom is one file everyone fears and every stack trace passes through. Change one rule, three unrelated tests fail.",
+        "**Leaky ownership:** symptom is duplicate source of truth — spot status in both `Spot` and `Ticket`, balances in both `Wallet` and `Ledger`. They drift, and reconciliation becomes a cron job.",
+        "**Primitive obsession:** symptom is `String status`, `int type`, `Map<String, Object> payload` everywhere. Invalid states compile, so bugs surface as bad data, not compile errors.",
+        "**I/O tangled with rules:** symptom is business logic that cannot be tested without network or disk. Tests are slow, flaky, and eventually skipped.",
+        "**Inheritance for reuse:** symptom is base-class edits breaking distant subclasses. You wanted code reuse; you got invisible coupling across the hierarchy."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The production smell to memorize",
+      "text": "If a *one-line business change* requires touching five classes, or a *one-class change* breaks five features, ownership is wrong. Do not add caching, workers, or microservices to fix it. Move the behavior to its owner, narrow the interface, and pin the invariant in one place. Scale fixes throughput; only LLD fixes change-cost."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code where it clarifies"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Pricing.java",
+      "code": "// Bad: Checkout owns pricing rules. Every new rule edits this class.\n// class Checkout {\n//   double total(String userType, double base) {\n//     if (userType.equals(\"PREMIUM\")) return base * 0.8;\n//     if (userType.equals(\"WEEKEND\")) return base * 0.9;\n//     return base; // rule 3 will add another branch here\n//   }\n// }\n\ninterface PricingStrategy {\n  double apply(double base);\n}\n\nfinal class PremiumPricing implements PricingStrategy {\n  public double apply(double base) { return base * 0.8; }\n}\n\nfinal class StandardPricing implements PricingStrategy {\n  public double apply(double base) { return base; }\n}\n\nfinal class Checkout {\n  private final PricingStrategy pricing;\n  Checkout(PricingStrategy pricing) { this.pricing = pricing; }\n\n  double total(double base) {\n    return pricing.apply(base); // closed for modification, open for extension\n  }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet is LLD in miniature. The commented version is not wrong because it is long — it is wrong because **pricing knowledge lives in the wrong owner**. `Checkout` should coordinate checkout, not enumerate discount rules, so every pricing change forces an edit, retest, and redeploy of checkout. The Strategy version moves the volatile part behind a narrow `apply()` contract. Why is that better? Because the direction of dependency flips: `Checkout` now depends on a stable abstraction, and new rules arrive as new classes, not as edits. The trade-off is explicit: you accept one extra interface and one extra file per rule in exchange for never reopening `Checkout` for pricing reasons. That exchange is profitable only because pricing is volatile — you would not do this for a truly stable calculation."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Clarify scope and follow-ups",
+          "text": "Ask what will vary: types of vehicles, pricing rules, concurrency, persistence? State assumptions out loud. Interviewers score this because real LLD is designing for the second requirement, not the first."
+        },
+        {
+          "title": "List entities and value objects",
+          "text": "Name 4-7 core classes, no more. Distinguish identity objects from pure data. Say why each one deserves to exist — what lifecycle or invariant does it own?"
+        },
+        {
+          "title": "Draw relationships and ownership",
+          "text": "Sketch a class diagram: composition vs association, multiplicities, who creates and deletes whom. Defend one ownership call explicitly and name its trade-off."
+        },
+        {
+          "title": "Assign behavior and contracts",
+          "text": "Write key method signatures, not full bodies. Show inputs, outputs, and who validates what. Keep interfaces narrow so callers cannot reach into internals."
+        },
+        {
+          "title": "Handle the delta",
+          "text": "Expect: add a feature, make it thread-safe, or persist it. Show extension without rewrite — new subclass or strategy, synchronized at the owning object, repository behind an interface. This is where offers are won."
+        },
+        {
+          "title": "Discuss testability and failure",
+          "text": "Explain how you would unit-test rules without I/O, what invariant violation throws, and where concurrency can break. Close by stating what you would *not* build yet and why."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail candidates"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**LLD is UML diagrams.** No — diagrams are notation. LLD is ownership and dependency decisions. A neat diagram of a bad design still fails the follow-up.",
+        "**LLD is memorizing 23 patterns.** Patterns are vocabulary, not a checklist. Naming *Strategy* correctly earns nothing if you apply it where nothing varies. Interviewers penalize speculative patterns.",
+        "**SOLID means always.** Each principle has a cost. Strict Interface Segregation on a stable internal helper just fragments the code. State when you are deliberately violating a principle and why.",
+        "**More classes means better design.** Beyond 7-9 core classes for a 45-minute problem, you are signaling inability to prioritize. Group trivia, elevate volatile behavior.",
+        "**LLD and HLD are interchangeable.** Adding a queue does not fix a god class, and splitting a class does not fix a hotspot. They solve different bottlenecks — change-cost versus load — and conflating them wastes both.",
+        "**Working code is enough.** In an LLD round, code that passes but cannot absorb the stated extension is a reject. Extensibility is the test, not compilation."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Apply LLD rigor proportional to lifespan and change rate.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Long-lived domain logic (billing, booking, game rules)",
+          "Full LLD",
+          "Change is guaranteed; ownership mistakes compound for years"
+        ],
+        [
+          "45-minute OOD interview problem",
+          "Full LLD, simplified",
+          "The follow-up extension is the real question; boundaries matter more than bodies"
+        ],
+        [
+          "Throwaway script or prototype",
+          "Minimal LLD",
+          "Lifespan is days; abstraction tax exceeds change savings"
+        ],
+        [
+          "CRUD with no rules or variation",
+          "Thin LLD",
+          "Anemic model plus a repository is fine; do not invent strategies for stable reads/writes"
+        ],
+        [
+          "Performance-critical inner loop",
+          "Defer clean abstractions locally",
+          "Virtual dispatch and allocation have a cost; isolate the fast path, keep the boundary clean"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Low Level Design is deciding classes, ownership, and interfaces so that the next requirement changes one place, not five — and I trade a little indirection now to avoid shotgun edits later.** Say that, then prove it with one ownership decision and one extension that needs no rewrite."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:47:05.820Z",
+    "problems": []
+  }
+}

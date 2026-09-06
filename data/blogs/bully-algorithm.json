@@ -1,0 +1,315 @@
+{
+  "slug": "bully-algorithm",
+  "title": "Bully Algorithm",
+  "summary": "Bully elects the highest live ID by intimidation: simple, fast when stable, brutal under partitions. Know its messages, its O(N^2) cost, and why you would never use it for real consensus.",
+  "kind": "HLD",
+  "problemSlug": "bully-algorithm-97-218",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Medium",
+  "coverEmoji": "👑",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "bully-algorithm",
+    "leader-election",
+    "fault-tolerance",
+    "distributed-consensus",
+    "HLD"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is Leader Election and why it is needed? (Bully Algorithm) - YouTube",
+      "url": "https://www.youtube.com/watch?v=3SnPwhKvNZ0",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Bully Algorithm in Distributed System - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/dsa/bully-algorithm-in-distributed-system/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Bully algorithm - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Bully_algorithm",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Lecture 6: Coordinator Election",
+      "url": "https://cseweb.ucsd.edu/classes/sp16/cse291-e/applications/ln/lecture6.html",
+      "source": "cseweb.ucsd.edu",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Bully is not agreement, it is intimidation.** Every process already knows the ranking, so there is nothing to negotiate — the highest-ID process that is still alive wins by default. An election is just a noisy way for lower processes to discover they lose. If you remember that, the message storm, the failure modes, and why it is *not* real consensus all follow."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What the Bully algorithm actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bully solves **leader election in a small, known membership** where every process has a unique, totally ordered identifier and all processes agree that *largest live ID wins*. When the current coordinator is suspected dead, any process that notices can start an election. It probes only processes ranked above it. If none answer, it declares itself coordinator and broadcasts victory to everyone below. If any higher process answers, it backs off and waits to be told who won. That is the whole protocol. There is no log, no quorum, no voting on values — just a deterministic rule plus a discovery procedure to find who satisfies it right now. The reason you need it is mundane: someone has to hold the lock table, sequence writes, or act as the single writer. Bully gives you that singleton without an external oracle, at the price of trusting timeouts and membership completely."
+    },
+    {
+      "type": "paragraph",
+      "text": "Take the assumptions seriously because they are where Bully lives or dies. It assumes a **synchronous system with bounded delay**: you know maximum message propagation plus handling time, so a missing reply within `2*T_msg + T_proc` means failure, not slowness. It assumes **reliable delivery** — no loss, no corruption, no indefinite partition — plus **complete membership knowledge**, meaning every process knows the ID and address of every other process. It assumes **fail-stop with stable storage**, where a crashed process stops cleanly and can recover with its ID intact. And it assumes a **timeout-based failure detector** that is accurate enough to be useful. None of those hold in a real wide-area network. That is the trade-off stated up front: Bully buys extreme simplicity by assuming the network is predictable. When the network stops being predictable, Bully is the first thing to lie to you."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: challenge upward, announce downward"
+    },
+    {
+      "type": "mermaid",
+      "title": "Bully election flow",
+      "caption": "Lower process challenges higher IDs, backs off if anyone answers.",
+      "code": "flowchart TD\n  A[\"P suspects coordinator is dead\"] --> B[\"Send ELECTION to all IDs > P\"]\n  B --> C{\"Any ANSWER before timeout?\"}\n  C -->|No| D[\"Broadcast VICTORY to all lower IDs\"]\n  C -->|Yes| E[\"Back off and wait for VICTORY\"]\n  E -->|VICTORY received| F[\"Accept sender as coordinator\"]\n  E -->|Timeout with no VICTORY| B"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are only three messages, and confusing them is how candidates fail interviews. **ELECTION** goes *upward only*: from a suspecting process `P` to every process with a higher ID. It means *I think the leader is dead, are any of you alive to overrule me?* **ANSWER** — sometimes called `OK` or `ALIVE` — goes *downward* in response and means *yes, I am alive, stand down, I will take over from here*. **VICTORY**, also called `COORDINATOR`, goes from the winner to *everyone* and means *the election is over, I am the new leader, update your pointer*. The directionality is the optimisation: you never need to poll lower processes because they cannot overrule you by definition. You challenge only those who can bully you, and you announce only to those you bully. That asymmetry is why the protocol is simple and also why a single slow higher process can force a cascade of wasted elections."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Detect and start",
+          "text": "P notices no heartbeat or response from the coordinator within its timeout, or P just recovered from a crash. If P holds the highest ID in its membership view, it skips straight to victory and announces. Otherwise it sends ELECTION to all higher IDs and starts a timer."
+        },
+        {
+          "title": "Higher processes bully back",
+          "text": "Any process Q that receives ELECTION from a lower ID replies ANSWER immediately, then starts its own election upward if it has not already. This is the chaining behaviour: P bullies no one, Q bullies P, R bullies Q, until the highest live process is reached."
+        },
+        {
+          "title": "Lower process backs off",
+          "text": "If P gets even one ANSWER, it sends nothing further for this round. It cancels its bid and waits for a VICTORY message. The trade-off is fewer messages in exchange for dependence: P is now hostage to a higher process actually finishing the job."
+        },
+        {
+          "title": "No answer means victory",
+          "text": "If P's timer expires with zero ANSWERs, P concludes no higher process is alive. It broadcasts VICTORY to all lower processes and assumes coordinator duties. It can now distribute state or accept client leadership traffic."
+        },
+        {
+          "title": "Recover and re-bully",
+          "text": "A recovered process does not silently rejoin as follower. It first syncs state from whoever claims to be coordinator, then starts an election. If its ID is higher than the incumbent, it deposes the incumbent by winning. This preemption is intentional — rank always beats incumbency."
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "The only three messages in Bully, and what each commits you to.",
+      "headers": [
+        "Message",
+        "Direction",
+        "Meaning and obligation"
+      ],
+      "rows": [
+        [
+          "ELECTION",
+          "lower -> all higher",
+          "Challenge. Sender suspects failure and demands to be overruled if anyone outranks it."
+        ],
+        [
+          "ANSWER / OK",
+          "higher -> challenger",
+          "Bullying reply. Means I am alive, you lose, wait for my VICTORY. Receiver must start its own upward election."
+        ],
+        [
+          "VICTORY / COORDINATOR",
+          "winner -> all",
+          "Decision. Election is over. All recipients must replace their coordinator pointer, even if they voted otherwise."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The cascading part is what newcomers miss. Suppose processes `1, 2, 4, 5` are alive and `5` — the leader — crashes. Both `2` and `4` notice. `2` sends ELECTION to `4` and `5`. `4` answers `2`, which silences `2`, then `4` sends ELECTION to `5`. No answer comes, so `4` broadcasts VICTORY. Total messages stay small when one process detects first, but when *everyone* detects at once each level starts its own upward probe before being silenced. That serial handoff is deliberate: it guarantees the highest live process eventually announces without any voting round. The trade-off is latency proportional to the height of the live chain and a message spike exactly when the system is already stressed by a failure. Simplicity of logic is paid for with fragility of timing."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The cost, honestly measured"
+    },
+    {
+      "type": "table",
+      "caption": "What Bully gives you and what it charges.",
+      "headers": [
+        "Property",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Correctness when assumptions hold",
+          "Deterministic single winner: highest live ID, no split vote possible.",
+          "Requires synchronous bounds and reliable delivery. Lose the bounds, lose correctness."
+        ],
+        [
+          "Message complexity",
+          "Best case O(N) when the second-highest detects first: N-2 elections plus N-1 victories.",
+          "Worst case O(N^2) when the lowest detects first or all detect concurrently. Every level probes every higher level."
+        ],
+        [
+          "Latency",
+          "Fast single round-trip when the top survivor is quick to respond.",
+          "Chained elections serialize upward. Recovery storms delay convergence when many processes wake together."
+        ],
+        [
+          "Membership",
+          "No external service needed. Fixed config file is enough for a static cluster.",
+          "Everyone must know everyone. Join, leave, and network changes require manual reconfiguration. Does not scale past tens of nodes."
+        ],
+        [
+          "Safety vs liveness",
+          "Safety is easy to see: no two processes can both think a lower ID beat a higher live ID.",
+          "Liveness depends entirely on timeouts. Too aggressive and you depose healthy leaders; too lax and you run leaderless for seconds."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Do the counting once and you will never forget it. In a system of `N` processes where the lowest-ID process `P1` detects failure first, it sends `N-1` ELECTIONs, gets `N-2` ANSWERs back, and each higher process in turn probes all processes above it. The sum is roughly `N*(N-1)/2` messages before the winner announces — textbook `O(N^2)`. Contrast that with the best case: `P_{N-1}` detects first, sends one ELECTION to the dead `P_N`, gets silence, broadcasts `N-2` VICTORY messages. That is `O(N)`. The gap matters because the worst case is the *common* case in practice: a leader crash is observed by many followers at the same heartbeat timeout, so many low processes fire simultaneously. You trade worst-case bandwidth for zero persistent state — no log, no quorum bookkeeping. For five nodes on a LAN that trade is fine. For five hundred nodes across regions it is disqualifying."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you will see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The dominant production failure is **false suspicion from slowness, not crash**. A stop-the-world garbage pause, a saturated NIC, or a single delayed heartbeat makes a healthy coordinator look dead to an aggressive timeout. The observer starts an election, gets an ANSWER from the actually-alive higher process, that process starts its own election, and within seconds you have deposed a healthy leader for no reason. The symptom is unmistakable in dashboards: leadership flapping with `VICTORY` broadcasts every few seconds, a spike in election traffic with no process deaths in the logs, and brief windows where clients see `leader changed` errors or duplicate single-writer actions. The fix is never *more aggressive timeouts*. The trade-off is fundamental: Bully cannot distinguish *dead* from *slow*, so every timeout value chooses between slow failover and frequent false coups."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Split brain from partition:** a network cut isolates the top IDs from the bottom IDs. Each side elects its own highest survivor and both broadcast VICTORY locally. Symptom: two processes both claiming coordinator, divergent writes, and a painful merge when the partition heals.",
+        "**Recovery storm:** five processes restart together after a rolling upgrade and each immediately calls an election. Symptom: O(N^2) ELECTION flood at boot, slow convergence, and the highest ID winning only after silencing everyone else one by one.",
+        "**Orphaned waiter:** P backs off after receiving ANSWER, but the higher process that answered then crashes before sending VICTORY. Symptom: cluster sits leaderless until P's secondary victory timeout fires. If you forgot that timer, it sits leaderless forever.",
+        "**Stale membership:** a decommissioned high ID remains in everyone's config. Every election wastes probes to a ghost that never answers. Symptom: elections always take the full timeout and failover is inexplicably slow."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Recovery deserves special attention because Bully's rule — *higher ID always preempts* — creates churn by design. When an old high-ID process returns, it does not politely join as a follower; it triggers an election it is guaranteed to win and yanks leadership away from a healthy incumbent that may hold in-memory lease state, open client connections, or in-flight sequences. The symptom is a leadership transfer with zero failures, followed by client reconnect storms and a brief throughput dip. Operators who run Bully in production learn to add dampening the textbook omits: probation periods for returnees, hold-down timers before a recovered node may challenge, and state transfer before victory is honoured. Each addition moves you away from pure Bully toward a lease-based scheme — which tells you Bully alone was insufficient. Name that trade-off in the interview: preemption gives determinism but destroys stability unless you bolt on extra mechanisms."
+    },
+    {
+      "type": "mermaid",
+      "title": "Partition causes dual coordinators",
+      "caption": "Bully cannot survive a split; each side elects its own bully.",
+      "code": "stateDiagram-v2\n  [*] --> Stable: leader 5 active\n  Stable --> Partitioned: network splits 1-2 | 4-5\n  Partitioned --> Leader2: 2 hears no ANSWER, wins low side\n  Partitioned --> Leader4: 4 hears no ANSWER, wins high side\n  Leader2 --> Conflict: partition heals, two VICTORY claims\n  Leader4 --> Conflict: partition heals, two VICTORY claims\n  Conflict --> Stable: higher ID 4 preempts after re-election"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "A minimal model you can whiteboard"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "bully.py",
+      "code": "class Process:\n    def __init__(self, pid, cluster):\n        self.pid = pid\n        self.cluster = cluster  # dict pid -> Process or None if dead\n        self.coordinator = None\n        self.in_election = False\n\n    def suspect_failure(self):\n        # Called on timeout or recovery. Only probes higher IDs.\n        higher = [p for i, p in self.cluster.items() if i > self.pid and p is not None]\n        if not higher:\n            self.declare_victory()\n            return\n        self.in_election = True\n        answers = [q.answer(self.pid) for q in higher]\n        if not any(answers):\n            self.declare_victory()\n        # else: back off and wait for VICTORY (with a second timeout!)\n\n    def answer(self, challenger):\n        # Higher process bullies challenger, then starts its own election.\n        if self.in_election:\n            return True\n        self.in_election = True\n        self.suspect_failure()\n        return True\n\n    def declare_victory(self):\n        self.coordinator = self.pid\n        self.in_election = False\n        for i, p in self.cluster.items():\n            if i != self.pid and p is not None:\n                p.coordinator = self.pid\n\n    def on_victory(self, winner):\n        self.coordinator = winner\n        self.in_election = False"
+    },
+    {
+      "type": "paragraph",
+      "text": "This toy omits timeouts and sockets on purpose so the control flow is visible: probe upward, back off on any answer, announce downward on silence. Two details carry the interview. First, `suspect_failure` needs *two* timers in real code — one for waiting on ANSWER, one for waiting on VICTORY after backing off — and most candidates forget the second, which is exactly the orphaned-waiter bug. Second, `answer` recursively triggers an upward election, which is where the `O(N^2)` cascade lives. Point at that recursion and say the trade-off aloud: one method keeps the code five lines long and guarantees the tallest live process wins, but it also guarantees a message burst proportional to the square of cluster size whenever detection is simultaneous. Interviewers promote candidates who connect code shape to production cost, not candidates who merely recite message names."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the job, not the algorithm",
+          "text": "Say what the leader does: holds the write lease, sequences IDs, owns the lock table. Then state the Bully contract: known membership, unique ranked IDs, timeout-based suspicion, highest live ID wins. This frames Bully as a means to an end and invites follow-ups about leases and fencing."
+        },
+        {
+          "title": "Write the three messages and the two timers",
+          "text": "Draw ELECTION upward, ANSWER downward, VICTORY to all. Explicitly name the ANSWER timeout and the VICTORY-wait timeout. Interviewers forgive slow coding but fail candidates who claim one timeout suffices."
+        },
+        {
+          "title": "Count the worst case on demand",
+          "text": "Walk the lowest-ID-detects-first scenario and derive O(N^2) messages. Then contrast with second-highest-detects-first at O(N). Offer the optimisation of gossiping suspicions before electing, and price it: less storm, slower reaction."
+        },
+        {
+          "title": "Break it, then fix it honestly",
+          "text": "Volunteer the partition split-brain and the slow-process false coup. Propose the real fixes — quorum election like Raft, monotonic fencing tokens, leases instead of pure timeouts — and admit each fix abandons pure Bully. That admission is the senior signal."
+        },
+        {
+          "title": "Close with the scope boundary",
+          "text": "State where you would still use it: under ten nodes, single rack, static config, crash-only failures. Anywhere else, reach for Raft or an external control plane. Decisive scoping beats encyclopedic recall."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Do not call Bully consensus",
+      "text": "Bully elects a *process*, it never agrees on a *value*. There is no log replication, no quorum, no commitment. If the prompt asks for agreement on data under faulty conditions, Bully is the wrong answer and saying *Raft / Paxos with quorums* is the pass. Confusing election with consensus is the fastest way to fail this round."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail candidates"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Lowest ID wins** — inverted. Bully always crowns the *highest* live ID. Lowest-wins is the Ring algorithm's token convention, not Bully's.",
+        "**VICTORY goes only to lower processes in theory, to all in practice** — the winner must inform everyone, including higher ghosts that may recover, otherwise stale coordinator pointers linger.",
+        "**One timeout is enough** — false. You need an election-response timer *and* a victory-arrival timer, or a crashed higher process leaves challengers waiting forever.",
+        "**Bully tolerates partitions** — it does the opposite. A partition yields two coordinators by construction because each side deterministically picks its local maximum.",
+        "**Recovery is passive** — wrong. A recovered process actively re-bullies and preempts a healthy incumbent purely by outranking it, causing churn operators must dampen.",
+        "**It scales to hundreds of nodes** — message squall and full-mesh membership kill it past a small cluster. Large or elastic membership needs quorum-based election, not ranking."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "When Bully is defensible and when it is malpractice.",
+      "headers": [
+        "Use Bully when",
+        "Avoid Bully when"
+      ],
+      "rows": [
+        [
+          "Fewer than ~10 processes with static, known membership on a low-jitter LAN.",
+          "Membership is elastic, large, or spans regions with unpredictable latency."
+        ],
+        [
+          "Crash-only failures and a single-writer convenience leader, not safety-critical sequencing.",
+          "You need agreed values, replicated logs, or exactly-once leadership under partitions."
+        ],
+        [
+          "You can tolerate brief dual-leader windows or add external fencing tokens cheaply.",
+          "Split brain causes money movement, duplicate job execution, or divergent writes you cannot merge."
+        ],
+        [
+          "Simplicity and auditability outweigh efficiency, e.g. coursework, embedded controllers, test harnesses.",
+          "You already run a coordination service or control plane — reuse its election instead of hand-rolling."
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Bully elects the highest-ID live process by having lower processes challenge upward and the unanswered survivor announce victory — O(N^2) worst-case, correct only under synchronous timeouts and full membership, so I would use it for a small static cluster and reach for quorum election anywhere partitions matter.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:56:13.852Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,256 @@
+{
+  "slug": "wal-and-change-data-captures",
+  "title": "WAL and Change Data Captures",
+  "summary": "WAL is the ordered durability log; CDC turns that log into downstream events. This concept explains the mechanism, trade-offs, and production failure modes.",
+  "kind": "HLD",
+  "problemSlug": "wal-and-change-data-captures-92-205",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "💾",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "WAL",
+    "CDC"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "How Change Data Capture Works: Understanding the Impact on ...",
+      "url": "https://medium.com/striim/how-change-data-capture-works-understanding-the-impact-on-databases-346f83e64693",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Change Data Capture? - Databricks",
+      "url": "https://www.databricks.com/blog/what-is-change-data-capture",
+      "source": "databricks.com",
+      "kind": "article"
+    },
+    {
+      "title": "Change Data Capture Postgres: Real-Time Integration Guide - Striim",
+      "url": "https://www.striim.com/blog/change-data-capture-postgres-real-time-integration-guide/",
+      "source": "striim.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**WAL is the database's truth; CDC is just a tailer of that truth.** The database never trusts heap pages for durability, only the append-only log. CDC works because it reuses that same log instead of querying tables. If you remember nothing else: stop polling the database, start reading its log. Every design choice — slots, LSNs, decoding plugins — exists to make that tailing safe without breaking the primary."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "The Write-Ahead Log (WAL) is an append-only, totally ordered record of every physical change before that change is allowed to be considered durable. In Postgres-style engines, a commit does not mean \"heap pages were updated.\" It means \"a commit record with a Log Sequence Number was flushed to durable WAL.\" Crash recovery is then replay of WAL, not inspection of tables. That ordering is why WAL is the only artifact you can trust after a crash, a failover, or a torn page write. It is sequential by design: sequential writes are fast on disk, and a single sequence number gives you a global order for everything that happened."
+    },
+    {
+      "type": "paragraph",
+      "text": "Change Data Capture is the conversion of that internal recovery log into external, row-level events: `insert`, `update` with before/after images, `delete`, plus transaction boundaries. Log-based CDC uses logical decoding to translate physical WAL bytes into logical row changes and then publishes them in commit order to a durable bus. This is fundamentally different from trigger-based or poll-based capture. It does not add read load to tables, does not miss intermediate updates inside a transaction, and preserves ordering. The trade-off is coupling: you now depend on log retention, slot state, and schema evolution, not just SQL semantics."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from commit to downstream event"
+    },
+    {
+      "type": "paragraph",
+      "text": "The write path is deliberately pessimistic. A client issues `UPDATE accounts SET balance = ...`. The engine writes the new tuple version to shared buffers, but it first formats WAL records describing the physical change and appends them to the WAL buffer. On commit, it flushes WAL to disk up to that transaction's LSN and only then acknowledges the client. A background checkpointer later flushes dirty heap pages and records a restart point. Readers never see uncommitted WAL. That is why WAL tailing is safe: committed LSN order *is* commit order. CDC exploits this by starting from a consistent snapshot plus a start LSN, then streaming every committed change after that point."
+    },
+    {
+      "type": "mermaid",
+      "title": "WAL to CDC flow",
+      "caption": "Committed WAL is decoded and published in LSN order; the slot tracks consumer progress.",
+      "code": "flowchart LR\n  Client[Client Write] --> WALBuf[WAL Buffer]\n  WALBuf --> WALDisk[WAL Segments on Disk]\n  WALDisk --> Heap[Checkpoint and Heap Apply]\n  WALDisk --> Decode[Logical Decoding]\n  Decode --> Slot[Replication Slot]\n  Slot --> Connector[CDC Connector]\n  Connector --> Bus[Event Log Bus]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three primitives make this reliable. First, the LSN: a monotonically increasing pointer into the log. It is your resume token, your ordering key, and your lag metric. Second, the replication slot: durable server-side state that says \"this consumer has processed up to LSN X, do not discard WAL before X.\" Without a slot, a fast log-recycling primary would delete data before a slow consumer reads it. Third, the logical decoding plugin: it filters physical noise like vacuum, indexes, and free-space churn and emits only logical row changes with `old` and `new` images. The trade-off is explicit: slots buy you no-data-loss at the cost of unbounded disk growth if the consumer stalls. That is not a bug. That is the contract."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The four ways to capture changes"
+    },
+    {
+      "type": "table",
+      "caption": "CDC implementation methods compared on load, fidelity, and operational cost.",
+      "headers": [
+        "Method",
+        "How it works",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Log-based (WAL tailing)",
+          "Read committed WAL via logical decoding and publish in LSN order",
+          "Near-real-time, ordered, no query load on primary, captures deletes and intermediate writes",
+          "Needs slot management, schema handling, and log retention ops; deletes require replica identity config"
+        ],
+        [
+          "Trigger-based",
+          "Row triggers write to an outbox or shadow table on every write",
+          "Simple, portable, full control over payload shape",
+          "Adds write latency to every transaction, doubles write amplification, trigger logic rots and blocks DDL"
+        ],
+        [
+          "Poll-based (timestamp / incrementing ID)",
+          "`SELECT ... WHERE updated_at > ?` on an interval",
+          "Zero database setup, easy to understand",
+          "Misses deletes, misses multiple updates in one interval, full table scans under load, latency is polling interval plus query time"
+        ],
+        [
+          "Snapshot + diff",
+          "Periodic full dump compared to prior dump",
+          "Works when you have no log access at all",
+          "Expensive, slow, no ordering guarantees, useless for high-churn tables; only a last resort"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Choose log-based by default for anything transactional, and say why: it moves capture cost off the query path and onto sequential log I/O, which is the cheapest I/O the database does. Triggers tax the exact transaction you are trying to keep fast, and polling taxes reads while still losing correctness on deletes and rapid updates. The trade-off you accept with log-based CDC is operational surface: you must monitor slot lag, size WAL disks for consumer outages, and version your event schema. You are trading application simplicity for infrastructure correctness, and for audit trails, caches, search indexes, and cross-service replication that trade is worth it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "CDC does not fail with a clean error. It fails with lag, disk pressure, and silent downstream divergence. The primary keeps accepting writes — that is the point of WAL decoupling — so the symptom shows up far from the cause: stale reads in the cache, missing rows in the warehouse, duplicate charges after a replay. If you design this in an interview without a lag monitor, a dead-letter path, and a retention limit, you have designed a pipeline that looks healthy while it is lying."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Stalled consumer bloats WAL disk: connector crashes or Kafka is unavailable, slot stops advancing, primary retains every segment since the confirmed LSN. Symptom you see: steady growth in `pg_wal` volume, then `no space left on device` and primary write stall. The database dies because a downstream analytics job was down.",
+        "Schema change breaks decoding: column dropped, type altered, or `REPLICA IDENTITY` left as default so `UPDATE` / `DELETE` arrive without a key. Symptom: connector exceptions, skipped events, or downstream upserts that turn into inserts and duplicate rows.",
+        "Large transaction causes latency spike: a backfill updates 10M rows in one transaction. Nothing is emitted until commit, then a massive burst. Symptom: consumer lag jumps from seconds to minutes instantly, downstream autoscaling thrashes, exactly-once sinks time out.",
+        "Out-of-order replay after failover: standby is promoted with a different timeline, connector restarts from an old LSN without handling the timeline switch. Symptom: duplicate events or gaps; idempotent consumers survive, non-idempotent ledgers do not.",
+        "Hot key ordering bottleneck: single-partition sink preserves global order by forcing everything through one partition. Symptom: throughput capped at one consumer while the database is idle; you bought correctness you did not need at the price of scale."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic incident is slot lag during a weekend outage. Friday night the sink blocks on a poison message — a `NUMERIC` overflow or a `TOAST` value the deserializer rejects. The connector retries and stops acknowledging. WAL accumulates at 50-200 GB per day on a write-heavy primary. Monday morning alerts fire for disk, not for CDC, and the on-call drops old WAL manually to save the primary, which permanently breaks the slot. Now you have no choice but a full re-snapshot of every table. The lesson: bound the blast radius with disk alerts on retained WAL bytes, slot-lag alerts in both bytes and seconds, and a documented policy for when you will drop a slot and reseed rather than let the primary fall over. Protect the write path first."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Slots protect data by threatening the primary",
+      "text": "A replication slot is a promise: the primary will keep WAL until you acknowledge it. That promise has no timeout by default. Every CDC design must answer: maximum retained WAL before we page, maximum lag before we drop the slot and force a resnapshot, and where that runbook lives. If you cannot quote those numbers, you do not have a CDC design."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Config that makes it concrete"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "postgres_cdc.sql",
+      "code": "-- postgresql.conf: you are paying write amplification for logical decoding\n-- Trade-off: higher wal_level + larger retention = more disk, safer CDC\nwal_level = logical\nmax_replication_slots = 8\nmax_wal_senders = 8\nwal_keep_size = '4GB'\n\n-- Per-table: you do not get UPDATE/DELETE keys for free\nALTER TABLE accounts REPLICA IDENTITY FULL;\n-- FULL logs old row on every update: correct but expensive.\n-- Prefer REPLICA IDENTITY USING INDEX (pk) when the key is immutable.\n\n-- Create the slot the connector will hold open\nSELECT pg_create_logical_replication_slot('cdc_to_bus', 'pgoutput');\n-- Monitor this like production: confirmed_flush_lsn vs current LSN is lag\nSELECT slot_name, confirmed_flush_lsn, pg_current_wal_lsn() FROM pg_replication_slots;"
+    },
+    {
+      "type": "paragraph",
+      "text": "This config is where the interview answer gets specific. `wal_level = logical` adds CPU and WAL volume because the engine now logs enough information to reconstruct rows, not just pages. `REPLICA IDENTITY FULL` fixes missing-key deletes but doubles log size on wide rows — use it only where you need deletes without a stable primary key. The trade-off is always the same: completeness of the change event versus bytes written on the hot path. Name it. Also state your initial snapshot strategy: `snapshot + LSN handoff` avoids locking tables for hours but requires a consistent snapshot boundary, otherwise you double-emit or skip rows created during the seed."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from durability, not from Kafka",
+          "text": "Draw client to WAL flush to ack, then show CDC as a second reader of the same log. Interviewers reject answers that start with connectors because it proves you think CDC polls tables. Lead with: commit equals WAL flush, everything else is replay."
+        },
+        {
+          "title": "State delivery semantics explicitly",
+          "text": "Say at-least-once with idempotent sinks, ordered per key by routing on primary key to a log partition. Do not claim exactly-once end to end unless you control idempotency keys and transactional sinks. The trade-off: global ordering kills throughput, key ordering scales."
+        },
+        {
+          "title": "Handle schema and deletes on the whiteboard",
+          "text": "Specify envelope with before/after, op type, LSN, and transaction ID, plus a schema registry version. State how deletes and DDL propagate. This is where medium questions become hard questions."
+        },
+        {
+          "title": "Draw failure handling, not just the happy path",
+          "text": "Add slot-lag monitoring, dead-letter queue for poison messages, and a resnapshot path when a slot is dropped. Explain when you sacrifice the CDC stream to save the primary. That answer signals production experience."
+        },
+        {
+          "title": "Size it with numbers",
+          "text": "Estimate WAL rate from writes per second times average record size, then size retention as rate times maximum tolerable consumer outage. Example reasoning beats hand-waving about infinite scale every time."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`CDC reads the tables` — no, it reads the log. If your design adds `updated_at` polling to a transactional system, you have added read load to the primary and still lost deletes.",
+        "`WAL and the binlog are backups` — no, they are the durability mechanism. Backups are derived from them. CDC reuses the same stream that crash recovery uses.",
+        "`CDC is exactly-once by default` — no, it is at-least-once with replays after restarts and failovers. Exactly-once requires idempotent consumers keyed on `(table, pk, LSN)`.",
+        "`Ordering is free` — no, commit order is known, but preserving it downstream forces partitioning compromises. Global order means one partition and capped throughput.",
+        "`Dropping a slot is harmless` — no, dropping a slot discards your resume point. The only recovery is a full re-snapshot, which is slow and load-heavy on the primary."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use log-based CDC for replication and eventing; avoid it for request-path reads.",
+      "headers": [
+        "Use WAL-based CDC when",
+        "Do not use it when"
+      ],
+      "rows": [
+        [
+          "Replicating to cache, search index, warehouse, or audit log with second-level freshness",
+          "You need synchronous guarantees — CDC is async by definition; use 2PC, outbox with request confirmation, or a synchronous read instead"
+        ],
+        [
+          "Publishing domain events from legacy writes you cannot change to emit events directly",
+          "Churn is tiny and polling cost is negligible — a 10-row config table does not need slots and decoding"
+        ],
+        [
+          "Needing ordered, complete history including deletes and intermediate updates",
+          "Downstream only needs current state snapshots daily — a nightly dump is cheaper and simpler to operate"
+        ],
+        [
+          "Fanning out one commit to many consumers without loading the primary",
+          "Team cannot operate slot monitoring and schema evolution — unmonitored CDC is worse than no CDC"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **CDC tails the WAL in commit order via a replication slot and publishes idempotent, key-ordered events, trading slot retention and schema ops for no read load on the primary.** Then point to your lag metric and your drop-and-resnapshot policy."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:26:52.165Z",
+    "problems": []
+  }
+}

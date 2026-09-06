@@ -1,0 +1,296 @@
+{
+  "slug": "fault-techniques",
+  "title": "Fault Techniques",
+  "summary": "Fault techniques are systematic ways to enumerate how a distributed system can fail before it does — FMEA, fault trees, functional failure analysis, and HAZOP — and then bind each failure to detection and mitigation.",
+  "kind": "HLD",
+  "problemSlug": "fault-techniques-97-189",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Medium",
+  "coverEmoji": "🛡️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Fault-Tolerance",
+    "Distributed-Consensus",
+    "Resilience"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Fault detection - an overview | ScienceDirect Topics",
+      "url": "https://www.sciencedirect.com/topics/mathematics/fault-detection",
+      "source": "sciencedirect.com",
+      "kind": "article"
+    },
+    {
+      "title": "Learn Fault Finding Fundamentals - YouTube",
+      "url": "https://www.youtube.com/watch?v=kwqPkXCv3w4",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "A Guide to Fault Detection and Diagnosis",
+      "url": "https://gregstanleyandassociates.com/whitepapers/FaultDiagnosis/faultdiagnosis.htm",
+      "source": "gregstanleyandassociates.com",
+      "kind": "article"
+    },
+    {
+      "title": "Let there be light! Use these IT fault analysis techniques to see systems ...",
+      "url": "https://www.equalexperts.com/blog/our-thinking/fault-analysis-techniques-to-improve-it-system-resilience/",
+      "source": "equalexperts.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Resilient systems are not built by adding retries and replicas. They are built by **enumerating failure modes first, then buying down the worst ones**. If you cannot name how a dependency fails, what the user sees, and how you detect it, your timeouts and circuit breakers are guesses. Fault techniques turn *what if it breaks?* into a priced list of bets."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Fault techniques are structured analysis methods that force you to reason from **function to failure to effect to mitigation** instead of sprinkling resilience patterns and hoping. A **fault** is a defect in a component — a crashed process, a flipped bit, a slow disk, a poisoned config. A **failure** is externally visible misbehavior — checkout returns 500, charges twice, stalls for 30 seconds. A **hazard** is a system state that can cause loss — duplicate charges, lost writes, split-brain leaders. Detection tells you something is wrong. Diagnosis tells you which root cause to fix. Tolerance keeps serving despite the fault. Analysis tells you which faults are worth tolerating. Confuse those four and you over-invest in the wrong layer: perfect detection with no mitigation is an alert storm, perfect replication with no fault model is a correlated outage waiting to happen."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Fault vs. failure:** fault is internal cause, failure is external symptom. One fault can cause zero, one, or many failures depending on masking. Design for the failure the user sees.",
+        "**Detection vs. diagnosis vs. tolerance:** detection answers *is it broken?*, diagnosis answers *what broke?*, tolerance answers *can we still serve?*. You need detection for all three; you only need diagnosis for repair.",
+        "**Failure mode vs. effect vs. cause:** mode is *how* it fails (crash, omission, timing, Byzantine), effect is blast radius, cause is why. Most HLD answers stop at cause and skip mode — which is why their mitigations do not work.",
+        "**Severity x likelihood x detectability:** the only sane way to rank work. A rare, severe, undetectable fault beats a common, mild, obvious one every time. If you cannot rank, you cannot prioritize."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this ordering matters: distributed systems fail in **partial, timed, and correlated** ways, not clean crash-stop. A downstream that is *slow* is worse than one that is *down* because it holds threads, exhausts queues, and propagates backpressure upstream. That is why the analysis must come before the pattern. Timeouts bound timing faults. Retries mask transient omission faults but amplify overload faults. Idempotency keys mask duplicate-execution faults. Quorum and fencing mask split-brain faults. Each mitigation only covers specific modes. Pick the mitigation from the mode, not from a checklist. The trade-off every time: **every tolerance mechanism adds a new fault source** — retry adds load, failover adds flapping, replication adds divergence — so you are always trading one failure class for another."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from function to mitigation"
+    },
+    {
+      "type": "paragraph",
+      "text": "All four classic techniques are the same loop with different direction. Start from a user-visible function, postulate how it can violate its contract, trace the propagation, score it, then attach a detector and a fallback. Do it top-down when you fear an outage, bottom-up when you distrust a component. The reason teams skip this is cost: it feels slower than drawing boxes. It is faster because it kills entire classes of follow-up questions — *what if the cache is stale? what if the queue fills? what if clocks skew?* — by answering them in one pass instead of one incident at a time. The trade-off: rigor costs meeting time now to save outage time later. Buy rigor proportional to blast radius."
+    },
+    {
+      "type": "mermaid",
+      "title": "Fault analysis loop",
+      "caption": "One loop, four entry points: start from function, mode, top event, or deviation.",
+      "code": "flowchart TD\n  A[\"Function: checkout charges exactly once\"] --> B[\"Postulate failure modes\"]\n  B --> C[\"Trace effect to user\"]\n  C --> D[\"Find causes + propagation\"]\n  D --> E[\"Score severity x likelihood\"]\n  E --> F[\"Attach detector + mitigation\"]\n  F --> G{\"Residual risk acceptable?\"}\n  G -->|No| B\n  G -->|Yes| H[\"Encode as timeout, retry, breaker, quota\"]"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The four techniques in one pass"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Functional Failure Analysis — top-down from user harm.** Ask: if this function fails, how? Omission, wrong value, too late, too often. Best for scoping an HLD in 3 minutes. Why use it: it forces you to define correct before you defend availability. Trade-off: coarse — it will not find component interactions.",
+        "**Failure Mode and Effects Analysis (FMEA) — bottom-up per component.** For each dependency list modes, effects, detection, and mitigation in a table, then score severity and detectability. Best for dependencies you do not control: payments, push, DNS, object store. Why use it: it produces a build list. Trade-off: tedious and blind to combinations — two benign faults that combine lethally will slip through.",
+        "**Fault Tree Analysis — top-down boolean logic.** Start from a dreaded top event like *lost acknowledged write* and expand with AND / OR gates until leaves are independent faults. Best for proving why quorum, fencing, and idempotency are non-negotiable. Why use it: it exposes single points and correlated branches visually. Trade-off: explodes combinatorially and assumes you know the gates; Byzantine and timing faults make trees lie if you treat branches as independent.",
+        "**HAZOP-style deviation walk — guidewords per flow.** Apply *no, more, less, late, early, reversed, corrupted* to every flow between boxes. Best for queues, streams, and cross-region replication where *late* and *duplicate* hurt more than *down*. Why use it: finds timing and ordering faults the other three miss. Trade-off: slowest, needs a facilitator, and feels pedantic until it catches the one late-duplicate that double-charges."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Pick the cheapest technique that finds the fault class you fear most.",
+      "headers": [
+        "Technique",
+        "What it gives you",
+        "What it costs you"
+      ],
+      "rows": [
+        [
+          "Functional Failure Analysis",
+          "Fast scope; ties resilience to user contract; kills vague it retries debates",
+          "Misses interactions; no ranking; easy to hand-wave"
+        ],
+        [
+          "FMEA",
+          "Per-dependency action list with detector + mitigation; great for interviews because it is enumerable",
+          "Linear thinking; misses AND-combinations; rots if not tied to runbooks"
+        ],
+        [
+          "Fault Tree",
+          "Shows cut sets and SPOFs; justifies quorum / fencing / bulkheads with logic, not taste",
+          "Large trees become unreadable; independence assumption breaks under correlated deploys and AZ failures"
+        ],
+        [
+          "HAZOP deviations",
+          "Finds late, duplicate, reordered, partial faults that cause real money loss",
+          "Heavy process; overkill for stateless CRUD; requires domain guidewords to be useful"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "My opinionated default: in a 45-minute HLD, run **functional failure in 2 minutes, a 3-row mini-FMEA on the two riskiest dependencies, and a 5-node fault tree for the one dreaded event** like double-charge or lost write. Skip full HAZOP live; steal its guidewords as a 30-second sweep — *what if it is late, duplicated, reordered, or partial?* Why this combo: FMEA alone makes you add retries everywhere, fault tree alone makes you draw logic with no detectors, HAZOP alone burns the clock. Together they cover omission, wrong-value, and timing faults for the price of one whiteboard. The trade-off you must state aloud: **depth on the critical path beats breadth everywhere** — exhaustive analysis of a non-critical thumbnail service is waste, shallow analysis of the payment path is negligence."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The most expensive miss is the **slow dependency treated as a dead dependency**. Your FMEA said *downstream crashes*, so you added retries with no deadline. In production the downstream does not crash — it degrades to p99 of 8 seconds. Threads park, queues fill, upstream timeouts cascade, and retries multiply load by 3x. Symptom you see: latency cliff with low error rate at first, then sudden 502 spike, then recovery after the retry storm, then repeat. The detector failed because you monitored status codes, not queue depth and deadline-exceeded counts. Fix is not *more retries* — it is deadlines, hedged requests or fail-fast, bulkheads, and load shedding. Trade-off named: **masking transient faults with retries trades availability for amplification**; without a retry budget and backoff with jitter you convert a partial fault into a full outage."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second classic is **tolerance that becomes the fault: flapping failover and divergent replicas**. Fault tree said *primary can die*, so you built automatic failover. You skipped fencing and the AND-gate where *primary is partitioned, not dead*. Now two writers accept orders, queues fork, and reconciliation invents duplicate shipments. Symptom you see: success rate looks healthy while business invariants bleed — duplicate charges, lost updates, *acknowledged but missing* records after failback. Monitoring shows leader changes flapping and replica lag sawtooth. The root cause is treating consensus as *election* instead of *mutual exclusion under partition*. Fix is fencing tokens, quorum writes, and idempotent consumers — slower and more complex, which is exactly why you need the tree to justify it. Trade-off named: **automatic recovery trades MTTR for correctness risk**; if you cannot fence, prefer degraded read-only over dual-write."
+    },
+    {
+      "type": "mermaid",
+      "title": "Fault tree for double-charge",
+      "caption": "Top event needs an AND of timing fault plus missing guard — remove either branch.",
+      "code": "graph TD\n  TOP[\"Top: user charged twice\"] --> A[\"AND: duplicate execution + no dedup\"]\n  A --> DUP[\"OR: retry, double-click, redelivery\"]\n  A --> NODEDUP[\"OR: no idempotency key, key not checked\"]\n  DUP --> R1[\"Client retry on timeout\"]\n  DUP --> R2[\"Queue redelivers\"]\n  NODEDUP --> K1[\"Key not stored atomically\"]\n  NODEDUP --> K2[\"Key TTL too short\"]"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Latency cliff + retry amplification:** p99 climbs, threadpool saturated, downstream QPS 2-4x normal. Detector to add: deadline-exceeded counter, queue time, retry budget burn rate — not just 5xx.",
+        "**Flapping + forked state:** leader changes per minute, replica lag oscillation, duplicate business IDs. Detector to add: fencing violations, quorum failures, consumer duplicate-delivery rate.",
+        "**Silent corruption:** success codes with wrong value — stale cache, truncated write, clock-skewed expiry. Symptom: support tickets before alerts fire. Detector to add: invariant checks, reconciliation lag, checksum mismatches.",
+        "**Alert storm with no isolation:** every service pages because detection fired without diagnosis. Symptom: 20 alerts, zero owner. Fix: topology-aware correlation and per-mode dashboards, not louder pages."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Runtime enforcement: analysis is shelfware without guards"
+    },
+    {
+      "type": "paragraph",
+      "text": "An FMEA row that does not compile to a timeout, budget, breaker, or quota is a wish. Every high-severity mode needs two artifacts: a **detector** that fires in seconds and a **mitigation** that acts without a human. Detectors are SLIs per mode — timeout rate, duplicate rate, lag, lease loss. Mitigations are bounded — deadlines propagate, retries are capped with jitter, breakers shed, bulkheads isolate, queues spill to dead-letter with reconciliation. Why encode it: humans do not execute the tree at 2 a.m.; code does. The standing trade-off: **fast failover improves availability but risks correctness, while strict quorum improves correctness but hurts availability under partition** — state which side of the partition trade you chose and why the business prefers it."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "resilience_from_fmea.py",
+      "code": "from dataclasses import dataclass\n\n@dataclass\nclass FailureMode:\n    mode: str            # e.g. downstream timeout / duplicate delivery\n    detector: str        # SLI that proves it\n    mitigation: str      # bounded action, not \"retry forever\"\n    budget: str          # explicit price you will pay\n\n# Mini-FMEA for checkout -> payments. Each row must compile to config.\nFMEA = [\n    FailureMode(\"payments slow (p99 >800ms)\", \"deadline_exceeded_total\", \"deadline 800ms + hedge after 600ms, bulkhead 20 conns\", \"max 1 hedge, shed after bulkhead full\"),\n    FailureMode(\"payments timeout then retry\", \"retry_budget_burn\", \"idempotency-Key + exactly-once store, retry x2 exp+jitter\", \"retry budget 10% of QPS, else fail-fast\"),\n    FailureMode(\"queue redelivery duplicate\", \"consumer_duplicate_total\", \"idempotent handler + dedup table with atomic insert\", \"dedup TTL 7d; spill to DLQ after 5 attempts\"),\n]\n\ndef should_retry(attempt: int, budget_remaining: float) -> bool:\n    # Trade-off made explicit: masking transients vs amplifying overload.\n    if attempt >= 2:\n        return False\n    if budget_remaining <= 0:\n        return False  # fail fast to protect downstream\n    return True"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Define correct first",
+          "text": "State the contract in one line: *charge exactly once within 2s or return a retryable error.* Without this, failure modes are unbounded and you will ramble. Interviewers score this as signal."
+        },
+        {
+          "title": "Run functional failure aloud in 60 seconds",
+          "text": "Enumerate omission, crash, late, duplicate, corrupt for the critical path. Say: *happy path is trivial, here are the four ways checkout violates its contract.* This frames the rest of the design."
+        },
+        {
+          "title": "Mini-FMEA the two scariest dependencies",
+          "text": "Draw a 4-column table: mode, user effect, detector, mitigation. Do payments and the queue, skip thumbnails and search. Name severity and why you deprioritized the rest — that ranking is the Medium-level bar."
+        },
+        {
+          "title": "Draw a 5-node fault tree for the dreaded event",
+          "text": "Pick *lost acknowledged write* or *double-charge*. Show AND / OR gates down to timeout, retry, partition, and missing idempotency. Use it to justify quorum, fencing, or dedup instead of asserting them."
+        },
+        {
+          "title": "Bind each row to runtime config",
+          "text": "Convert every mitigation to numbers: deadline, retry cap, breaker threshold, bulkhead size, DLQ policy. Say the trade-off: *2 retries with 10% budget trades 0.1% extra success for bounded amplification.* Vague *we will retry* fails here."
+        },
+        {
+          "title": "Close with residual risk and chaos validation",
+          "text": "State what you chose not to cover and how you would prove it: inject latency, kill leader, partition AZ, duplicate delivery. Chaos without a prior expected-behavior list is theater; with a fault list it is verification."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail the round"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**More replicas equals more resilience.** Replicas without independence and fencing just replicate the fault. Same AZ, same config push, same clock means correlated failure — your fault tree lied about OR.",
+        "**Retries fix failures.** Retries only mask transient omission. They worsen overload, latency, and duplicates. Without idempotency and a budget, a retry is a load multiplier with a hope attached.",
+        "**Circuit breaker detects faults.** Breakers mitigate by shedding; they detect poorly and late. Detection is SLIs, deadline counters, and invariant checks. A breaker with no detector flaps and hides the cause.",
+        "**Consensus makes failures go away.** Consensus narrows the fault class to crash + partition at the cost of latency and availability. It does not cover Byzantine, stale reads, or client duplicates — you still need fencing and end-to-end idempotency.",
+        "**HAZOP / FMEA is waterfall paperwork.** Done fully, yes. Done as a 5-minute whiteboard sweep with guidewords *late, duplicate, partial, reordered*, it is the fastest way to sound senior. The artifact rots; the thinking compounds.",
+        "**Timeouts are just config.** Timeouts are the fault model. No deadline means you adopted *wait forever* as your timing-fault policy. Propagate deadlines end-to-end or your bulkheads are decoration."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Match effort to blast radius and fault class.",
+      "headers": [
+        "Scenario",
+        "Use it?",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Checkout, payments, write path, leader election",
+          "Yes — mini-FMEA + fault tree",
+          "Money and durability faults are severe and hard to detect; rigor pays"
+        ],
+        [
+          "Async pipeline with at-least-once delivery",
+          "Yes — HAZOP sweep for late / duplicate / reorder",
+          "Timing faults dominate; idempotency and DLQ design fall out directly"
+        ],
+        [
+          "Cross-region replication / quorum choice",
+          "Yes — fault tree with partitions",
+          "Forces explicit fencing and consistency trade-off instead of hand-waving"
+        ],
+        [
+          "Stateless thumbnail, autocomplete, internal dashboard",
+          "No — functional failure only",
+          "Blast radius is low; full FMEA costs more than the outage"
+        ],
+        [
+          "Early MVP with no users",
+          "No — one detector + one fallback",
+          "Speed matters more; log modes as debt, do not gild resilience you may throw away"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Gotcha to avoid",
+      "text": "Do not present mitigations without detectors. *We retry, we fail over, we replicate* with no per-mode SLI means you will neither know you are broken nor which branch of the tree fired. Every mitigation gets a counter and a dashboard, or it does not exist."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Fault techniques turn *what if it fails* into a ranked list of modes with a detector and a bounded mitigation each — so I spend availability budget where user harm and undetectability are highest, and I can tell you the trade-off I bought."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:54:36.734Z",
+    "problems": []
+  }
+}

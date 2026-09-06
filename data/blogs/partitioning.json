@@ -1,0 +1,272 @@
+{
+  "slug": "partitioning",
+  "title": "Partitioning",
+  "summary": "Partitioning is a placement decision: choose the partition key and routing scheme to isolate growth and queries, and accept hotspots, scatter-gather, and resharding pain as the price.",
+  "kind": "HLD",
+  "problemSlug": "partitioning-92-204",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "🗂️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "Partitioning"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Data Partitioning Explained! Everything You Need to ... - YouTube",
+      "url": "https://www.youtube.com/watch?v=OIjEYu84ulQ",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Partitioning Explained For Teachers, Parents And Kids",
+      "url": "https://thirdspacelearning.com/us/blog/what-is-partitioning/",
+      "source": "thirdspacelearning.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is data partitioning, and why does it matter - Aerospike",
+      "url": "https://aerospike.com/blog/what-is-data-partitioning/",
+      "source": "aerospike.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Partitioning? Maths Teaching Wiki - Twinkl",
+      "url": "https://www.twinkl.com/teaching-wiki/partitioning",
+      "source": "twinkl.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Partitioning does not make your database faster. It makes each failure, query, and growth problem smaller.** You split rows or columns so one machine never holds all the data or serves all the traffic. Every scheme is just an answer to: **given a key, which machine owns it, and what breaks when that answer changes?**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What partitioning is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Partitioning is assignment of each record to exactly one owner partition based on a **partition key**. The key can be a user ID, timestamp, geography, or a hash of one of those. A router — client library, proxy, or coordinator node — applies a deterministic function to the key and forwards the read or write to that partition. That is the whole mechanism. No magic. If two requests carry the same partition key, they land on the same partition. If they carry different keys, they can run in parallel on different machines. Choose the key wrong and you have built a distributed system that still behaves like a single hot machine."
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep three terms straight because interviewers use them to trap you. **Horizontal partitioning** splits by rows: each partition has the same schema but a subset of records. **Vertical partitioning** splits by columns or tables: wide, rarely-read blobs go to one store, hot narrow columns to another. **Sharding** is horizontal partitioning deployed across independent database processes or hosts, each with its own CPU, memory, disk, and failure domain, plus a routing layer on top. Postgres table partitions on one host are partitioning. The same logical split across eight hosts behind a router is sharding. The trade-off: sharding removes the single-machine capacity ceiling, but you now own routing, rebalancing, and cross-shard queries."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How routing actually works"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are only three routing families, and you must pick one with reasons. **Range partitioning** maps contiguous key ranges to partitions: `A-M` on node 1, `N-Z` on node 2, or January to March on node 1. It keeps range scans local, which is why time-series tables love it. **Hash partitioning** hashes the key and mods by partition count: `partition = hash(user_id) % N`. It spreads writes evenly but destroys locality — a range scan becomes a scatter-gather across all partitions. **Directory-based routing** keeps an explicit lookup table: key range -> owner. It is flexible, it allows uneven splits and manual moves, but the directory itself becomes state you must replicate, cache, and keep consistent. Most production systems end on **consistent hashing** with virtual nodes: a hash ring where adding a node only remaps `1/N` of keys instead of almost everything."
+    },
+    {
+      "type": "mermaid",
+      "title": "Request routing by partition key",
+      "caption": "The router is the system. Lose it or desync it and writes go to the wrong owner.",
+      "code": "flowchart LR\n    C[Client request with key] --> R[Router: hash or range lookup]\n    R --> P0[Partition 0\\nkeys 0-333]\n    R --> P1[Partition 1\\nkeys 334-666]\n    R --> P2[Partition 2\\nkeys 667-999]\n    P0 --> S0[Node A]\n    P1 --> S1[Node B]\n    P2 --> S2[Node C]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why the router placement matters: if routing lives in a smart client, you get low latency and no extra hop, at the cost of deploying routing-table updates to every service on every reshard. If it lives in a proxy or coordinator, you can change mapping in one place, at the cost of an extra network hop and a new component to scale and fail over. There is no neutral choice. Client-side routing trades operational simplicity at the proxy for deployment complexity at the edge. Proxy routing trades request latency for control. Say that explicitly, or you sound like you have never operated either."
+    },
+    {
+      "type": "table",
+      "caption": "Partitioning schemes compared honestly. Pick by access pattern, not fashion.",
+      "headers": [
+        "Scheme",
+        "What it buys you",
+        "What it costs you",
+        "Use when"
+      ],
+      "rows": [
+        [
+          "Range on key / time",
+          "Range scans hit one partition; easy expiry by dropping old partitions",
+          "Hotspots on newest range; uneven growth; painful split of hot range",
+          "Time-ordered queries dominate and ingest is append-mostly"
+        ],
+        [
+          "Hash on key mod N",
+          "Near-uniform spread; simple; no directory",
+          "No range locality; full reshard moves ~all data when N changes; cross-partition transactions",
+          "Point lookups by ID dominate and load must spread evenly"
+        ],
+        [
+          "Consistent hash + vnodes",
+          "Add/remove node moves only ~1/N keys; smooths heterogeneity with vnode weights",
+          "Still no range locality; ring + membership logic to operate; hot keys still hot",
+          "Elastic node count with point lookups and frequent scaling events"
+        ],
+        [
+          "Directory / lookup table",
+          "Arbitrary placement; isolate tenants; move hot ranges manually",
+          "Directory is critical state: cache invalidation, consistency, extra lookup",
+          "Multi-tenant isolation or highly skewed keys needing manual control"
+        ],
+        [
+          "Vertical split",
+          "Smaller hot working set; independent scaling of blob vs. metadata",
+          "Joins across stores in application; two failure modes; schema coordination",
+          "Wide rows where 5% of columns serve 95% of queries"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The dominant failure is **skew**, not node loss. Hashing spreads keys, not traffic. One celebrity user, one large tenant, one hot time bucket can drive 80% of requests to one partition while the rest idle. Symptom: p99 latency climbs on one node, CPU and lock contention spike there, connection pools saturate, and adding more partitions does nothing because the hot key still hashes to one owner. Dashboard shows one partition with 10x QPS and 5x disk growth. The fix is not more shards — it is key redesign: salt the hot key, split the tenant, cache the hot read, or move from hash to directory so you can isolate the offender. If you cannot name your hot key, you have not designed anything."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "What the on-call sees",
+      "text": "One node hot, rest cold. Throttled writes on one shard, rebalancing stuck, scatter-gather timeouts on range queries. If cross-partition queries grow from 1 to N fan-out, tail latency becomes the slowest shard plus network overhead — every time."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure is **resharding**. Changing partition count, splitting a range, or replacing a node requires moving data while serving traffic. Done naively you get double-writes, missing reads, or hours of degraded throttling. The production pattern is: mark range as migrating, dual-write old and new, backfill snapshot, verify checksums, then flip the routing table and drain. The trade-off is unavoidable: online migration buys availability at the cost of complexity and temporary write amplification. Offline migration buys simplicity at the cost of downtime. Cross-partition transactions are the third failure: without a coordinator you get partial writes, so teams either forbid them by colocating related data on the same partition key or pay for two-phase commit and accept the latency and blocking on coordinator failure."
+    },
+    {
+      "type": "paragraph",
+      "text": "Directory staleness is the quiet killer. Clients cache `key -> partition` and a reshard invalidates it. Symptom: elevated `wrong-node` redirects, write conflicts, or reads returning stale empty results right after a move. The fix is versioned routing tables and a single source of truth for mapping, but that adds a lookup on the critical path. So you cache with short TTL and accept redirect storms during moves. Name that trade-off: freshness of routing versus added latency and load on the directory."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Partition function in code"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "partition_router.py",
+      "code": "import hashlib\n\nNUM_PARTITIONS = 64\nVIRTUAL_NODES = 128  # vnodes per physical node smooth weight differences\n\ndef partition_for_key(key: str, num_partitions: int = NUM_PARTITIONS) -> int:\n    # Stable hash: all routers must agree. Never use process-randomised hash.\n    h = int(hashlib.sha256(key.encode()).hexdigest(), 16)\n    return h % num_partitions\n\ndef range_partition_for_ts(month: int, boundaries=(4, 8)) -> int:\n    # Range keeps scans local: Q1 -> p0, Q2-Q3 -> p1, rest -> p2.\n    # Trade-off: current month partition absorbs all writes.\n    if month < boundaries[0]:\n        return 0\n    if month < boundaries[1]:\n        return 1\n    return 2\n\n# Composite key to break a hot tenant: tenant + salt, not tenant alone.\n# partition_for_key(f\"{tenant_id}#{shard_salt}\") spreads one tenant.\n# Cost: readers must fan out over salts to reassemble."
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet looks trivial and that is the point. The interview signal is not the modulo, it is what you say around it: the hash must be stable across processes and languages, the partition count change must not remap everything (hence consistent hashing in real systems), and salting a hot key fixes write skew by turning one logical key into many physical keys — which forces scatter-gather on reads. Every line buys something and bills you elsewhere. If you propose `hash() % N` without mentioning rehash storm or hot keys, you have described a homework answer, not a system."
+    },
+    {
+      "type": "mermaid",
+      "title": "Online reshard without downtime",
+      "caption": "Availability during moves costs dual-writes and verification. There is no free move.",
+      "code": "flowchart TD\n    A[Mark range as migrating] --> B[Dual-write old and new owner]\n    B --> C[Backfill snapshot to new owner]\n    C --> D[Verify checksums and lag]\n    D --> E[Flip routing table version]\n    E --> F[Drain old owner and delete]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from access patterns, not partition count",
+          "text": "Ask: point lookup or range scan? Read-heavy or write-heavy? Single-tenant queries or global analytics? Then propose the key: `user_id` hash for profile lookups, `(tenant_id, created_at)` range for per-tenant timelines. Justify why that key keeps the dominant query single-partition."
+        },
+        {
+          "title": "Draw the router and state who owns the mapping",
+          "text": "Sketch client, router, partitions, and where the mapping lives. State client-side versus proxy routing and the update story. Interviewers fail candidates who draw boxes without saying who redirects on a stale map."
+        },
+        {
+          "title": "Quantify partitions and size",
+          "text": "Pick numbers: 100M users, 2KB per row, 3x replication, 500GB usable per node → ~shard count and growth headroom. Show you size partitions so one shard fits on one node with room to split, typically tens to low hundreds of GB, not terabytes."
+        },
+        {
+          "title": "Attack your own key with skew",
+          "text": "Volunteer the hotspot: newest time partition, largest tenant, celebrity key. Propose mitigation before asked: salt, tenant isolation, cache, directory override. This is where medium becomes senior."
+        },
+        {
+          "title": "Close with reshard and cross-shard rules",
+          "text": "End with: how you split without downtime, how you forbid or coordinate cross-partition writes, and how range queries fan out with p99 consequences. If analytics need full scans, add an offline warehouse instead of torturing the serving shards."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Partitioning equals replication.** No. Partitioning splits ownership; replication copies it. You need both: partitions for scale, replicas of each partition for survival. One without the other is either fragile or unscalable.",
+        "**More partitions always means more throughput.** No. More partitions means more fan-out, more connections, more metadata, and worse tail latency. Throughput scales only if queries stay single-partition.",
+        "**Hashing solves hotspots.** Hashing solves uneven key counts. It does nothing for uneven traffic per key. A hot key is hot on every scheme until you split, cache, or isolate it.",
+        "**Range scans work fine on hash-partitioned data.** They do not. Hash destroys order. A date-range query becomes N parallel queries plus a merge. If ranges matter, use range partitioning or a secondary index with its own partitioning story.",
+        "**The database handles rebalancing for free.** It handles it at a price: background I/O, throttling, stale caches, and versioned routing. Zero-downtime moves always cost dual-writes and verification somewhere.",
+        "**Vertical partitioning is just normalisation.** No. Normalisation is logical. Vertical partitioning is physical placement to shrink the hot working set — it trades join locality for cache and I/O efficiency."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Partition only when one machine cannot hold the data, the traffic, or the blast radius.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Dataset exceeds one node disk/RAM or write QPS exceeds one node",
+          "Partition",
+          "Only way to scale capacity and parallelise ingest beyond vertical limits"
+        ],
+        [
+          "Tenant isolation, time-based retention, geographic locality required",
+          "Partition",
+          "Lets you drop old partitions, pin tenants, and keep queries local"
+        ],
+        [
+          "Small dataset (< tens of GB), low QPS, strong cross-row transactions",
+          "Do not partition",
+          "You pay scatter-gather, ops, and resharding for no gain; use replicas + indexes"
+        ],
+        [
+          "Heavy ad-hoc joins and global aggregations on serving path",
+          "Do not shard serving DB",
+          "Fan-out kills p99; replicate to warehouse or build purpose-built index instead"
+        ],
+        [
+          "Unclear access pattern",
+          "Defer sharding",
+          "Wrong key is worse than no key; scale vertically, measure, then shard on the proven hot dimension"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Partition by the key your dominant query filters on so that query hits one partition, and accept that every other access pattern pays fan-out while moves pay dual-writes.**"
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:25:41.625Z",
+    "problems": []
+  }
+}

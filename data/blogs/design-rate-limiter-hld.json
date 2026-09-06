@@ -1,0 +1,512 @@
+{
+  "slug": "design-rate-limiter-hld",
+  "title": "Design Rate Limiter (HLD)",
+  "summary": "Design a distributed rate limiter: clarify limits and granularity, reject fixed windows, enforce at the gateway with atomic Redis counters, and prove correctness under concurrency and failure.",
+  "kind": "HLD",
+  "problemSlug": "design-rate-limiter-hld-150-318",
+  "topic": "More Interview Problems",
+  "difficulty": "Hard",
+  "coverEmoji": "🚦",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Rate Limiter",
+    "Distributed Systems"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.ambitionbox.com/interviews/6sense-interview-questions",
+      "title": "30+ 6Sense Interview Questions & Answers 2026 | AmbitionBox",
+      "source": "ambitionbox.com",
+      "kind": "aggregate",
+      "companies": [
+        {
+          "name": "6Sense",
+          "role": "Senior Software Engineer",
+          "date": "Mar 2025",
+          "quote": "Design Rate Limiter (HLD)"
+        }
+      ]
+    },
+    {
+      "url": "https://www.ambitionbox.com/interviews/6sense-interview-questions/senior-soft-engineer",
+      "title": "10+ 6Sense Senior Software Engineer Interview Questions & Answers 2026",
+      "source": "ambitionbox.com",
+      "kind": "aggregate",
+      "companies": [
+        {
+          "name": "6Sense",
+          "role": "Senior Software Engineer",
+          "quote": "Q. How would you design a rate limiter to protect a critical API endpoint?"
+        }
+      ]
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=MIJFyUPG4Z4",
+      "title": "Design a Distributed Rate Limiter w/ a Ex-Meta Staff Engineer - YouTube",
+      "source": "youtube.com",
+      "kind": "roundup",
+      "companies": [
+        {
+          "name": "Microsoft",
+          "quote": "It's asked a lot at Microsoft, for"
+        },
+        {
+          "name": "OpenAI",
+          "quote": "been reporting that it's being asked at\nOpenAI lately, too."
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "PayPal Senior Software Engineer Interview Full Breakdown From ...",
+      "url": "https://www.instagram.com/reel/DZ7dkH9sKQf/",
+      "source": "instagram.com",
+      "kind": "article"
+    },
+    {
+      "title": "Over the last few years, I've given 50+ interviews and had the ...",
+      "url": "https://www.instagram.com/reel/DZzi_sNS821/",
+      "source": "instagram.com",
+      "kind": "article"
+    },
+    {
+      "title": "PayPal Senior Software Engineer Interview Experience Full ...",
+      "url": "https://m.youtube.com/shorts/8nBVOoDOXGM",
+      "source": "m.youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "PAYPAL Complete Interview Experience for SDE ... - Instagram",
+      "url": "https://www.instagram.com/reel/DaNenKRiEA9/",
+      "source": "instagram.com",
+      "kind": "article"
+    },
+    {
+      "title": "How to prepare for Microsoft SDE 2 Machine Coding round? - Reddit",
+      "url": "https://www.reddit.com/r/leetcode/comments/1mzysoi/how_to_prepare_for_microsoft_sde_2_machine_coding/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "30+ 6Sense Interview Questions & Answers 2026 | AmbitionBox",
+      "url": "https://www.ambitionbox.com/interviews/6sense-interview-questions",
+      "source": "ambitionbox.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the interviewer is really testing",
+      "text": "This is not an algorithms question. It is a **distributed coordination under load** question. Anyone can write `if count > 5 return 429`. The test is: where do you enforce, how do you count across ten gateways without a race, which counting algorithm survives bursts without storing every request, and what happens when your counter store dies. If you jump to code without fixing granularity, burst behavior, and fail-open vs fail-closed, you fail even with correct code."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a rate limiter that protects backend services from overload and abuse. Clients are identified by a key such as `user_id`, `api_key`, `IP`, or a combination like `api_key + endpoint`. Each key has one or more rules, for example **5 requests per second per user** with a small burst allowance, plus **1000 requests per minute per API key** for coarse protection. On every request the system must decide in single-digit milliseconds whether to allow or reject, return `429 Too Many Requests` with `Retry-After` when rejected, and expose `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `X-RateLimit-Reset` headers when allowed. It must work correctly when traffic is spread across many gateway instances and must handle peaks of tens of thousands of requests per second without becoming the bottleneck itself."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`allow(key, cost) -> allow | deny + retry_after_ms` — synchronous decision on the hot path. `cost` is usually 1 but some endpoints cost more.",
+        "`configure(rule)` — operators update limits without redeploying gateways. Propagation delay of a few seconds is acceptable.",
+        "Enforcement is per rule hierarchy: the strictest matching rule wins. Example: `POST /generate` limited to 5/sec/user AND 100/min/user.",
+        "Scale target to state up front: ~50K RPS across 20 gateways, p99 decision under 5ms, counter store must not lose correctness under concurrent increments."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Strong candidates spend five minutes pinning down semantics because every choice changes the algorithm. Fixed window vs sliding window is not an implementation detail — it decides whether a burst of 2x limit slips through at a window boundary. Per-process vs centralized counting decides whether your limit is approximate or exact. Blocking vs queuing decides whether you need token bucket or leaky bucket. Ask in this order and lock the answers on the whiteboard. Trade-off: two minutes of questions now saves you from redesigning at minute 35 when the interviewer says *what about bursts*."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "What is the limit key?",
+          "text": "Is it per IP, per authenticated user, per API key, per endpoint, or hierarchical? Per IP alone is spoofable behind NAT and punishes shared offices. Per user + per endpoint is what you want. Agree that multiple rules can match one request."
+        },
+        {
+          "title": "Exact or approximate?",
+          "text": "Do we need strict never-exceed-5-per-second, or is 6 occasionally acceptable during a failover? Strict forces a centralized atomic counter. Approximate lets you use local caches with gossip. Most production systems demand strict for billing tiers, approximate for abuse protection."
+        },
+        {
+          "title": "How should bursts behave?",
+          "text": "Is 5/sec a hard ceiling in any 1000ms slice, or is average 5/sec with burst of 10 allowed? If bursts are allowed you need token bucket. If no burst is ever allowed you need sliding-window log. This one question selects your algorithm."
+        },
+        {
+          "title": "What happens on reject?",
+          "text": "Immediate 429, or queue/delay the request? User-facing APIs reject fast. Internal pipeline ingestion smooths with leaky bucket. Agree on headers and Retry-After semantics now."
+        },
+        {
+          "title": "Where does it sit?",
+          "text": "Gateway middleware, sidecar, or library inside each service? Gateway is standard because it fails before you burn backend threads. Trade-off: gateway is a choke point you must keep stateless and fast."
+        },
+        {
+          "title": "What is the failure mode?",
+          "text": "If Redis is down, do we fail open (allow all, risk overload) or fail closed (deny all, cause outage)? There is no neutral answer. You must pick and justify it per traffic class."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Scope agreed before any boxes are drawn.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Synchronous allow/deny per request key with configurable limit and window",
+          "This is the hot path; everything else is secondary"
+        ],
+        [
+          "Functional",
+          "Support multiple rules per key and hierarchical override (endpoint overrides global)",
+          "Real systems never have one global limit"
+        ],
+        [
+          "Functional",
+          "Return 429 + Retry-After + RateLimit headers",
+          "Clients need backoff signal, not silent drops"
+        ],
+        [
+          "Functional",
+          "Dynamic rule updates without restart",
+          "Operators tune limits during incidents"
+        ],
+        [
+          "Non-functional",
+          "p99 decision latency <5ms at 50K RPS across N gateways",
+          "Limiter must not be slower than the API it protects"
+        ],
+        [
+          "Non-functional",
+          "Correct under concurrency: no lost increments across instances",
+          "Race here means 2x overload"
+        ],
+        [
+          "Non-functional",
+          "Tolerate single AZ / counter-node failure without cascading",
+          "Limiter failure must not take down the product"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — single-node fixed window counter"
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive answer every candidate gives first: keep `Map<key, count>` in each gateway process, reset every second with a timer. `allow` increments the counter, denies if `count > limit`. It is O(1), trivial to code, and completely wrong for production. First, each gateway has its own map, so with 20 gateways and limit 5/sec, the real global limit becomes 100/sec. You can sticky-route by user to one gateway, but then you lose fault tolerance and create hot shards — trade-off: correctness for availability, and you lose. Second, fixed windows allow boundary bursts. If limit is 5/sec, a client sends 5 requests at 999ms and 5 more at 1001ms: both windows see 5, both allow, but 10 requests pass in 2ms. That is exactly the overload spike the limiter exists to stop. Third, a timer-based reset needs either a background thread per key (memory explosion) or lazy expiry checks that everyone forgets to write under pressure."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Splits state: N gateways means N x limit effective throughput. No coordination, no correctness.",
+        "Boundary burst: allows up to 2x limit in a window overlap. Fails the only property that matters.",
+        "Memory leak: keys for every IP ever seen unless you add TTL eviction, which in-memory maps do not give you for free.",
+        "Clock and reset races: concurrent threads on one box can both read 4, both increment to 5, both allow — 6 passes a limit of 5."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Do the boundary math out loud",
+      "text": "Interviewers promote you when you draw two adjacent 1-second windows and place 5 dots at the end of window 1 and 5 dots at the start of window 2. Say: **fixed window allows 10 requests in 2ms with limit 5/sec.** That one sentence kills Approach 1 and forces the conversation to sliding windows or token buckets. Do it unprompted."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design — enforce at edge, decide centrally"
+    },
+    {
+      "type": "paragraph",
+      "text": "Put enforcement in the API gateway middleware so rejected requests never allocate a backend thread, but keep counting in a centralized, fast, atomic store — practically Redis or Memcached — so every gateway sees the same count. Gateways stay stateless: on each request they compute the limit keys (`user:123:generate:sec`, `key:abc:min`), run one Lua script that increments and checks expiry atomically, then allow or return 429. Rule definitions live in a config service backed by a database; gateways poll or subscribe for updates and cache rules locally for 5-10 seconds. Counting stays synchronous and on the hot path. Configuration stays asynchronous and off the hot path. Trade-off: you add ~1-2ms of Redis RTT to every request in exchange for globally exact limits. To claw back latency, co-locate Redis in the same AZ as gateways and pipeline the increments for all matching rules in one round trip."
+    },
+    {
+      "type": "mermaid",
+      "title": "Request path through gateway limiter",
+      "caption": "Synchronous decision, asynchronous config.",
+      "code": "flowchart TD\n  C[Client] --> LB[Load Balancer]\n  LB --> GW[API Gateway]\n  GW --> RL[Rate Limit Check]\n  RL --> Redis[(Redis Counters)]\n  RL -->|allow| BE[Backend Service]\n  RL -->|deny 429| C\n  CFG[Config Service] --> DB[(Rule DB)]\n  CFG --> GW\n  GW --> OBS[Metrics and Logs]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this placement wins: a library inside each microservice duplicates logic and lets attackers bypass the weakest service. A sidecar per pod works but multiplies Redis connections by pod count and complicates header consistency. A gateway filter centralizes headers, metrics, and deny logic in one audited place. Trade-off: the gateway becomes a critical dependency, so you must run it multi-AZ, keep the Lua script under 2ms, and define the Redis-down behavior explicitly. Most teams fail open for read-only public endpoints and fail closed for expensive write or GPU endpoints — state that split, do not pretend one policy fits all."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Choosing the algorithm — there is no best, only trade-offs"
+    },
+    {
+      "type": "paragraph",
+      "text": "You must name four algorithms and then commit to one with reasons. Fixed window is out for the burst reason above. Sliding-window log stores every request timestamp in a sorted set and counts entries in `now - window`. It is perfectly accurate and handles bursts correctly, but it stores one entry per request — 5/sec/user is fine, 10K/sec per hot API key is not. Trade-off: accuracy for memory. Token bucket holds `tokens` refilled at `rate` up to `capacity`; each request consumes one token. It allows controlled bursts up to capacity while enforcing long-term average, uses O(1) state per key, and is the default for most gateways. Trade-off: it permits short bursts by design, so do not use it when no burst is tolerable. Sliding-window counter approximates the log by combining two fixed windows weighted by overlap: `count = prev * overlap + current`. It fixes the 2x boundary burst to within a few percent, stays O(1), and maps cleanly to two Redis keys with TTL. That is why large APIs use it. Leaky bucket is the mirror of token bucket for smoothing: requests enter a queue drained at constant rate. Use it when downstream needs constant outflow, not when clients need fast reject."
+    },
+    {
+      "type": "table",
+      "caption": "Algorithm selection. Pick one and defend it.",
+      "headers": [
+        "Algorithm",
+        "State",
+        "Burst behavior",
+        "Use when"
+      ],
+      "rows": [
+        [
+          "Fixed window",
+          "One counter per window",
+          "Allows 2x at boundary — broken",
+          "Never, except coarse coarse abuse floors"
+        ],
+        [
+          "Sliding-window log",
+          "One timestamp per request",
+          "Exact, no burst slip",
+          "Low-RPS billing-critical limits"
+        ],
+        [
+          "Sliding-window counter",
+          "Two counters + weights",
+          "Near-exact, tiny over-admit",
+          "Default for high-RPS APIs"
+        ],
+        [
+          "Token bucket",
+          "Tokens + last refill",
+          "Allows burst up to capacity",
+          "Need burst + average rate (typical user tier)"
+        ],
+        [
+          "Leaky bucket",
+          "Queue + drain rate",
+          "Smooths to constant outflow",
+          "Protect fragile downstream that cannot spike"
+        ]
+      ]
+    },
+    {
+      "type": "mermaid",
+      "title": "Core abstractions",
+      "caption": "Gateway depends on rules and an atomic store, not on algorithm details.",
+      "code": "classDiagram\n  class RateLimitRule {\n    +String keyPattern\n    +int limit\n    +int windowSec\n    +int burst\n    +bool failOpen\n  }\n  class RateLimiter {\n    +boolean allowRequest\n    +int getRemaining\n    +long getRetryAfterMs\n  }\n  class TokenBucket {\n    +double tokens\n    +long lastRefillMs\n    +boolean tryConsume\n  }\n  class CounterStore {\n    +long incrAndExpire\n  }\n  RateLimiter --> RateLimitRule : uses\n  RateLimiter --> TokenBucket : delegates\n  RateLimiter --> CounterStore : persists"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code — the logic you must be able to write"
+    },
+    {
+      "type": "paragraph",
+      "text": "In the interview you will be asked to write the core, not the whole gateway. Write lazy-refill token bucket: no background threads, refill computed from `now - lastRefill` on each request. That is the detail juniors miss — a sweeper thread per key does not scale to millions of keys. For distributed mode the same math moves into a Lua script so `GET + COMPARE + INCR + EXPIRE` executes atomically inside Redis. Without Lua, two gateways both read 4 and both write 5. With Lua, Redis serializes the scripts. Trade-off: Lua burns Redis CPU, so keep the script under ~30 lines, use integer milliseconds, and set TTL equal to window so cold keys self-delete. The Java below is the in-process core you whiteboard; the Python shows the sliding-window counter math you describe for the Redis version."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "TokenBucketLimiter.java",
+      "code": "import java.util.concurrent.ConcurrentHashMap;\n\npublic class TokenBucketLimiter {\n    private static class Bucket {\n        double tokens;\n        long lastRefillMs;\n        Bucket(double tokens, long now) { this.tokens = tokens; this.lastRefillMs = now; }\n    }\n    private final ConcurrentHashMap<String, Bucket> buckets = new ConcurrentHashMap<>();\n    private final double capacity;   // max burst\n    private final double refillPerMs; // sustained rate\n\n    public TokenBucketLimiter(double permitsPerSecond, double maxBurst) {\n        this.capacity = maxBurst;\n        this.refillPerMs = permitsPerSecond / 1000.0;\n    }\n\n    public boolean allow(String key) {\n        return allow(key, 1);\n    }\n\n    public boolean allow(String key, int cost) {\n        long now = System.currentTimeMillis();\n        Bucket b = buckets.computeIfAbsent(key, k -> new Bucket(capacity, now));\n        synchronized (b) {\n            // lazy refill: no background thread, O(1) per request\n            long elapsed = now - b.lastRefillMs;\n            if (elapsed > 0) {\n                b.tokens = Math.min(capacity, b.tokens + elapsed * refillPerMs);\n                b.lastRefillMs = now;\n            }\n            if (b.tokens >= cost) {\n                b.tokens -= cost;\n                return true;\n            }\n            return false;\n        }\n    }\n\n    // Lua equivalent for Redis (atomic across gateways):\n    // KEYS[1]=bucket key, ARGV[1]=capacity, ARGV[2]=refill_per_ms,\n    // ARGV[3]=now_ms, ARGV[4]=cost\n    static final String LUA =\n        \"local b = redis.call('HMGET', KEYS[1], 'tokens', 'ts') \" +\n        \"local tokens = tonumber(b[1]) or tonumber(ARGV[1]) \" +\n        \"local ts = tonumber(b[2]) or tonumber(ARGV[3]) \" +\n        \"local elapsed = math.max(0, tonumber(ARGV[3]) - ts) \" +\n        \"tokens = math.min(tonumber(ARGV[1]), tokens + elapsed * tonumber(ARGV[2])) \" +\n        \"if tokens >= tonumber(ARGV[4]) then \" +\n        \"  redis.call('HMSET', KEYS[1], 'tokens', tokens - tonumber(ARGV[4]), 'ts', ARGV[3]) \" +\n        \"  redis.call('PEXPIRE', KEYS[1], 60000) \" +\n        \"  return 1 else \" +\n        \"  redis.call('HMSET', KEYS[1], 'tokens', tokens, 'ts', ARGV[3]) \" +\n        \"  redis.call('PEXPIRE', KEYS[1], 60000) \" +\n        \"  return 0 end\";\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "sliding_window.py",
+      "code": "import time\n\nclass SlidingWindowCounter:\n    \"\"\"Approximate sliding window: O(1) state, no per-request log.\n    Trade-off vs log: ~1-2% over-admit at boundary for 10x less memory.\"\"\"\n    def __init__(self):\n        self.windows: dict[str, tuple[int, int]] = {}  # key -> (prev, curr)\n        self.window_start: dict[str, float] = {}\n\n    def allow(self, key: str, limit: int, window_sec: int) -> bool:\n        now = time.time()\n        start = self.window_start.get(key, now)\n        prev, curr = self.windows.get(key, (0, 0))\n        # roll window if expired\n        if now - start >= window_sec:\n            if now - start >= 2 * window_sec:\n                prev, curr = 0, 0\n            else:\n                prev, curr = curr, 0\n            start = start + window_sec\n            self.window_start[key] = start\n        elapsed = now - start\n        estimate = prev * (1 - elapsed / window_sec) + curr\n        if estimate + 1 > limit:\n            return False\n        self.windows[key] = (prev, curr + 1)\n        return True"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Cost per allow() decision. Memory is per active key.",
+      "headers": [
+        "Variant",
+        "Time",
+        "Memory per key",
+        "Network"
+      ],
+      "rows": [
+        [
+          "In-process token bucket",
+          "O(1)",
+          "O(1): tokens + timestamp",
+          "None"
+        ],
+        [
+          "Redis fixed window + Lua",
+          "O(1) + 1 RTT",
+          "O(1): counter + TTL",
+          "1 RTT, pipelined for N rules"
+        ],
+        [
+          "Redis sliding-window counter",
+          "O(1) + 1 RTT",
+          "O(1): two counters",
+          "1 RTT"
+        ],
+        [
+          "Redis sliding-window log (ZSET)",
+          "O(log n) trim + count",
+          "O(n): one entry per request",
+          "1-2 RTT, heaviest"
+        ],
+        [
+          "Leaky bucket queue",
+          "O(1) enqueue/dequeue",
+          "O(queue depth)",
+          "Plus queueing delay"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The hardest follow-up — distributed correctness"
+    },
+    {
+      "type": "paragraph",
+      "text": "Single-box locking means nothing once you have 20 gateways. The race is `read 4, read 4, both write 5` and it happens constantly at limit because every client retries at once. The fix is to never do read-then-write from the client: ship the whole decision into Redis with `EVALSHA` Lua so increment, expiry, and comparison are one atomic step. Pipeline all rules for a request into one script invocation to avoid N round trips — first deny wins and you return its `Retry-After`. Shard Redis by hash of limit key so hot API keys spread, but watch for the celebrity-key problem: one viral API key hammers one shard. Mitigate with local probabilistic pre-filtering (allow 90% locally, verify the rest centrally) only if approximate limits are acceptable — trade-off: exactness for hotspot survival, and you must say so. Clock skew across gateways does not break token bucket if you pass `now` from the gateway but clamp negative elapsed to zero; it does break fixed windows if windows are computed locally, which is another reason to let Redis expire keys by TTL rather than comparing wall clocks."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Decide fail-open vs fail-closed before they ask",
+      "text": "If Redis times out after 10ms, what do you do? **Fail open** protects availability but lets a traffic spike through during the exact moment you are weakest. **Fail closed** protects backends but turns a Redis blip into a full outage. The senior answer: split by cost. Fail open for cheap idempotent reads with a small local fallback bucket (e.g. 20% of normal limit). Fail closed for expensive writes, auth attempts, and GPU inference. Add a circuit breaker that flips to local-only mode and emits a metric so operators see degraded enforcement."
+    },
+    {
+      "type": "paragraph",
+      "text": "Persistence and scale details separate strong from average. Never use a relational database on the hot path — write amplification and row locks collapse at 50K RPS. Use Redis Cluster with `PEXPIRE` equal to window length so idle keys vanish without a janitor. For multi-region, do not try to synchronize counters globally on every request; the cross-region RTT destroys p99. Instead enforce strict local limits per region (e.g. 3/sec in each of two regions for a global 5/sec) or use a token service that doles out quota chunks asynchronously — trade-off: slight under-utilization for independence and speed. Emit per-decision counters (`allowed`, `denied`, `latency`, `rule_id`) to your metrics pipeline; without per-rule observability you cannot tell a DDoS from a misconfigured limit during an incident."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Hierarchical and tiered limits?",
+          "text": "Check free tier 5/sec, paid tier 100/sec, plus global 50K/sec guardrail in one Lua call. Deny if any rule denies. Cache tier lookup in gateway for 10s — trade-off: 10s stale tier after upgrade for zero auth-service calls per request."
+        },
+        {
+          "title": "Handle multi-DC without global lock?",
+          "text": "Partition quota per DC or use async token分配 with periodic reconciliation. Accept sum of locals slightly under global limit. Never do synchronous cross-region INCR."
+        },
+        {
+          "title": "Prevent Redis hotspot on one key?",
+          "text": "Hash-tag sharding plus jittered Retry-After to de-synchronize retries. For extreme hotspots add local admission pre-filter. Trade-off: exact cap vs survival."
+        },
+        {
+          "title": "What headers and status?",
+          "text": "429 with Retry-After in seconds, plus X-RateLimit-Limit, Remaining, Reset. Use sliding Reset = window expiry, not fixed clock second, or clients miscompute backoff."
+        },
+        {
+          "title": "How do clients discover limits?",
+          "text": "Document in OpenAPI, return headers on every response including 200s, and expose a lightweight /limits endpoint for SDKs. Do not rely on clients reading docs."
+        },
+        {
+          "title": "DDoS vs legitimate spike?",
+          "text": "Rate limiter is not a WAF. Combine with IP reputation, proof-of-work or CAPTCHA challenge on repeated 429, and autoscale backends. Limiter buys time; it does not classify intent."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Boundary burst: 5 at end of window + 5 at start of next = 10 in 2ms. Name it and show the fix.",
+        "Retry storm: all denied clients retry at same `Retry-After`. Add jitter 0.8x-1.2x.",
+        "Clock jump: NTP leap or container pause makes `elapsed` negative or huge. Clamp to `[0, window]`.",
+        "Cold key vs hot key: `SETNX + EXPIRE` must be atomic — use `SET key val NX PX` or Lua, never two commands.",
+        "Cost > 1: batch or GraphQL requests consume N tokens. Reject upfront if `cost > capacity`.",
+        "Key explosion: attacker rotates IPs or user IDs. Cap cardinality with LRU + TTL and add coarse IP-/24 fallback rule.",
+        "Rule update mid-window: old and new counters overlap. Version the Redis key with rule hash so a limit change starts a fresh window.",
+        "IPv6 and NAT: per-IP alone blocks offices. Combine IP + user + endpoint, never IP alone for authenticated traffic."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How you are graded — weak vs strong"
+    },
+    {
+      "type": "table",
+      "caption": "What separates a pass from a hire signal.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Scope",
+          "Jumps to code with one global limit",
+          "Fixes key granularity, tiers, headers, and scale targets first"
+        ],
+        [
+          "Algorithm",
+          "Fixed window counter only",
+          "Compares 4 algorithms, picks sliding-counter or token bucket with burst math"
+        ],
+        [
+          "Distribution",
+          "In-memory map, ignores multi-gateway race",
+          "Atomic Lua, pipelining, sharding, hotspot plan"
+        ],
+        [
+          "Failure handling",
+          "No answer for Redis down",
+          "Split fail-open vs fail-closed by cost + local fallback + alert"
+        ],
+        [
+          "Scale",
+          "Vague claims of horizontal scaling",
+          "Quantifies RPS, p99, RTT, TTL memory, multi-DC trade-off"
+        ],
+        [
+          "Communication",
+          "Describes boxes",
+          "States trade-off every decision: exactness vs latency vs availability"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "45-minute plan",
+      "text": "Minutes 0-5: clarify key, burst, exactness, fail mode, scale. Minutes 5-12: requirements table + reject fixed window with boundary math. Minutes 12-25: draw gateway + Redis + config, walk through allow/deny path with headers. Minutes 25-33: write token-bucket allow() and sketch the Lua atomic version. Minutes 33-40: distribution, hotspots, multi-DC, Redis-down split. Minutes 40-45: edge cases and observability. If you are still drawing boxes at minute 20, you are behind — cut scope and get to atomicity."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:42:54.823Z",
+    "problems": []
+  }
+}

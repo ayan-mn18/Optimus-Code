@@ -1,0 +1,403 @@
+{
+  "slug": "design-inventory-management-system",
+  "title": "Design Inventory Management System",
+  "summary": "LLD inventory system: model stock as available vs reserved per SKU-warehouse bin, prevent oversell with per-bin locks, and expire reservations.",
+  "kind": "LLD",
+  "problemSlug": "design-inventory-management-system-42-82",
+  "topic": "LLD Interview Problems",
+  "difficulty": "Medium",
+  "coverEmoji": "📦",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Design Patterns",
+    "Inventory"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.hellointerview.com/community/questions/inventory-management-system/cmg5kc7qp00up08adnwzv1w43",
+      "title": "Design an Inventory Management System | Hello Interview",
+      "source": "hellointerview.com",
+      "kind": "roundup",
+      "companies": [
+        {
+          "name": "Blue Origin",
+          "quote": "Asked at: Blue Origin"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "Google l5 interview experience[Selected ] - Discuss",
+      "url": "https://leetcode.com/discuss/post/6552739/google-l5-interview-experienceselected-b-8ff5/",
+      "source": "leetcode.com",
+      "kind": "article"
+    },
+    {
+      "title": "[Pinterest] - Interview Experience - [Senior] | Hack2hire Forum",
+      "url": "https://www.hack2hire.com/forum/6a6d272148af2ae18e99358b",
+      "source": "hack2hire.com",
+      "kind": "article"
+    },
+    {
+      "title": "20+ Agoda Senior Software Engineer Interview Questions & Answers 2026",
+      "url": "https://www.ambitionbox.com/interviews/agoda-interview-questions/senior-soft-engineer",
+      "source": "ambitionbox.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design Inventory Management System: (Step-by-Step Guide) 2026",
+      "url": "https://www.systemdesignhandbook.com/guides/design-inventory-management-system/",
+      "source": "systemdesignhandbook.com",
+      "kind": "article"
+    },
+    {
+      "title": "Types of LLD interviews - AlgoMaster.io",
+      "url": "https://algomaster.io/learn/lld/lld-interview-types",
+      "source": "algomaster.io",
+      "kind": "article"
+    },
+    {
+      "title": "Design an Inventory Management System | Hello Interview",
+      "url": "https://www.hellointerview.com/community/questions/inventory-management-system/cmg5kc7qp00up08adnwzv1w43",
+      "source": "hellointerview.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "This is **not a CRUD exercise**. The interviewer wants to see if you can model **contention over a scarce number**. Anyone can write `stock -= qty`. The test is: do you separate `onHand` from `available` from `reserved`, do you stop two threads from selling the last unit twice, and do you handle a reservation that never converts to a sale? If you jump to classes without nailing the reservation lifecycle, you fail."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design an in-memory inventory management system for a retailer with multiple warehouses. It must track products, track how many units of each product sit in each warehouse, allow clients to check availability, reserve stock for an order, confirm or cancel that reservation, restock, and get alerted when stock runs low. The system must never oversell: the sum of confirmed plus unexpired reserved quantities can never exceed physical stock, even under concurrent reservations from many threads."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`addProduct(product)` / `addWarehouse(warehouse)` — register catalog and network.",
+        "`addStock(sku, warehouseId, qty)` / `removeStock(sku, warehouseId, qty)` — inbound and damage / shrinkage.",
+        "`checkAvailability(sku, qty)` — is there enough sellable stock globally or per warehouse?",
+        "`reserve(sku, warehouseId, qty, orderId)` -> `reservationId` — soft-hold stock with a TTL.",
+        "`commitReservation(reservationId)` — convert hold into a sale, decrement physical.",
+        "`cancelReservation(reservationId)` / auto-expire — release hold back to available.",
+        "`getStockLevel(sku, warehouseId)` / `listLowStock(threshold)` — observability."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Strong candidates spend five minutes pinning the physics of stock before touching a class diagram. Inventory has at least three numbers that novices collapse into one, and every follow-up exploits that collapse. Force the interviewer to choose semantics now so your locks and state machine have something correct to enforce."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "What does quantity mean?",
+          "text": "Agree on three counters per bin: `onHand` is physical units present, `reserved` is soft-held for open orders, `available = onHand - reserved`. All sell decisions use `available`, never `onHand`. This one distinction drives the entire design."
+        },
+        {
+          "title": "Reserve then commit, or direct decrement?",
+          "text": "Push for two-phase: `reserve` with expiry, then `commit` or `cancel`. Direct decrement cannot model abandoned carts and forces you to oversell or manually compensate. Ask what the reservation TTL should be and who sweeps expired holds."
+        },
+        {
+          "title": "Warehouse selection: caller picks or system allocates?",
+          "text": "Does `reserve(sku, qty)` auto-split across warehouses nearest the customer, or must the caller pass `warehouseId`? Auto-allocation is a bin-packing and latency problem. For 45 minutes, make the caller pass `warehouseId` and expose a `findWarehousesWithStock(sku)` helper, then discuss allocation as a follow-up."
+        },
+        {
+          "title": "Can available go negative, and can two orders share the last unit?",
+          "text": "Answer must be no. Ask if backorders are allowed. If yes, you need a separate backorder queue; if no, reservation must atomically check-and-hold. State your choice explicitly."
+        },
+        {
+          "title": "Scale and concurrency?",
+          "text": "Single process or distributed? How many SKUs, warehouses, and reserves per second? This decides per-bin in-memory locks versus database optimistic versioning. Agree you will build single-process thread-safe and explain how it maps to a persistent version."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements agreed"
+    },
+    {
+      "type": "table",
+      "caption": "Scope agreed before coding.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Products, warehouses, per-bin stock levels",
+          "Bin is the unit of contention; global SKU total is derived"
+        ],
+        [
+          "Functional",
+          "Reserve with TTL, commit, cancel, expire",
+          "Models real carts; prevents stranded holds"
+        ],
+        [
+          "Functional",
+          "Restock, adjust, low-stock alert",
+          "Inbound and observability close the loop"
+        ],
+        [
+          "Non-functional",
+          "No oversell under concurrency",
+          "The correctness invariant everything is graded on"
+        ],
+        [
+          "Non-functional",
+          "Reserve/commit O(1) per bin",
+          "No global scan on the hot path"
+        ],
+        [
+          "Non-functional",
+          "Thread-safe readers and writers",
+          "Reservations race by definition"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the flat counter map"
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive answer is a `Map<String, Integer> stock` keyed by SKU with `if (stock.get(sku) >= qty) stock.put(sku, stock.get(sku) - qty)`. It looks clean, it passes a single-threaded demo, and it is wrong in every way that matters. It collapses physical and sellable into one integer, so you cannot distinguish sold from merely held. It has no warehouse dimension, so multi-node fulfillment is impossible. It has no reservation object, so abandoned carts leak stock forever. And the check-then-act is not atomic, so two threads both see `1 left` and both sell it."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NaiveInventory.java",
+      "code": "class NaiveInventory {\n    private final Map<String, Integer> stock = new HashMap<>();\n    public boolean reserve(String sku, int qty) {\n        int cur = stock.getOrDefault(sku, 0);\n        if (cur < qty) return false;\n        stock.put(sku, cur - qty); // BUG: check-then-act race + no TTL + no warehouse\n        return true;\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Reject this explicitly in the interview. Name four failures: **lost update** under concurrency because read and write are not atomic, **stranded stock** because there is no expiry path, **no audit trail** because you mutated an integer instead of appending a reservation event, and **wrong granularity** because contention is per SKU-warehouse bin, not per global SKU. The fix is not adding `synchronized` to this method — that serializes all SKUs on one lock and still leaves the domain model broken. You need a different shape: a bin object with its own lock and a first-class reservation lifecycle. Trade-off stated plainly: the naive version is O(1) and trivial to write but sacrifices correctness; the real version costs more objects and locking logic to buy exactly-once sale semantics."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The oversell trap",
+      "text": "Every failed solution does `if (available >= qty) available -= qty` without atomicity. Under two threads that interleaves to **-1**. The interviewer will run that interleaving mentally. Say upfront: **check-and-reserve must happen under the bin lock**, and `available` is derived, never stored independently."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Real design — bins, reservations, and per-bin locks"
+    },
+    {
+      "type": "paragraph",
+      "text": "Model the warehouse bin as the aggregate root. A `Bin` holds `onHand` and `reserved` plus its own `ReentrantLock`. All mutations to that bin — restock, reserve, commit, cancel — happen under that single lock, so the check and the hold are one atomic step. Reservations are separate immutable-ish objects with `PENDING`, `COMMITTED`, `CANCELLED`, `EXPIRED` states and a deadline. `InventoryService` is a thin orchestrator: look up the bin, delegate to it, publish a low-stock event if the threshold is crossed. Observers handle alerts; a `ScheduledExecutorService` sweeps expired holds. Why this shape? Per-bin locking gives you parallelism across SKUs for free — Coke and Pepsi never block each other — while serializing only true competitors for the same physical shelf. The cost is more locks to manage and a background sweeper to reason about, but that is the price of never overselling without a global bottleneck. Alternative of one global lock is simpler to prove correct but caps throughput at one reservation at a time; alternative of lock-free atomics per integer reintroduces split-brain between `onHand` and `reserved`."
+    },
+    {
+      "type": "mermaid",
+      "title": "Reservation lifecycle",
+      "caption": "Two-phase hold prevents stranded stock.",
+      "code": "flowchart TD\n  A[Client calls reserve] --> B{Bin lock acquired}\n  B --> C{available >= qty}\n  C -->|No| D[Reject insufficient stock]\n  C -->|Yes| E[Increment reserved create PENDING]\n  E --> F[Return reservationId with TTL]\n  F --> G{Client action before expiry}\n  G -->|Commit| H[Decrement onHand and reserved]\n  G -->|Cancel| I[Decrement reserved only]\n  G -->|Timeout| J[Sweeper expires decrement reserved]"
+    },
+    {
+      "type": "mermaid",
+      "title": "Domain structure",
+      "caption": "Bin is the contention boundary.",
+      "code": "classDiagram\n  class Product {\n    +String sku\n    +String name\n  }\n  class Warehouse {\n    +String id\n    +String location\n  }\n  class Bin {\n    +int onHand\n    +int reserved\n    +available() int\n    +reserveQty() bool\n    +commitQty() bool\n  }\n  class Reservation {\n    +String id\n    +String sku\n    +int qty\n    +String status\n  }\n  class InventoryService {\n    +reserve() String\n    +commit() void\n    +cancel() void\n  }\n  class StockListener {\n    +onLowStock() void\n  }\n  Product --> Bin : stocked in\n  Warehouse --> Bin : owns\n  Bin --> Reservation : grants\n  InventoryService --> Bin : coordinates\n  InventoryService --> StockListener : notifies"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the class diagram as contention boundaries, not just nouns. `Product` and `Warehouse` are dumb identity records — no behavior, no locks — because they are never contended. `Bin` owns the invariant `reserved <= onHand` and is the only class allowed to mutate counts, which is why it owns the lock. `Reservation` is a value plus state machine; it never mutates a bin directly, the service does that under the bin lock to keep ordering deterministic. `StockListener` is an Observer so alerting never blocks the reserve path — slow email or webhook code cannot hold a bin lock. Trade-off: this indirection adds a map lookup per operation, but it isolates failure domains and keeps the hot path to two hash lookups plus one uncontended lock acquisition in the common case."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Core domain code"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "InventoryService.java",
+      "code": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.locks.*;\n\nenum ReservationStatus { PENDING, COMMITTED, CANCELLED, EXPIRED }\n\nclass Bin {\n    final String sku; final String warehouseId;\n    int onHand; int reserved;\n    final ReentrantLock lock = new ReentrantLock();\n    Bin(String sku, String w, int q) { this.sku = sku; this.warehouseId = w; this.onHand = q; }\n    int available() { return onHand - reserved; }\n}\n\nclass Reservation {\n    final String id; final String sku; final String warehouseId;\n    final int qty; final long expiresAt;\n    volatile ReservationStatus status = ReservationStatus.PENDING;\n    Reservation(String id, String sku, String w, int qty, long ttlMs) {\n        this.id = id; this.sku = sku; this.warehouseId = w; this.qty = qty;\n        this.expiresAt = System.currentTimeMillis() + ttlMs;\n    }\n}\n\ninterface StockListener { void onLowStock(String sku, String warehouseId, int available); }\n\npublic class InventoryService {\n    private final Map<String, Bin> bins = new ConcurrentHashMap<>();\n    private final Map<String, Reservation> reservations = new ConcurrentHashMap<>();\n    private final List<StockListener> listeners = new CopyOnWriteArrayList<>();\n    private final int lowStockThreshold;\n    private final ScheduledExecutorService sweeper = Executors.newSingleThreadScheduledExecutor();\n    public InventoryService(int lowStockThreshold) {\n        this.lowStockThreshold = lowStockThreshold;\n        sweeper.scheduleAtFixedRate(this::expireSweep, 1, 1, TimeUnit.SECONDS);\n    }\n    private String key(String sku, String w) { return sku + \"#\" + w; }\n    public void addStock(String sku, String w, int qty) {\n        if (qty <= 0) throw new IllegalArgumentException(\"qty must be positive\");\n        Bin b = bins.computeIfAbsent(key(sku, w), k -> new Bin(sku, w, 0));\n        b.lock.lock();\n        try { b.onHand += qty; } finally { b.lock.unlock(); }\n    }\n    public String reserve(String sku, String w, int qty, long ttlMs) {\n        Bin b = bins.get(key(sku, w));\n        if (b == null || qty <= 0) return null;\n        b.lock.lock();\n        try {\n            if (b.available() < qty) return null; // atomic check-and-hold\n            b.reserved += qty;\n            String id = UUID.randomUUID().toString();\n            reservations.put(id, new Reservation(id, sku, w, qty, ttlMs));\n            if (b.available() <= lowStockThreshold)\n                listeners.forEach(l -> l.onLowStock(sku, w, b.available()));\n            return id;\n        } finally { b.lock.unlock(); }\n    }\n    public boolean commit(String reservationId) {\n        Reservation r = reservations.get(reservationId);\n        if (r == null || r.status != ReservationStatus.PENDING) return false;\n        Bin b = bins.get(key(r.sku, r.warehouseId));\n        b.lock.lock();\n        try {\n            if (r.status != ReservationStatus.PENDING) return false;\n            if (System.currentTimeMillis() > r.expiresAt) { r.status = ReservationStatus.EXPIRED; b.reserved -= r.qty; return false; }\n            b.reserved -= r.qty; b.onHand -= r.qty; r.status = ReservationStatus.COMMITTED;\n            return true;\n        } finally { b.lock.unlock(); }\n    }\n    public boolean cancel(String reservationId) {\n        Reservation r = reservations.get(reservationId);\n        if (r == null || r.status != ReservationStatus.PENDING) return false;\n        Bin b = bins.get(key(r.sku, r.warehouseId));\n        b.lock.lock();\n        try {\n            if (r.status != ReservationStatus.PENDING) return false;\n            b.reserved -= r.qty; r.status = ReservationStatus.CANCELLED;\n            return true;\n        } finally { b.lock.unlock(); }\n    }\n    private void expireSweep() {\n        long now = System.currentTimeMillis();\n        for (Reservation r : reservations.values()) {\n            if (r.status == ReservationStatus.PENDING && now > r.expiresAt) {\n                Bin b = bins.get(key(r.sku, r.warehouseId));\n                if (b == null) continue;\n                b.lock.lock();\n                try { if (r.status == ReservationStatus.PENDING) { r.status = ReservationStatus.EXPIRED; b.reserved -= r.qty; } }\n                finally { b.lock.unlock(); }\n            }\n        }\n    }\n    public int available(String sku, String w) {\n        Bin b = bins.get(key(sku, w));\n        if (b == null) return 0;\n        b.lock.lock();\n        try { return b.available(); } finally { b.lock.unlock(); }\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "inventory.py",
+      "code": "import threading, time, uuid\nclass Bin:\n    def __init__(self, qty=0):\n        self.on_hand = qty; self.reserved = 0; self.lock = threading.Lock()\n    @property\n    def available(self): return self.on_hand - self.reserved\nclass Inventory:\n    def __init__(self): self.bins, self.holds = {}, {}\n    def add_stock(self, sku, w, qty):\n        b = self.bins.setdefault((sku, w), Bin())\n        with b.lock: b.on_hand += qty\n    def reserve(self, sku, w, qty, ttl=300):\n        b = self.bins.get((sku, w))\n        if not b: return None\n        with b.lock:\n            if b.available < qty: return None\n            b.reserved += qty\n            rid = str(uuid.uuid4())\n            self.holds[rid] = (b, qty, time.time() + ttl, 'PENDING')\n            return rid\n    def commit(self, rid):\n        rec = self.holds.get(rid)\n        if not rec or rec[3] != 'PENDING': return False\n        b, qty, exp, _ = rec\n        with b.lock:\n            if time.time() > exp:\n                b.reserved -= qty; self.holds[rid] = (b, qty, exp, 'EXPIRED'); return False\n            b.reserved -= qty; b.on_hand -= qty\n            self.holds[rid] = (b, qty, exp, 'COMMITTED'); return True"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Cost per operation.",
+      "headers": [
+        "Operation",
+        "Time",
+        "Notes"
+      ],
+      "rows": [
+        [
+          "reserve / commit / cancel",
+          "O(1)",
+          "Two map lookups + one bin lock; no scans"
+        ],
+        [
+          "checkAvailability (one bin)",
+          "O(1)",
+          "Derived subtraction under lock"
+        ],
+        [
+          "checkAvailability (global SKU)",
+          "O(W)",
+          "Sum across W warehouses; cache if hot"
+        ],
+        [
+          "expire sweep",
+          "O(R) per tick",
+          "R = open reservations; index by expiry to cut cost"
+        ],
+        [
+          "Memory",
+          "O(B + R)",
+          "B bins + open reservations; committed history must be offloaded"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency — the make-or-break follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "The interviewer will ask some variant of: ten buyers race for the last two units, how do you guarantee you sell exactly two? Answer with three sentences and then point at the code. One: contention scope is the bin, so `reserve` acquires that bin's `ReentrantLock` before reading `available`. Two: check and mutation happen inside the same critical section, so the interleaving that causes oversell is structurally impossible — there is no unlock between test and hold. Three: `commit` and `cancel` re-check `PENDING` status inside the same lock, so double-commit or commit-after-expiry cannot double-decrement. Then name the trade-offs like a senior. Per-bin pessimistic locking is easy to reason about and gives high parallelism across bins, but a hot SKU in one warehouse still serializes — that is correct serialization, not a bottleneck you can remove without risking oversell. The alternative, optimistic versioning with a `version` column in a database, allows higher throughput under low contention but forces retries under high contention and pushes complexity to the caller. For distributed deployments, say you would replace the in-memory lock with a row-level `SELECT FOR UPDATE` or a conditional update `WHERE available >= qty` plus a unique reservation id for idempotency, and run the expiry sweeper as a single leader or with claim-and-sweep to avoid double-expiry."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Say this line verbatim",
+      "text": "**Never store `available` as a field.** Store `onHand` and `reserved`, derive `available`. Two stored counters that must stay consistent will diverge; one derived value cannot. That single sentence signals you have built this before."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Allocate across warehouses?",
+          "text": "Greedy nearest-with-stock first, or split proportionally. This becomes a short transaction across multiple bin locks — lock bins in sorted key order to avoid deadlock, reserve all-or-nothing, and roll back partial holds on failure. Trade-off: multi-bin atomicity costs coordinated locking versus single-bin simplicity."
+        },
+        {
+          "title": "Idempotent reserve/commit?",
+          "text": "Attach `orderId` as idempotency key: if the same order retries, return the existing reservation instead of creating a duplicate. Store order-to-reservation mapping. Costs memory, buys exactly-once semantics over flaky networks."
+        },
+        {
+          "title": "Persistence?",
+          "text": "Map bins to a table with `(sku, warehouse_id, on_hand, reserved, version)`. Use optimistic locking on version or atomic `UPDATE ... WHERE on_hand - reserved >= qty`. Keep the sweeper in the database with an index on `expires_at`. Trade-off: throughput drops versus memory, durability wins."
+        },
+        {
+          "title": "Low-stock and replenishment?",
+          "text": "Observer fires when `available <= threshold`; a reorder policy (Strategy pattern) computes purchase quantity. Do not reorder inside the bin lock — publish an event and let a consumer act. Keeps hot path fast at the cost of eventual replenishment."
+        },
+        {
+          "title": "Race on expiry vs commit?",
+          "text": "Both paths re-check status and deadline under the same bin lock; only the first wins, the second sees non-PENDING and returns false. Requires the deadline check inside the lock, not before it."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Reserve zero or negative quantity, unknown SKU, unknown warehouse — reject, never create a reservation.",
+        "Reserve more than available by exactly one — the boundary the interviewer will test.",
+        "Double `commit` on the same id, `cancel` after `commit`, `commit` after expiry — all return `false` with no count change.",
+        "Expiry fires in the same millisecond as `commit` — lock ordering decides one winner; state it.",
+        "Restock arrives while holds are pending — `onHand` rises, `available` rises, pending holds unaffected.",
+        "Remove more than `available` via damage / shrinkage — clamp and require manager override; never let `onHand` go below `reserved`.",
+        "Hot SKU thundering herd — per-bin lock serializes correctly; mention queueing or backpressure rather than weakening the invariant.",
+        "Clock skew for TTL in distributed version — use monotonic lease or database timestamp, not client time."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak vs strong signals.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Domain model",
+          "One `stock` integer per SKU",
+          "Bin with `onHand` + `reserved`, derived `available`, reservation state machine"
+        ],
+        [
+          "Correctness",
+          "`synchronized` slapped on broken logic",
+          "Atomic check-and-hold under per-bin lock; invariant stated"
+        ],
+        [
+          "Lifecycle",
+          "No expiry; holds leak",
+          "TTL + background sweep + cancel/commit paths"
+        ],
+        [
+          "Concurrency",
+          "Global lock or no lock",
+          "Per-bin locks, lock ordering for multi-bin, DB mapping explained"
+        ],
+        [
+          "Extensibility",
+          "Hard-coded alerts inline",
+          "Observer for alerts, Strategy for reorder, idempotency key ready"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "45-minute plan",
+      "text": "Minutes 0-5: clarify the three counters and reserve-then-commit. Minutes 5-10: draw bins, reservations, and the state machine. Minutes 10-25: code `Bin` plus `reserve` and `commit` with per-bin locks. Minutes 25-35: handle expiry, cancel, and low-stock observer. Minutes 35-45: drive concurrency, idempotency, multi-warehouse allocation, and persistence mapping. Close by restating the invariant: **reserved never exceeds onHand, and every hold has exactly one terminal state.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:30:24.505Z",
+    "problems": []
+  }
+}

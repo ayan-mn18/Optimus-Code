@@ -21,6 +21,21 @@ export class LlmError extends Error {
  * field has to be expressed as a nullable type instead. This walks a schema and
  * makes that true, so callers can write schemas the way they think about them.
  */
+/**
+ * Strips lone surrogates from text bound for the API.
+ *
+ * Scraped pages occasionally carry an unpaired surrogate — half of an emoji cut
+ * by a truncation, usually. `JSON.stringify` faithfully emits it as `\ud800`,
+ * which JavaScript's own parser accepts but a strict server-side parser rejects
+ * with "unexpected end of hex escape". The whole request 400s and the article is
+ * lost over one invisible character.
+ */
+export function sanitiseForJson(text) {
+  if (typeof text !== 'string') return text;
+  // A high surrogate not followed by a low one, or a low one not preceded by a high one.
+  return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '');
+}
+
 export function strictify(node) {
   if (Array.isArray(node)) return node.map(strictify);
   if (!node || typeof node !== 'object') return node;
@@ -79,10 +94,10 @@ export async function chat({
   const body = {
     model,
     max_tokens: maxTokens,
-    messages: messages ?? [
+    messages: (messages ?? [
       ...(system ? [{ role: 'system', content: system }] : []),
       { role: 'user', content: user },
-    ],
+    ]).map((message) => ({ ...message, content: sanitiseForJson(message.content) })),
     // OpenAI-style scalar. Meta rejects the nested `reasoning` object outright
     // ("unknown parameter `reasoning`"), so this is the portable spelling.
     reasoning_effort: effort,
@@ -128,15 +143,44 @@ export async function chat({
   };
 }
 
+/**
+ * Repairs the JSON damage models actually produce.
+ *
+ * The one seen in practice is a truncated unicode escape — a bare `\u` or
+ * `\u12` left mid-string — which makes JSON.parse throw "unexpected end of hex
+ * escape" and loses an otherwise complete article. A lone trailing backslash
+ * does the same. Both are safe to neutralise: they carry no meaning, and the
+ * alternative is discarding the whole document.
+ */
+export function repairJson(text) {
+  return text
+    // \u not followed by four hex digits
+    .replace(/\\u(?![0-9a-fA-F]{4})/g, '\\\\u')
+    // a backslash that escapes nothing legal
+    .replace(/\\(?!["\\/bfnrtu])/g, '\\\\')
+    // Raw control characters are illegal inside a JSON string. The class is
+    // written out deliberately; eslint flags control chars in regexes and this
+    // is the one place they are the point.
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, ' ');
+}
+
 /** Structured call that returns parsed JSON, or throws if the model ignored the schema. */
 export async function chatJson(options) {
   const result = await chat(options);
-  try {
-    return JSON.parse(result.text);
-  } catch {
-    // Some providers wrap JSON in a fence even under a schema.
-    const fenced = result.text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (fenced) return JSON.parse(fenced[1]);
-    throw new LlmError(502, 'Model did not return parseable JSON');
+
+  // Some providers wrap JSON in a fence even under a schema.
+  const fenced = result.text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const candidates = [result.text, fenced?.[1]].filter(Boolean);
+
+  for (const candidate of candidates) {
+    for (const attempt of [candidate, repairJson(candidate)]) {
+      try {
+        return JSON.parse(attempt);
+      } catch {
+        // fall through to the repaired form, then to the next candidate
+      }
+    }
   }
+  throw new LlmError(502, 'Model did not return parseable JSON');
 }

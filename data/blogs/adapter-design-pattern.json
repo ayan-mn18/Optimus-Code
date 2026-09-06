@@ -1,0 +1,305 @@
+{
+  "slug": "adapter-design-pattern",
+  "title": "Adapter Design Pattern",
+  "summary": "Adapter translates one interface into another without changing either side. Object Adapter via composition is the default; Class Adapter via inheritance is rarely worth it.",
+  "kind": "LLD",
+  "problemSlug": "adapter-design-pattern-37-77",
+  "topic": "Structural Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": " f50c",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Structural Patterns",
+    "Adapter",
+    "Interview"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Adapter - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/adapter",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Adapter pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Adapter_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Adapter Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/adapter-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Adapter Design Pattern in Java - Medium",
+      "url": "https://medium.com/@akshatsharma0610/adapter-design-pattern-in-java-fa20d6df25b8",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Adapter is **interface translation, not behavior change**. The adaptee already does the right work; it just speaks the wrong protocol. You add a thin wrapper that speaks `Target` on the outside and calls `Adaptee` on the inside. If you are adding business logic, retry policy, or caching inside the adapter, you have stopped writing an adapter and started writing a half-baked Facade."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Adapter lets a `Client` that depends on a `Target` interface reuse an `Adaptee` class that does not implement that interface, without editing either the client or the adaptee. The adapter implements (or subtypes) `Target`, holds a reference to `Adaptee`, and in each method converts arguments, delegates the call, then converts the result and exceptions back to what the client expects. That is the whole pattern: convert in, delegate, convert out. It exists for one reason: you do not control one side of the boundary. That side is legacy code you cannot risk breaking, a third-party jar with no source, an SDK that changes on someone else's release cadence, or two teams that froze their interfaces before they agreed."
+    },
+    {
+      "type": "paragraph",
+      "text": "The contract is strict. The client must never reference the adaptee type directly; if it does, the adapter is decoration with no isolation value. The adaptee must never know the adapter exists; if you edit the adaptee to be more adapter-friendly, you have done a refactor, not applied the pattern. And the adapter must own no domain state of its own beyond mapping configuration. It holds translation tables, unit conversions, field renames, error-code maps. The trade-off: you buy decoupling of compile-time dependencies at the cost of an extra indirection and a translation layer you now own and must test."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: Object Adapter vs Class Adapter"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are two mechanical variants and only one you should default to. **Object Adapter** uses composition: the adapter implements `Target` and wraps an `Adaptee` instance. It works in every language, supports multiple adaptees, supports runtime swapping of the wrapped instance, and keeps inheritance hierarchies clean. **Class Adapter** uses multiple inheritance: the adapter subclasses the adaptee and implements `Target`. It saves one pointer dereference and lets you override adaptee behavior, but it binds you to one concrete adaptee class at compile time, breaks in languages without multiple inheritance like Java and C#, and confuses every reader because an adapter *is not* a kind of adaptee. The trade-off is flexibility versus one less object allocation. Flexibility wins in every interview answer unless you can prove allocation is your bottleneck."
+    },
+    {
+      "type": "mermaid",
+      "title": "Object Adapter structure",
+      "caption": "Prefer this shape. Client depends only on Target.",
+      "code": "classDiagram\n  class Target {\n    <<interface>>\n    +pay(amountInCents) : void\n  }\n  class Adaptee {\n    +makePayment(amountDollars : float) : int\n  }\n  class Adapter {\n    -adaptee : Adaptee\n    +pay(amountInCents) : void\n  }\n  Client --> Target : depends on\n  Adapter ..|> Target : implements\n  Adapter o-- Adaptee : wraps"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that diagram as dependency control. The arrow from `Client` to `Target` is the only compile-time dependency the client has. `Adapter` is the only class that knows both vocabularies: cents versus dollars, unchecked versus checked exceptions, `pay()` versus `makePayment()`. That concentration is the point. When the third-party SDK renames a method or changes an `int` status code to an enum, you edit one file. The trade-off: that one file becomes a magnet for unrelated compatibility hacks if you let product code import adaptee types for convenience. Forbid it. The adapter package is the only place allowed to import the vendor package."
+    },
+    {
+      "type": "mermaid",
+      "title": "Call flow through an adapter",
+      "caption": "Every call is translate, delegate, translate back.",
+      "code": "flowchart LR\n  C[Client] -->|pay 10000 cents| A[Adapter]\n  A -->|convert to 100.00 dollars| S[Adaptee.makePayment]\n  S -->|return code 0| A\n  A -->|return void / throw DomainException| C"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What Adapter buys you and what it charges.",
+      "headers": [
+        "Benefit",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Reuse without modification",
+          "You integrate legacy and vendor code you cannot or should not fork. Upgrades stay contained behind the wrapper.",
+          "You own translation bugs. A wrong rounding rule or dropped field is now your defect, not the vendor's."
+        ],
+        [
+          "Single point of change",
+          "Interface drift in the adaptee touches one class instead of N call sites. Tests for mapping live in one place.",
+          "Extra indirection on every call plus an extra class per adaptee. Stack traces get one frame deeper."
+        ],
+        [
+          "Testability",
+          "You can mock Target in client tests and mock Adaptee in adapter tests. Neither side needs the other to compile.",
+          "You must write bidirectional mapping tests including error paths, nulls, and overflow. Most teams only test the happy path."
+        ],
+        [
+          "Open-Closed compliance",
+          "You extend behavior by adding new adapters rather than editing clients or vendored code.",
+          "Interface mismatch that is semantic, not syntactic, cannot be fixed by translation. Adapters hide that gap until production."
+        ],
+        [
+          "Composition over inheritance",
+          "Object Adapter works with final classes, static factories, and runtime-configured adaptees.",
+          "Lifetime and thread-safety of the wrapped instance leak into the adapter. Who closes it and whether it is thread-safe must be decided explicitly."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "My opinionated default: always choose Object Adapter, always program the client against the `Target` interface you own, and always inject the adaptee into the adapter constructor. That gives you substitution, test doubles, and a clear ownership line. Class Adapter is a correct answer on a UML quiz and a wrong answer in a Java or C# codebase where it forces awkward workarounds for single inheritance. The trade-off you are stating in the interview is this: one more allocation and one more method call per operation in exchange for the freedom to swap, mock, and version the adaptee independently."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Adapters fail silently because they look too simple to test. The failure is never a crash in the adapter frame; it is data corruption or semantic drift that passes through a green `200 OK`. The classic case is lossy conversion: cents to float dollars loses precision, XML attributes with no JSON equivalent get dropped, vendor status `PENDING_RETRY` gets mapped to your `FAILED` because your `Target` enum has no third value. The adapter compiles, the integration test with one happy-path fixture passes, and reconciliation breaks three weeks later. The trade-off of hiding incompatibility is that you also hide information loss. Every lossy mapping needs an explicit, logged decision, not a quiet default."
+    },
+    {
+      "type": "table",
+      "caption": "Failure, symptom you would actually see, and fix.",
+      "headers": [
+        "Failure mode",
+        "Symptom in logs / metrics",
+        "Fix"
+      ],
+      "rows": [
+        [
+          "Lossy type conversion",
+          "Off-by-one-cent settlement mismatches; `ledger_sum != gateway_sum` in daily reconciliation. No exception.",
+          "Keep canonical units in Target as integers. Do conversion with `BigDecimal` or integer math inside adapter and unit-test boundaries."
+        ],
+        [
+          "Incomplete error mapping",
+          "Vendor returns code 429 or timeout object; adapter throws generic `RuntimeException`. Client retries everything identically and triggers throttling.",
+          "Map every adaptee error to a typed Target exception: `Retryable`, `Fatal`, `Auth`. Log unmapped codes as errors, never default them to retry."
+        ],
+        [
+          "Leaky adaptee types",
+          "Vendor type appears in heap dumps, API responses, or method signatures outside adapter package. Vendor upgrade breaks 40 files.",
+          "Enforce package boundary with ArchUnit or import-linter rule. Adapter must deep-copy to domain types; never return vendor objects."
+        ],
+        [
+          "Stateful adaptee reused unsafely",
+          "Intermittent wrong-user charges or `Connection reset` under load. Single-threaded test passes, load test fails.",
+          "Document thread-safety contract. Either make adapter create a fresh adaptee per call, pool it, or synchronize and measure. Do not share a non-thread-safe SDK client behind a singleton adapter."
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The leaky adapter trap",
+      "text": "If your adapter method accepts or returns a vendor type, takes a vendor exception as a parameter, or requires the caller to configure the adaptee first, it is not an adapter. It is a pass-through that preserves the coupling you claimed to remove. Review rule: `grep` for vendor imports outside the `adapter` package. Any hit is a defect."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes it concrete"
+    },
+    {
+      "type": "paragraph",
+      "text": "Take payment integration, the case interviewers actually probe. Your domain speaks `pay(long amountInCents)` and throws a domain exception. The vendor SDK speaks `makePayment(double amountInDollars)` and returns an `int` status. You do not want `double` money or vendor codes anywhere in checkout logic. So you define a `Target` you own, wrap the vendor class, and confine every ugly conversion to one place. The trade-off made visible here: the adapter does boring, exact arithmetic and exhaustive error mapping so the client stays clean. That boring code is where the bugs live, so it gets the most tests."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "PaymentAdapter.java",
+      "code": "interface PaymentTarget {\n    void pay(long amountInCents) throws PaymentFailedException;\n}\n\n// Third-party: you cannot edit this. Uses double dollars, returns int codes.\nfinal class VendorGateway {\n    int makePayment(double amountInDollars) { /* ... */ return 0; }\n}\n\nfinal class PaymentAdapter implements PaymentTarget {\n    private final VendorGateway gateway;\n\n    PaymentAdapter(VendorGateway gateway) {\n        this.gateway = gateway;\n    }\n\n    @Override\n    public void pay(long amountInCents) throws PaymentFailedException {\n        if (amountInCents <= 0) throw new PaymentFailedException(\"non-positive amount\");\n        // Exact conversion: never new BigDecimal(double). Trade-off: verbosity for correctness.\n        java.math.BigDecimal dollars = java.math.BigDecimal.valueOf(amountInCents)\n            .movePointLeft(2);\n        int code;\n        try {\n            code = gateway.makePayment(dollars.doubleValue());\n        } catch (RuntimeException e) {\n            throw new PaymentFailedException(\"gateway call failed\", e);\n        }\n        // Exhaustive mapping. Unknown codes fail loud, never default to success.\n        switch (code) {\n            case 0: return;\n            case 1: throw new PaymentFailedException(\"declined\");\n            case 2: throw new PaymentFailedException(\"retryable: gateway busy\");\n            default: throw new PaymentFailedException(\"unmapped gateway code: \" + code);\n        }\n    }\n}\n\n// Client depends only on PaymentTarget. Swap Stripe/Adyen by swapping adapters.\nclass CheckoutService {\n    private final PaymentTarget payments;\n    CheckoutService(PaymentTarget payments) { this.payments = payments; }\n    void checkout(long totalCents) throws PaymentFailedException {\n        payments.pay(totalCents);\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape survives follow-ups. `CheckoutService` can be unit-tested with a stub `PaymentTarget` in milliseconds with no SDK on the classpath. `PaymentAdapter` can be tested against a fake `VendorGateway` covering zero, negative, `Long.MAX_VALUE` cents, and every status code. When the vendor ships v2 with `charge(Money)` instead of `makePayment(double)`, you write `PaymentAdapterV2` and change one wiring line. The trade-off you accepted: two extra types and mapping tests that feel like overhead until the first vendor migration, at which point they pay for themselves in a single afternoon."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "class_adapter_contrast.py",
+      "code": "from abc import ABC, abstractmethod\n\nclass Target(ABC):\n    @abstractmethod\n    def request(self) -> str: ...\n\nclass Adaptee:\n    def specific_request(self) -> str:\n        return \".eetpadA eht fo roivaheb laicepS\"\n\n# Object Adapter (prefer): composition, swappable at runtime.\nclass ObjectAdapter(Target):\n    def __init__(self, adaptee: Adaptee) -> None:\n        self._adaptee = adaptee\n    def request(self) -> str:\n        # Translate: reverse the string protocol into ours.\n        return self._adaptee.specific_request()[::-1]\n\n# Class Adapter (avoid in most codebases): inheritance, bound at compile time.\n# Trade-off: one fewer object, but you cannot wrap an existing instance\n# and you inherit every public method of Adaptee whether you want it or not.\nclass ClassAdapter(Adaptee, Target):\n    def request(self) -> str:\n        return self.specific_request()[::-1]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the Target you own",
+          "text": "Start by defining the interface your application wishes existed: `NotificationSender.send(User, Message)`, `Cache.get(key)`, `Pay(amountInCents)`. Say explicitly that the client will depend only on this. Interviewers score this first sentence; it proves you understand dependency direction."
+        },
+        {
+          "title": "Identify the Adaptee you cannot change",
+          "text": "Point at the legacy class or SDK method and name the exact incompatibility: different method name, different units, different error model, different data format like XML versus JSON. Be specific about signature mismatch, not vague about being incompatible."
+        },
+        {
+          "title": "Draw the Object Adapter and justify composition",
+          "text": "Sketch Client -> Target <- Adapter o-- Adaptee. State the trade-off out loud: composition costs one indirection but allows wrapping any instance, mocking, and supporting multiple adaptees. Reject Class Adapter for Java and C# unless asked."
+        },
+        {
+          "title": "Show translate-delegate-translate",
+          "text": "Write one method that validates input, converts arguments, calls the adaptee in try-catch, converts the result and every error code. Call out lossy conversions and how you fail loud on unmapped cases. This is where senior candidates separate from juniors."
+        },
+        {
+          "title": "Handle the follow-ups",
+          "text": "Expect: two-way adapter, adapter for multiple adaptees behind one Target, thread-safety and lifecycle of the wrapped client, and Adapter versus Facade versus Decorator versus Proxy. Have a one-line distinction for each ready before you walk in."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose offers"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Adapter changes behavior.** No. It changes interface. If `get()` now caches, retries, or rate-limits, that is Decorator or a policy wrapper stacked on top of the adapter. Keep the layers separate so each can be tested alone.",
+        "**Adapter and Facade are interchangeable.** No. Adapter fixes one incompatible interface so an existing client can use it. Facade simplifies many interfaces into one convenient entry point for all clients. Different problem, different shape.",
+        "**Adapter and Proxy share a purpose.** No. Proxy preserves the interface and controls access to the object: lazy init, access check, remote stub. Adapter deliberately changes the interface. If the signatures match, it is not an adapter.",
+        "**Wrapper means Adapter.** Wrapper is a nickname shared with Decorator and Proxy. Saying wrapper tells the interviewer nothing. Name which interface changes and which stays identical.",
+        "**More adapters means better abstraction.** No. One adapter per adaptee-target pair is correct. A single god-adapter with `if vendor == X` branches reintroduces the coupling you removed. Split them and select at composition root."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use Adapter at boundaries you do not control; refactor code you do control.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Third-party SDK, legacy module, or hardware driver with a fixed API",
+          "Use Adapter",
+          "You cannot edit the source safely. Translation layer isolates upgrade risk to one file."
+        ],
+        [
+          "Two internal teams can agree on a shared interface",
+          "Do not adapt — unify",
+          "Adapting code you own adds permanent translation tax. Change one side to the common interface instead."
+        ],
+        [
+          "Multiple vendors behind one domain concept (payments, storage, notifications)",
+          "Use Adapter per vendor",
+          "Each adapter implements your Target. Client stays vendor-neutral and selection happens at wiring time."
+        ],
+        [
+          "You need to add retry, cache, logging, or auth around calls",
+          "Adapter alone is wrong — stack Decorator",
+          "Trade-off: adapter handles shape, decorator handles policy. Mixing them makes error mapping untestable."
+        ],
+        [
+          "Mismatch is semantic, not syntactic (at-least-once vs exactly-once, sync vs async)",
+          "Adapter is insufficient",
+          "No argument renaming bridges different delivery guarantees. You need a redesign or a message layer, not translation."
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "\"Adapter lets my client depend on a `Target` interface I own by wrapping the incompatible `Adaptee` with composition and confining all argument, result, and error translation — including explicit handling of lossy cases — to that one wrapper.\""
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:00:55.402Z",
+    "problems": []
+  }
+}

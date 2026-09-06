@@ -1,0 +1,278 @@
+{
+  "slug": "mediator-design-pattern",
+  "title": "Mediator Design Pattern",
+  "summary": "Mediator centralizes N-to-N colleague communication into one object so colleagues stay decoupled — at the cost of concentrating logic and change pressure in the mediator itself.",
+  "kind": "LLD",
+  "problemSlug": "mediator-design-pattern-36-76",
+  "topic": "Behavioral Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "🎛️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Behavioral",
+    "Mediator",
+    "Decoupling"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Mediator - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/mediator",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Mediator Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/mediator-design-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Mediator pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Mediator_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Mediator Design Pattern (A Behavioral Design Pattern) - Medium",
+      "url": "https://medium.com/@ankitviddya/mediator-design-pattern-a-behavioral-design-pattern-dc508cd7bb8e",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Mediator trades N-to-N coupling for 1-to-N coupling.** Colleagues never call each other; they call `mediator.notify(sender, event)` and the mediator decides what happens next. If your design still lets two colleagues hold direct references, you did not apply the pattern — you just renamed a dependency."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Mediator is a behavioral object that **encapsulates an interaction protocol**. You have a set of colleague objects — buttons, text fields, services, aircraft, chat users — that need to coordinate. Instead of each colleague knowing the interface and state of every other colleague, each colleague knows exactly one object: the mediator. The mediator holds the coordination logic: who to call, in what order, under what condition, and what to ignore. Colleagues report facts (`clicked`, `textChanged`, `landRequest`), the mediator makes decisions."
+    },
+    {
+      "type": "paragraph",
+      "text": "This is different from routing or forwarding. A router passes a message unchanged from A to B. A mediator **interprets** the message and may trigger a multi-step workflow across C, D, and E, or trigger nothing at all. That is why the canonical interface is not `send(to, message)` but `notify(sender, event)`. The sender does not choose the receiver. The mediator does. Trade-off stated upfront: you delete distributed conditional logic from colleagues, but you create one place where all that logic accumulates and must be tested as a unit."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Start from the failure mode: five UI controls that call each other directly produce up to 20 directed dependencies. Every behavior change — `submit should stay disabled until validation passes` — touches four classes. Mediator inverts this. Controls emit stateless events upward. The dialog, controller, or dedicated `ConcreteMediator` holds references to all controls and implements the rules. Controls become dumb and reusable; the mediator becomes smart and specific. That specificity is intentional. You want the part that changes together to live together, instead of smeared across reusable widgets."
+    },
+    {
+      "type": "mermaid",
+      "title": "Mesh versus star",
+      "caption": "Direct colleague calls grow quadratically; mediated calls grow linearly.",
+      "code": "graph TD\n  subgraph Before[Without mediator]\n    A1[Button] --- B1[Checkbox]\n    A1 --- C1[TextField]\n    B1 --- C1\n    B1 --- D1[Validator]\n    C1 --- D1\n    A1 --- D1\n  end\n  subgraph After[With mediator]\n    A2[Button] --> M[Dialog Mediator]\n    B2[Checkbox] --> M\n    C2[TextField] --> M\n    D2[Validator] --> M\n    M --> A2\n    M --> B2\n    M --> C2\n    M --> D2\n  end"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the right-hand side carefully: arrows go **through** `M`. A colleague never addresses another colleague by name. It says `mediator.notify(this, \"checked\")` and forgets about it. The mediator then reads state from one colleague and writes state into another — `if checkbox.isChecked() then dogName.show() else dogName.hide()`. This read-evaluate-write loop is the whole runtime. Trade-off: event flow is now indirect, so stack traces and data flow are harder to follow than a direct call. You gain local reasoning about each colleague and lose global visibility of the interaction unless you read the mediator."
+    },
+    {
+      "type": "mermaid",
+      "title": "Static structure",
+      "caption": "Colleagues depend on the abstraction; only the concrete mediator depends on concrete colleagues.",
+      "code": "classDiagram\n  class Mediator {\n    <<interface>>\n    +notify(sender, event)\n  }\n  class DialogMediator {\n    +notify(sender, event)\n    +validateAll()\n  }\n  class UIControl {\n    +mediator : Mediator\n    +changed(event)\n  }\n  class Button {\n    +click()\n  }\n  class Checkbox {\n    +isChecked()\n  }\n  class TextField {\n    +setVisible(v)\n  }\n  Mediator <|.. DialogMediator\n  UIControl <|-- Button\n  UIControl <|-- Checkbox\n  UIControl <|-- TextField\n  UIControl --> Mediator\n  DialogMediator --> Button\n  DialogMediator --> Checkbox\n  DialogMediator --> TextField"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Minimal implementation that shows the split"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "MediatedDialog.java",
+      "code": "interface Mediator {\n    void notify(UIControl sender, String event);\n}\n\nabstract class UIControl {\n    protected final Mediator mediator;\n    protected UIControl(Mediator mediator) { this.mediator = mediator; }\n}\n\nclass Button extends UIControl {\n    private boolean enabled = false;\n    Button(Mediator m) { super(m); }\n    void click() { mediator.notify(this, \"click\"); }\n    void setEnabled(boolean v) { this.enabled = v; }\n    boolean isEnabled() { return enabled; }\n}\n\nclass Checkbox extends UIControl {\n    private boolean checked;\n    Checkbox(Mediator m) { super(m); }\n    void setChecked(boolean v) { this.checked = v; mediator.notify(this, \"check\"); }\n    boolean isChecked() { return checked; }\n}\n\nclass TextField extends UIControl {\n    private boolean visible = false;\n    private String text = \"\";\n    TextField(Mediator m) { super(m); }\n    void setText(String t) { this.text = t; mediator.notify(this, \"input\"); }\n    String getText() { return text; }\n    void setVisible(boolean v) { this.visible = v; }\n}\n\nclass ProfileDialog implements Mediator {\n    Button submit;\n    Checkbox hasDog;\n    TextField dogName;\n\n    @Override\n    public void notify(UIControl sender, String event) {\n        // All cross-object rules live here. Colleagues hold no rules.\n        if (event.equals(\"check\")) {\n            dogName.setVisible(hasDog.isChecked());\n        }\n        if (event.equals(\"check\") || event.equals(\"input\")) {\n            boolean valid = !hasDog.isChecked() || !dogName.getText().isBlank();\n            submit.setEnabled(valid);\n        }\n        if (event.equals(\"click\") && submit.isEnabled()) {\n            save();\n        }\n    }\n\n    private void save() { /* persist profile */ }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why it is shaped this way: `UIControl` stores only the `Mediator` interface, not the concrete dialog. That is what makes `Button` reusable in a second dialog — it never imports `ProfileDialog`. The concrete dialog stores concrete colleagues, because something has to know that `check` means `toggle dogName visibility and recompute submit state`. Putting that rule anywhere else reintroduces coupling. Trade-off: adding a new widget requires two edits — the widget class plus one more branch in `notify`. That is cheaper than editing five existing widgets, but it means `notify` grows with every feature and needs disciplined decomposition into `validateAll()`, `updateVisibility()` helpers rather than one long conditional chain."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What Mediator buys and what it charges.",
+      "headers": [
+        "Gain",
+        "Cost",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Colleague reuse: widgets depend on one stable interface",
+          "Mediator becomes application-specific and is rarely reusable",
+          "Reuse moves, it does not appear from nowhere"
+        ],
+        [
+          "O(n) dependencies instead of O(n^2)",
+          "Interaction flow is implicit and harder to trace in a debugger",
+          "You optimize for modification, not for read-through"
+        ],
+        [
+          "Interaction protocol is explicit in one file",
+          "That file becomes a change magnet and merge hotspot",
+          "Centralization concentrates both clarity and conflict"
+        ],
+        [
+          "Colleagues are trivially unit-testable with a stub mediator",
+          "Mediator needs combinatorial tests over event orderings",
+          "Test burden shifts from many small tests to fewer stateful tests"
+        ],
+        [
+          "New colleague type touches only itself plus mediator",
+          "Changing the Mediator interface touches every colleague",
+          "Keep the interface narrow: one `notify` method, string or enum event"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The common sales pitch is `decoupling`, which hides the real exchange. Mediator does not remove complexity; it **relocates** it from a graph of peer dependencies into a star with a dense center. That is the correct call when the interaction rules change more often than the colleagues themselves — form validation, chat moderation, air-traffic sequencing, workflow orchestration. It is the wrong call when colleagues are stable and independent, because then you pay indirection with no corresponding saving in change cost."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The dominant failure is the **God Mediator**: one class that starts as `DialogMediator` and ends as validator, formatter, network client, analytics emitter, and feature-flag evaluator. Symptoms arrive in order. First, `notify` grows past 200 lines with nested `instanceof` checks and stringly-typed events. Second, event ordering matters but is undocumented — `input` before `check` produces a different submit state than `check` before `input`. Third, re-entrancy: the mediator updates colleague A, which fires another `notify` synchronously, which re-enters the mediator mid-update and corrupts the partially computed state. In UI code this shows as flickering controls or a submit button that enables then instantly disables. In server-side mediators — chat rooms, lobbies, saga coordinators — it shows as duplicate broadcasts, dropped messages, or a mediator thread that blocks because one colleague call is slow and every other colleague queues behind it."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`notify` full of `if (sender == specificInstance)` — the mediator knows instances, not roles. Symptom: adding a second dialog instance cross-fires events.",
+        "Synchronous re-entrant updates — mediator sets state on a colleague inside `notify`, colleague immediately calls back into `notify`. Symptom: stack overflow or inconsistent intermediate UI.",
+        "Mediator doing I/O inline — validation calls a remote service while colleagues wait. Symptom: entire form freezes on every keystroke; throughput collapses to the slowest dependency.",
+        "Event vocabulary explosion — dozens of raw strings like `\"click2\"`, `\"input_changed_v2\"`. Symptom: typos silently drop behavior; rename breaks half the flows with no compiler error.",
+        "Mediator holding mutable shared state without ownership rules. Symptom: race between two events leaves `submitEnabled` wrong until the next keystroke forces recomputation."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The fix is not to abandon the pattern",
+      "text": "Split the mediator before you split the colleagues: extract `VisibilityRules` and `ValidationRules` as plain objects the mediator calls, make event types an enum, recompute derived state from scratch on every event instead of incrementally patching it, and never let the mediator block on I/O — enqueue and return. If `notify` cannot stay side-effect-ordered and idempotent per event, the design is already broken."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the many-to-many",
+          "text": "Start by drawing the peer graph: `chat users broadcast to each other`, `runway, gates, and aircraft coordinate landing`. Say explicitly that direct references give O(n^2) coupling and kill reuse. Interviewers award points for quantifying the dependency count."
+        },
+        {
+          "title": "Introduce the narrow interface",
+          "text": "Define `Mediator.notify(sender, event)` and make every colleague depend only on it. Show that `Button` or `ChatUser` can compile without knowing any peer type. This is the decoupling claim — prove it with imports."
+        },
+        {
+          "title": "Put one concrete flow end to end",
+          "text": "Pick `checkbox checked -> show dog field -> revalidate -> enable submit`. Implement it entirely inside the concrete mediator. Do not leak `if (hasDogChecked)` into the checkbox class. That placement decision is what is being graded."
+        },
+        {
+          "title": "Handle the follow-ups",
+          "text": "Expect: add a new colleague type, add undo, make it concurrent, replace strings with typed events. Answer each by changing the mediator and one colleague, and say the trade-off: new colleague is cheap, new event kind touches the mediator interface and every stub."
+        },
+        {
+          "title": "Name the limit unprompted",
+          "text": "Close by saying when you would not use it: stable independent objects, or a mediator that has grown I/O and domain logic. Propose extraction or replacement with Observer / event bus. Interviewers remember candidates who volunteer the downside."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Mediator is the same as Observer.** No. Observer is one-to-many broadcast where subscribers choose what to listen to. Mediator is many-to-many coordination where the hub chooses who reacts. You can implement a mediator on top of an event bus, but the bus alone does not contain the decision logic.",
+        "**Mediator is the same as Facade.** No. Facade simplifies one direction of calls into a subsystem and holds no interaction state. Mediator holds multi-party protocol state and is called back repeatedly during a workflow.",
+        "**The dialog class acting as mediator is a hack.** It is the intended starting point. Promoting it to a separate `ConcreteMediator` only pays off when the same colleagues must work under two different protocols or when the dialog is already overloaded.",
+        "**More events means looser coupling.** The opposite past a point. A 40-value event enum coupled to `instanceof` chains is tighter than three well-chosen events plus query methods on colleagues. Keep events coarse (`changed`) and let the mediator query state.",
+        "**Colleagues should never reference each other, even via IDs.** Overstated. The rule is no behavioral dependency. A chat user holding another user's immutable ID for display is fine. Calling methods on that user object directly is the violation."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Selection rule: use it for volatile protocols, not for stable peers.",
+      "headers": [
+        "Use it when",
+        "Avoid it when",
+        "Use instead"
+      ],
+      "rows": [
+        [
+          "Form / dialog with cross-field validation and visibility rules",
+          "Controls are independent with no shared rules",
+          "Direct calls — no pattern needed"
+        ],
+        [
+          "Chat room, lobby, air-traffic sequencing with central policy",
+          "Policy is just broadcast with no decision logic",
+          "Observer or publish-subscribe bus"
+        ],
+        [
+          "Saga / workflow coordinator across services in one process",
+          "Coordination spans processes and needs durability",
+          "Outbox plus message queue or orchestrator service"
+        ],
+        [
+          "Reuse of colleague widgets across dialogs matters",
+          "Only one dialog exists and will never be reused",
+          "Private methods in the dialog — mediator is overkill"
+        ],
+        [
+          "Interaction rules change faster than colleague types",
+          "Colleague types churn but protocol is fixed",
+          "Strategy or State inside colleagues"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "A practical filter: if you cannot write down the protocol as `on event X from role R, do Y to role S`, you do not have a mediator yet — you have scattered conditionals waiting to be centralized. Write that table first, then the interface follows. And cap the mediator's job at coordination. The moment it starts validating formats, persisting data, or calling remote services directly, extract those as collaborators the mediator invokes. Coordination versus execution is the boundary that keeps the center from collapsing under its own weight."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Mediator replaces direct colleague-to-colleague calls with events into a central coordinator that owns the interaction protocol — cheap to extend with new colleagues, paid for by a mediator that must stay narrow, side-effect-ordered, and free of I/O.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:58:35.409Z",
+    "problems": []
+  }
+}

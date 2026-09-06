@@ -1,0 +1,409 @@
+{
+  "slug": "design-news-feed-system-insta-post-design",
+  "title": "Design News Feed System / Insta Post Design",
+  "summary": "Design a scalable News Feed with hybrid push-pull fanout: write path, read path, ranking, and celebrity handling.",
+  "kind": "HLD",
+  "problemSlug": "design-news-feed-system-insta-post-design-150-318",
+  "topic": "More Interview Problems",
+  "difficulty": "Medium",
+  "coverEmoji": " f4f0",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "News-Feed",
+    "Fanout",
+    "Caching",
+    "System-Design"
+  ],
+  "evidence": [
+    {
+      "url": "https://medium.com/the-interview-sage/design-facebook-news-feed-instagram-twitter-system-design-architecture-4554e08f014d",
+      "title": "Design Facebook News Feed | Instagram | The Interview Sage",
+      "source": "medium.com",
+      "kind": "report",
+      "companies": [
+        {
+          "name": "Facebook",
+          "quote": "Hi Everyone, I recently got the Design Facebook News Feed question in my Facebook onsite interview round."
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "Design Facebook News Feed | Instagram | The Interview Sage",
+      "url": "https://medium.com/the-interview-sage/design-facebook-news-feed-instagram-twitter-system-design-architecture-4554e08f014d",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design Facebook's News Feed | Hello Interview System Design in a Hurry",
+      "url": "https://www.hellointerview.com/learn/system-design/problem-breakdowns/fb-news-feed",
+      "source": "hellointerview.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design a News Feed System - ByteByteGo | Technical Interview Prep",
+      "url": "https://bytebytego.com/courses/system-design-interview/design-a-news-feed-system",
+      "source": "bytebytego.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the interviewer is really testing",
+      "text": "This is **not a CRUD interview**. Anyone can draw `Client -> API -> DB`. What is graded is whether you can reason about **fanout cost**: a write from one user becomes reads for thousands. The interviewer wants to hear you choose **push vs pull vs hybrid on purpose**, kill the naive `JOIN` on read, and defend your consistency trade-off. If you do not say *celebrity problem* unprompted, you fail the Medium bar."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a News Feed system where users publish posts containing text plus optional images or video, follow other users, and view a personalized home timeline of posts from people they follow in reverse-chronological order with pagination. The system must support `post`, `follow/unfollow`, `getFeed`, and `getProfile` at social-network scale: tens of millions of daily active users, highly skewed follow graphs, spiky read/write ratios around 100:1, and sub-500ms p99 feed loads. The feed does not need to be strongly consistent; a delay of tens of seconds for a new post to appear in all followers timelines is acceptable. Ranking, ads, and stories are out of scope unless you earn time for follow-ups."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`POST /v1/posts` — authenticated user creates a post with text and optional `mediaIds`. Returns `postId`. Must be durable and visible quickly.",
+        "`DELETE /v1/posts/{id}`, `POST /v1/follows` and `DELETE /v1/follows` — mutations to the social graph and content lifecycle.",
+        "`GET /v1/feed?cursor=&limit=20` — returns the caller's home timeline newest-first, with opaque cursor for pagination. This is the hot path.",
+        "`GET /v1/users/{id}/posts?cursor=` — profile timeline, directly queryable by author. This distinction between home timeline and profile timeline drives the entire storage choice."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not start drawing boxes. Spend four minutes pinning scope, because every answer changes storage and fanout. Interviewers deduct heavily if you assume chronological feed and they wanted ranked, or assume symmetric friends when the graph is asymmetric follows."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Push, pull, or chronological?",
+          "text": "Ask if feed is strict reverse-chronological or ranked. Agree to start chronological, then add a ranking layer as a follow-up. This lets you justify precomputed timelines instead of hand-waving ML."
+        },
+        {
+          "title": "Read/write ratio and scale?",
+          "text": "Pin daily actives, posts per day, follows per user, and max followers. You need numbers like 10M DAU, 100M reads/day, 1M posts/day, avg 300 follows, p99 5K follows, and a few accounts with 10M+ followers. Without skew you cannot justify hybrid fanout."
+        },
+        {
+          "title": "Media in scope?",
+          "text": "Confirm posts carry images/video. Agree you will not design transcoding inline — upload goes to blob storage via pre-signed URLs, post metadata only references `mediaIds`. This separates hot metadata path from bulky bytes."
+        },
+        {
+          "title": "Consistency and pagination contract?",
+          "text": "Confirm eventual consistency is allowed and cursor pagination is required, not offset. Offset breaks under concurrent inserts. Cursor must be `(createdAt, postId)` to stay stable."
+        },
+        {
+          "title": "Deletes, edits, and blocks?",
+          "text": "Ask if delete/unfollow/block must retract from already-materialized feeds. Say yes for delete and block, best-effort async for edit. This forces tombstones and lazy filtering, not just happy-path writes."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Agreed scope before architecture.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Publish post with text + media refs, delete post",
+          "Write path must be durable even if fanout lags"
+        ],
+        [
+          "Functional",
+          "Follow / unfollow, get followers/followees",
+          "Graph service is separate from feed; different access pattern"
+        ],
+        [
+          "Functional",
+          "Home feed newest-first with cursor pagination",
+          "Hot read; cannot do scatter-gather over network on every view"
+        ],
+        [
+          "Functional",
+          "Profile timeline by author",
+          "Direct lookup; justifies post-by-author index"
+        ],
+        [
+          "Non-functional",
+          "p99 feed read < 500ms, post accept < 300ms",
+          "Forces cache + precomputation, async fanout"
+        ],
+        [
+          "Non-functional",
+          "Available over consistent, tolerate ~30-60s staleness",
+          "Allows materialized timelines and queue-based fanout"
+        ],
+        [
+          "Non-functional",
+          "Scale to 10M+ DAU, 100:1 read/write, celebrity accounts",
+          "Naive fanout explodes; requires hybrid push/pull"
+        ],
+        [
+          "Non-functional",
+          "Durability for posts and graph, best-effort for precomputed feeds",
+          "Feeds are derivable and rebuildable; source of truth is not cache"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the naive pull on read"
+    },
+    {
+      "type": "paragraph",
+      "text": "The obvious answer is fully normalized SQL: `users`, `follows(follower_id, followee_id)`, `posts(post_id, author_id, created_at, body)`. To render a feed you fetch the followee list, then run something like `SELECT * FROM posts WHERE author_id IN (...) ORDER BY created_at DESC LIMIT 20`, or fan-in at request time across shards. It is simple, always fresh, trivially correct for deletes and unfollows, and needs no background workers. That is why juniors propose it, and why it dies at scale. The trade-off is brutal: you pay fanout cost on every read, the hottest operation by 100x. A user with 1000 followees triggers a scatter-gather across many post partitions, merge-sort in the request path, and a tail-latency nightmare. Cache does not save you because every timeline is unique and invalidates on every post. Add one celebrity with 10M followers and one pagination request with `OFFSET 200` and your database falls over. Pull-on-read optimizes for write cheapness at the expense of read latency — exactly backwards for this workload."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Read amplification: `O(F)` shards touched per feed view where `F` is followee count, versus `O(1)` cache lookup with precomputation.",
+        "Latency coupling: p99 feed latency becomes p99 of slowest post shard plus merge cost. No isolation.",
+        "Hot keys and thundering herds: celebrity posts are read by millions concurrently; without materialization every view hits source of truth.",
+        "Pagination instability: offset breaks when new posts arrive mid-scroll; you need stable cursors which pull-only SQL handles poorly across shards."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design — hybrid fanout with materialized timelines"
+    },
+    {
+      "type": "paragraph",
+      "text": "The production answer is **fanout-on-write for normal users plus pull-on-read for celebrities**, backed by durable post storage and rebuildable timeline storage. Write path is asynchronous: accept the post, persist it once as source of truth, then enqueue a fanout job that prepends `postId` to each follower's precomputed timeline in cache and cold store. Read path never touches the graph or does a distributed join; it does a single range scan on the caller's timeline by cursor, then hydrates `postIds` with a batched multi-get. The key trade-off you must state: you trade **write amplification and storage for read speed**. A post by a user with 5K followers costs 5K timeline writes, but turns 5K future feed reads into `O(1)` cache hits. That is correct because reads dominate 100:1. Celebrities invert the math — 10M timeline writes per post is a self-inflicted DDoS — so you exempt them from push and merge their posts at read time. You pay slightly higher read latency for the 0.01% of authors to protect write availability for everyone."
+    },
+    {
+      "type": "mermaid",
+      "title": "Hybrid fanout architecture",
+      "caption": "Write path is async; read path is single timeline lookup plus hydration.",
+      "code": "graph TD\n  C[Client] --> G[API Gateway]\n  G --> P[Post Service]\n  G --> F[Feed Service]\n  G --> R[Graph Service]\n  P --> B[Blob Store]\n  P --> M[Post Store]\n  P --> Q[Feed Queue]\n  Q --> W[Fanout Workers]\n  W --> E[Feed Cache]\n  W --> T[Timeline Store]\n  R --> GDB[Graph Store]\n  W --> GDB\n  F --> E\n  F --> T\n  F --> M"
+    },
+    {
+      "type": "paragraph",
+      "text": "Follow the request flow to make it concrete. `POST /v1/posts` hits the Post Service, which validates auth, allocates a Snowflake-like `postId`, writes the row to the Post Store such as Cassandra keyed by `postId` plus a secondary index by `(authorId, createdAt)`, and returns 201 immediately without waiting for fanout. It then publishes `PostCreated` to Kafka. Fanout Workers consume that event, fetch followers in pages from the Graph Store, shard the follower list, and for each normal follower do `LPUSH timeline:{userId} postId` in Redis and an async append to the Timeline Store in Cassandra or Scylla keyed by `(ownerId, createdAt, postId)`. Celebrity detection is a threshold check: if `followerCount > 100K` or a flag is set, skip push and mark the post as `celebrityOnly`. On `GET /v1/feed`, the Feed Service reads `timeline:{userId}` by cursor from Redis, falling back to Timeline Store on miss, pulls recent celebrity posts via a small pull path keyed by followee, merges the two sorted lists in memory, hydrates via `MGET posts`, filters tombstones and blocked authors, and returns the next cursor. Media bytes never flow through this path — clients fetch them directly from CDN with signed URLs. Why Kafka in the middle? To decouple accept latency from fanout latency and absorb spikes. The trade-off is eventual staleness and operational complexity versus a feed that stays fast when a match ends and posting spikes 20x."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Data model — source of truth vs derived state"
+    },
+    {
+      "type": "mermaid",
+      "title": "Core schema",
+      "caption": "Posts and graph are truth; timelines are derived and rebuildable.",
+      "code": "classDiagram\n  class User {\n    +long id\n    +string name\n  }\n  class Follow {\n    +long followerId\n    +long followeeId\n  }\n  class Post {\n    +long postId\n    +long authorId\n    +long createdAt\n    +string body\n  }\n  class FeedEntry {\n    +long ownerId\n    +long postId\n    +long createdAt\n  }\n  User --> Follow : follows\n  User --> Post : authors\n  Post --> FeedEntry : fannedOutTo"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep three stores because they have opposite access patterns, and say so. The Graph Store holds `follows` and `followers` adjacency lists; it needs fast paginated scans of followers during fanout, so a wide-row store or Redis Sets sharded by user work, with the full list also in Cassandra for durability. The Post Store holds immutable post metadata keyed by `postId` for point hydration and by `(authorId, createdAt)` for profile pages and celebrity pull; Cassandra shines here because writes are append-only and reads are key-based, no joins needed. The Timeline Store holds materialized `FeedEntry` rows keyed by `(ownerId, createdAt, postId)` with a TTL-compacted window of e.g. last 1000 entries per user; Redis holds the hot head of that list for sub-10ms reads, Cassandra holds the cold tail. Why not Postgres for all? Because timeline writes are high-throughput blind appends with no transactions, and Postgres would serialize on indexes and bloat on deletes. The trade-off of this polyglot choice is you now own dual-write drift: timeline can lag or diverge from posts, so every read must filter deleted posts and every delete must emit a tombstone event that workers apply lazily. Derive, do not trust."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code — the decision logic that matters"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interview code for HLD is not a full server. Write the two functions that prove you understand the hard part: fanout routing and feed merging with cursors. Everything else is boilerplate."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "FanoutService.java",
+      "code": "public class FanoutService {\n  private static final int CELEBRITY_THRESHOLD = 100_000;\n  private static final int TIMELINE_CAP = 1000;\n  private final GraphStore graph; private final TimelineStore timelines;\n  private final CelebrityIndex celebrities; private final Queue fanoutQueue;\n\n  // Write path: persist already done, now decide push vs skip.\n  public void onPostCreated(Post post) {\n    long followers = graph.followerCount(post.authorId());\n    if (followers > CELEBRITY_THRESHOLD || celebrities.isCelebrity(post.authorId())) {\n      celebrities.indexPost(post); // pull path only, no fanout\n      return;\n    }\n    // Page followers to bound memory; each page becomes a job.\n    String cursor = null;\n    do {\n      FollowPage page = graph.listFollowers(post.authorId(), cursor, 1000);\n      fanoutQueue.publish(new FanoutJob(post.postId(), post.createdAt(), page.ids()));\n      cursor = page.nextCursor();\n    } while (cursor != null);\n  }\n\n  public void applyFanout(FanoutJob job) {\n    for (long followerId : job.followerIds()) {\n      timelines.prepend(followerId, job.postId(), job.createdAt(), TIMELINE_CAP);\n    }\n  }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "feed_merge.py",
+      "code": "def get_feed(user_id, cursor, limit=20, graph=None, timelines=None, posts=None):\n    # 1. Precomputed timeline covers normal followees (push path)\n    pushed = timelines.range_by_cursor(user_id, cursor, limit * 2)\n    # 2. Pull path covers only celebrity followees (tiny set)\n    celebs = graph.celebrity_followees(user_id)  # usually 0-5 ids\n    pulled = []\n    for cid in celebs:\n        pulled += posts.latest_by_author(cid, since=cursor, limit=limit)\n    # 3. Merge two sorted lists, hydrate, filter tombstones\n    merged = merge_desc(pushed, pulled, key=lambda e: (e.created_at, e.post_id))\n    hydrated = posts.mget([e.post_id for e in merged[:limit*2]])\n    visible = [p for p in hydrated if p is not None and not p.is_deleted]\n    # opaque cursor = last (created_at, post_id)\n    next_cursor = encode(visible[-1].created_at, visible[-1].post_id) if visible else None\n    return visible[:limit], next_cursor"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity and capacity"
+    },
+    {
+      "type": "table",
+      "caption": "Cost model to quote without hesitating.",
+      "headers": [
+        "Operation",
+        "Cost",
+        "Note"
+      ],
+      "rows": [
+        [
+          "Post accept",
+          "O(1) DB write + O(1) enqueue",
+          "p99 independent of follower count; fanout is async"
+        ],
+        [
+          "Fanout normal user",
+          "O(F) timeline writes batched",
+          "F = follower count; 5K writes amortized over 500K future reads"
+        ],
+        [
+          "Fanout celebrity",
+          "O(1) index write, zero timeline writes",
+          "Avoids 10M-write storm; shifts cost to read"
+        ],
+        [
+          "Feed read hit",
+          "O(limit) cache range + O(limit) MGET",
+          "Single key lookup, no scatter-gather"
+        ],
+        [
+          "Feed read miss",
+          "O(limit) timeline store scan + hydration",
+          "Fallback to Cassandra, then refill cache"
+        ],
+        [
+          "Storage",
+          "O(P * avgFollowers) timeline entries capped",
+          "Cap at 1000/user bounds blowup; cold tail evicted"
+        ],
+        [
+          "Graph scan",
+          "O(F / pageSize) paged reads",
+          "Never load full follower list into memory"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency and the hardest follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "The concurrency story has two halves: accepting writes without loss, and keeping reads stable under races. Fanout workers must be idempotent because Kafka redelivers; `prepend` must be a set-add keyed by `(ownerId, postId)` not a blind list push, otherwise retries duplicate entries. Use per-user timeline locks or Lua scripts in Redis to make trim-to-cap atomic with prepend, or two concurrent fanout jobs will interleave and evict the wrong entry. For celebrity pull, bound the merge: if a user follows 50 celebrities each posting constantly, capping per-author fetch to `limit` keeps read latency flat. The follow/unfollow race is the classic gotcha: if Alice unfollows Bob while Bob's post is fanning out, she may still see it. Fix it at read time, not with distributed transactions — filter timeline entries against the current follow set and block list during hydration, and run a background sweeper on unfollow events to lazily delete stale entries. The trade-off is you accept transient ghost posts for a few seconds to avoid coupling graph writes to millions of timeline deletes synchronously. Harder follow-up is ranking: replace `createdAt` sort key with `score` computed by a separate ranker that reorders only the top N candidates in memory at read time, leaving stored timeline order untouched so you can A/B test ranking without rewriting storage."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Three traps that sink candidates",
+      "text": "First, **offset pagination** — `OFFSET 40 LIMIT 20` duplicates and drops posts under concurrent inserts; always use `(createdAt, postId)` cursors. Second, **cache-aside without TTL and tombstones** — a deleted post lives forever in materialized feeds unless deletes publish events and reads filter. Third, **synchronous fanout on post** — awaiting 5K Redis writes before returning 201 turns every normal post into tail latency and fails the availability requirement. Enqueue and return."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "How do you add ranking without rewriting everything?",
+          "text": "Keep chronological timelines as candidate generation. At read time fetch 2x candidates, call Ranker service for scores, sort top N, return. Trade-off: extra 20-50ms and loss of strict recency for engagement."
+        },
+        {
+          "title": "How do video and image uploads scale?",
+          "text": "Direct-to-blob with pre-signed URLs, async transcoding pipeline, CDN delivery. Post metadata stores only IDs and dimensions. Never proxy bytes through API servers."
+        },
+        {
+          "title": "How do you handle deletes, blocks, and private posts?",
+          "text": "Deletes emit tombstones fanned out lazily plus read-time filtering. Blocks filtered at hydration via block-set lookup. Private posts checked against visibility ACL during hydration, not fanout."
+        },
+        {
+          "title": "How do you survive a celebrity posting during a final?",
+          "text": "Rate-limit fanout queue per author, shed celebrity push entirely, serve via pull with dedicated cache key per celebrity plus request coalescing. Monitor queue lag and autoscale workers."
+        },
+        {
+          "title": "How do you backfill a new user or rebuild a corrupted timeline?",
+          "text": "Bootstrap by pulling latest N posts from followees profile indexes and merging. Same path as celebrity pull. Timelines are disposable; posts and graph are not."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Celebrity with 10M followers posts — must not enqueue 10M writes synchronously; pull path only.",
+        "User follows 5K accounts, 200 post/sec aggregate — timeline cap and TTL prevent unbounded growth.",
+        "Unfollow then re-follow — stale entries must not resurrect; filter by current graph version at read.",
+        "Delete post after fanout — tombstone + read filter; already-cached entries disappear within seconds.",
+        "Cold user returns after 6 months — cache miss, rebuild from Timeline Store tail, paginate correctly.",
+        "Duplicate delivery from queue — idempotent prepend keyed by `postId` prevents double entries.",
+        "Cursor tampering or clock skew — opaque base64 cursor with `(createdAt, postId)`, Snowflake IDs monotonic per shard.",
+        "Thundering herd on hot celebrity — singleflight coalescing + short TTL cache on celebrity pull results."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on — weak vs strong"
+    },
+    {
+      "type": "table",
+      "caption": "How interviewers score this problem.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Fanout choice",
+          "Picks pure push or pure pull with no numbers",
+          "Quantifies write amplification vs read cost, picks hybrid with threshold"
+        ],
+        [
+          "Read path",
+          "JOIN or scatter-gather on every view",
+          "Single timeline lookup + batched hydration, cursor-based"
+        ],
+        [
+          "Storage",
+          "One SQL DB for everything",
+          "Separates post truth, graph, timeline cache/store with reasons"
+        ],
+        [
+          "Scale math",
+          "No estimation",
+          "DAU, QPS, storage per timeline cap, celebrity bound"
+        ],
+        [
+          "Failure handling",
+          "Ignores deletes, retries, lag",
+          "Idempotent workers, tombstones, read-time filtering, queue backpressure"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "45-minute plan",
+      "text": "**0-5 min:** clarify chronological vs ranked, scale, media, consistency. **5-10 min:** lock requirements and estimation. **10-12 min:** dismiss naive pull with cost math. **12-30 min:** draw write vs read paths, stores, queue, hybrid fanout with celebrity exemption. **30-38 min:** deep dive on one hard area — celebrity merge, pagination, or deletes. **38-45 min:** follow-ups: ranking hook, CDN media, backfill. End by restating trade-offs: *staleness for speed, storage for reads, pull for celebrities.*"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:43:52.886Z",
+    "problems": []
+  }
+}

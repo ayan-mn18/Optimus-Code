@@ -1,0 +1,327 @@
+{
+  "slug": "other-types-of-databases",
+  "title": "Other Types of Databases",
+  "summary": "Beyond relational and basic NoSQL: time-series, search, graph, columnar OLAP, and vector stores — how each exploits one access pattern and what it sacrifices to do it.",
+  "kind": "HLD",
+  "problemSlug": "other-types-of-databases-92-203",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "🧭",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "System Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Different Types of Databases & When To Use Them | Rivery",
+      "url": "https://rivery.io/data-learning-center/database-types-guide/",
+      "source": "rivery.io",
+      "kind": "article"
+    },
+    {
+      "title": "The Types of Databases (with Examples) - Matillion",
+      "url": "https://www.matillion.com/blog/the-types-of-databases-with-examples",
+      "source": "matillion.com",
+      "kind": "article"
+    },
+    {
+      "title": "Types Of Databases | MongoDB",
+      "url": "https://www.mongodb.com/resources/basics/databases/types",
+      "source": "mongodb.com",
+      "kind": "article"
+    },
+    {
+      "title": "Types of Databases - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/dbms/types-of-databases/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "There is no general-purpose database. Every \"other\" database is a **storage layout + index fused to one access pattern**. If you can name the dominant read and write shape, the choice is forced. If you cannot, you will pick wrong and pay for it in tail latency, cost, or a 3 a.m. outage."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What \"other types\" actually covers"
+    },
+    {
+      "type": "paragraph",
+      "text": "In a High-Level Design interview, **relational, key-value, and document** are table stakes. \"Other\" means the specialized engines you reach for when those three collapse: **time-series, full-text search, graph, columnar OLAP, and vector**. They do not store fundamentally different bytes. They store the *same* bytes in a layout that makes one query class cheap and everything else expensive. That is the entire point. You are trading generality for a 10-100x win on the hot path."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Time-series:** append-only measurements keyed by time + tags. Optimized for high-rate writes and range scans over recent windows.",
+        "**Search:** documents indexed by *terms*, not rows. Optimized for relevance ranking, prefix / fuzzy match, and faceted filtering.",
+        "**Graph:** nodes + edges stored with direct pointers. Optimized for multi-hop traversals like *friends-of-friends* or *fraud rings*.",
+        "**Columnar OLAP:** tables stored column-by-column in compressed blocks. Optimized for scans and aggregates over billions of rows.",
+        "**Vector:** high-dimensional embeddings indexed for approximate nearest-neighbor. Optimized for *find the K most similar* under a distance metric."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why specialization wins: storage follows the query"
+    },
+    {
+      "type": "paragraph",
+      "text": "A B-tree row store is a compromise: decent at point lookups, mediocre at scans, terrible at relevance or traversals. Specialized engines remove the compromise. A time-series engine assumes writes arrive roughly in time order and are never updated — so it can use compressed, immutable chunks and skip general transaction machinery. A search engine assumes reads are *term -> document list intersections* — so it builds an inverted index and accepts painful updates. A graph store assumes the join *is* the query — so it stores adjacency as physical pointers and accepts that global scans will be slow. Choose by **write shape, read shape, and mutability**. Everything else is detail. The trade-off is always the same: you buy speed on the target workload by making off-target workloads slow, expensive, or impossible."
+    },
+    {
+      "type": "mermaid",
+      "title": "Pick by access pattern, not by data type",
+      "caption": "Start from the dominant query. If two patterns are equally hot, you need two stores.",
+      "code": "flowchart TD\n  A[Start from access pattern] --> B{Append only ordered by time}\n  B -->|Yes| C[Time series engine]\n  B -->|No| D{Query is text relevance or facets}\n  D -->|Yes| E[Search index]\n  D -->|No| F{Query traverses relationships}\n  F -->|Yes| G[Graph store]\n  F -->|No| H{Scan billions for aggregates}\n  H -->|Yes| I[Columnar OLAP]\n  H -->|No| J[Similarity over embeddings]\n  J -->|Yes| K[Vector index]\n  J -->|No| L[Stay on relational or document]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The five families that matter in HLD"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1. Time-series: built for time-ordered appends"
+    },
+    {
+      "type": "paragraph",
+      "text": "Time-series data has three properties: **writes vastly outnumber updates, time is the primary filter, and recent data is read hottest**. The engine exploits all three. Incoming points are buffered in memory, sorted by timestamp, dictionary-encoded by tag, then flushed as immutable compressed chunks partitioned by time. That is why ingestion rates are absurd — no in-place updates, no secondary-index maintenance, just sequential writes. Retention is a file drop, not a `DELETE`. Downsampling and rollups are first-class because raw resolution is unaffordable past days. The trade-off: **cardinality kills**. Every unique tag combination creates a new series in memory. Allow unbounded `user_id` or `request_id` as a tag and the index explodes, memory spikes, and writes stall. Use it when time is the key and aggregates over windows are the query. Do not use it as a generic event log."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2. Search: built for terms, not rows"
+    },
+    {
+      "type": "paragraph",
+      "text": "A search index answers a question a B-tree cannot: *which documents contain these words, ranked by relevance*. The core structure is an **inverted index** — for each term, a sorted posting list of document IDs plus positions and frequencies — backed by segment files that are written once and merged in the background. Tokenizers, stemmers, and analyzers decide what a term even is, which is why schema design here is linguistics, not columns. Ranking uses term frequency, field boosts, and filters, not `ORDER BY`. The trade-off: **writes are heavy and consistency is delayed**. Every document is analyzed, posted to many lists, and only visible after a refresh or merge. High update rates cause segment explosion and merge storms. Use it when users type text and expect ranked, typo-tolerant results plus facet counts. Do not use it as a system of record — keep the source of truth elsewhere and reindex from it."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3. Graph: built for hops, not scans"
+    },
+    {
+      "type": "paragraph",
+      "text": "Relational joins answer one hop cheaply and N hops painfully — each hop is another hash or index probe over growing intermediate sets. A native graph store uses **index-free adjacency**: each node physically stores pointers to its edges and neighbors, so traversing an edge is a pointer chase, not a join. That makes 3-6 hop queries — *accounts sharing a device with a known fraudster*, *permission inheritance*, *dependency impact* — stay roughly proportional to the subgraph visited, not the table size. The trade-off: **global queries and high write fan-out hurt**. There is no cheap full-table scan or bulk aggregation, sharding by edge-cut is hard because traversals cross partitions, and supernodes with millions of edges become hotspots. Use it when the value is in the *relationship path itself* and depth is unbounded. If your traversals are always depth-1, you do not need a graph — you need a secondary index."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "4. Columnar OLAP: built for scans over billions"
+    },
+    {
+      "type": "paragraph",
+      "text": "Analytical queries touch few columns but many rows: `SUM(revenue) BY country WHERE year = 2026`. A row store reads entire rows to discard 90% of the bytes. A columnar store reads **only the needed columns**, stored as tightly compressed blocks with min/max statistics and dictionary encoding. Blocks that cannot match the filter are skipped without decompression. This is why a petabyte scan can return in seconds — I/O drops by an order of magnitude and execution is vectorized. The trade-off: **point writes and updates are toxic**. There is no cheap single-row `UPDATE`; ingestion is batch, micro-batch, or merge-on-read, and data is often minutes stale. Use it when reads are wide scans with grouping and filtering, and writers can tolerate bulk loads. Do not put it on the synchronous request path."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "5. Vector: built for similarity, not equality"
+    },
+    {
+      "type": "paragraph",
+      "text": "Vector search answers *nearest*, not *equal*. Embeddings are dense float arrays where distance means semantic similarity, and the index is an **approximate nearest-neighbor structure** such as a navigable small-world graph or partitioned IVF lists with quantized codes. Exact search is linear and unaffordable past millions of vectors, so the engine deliberately trades recall for latency: fewer probes, faster answers, some missed neighbors. Filters plus vectors are the hard part — pre-filtering destroys graph connectivity, post-filtering wastes probes on discarded candidates. The trade-off: **recall vs. latency vs. update cost**. High recall needs larger graphs and more memory, frequent embedding updates force reindexing, and relevance depends entirely on embedding quality, which the database does not control. Use it when the query is *most like this* — recommendations, semantic search, deduplication. Do not use it for exact predicates a B-tree answers perfectly."
+    },
+    {
+      "type": "table",
+      "caption": "What each engine buys and what it charges you.",
+      "headers": [
+        "Engine",
+        "Wins because",
+        "Loses because"
+      ],
+      "rows": [
+        [
+          "Time-series",
+          "Immutable time-partitioned chunks give massive append throughput and cheap window aggregates",
+          "High tag cardinality blows memory; ad-hoc joins and point updates are slow or unsupported"
+        ],
+        [
+          "Search",
+          "Inverted index + ranking gives typo-tolerant relevance and facets no B-tree can match",
+          "Eventual visibility, expensive updates, merge overhead; not a source of truth"
+        ],
+        [
+          "Graph",
+          "Pointer-based adjacency makes deep traversals proportional to subgraph, not table size",
+          "Hard to shard, supernodes hotspot, full scans and bulk analytics are poor"
+        ],
+        [
+          "Columnar OLAP",
+          "Column pruning + compression + block skipping makes billion-row aggregates fast and cheap",
+          "No low-latency single-row writes; ingestion is batched and data is stale by minutes"
+        ],
+        [
+          "Vector",
+          "ANN index makes K-nearest over millions tractable at millisecond latency",
+          "Approximate by design; filtered search, frequent updates, and dimension growth degrade recall or cost"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How they fail in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Specialized stores do not degrade gracefully. They fall off a cliff when you violate their core assumption, and the symptom always looks like something else at first. Learn the mapping or you will misdiagnose for hours. The pattern is consistent: **the index structure that made the hot path fast becomes the bottleneck** — series index, segment merges, supernode traversal, or ANN graph size — and latency spikes while CPU and disk look deceptively normal because the pressure is on memory and random I/O amplification."
+    },
+    {
+      "type": "table",
+      "caption": "Failure mode to symptom. Memorize this for on-call and interviews.",
+      "headers": [
+        "Violation",
+        "What happens internally",
+        "Symptom you observe"
+      ],
+      "rows": [
+        [
+          "Unbounded tags in time-series",
+          "Millions of active series exhaust RAM; compactions stall",
+          "Write rejections + rising ingestion lag, queries over wide time ranges time out"
+        ],
+        [
+          "High update rate on search index",
+          "Too many small segments; merges cannot keep up, refresh lag grows",
+          "Search results stale by minutes, p99 spikes, disk fills with segments"
+        ],
+        [
+          "Supernode in graph",
+          "One node with millions of edges; every traversal fans out through it",
+          "Depth-2 query goes from 20ms to 30s; one partition hot, others idle"
+        ],
+        [
+          "Trickle writes to columnar",
+          "Thousands of tiny files defeat block skipping and compression",
+          "Simple dashboard query scans 50k files, cost explodes, latency goes to minutes"
+        ],
+        [
+          "Naive re-embedding in vector store",
+          "Full reindex on every model change; recall drops if dimensions drift",
+          "Recommendations silently degrade, latency doubles, memory doubles with two indexes live"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete shape: what the schema actually looks like"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "specialized_schemas.py",
+      "code": "# TIME-SERIES: measurement + tags (indexed) + fields (not indexed) + time\n# WHY: tags become the series key. Keep cardinality low.\n# TRADE-OFF: querying by a field without tag is a full scan.\npoint = {\n    \"measurement\": \"api_latency\",\n    \"tags\": {\"service\": \"checkout\", \"az\": \"us-east-1a\"},  # indexed, low cardinality\n    \"fields\": {\"p99_ms\": 212.0, \"count\": 1403},              # values, not indexed\n    \"time\": 1757200000000000000\n}\n# Retention + rollup are part of the schema, not an afterthought:\n# raw 7d -> 1m rollup 90d -> 1h rollup 1y\n\n# SEARCH: analyzer choice IS the schema.\n# WHY: standard analyzer lowercases + stems; keyword preserves exact IDs.\n# TRADE-OFF: wrong analyzer = unsearchable data with no error.\nindex_mapping = {\n    \"mappings\": {\n        \"properties\": {\n            \"title\": {\"type\": \"text\", \"analyzer\": \"standard\"},\n            \"sku\": {\"type\": \"keyword\"},  # exact filter, not analyzed\n            \"price\": {\"type\": \"scaled_float\", \"scaling_factor\": 100}\n        }\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "graph_and_columnar.sql",
+      "code": "-- GRAPH: model the traversal, not the table.\n-- WHY: multi-hop fraud path is a pointer walk, not N joins.\n-- TRADE-OFF: global aggregate over all nodes is a full-graph walk.\nMATCH (a:Account)-[:USED_DEVICE]->(d:Device)<-[:USED_DEVICE]-(b:Account)\nWHERE a.flagged = true AND a <> b\nRETURN b.id, count(*) AS shared_devices;\n\n-- COLUMNAR OLAP: wide table, partition by day, sort by filter columns.\n-- WHY: partition pruning + min/max skipping avoids reading 99% of blocks.\n-- TRADE-OFF: single-row UPDATE rewrites a whole block.\nCREATE TABLE events (\n  day DATE,\n  country LowCardinality(String),\n  revenue Decimal(12,2)\n) ENGINE = MergeTree()\nPARTITION BY toYYYYMM(day)\nORDER BY (country, day);"
+    },
+    {
+      "type": "paragraph",
+      "text": "Notice what is missing from every example: foreign keys, transactions, and normalization. That absence is deliberate. These engines push integrity back to the application or to an upstream relational store. If you need **exactly-once updates plus search plus analytics**, you do not get it in one engine — you get a pipeline: relational system of record, change-data-capture to search, batch loads to columnar, async embeddings to vector. Say that explicitly in design. Interviewers reward the pipeline answer and punish the single magic database answer."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the dominant query in one sentence",
+          "text": "Open with the access pattern: time-window aggregate, ranked text search, K-hop traversal, full-scan aggregate, or K-nearest. If you cannot state it, you cannot justify the pick. Vague answers like scalable and flexible lose points immediately."
+        },
+        {
+          "title": "State the write rate, mutability, and freshness",
+          "text": "Give numbers: 100K points/sec append-only, 200 docs/sec with 30s visibility tolerance, 10 updates/sec on edges. This is what separates time-series from search from columnar. No numbers means no design."
+        },
+        {
+          "title": "Pick one engine and name the sacrifice",
+          "text": "Say the trade-off out loud: I pick a search index for relevance and accept eventual consistency and reindex cost, with the relational store kept as source of truth. Every pick without a cost sounds naive."
+        },
+        {
+          "title": "Draw the dual-write or CDC path",
+          "text": "Show how data gets in and stays consistent: outbox plus async consumer, batch loader, or stream processor. Explain ordering, retries, and what happens when the secondary lags. This is where medium questions become hard."
+        },
+        {
+          "title": "Answer the scale trap",
+          "text": "Expect one follow-up: what if tag cardinality explodes, what if a supernode appears, what if segments merge-storm, what if vector recall drops. Have a mitigation: tag allowlist, edge splitting, index rollover, recall benchmark with reindex strategy."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail interviews"
+    },
+    {
+      "type": "list",
+      "items": [
+        "\"We need flexible schema, so document store handles search too\" — text search with trigram indexes on a document store collapses past relevance, fuzziness, or facets. Ranking is not filtering.",
+        "\"Graph is just joins, relational can do it\" — true at depth-1, false at depth-4. Four joins over hundred-million-row tables materialize explosive intermediates; pointer walks do not.",
+        "\"Columnar is just a faster Postgres\" — it is a different write contract. Expecting millisecond single-row reads/writes on OLAP guarantees a missed latency target.",
+        "\"Vector search is exact\" — it is approximate by design. If you promise 100% recall at low latency over 100M vectors, you have promised the impossible.",
+        "\"One engine reduces operational cost\" — one wrong engine increases it. Running a relational store plus one specialist with clear CDC is cheaper than fighting a general store at 10x size.",
+        "\"Time-series tags are free metadata\" — tags are the index. Every high-cardinality tag multiplies memory and kills the engine that was supposed to save you."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "When to use each engine and when to walk away.",
+      "headers": [
+        "Engine",
+        "Use when",
+        "Do NOT use when"
+      ],
+      "rows": [
+        [
+          "Time-series",
+          "Metrics, sensor data, tracing latencies; append-only, time is the main predicate, rollups acceptable",
+          "Tags have unbounded cardinality, records need frequent in-place updates or cross-entity joins"
+        ],
+        [
+          "Search",
+          "User-typed queries, autocomplete, faceted catalogs; relevance ranking matters more than freshness",
+          "Strong consistency required, high churn documents, or source-of-truth guarantees needed"
+        ],
+        [
+          "Graph",
+          "Value is in paths: fraud, permissions, lineage, recommendations by connection depth",
+          "All queries are depth-1 lookups, or workload is bulk global aggregation and reporting"
+        ],
+        [
+          "Columnar OLAP",
+          "Dashboards and ad-hoc analytics over billions of rows; batch ingestion and minute-level staleness OK",
+          "Synchronous request path, per-row OLTP, or low-latency point lookups by primary key"
+        ],
+        [
+          "Vector",
+          "Semantic similarity, recommendations, near-duplicate detection over learned embeddings",
+          "Predicates are exact equality/range, dataset is small enough for brute force, or embeddings change daily without reindex budget"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Pick the store by the **dominant access shape** — time-series for time-ordered appends, search for ranked text, graph for multi-hop paths, columnar for billion-row scans, vector for similarity — and **name the consistency, write, or generality cost you accept to get it**.kaz"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:24:29.265Z",
+    "problems": []
+  }
+}

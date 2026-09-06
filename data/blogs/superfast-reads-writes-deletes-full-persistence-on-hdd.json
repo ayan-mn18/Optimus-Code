@@ -1,0 +1,256 @@
+{
+  "slug": "superfast-reads-writes-deletes-full-persistence-on-hdd",
+  "title": "Superfast reads, writes, deletes & full persistence on HDD",
+  "summary": "Why HDD persistence demands log-structured writes: WAL, MemTable, SSTables, and compaction — and what you pay in read and space amplification.",
+  "kind": "HLD",
+  "problemSlug": "superfast-reads-writes-deletes--full-persistence-on-hdd-95-309",
+  "topic": "Caching Mechanisms",
+  "difficulty": "Medium",
+  "coverEmoji": "💾",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Caching Mechanisms",
+    "Persistence",
+    "LSM"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is read/write (R/W)? - Lenovo",
+      "url": "https://www.lenovo.com/us/en/glossary/read-and-write/?srsltid=AfmBOooZflfymXW7EWtpOGgBYNWGtROFqDkiqrmzg-NX5K-euRakvpcA",
+      "source": "lenovo.com",
+      "kind": "article"
+    },
+    {
+      "title": "hard drive - Is an HDD overwritten with zeroes faster? - Super User",
+      "url": "https://superuser.com/questions/1314254/is-an-hdd-overwritten-with-zeroes-faster",
+      "source": "superuser.com",
+      "kind": "article"
+    },
+    {
+      "title": "Optimize Your Hard Drive and Extend Data Life - Including SSDs with ...",
+      "url": "https://www.youtube.com/watch?v=rISzLipRm7Y",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "You do not make an HDD fast. You **refuse to seek**. Turn every random write and delete into a sequential log append in memory, then flush it as a large sorted file. Reads stay fast because you check memory first and never touch the disk without a `Bloom filter` and a block cache saying you must. **Trade-off in one line: you buy write throughput with read complexity and background merge work.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "This is a log-structured persistent index, not a cache in front of a database. The durable state lives on HDD as a set of **immutable sorted files (SSTables)** plus a **write-ahead log (WAL)**. The mutable head lives in RAM as a **MemTable** — typically a skiplist or balanced tree keyed by sort order. Writes go to the WAL for crash durability, then to the MemTable for ordering. When the MemTable fills, you freeze it and flush it to HDD as one new sequential SSTable. Deletes are writes: a **tombstone** marker that hides older versions until compaction garbage-collects it. Reads merge results from MemTable, then newest SSTable to oldest, with per-file Bloom filters, sparse indexes, and a block cache to avoid disk seeks. Persistence is total — after `fsync` on the WAL, data survives a crash — but no live record is ever updated in place on the HDD."
+    },
+    {
+      "type": "paragraph",
+      "text": "HDD physics forces this shape. A random 4KB overwrite costs a seek plus rotation: roughly 5-10 ms, which caps you at 100-200 random IOPS per spindle. A sequential 64 MB flush streams at 100-200 MB/s with zero seeks. That is a **three-order-of-magnitude gap**, and no tuning closes it. An update-in-place design like a naive B-tree pays a seek per write, per delete, and per cache miss. A log-structured design pays one sequential write per thousand keys, amortized. The reason interviewers ask this on HDD specifically is to see if you name the constraint: **random I/O is the enemy, sequential I/O is the only fast path**. If you propose write-through caching with in-place updates and call it done, you have ignored the hardware. The correct stance is opinionated: for write-heavy persistence on spinning disk, batch and sort in RAM, write sequentially, merge later."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Write path is append-only by design. The client write hits the WAL first: a sequential file append followed by `fsync` or group-commit if you need throughput over per-write latency. Only then do you insert into the MemTable. This ordering is the durability contract — WAL before memory — and it is why recovery replays the WAL after a crash. When the MemTable hits its size threshold, typically 32-256 MB, you swap in a fresh empty MemTable for new traffic and flush the frozen one in sorted order as an L0 SSTable: one large sequential write, one sparse index of block offsets, one Bloom filter. No seeks, no overwrites. **Trade-off: you accept double-write cost (WAL + flush) and RAM pressure to eliminate random disk writes.** Group commit and larger MemTables reduce `fsync` frequency but increase data-at-risk window and recovery time — say so explicitly."
+    },
+    {
+      "type": "mermaid",
+      "title": "Write and flush path",
+      "caption": "All HDD writes are large sequential appends.",
+      "code": "graph TD\n  C[Client write] --> W[WAL sequential append + fsync]\n  W --> M[Active MemTable in RAM]\n  M -->|Size threshold hit| F[Freeze MemTable]\n  F --> S[Flush sorted run as SSTable L0]\n  S --> L[Leveled SSTables L0 to Ln on HDD]\n  L --> K[Background compaction merges and GCs]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read path is a merge with short-circuits. You check in strict recency order: active MemTable, frozen MemTables, L0 SSTables newest-first, then deeper levels. Each SSTable probe is guarded: first its in-memory Bloom filter — if it says definitely-not-present, you skip the file entirely — then its sparse index to locate one compressed block, then the **block cache** to avoid the HDD on hot keys. The first hit wins; a tombstone hit means deleted, so you stop and return not-found. This is why reads are correct without updating anything on disk. **Trade-off: reads pay CPU and memory (Bloom checks, multiple probes, cache lookups) to preserve the sequential-write layout.** Without those guards, a point lookup would scan every level and every HDD seek you saved on write would be repaid with interest on read."
+    },
+    {
+      "type": "mermaid",
+      "title": "Read path",
+      "caption": "Newest-first merge guarded by Bloom filters and cache.",
+      "code": "graph LR\n  R[Read request] --> B[Block cache check]\n  B --> MM[Check MemTables newest first]\n  MM --> BF[Check Bloom filter per SSTable]\n  BF --> S0[Probe SSTables L0 to Ln in order]\n  S0 --> H[Single block read from HDD if miss in cache]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Delete is a write plus deferred garbage collection. You never punch a hole in an SSTable — immutability is what keeps writes sequential. Instead you insert a tombstone with a newer sequence number. Reads see the tombstone and mask older versions. The space is reclaimed only when **compaction** merges overlapping SSTables, drops shadowed versions, and discards tombstones once they have covered all older levels. This is the correct mental model: delete latency is memory-speed, delete durability is WAL-speed, delete space reclamation is compaction-speed. **Trade-off: instant logical deletes in exchange for temporary space bloat and extra merge I/O.** If compaction falls behind, tombstones pile up, SSTable count grows, and every read checks more Bloom filters — delete-heavy workloads degrade reads first."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What log-structuring buys and what it bills you for.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "WAL + MemTable before HDD",
+          "Crash durability with sequential-only disk writes; absorbs bursts in RAM",
+          "Double-write I/O; recovery replay time; RAM sized to write burst"
+        ],
+        [
+          "Immutable sorted SSTables",
+          "No random overwrites; large sequential flushes saturate HDD bandwidth",
+          "Old versions and tombstones linger until compaction; space amplification"
+        ],
+        [
+          "Leveled compaction",
+          "Bounded read fan-out; sorted runs keep range scans sequential",
+          "Write amplification 10-30x from repeated rewrites; background I/O steals HDD bandwidth"
+        ],
+        [
+          "Bloom filter per file + block cache",
+          "Most absent-key reads touch zero HDD blocks; hot reads served from RAM",
+          "Memory per key (~10 bits) + cache RAM; false positives still cause wasted reads"
+        ],
+        [
+          "Tombstone deletes",
+          "O(log N) in-memory delete; no seek to erase on HDD",
+          "Deletes invisible until compaction; read amplification grows if compaction lags"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Name the three amplifications or you do not understand the design. **Write amplification** is total bytes rewritten to HDD divided by client bytes — compaction rewrites the same key many times as it moves down levels. **Read amplification** is files and blocks probed per logical read — deeper level counts and overlapping L0 files multiply probes. **Space amplification** is disk bytes held versus logical bytes — stale versions plus tombstones plus fragmentation. You can tune one down only by pushing another up: larger levels and rarer compaction lower write amplification but raise read and space amplification; aggressive compaction does the reverse and burns HDD bandwidth. There is no setting that improves all three. The interview answer is to pick based on workload: write-heavy favors larger MemTables and lazier compaction, read-heavy favors tighter levels, Bloom filters sized to ~1% false-positive rate, and a generous block cache."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every failure here looks like sudden latency, not an error code. The system keeps returning correct data while p99 explodes, because the background work that keeps reads cheap has stalled. Watch SSTable count, compaction backlog, Bloom false-positive rate, and block-cache hit rate — those four metrics predict every incident below."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Compaction backlog / write stall:** symptom is write p99 spikes then forced throttling. Cause: L0 file count breached its limit because HDD bandwidth is saturated by foreground flushes. You see it as flush queue depth growing and compaction pending bytes climbing monotonically.",
+        "**Tombstone pile-up after mass delete:** symptom is reads get slower *after* deleting data. Deleted keys still occupy SSTables and each read checks more filters and blocks. Disk usage does not drop. Fix is to force compaction, not to add cache.",
+        "**Bloom filter memory starvation:** symptom is HDD IOPS jump on absent-key reads and cache misses. Filters were undersized or paged out, so every negative lookup falls through to disk. You see it as high seek rate with low cache hit rate.",
+        "**WAL fsync bottleneck:** symptom is low throughput with idle CPU and idle HDD streaming bandwidth. Each write waits on `fsync`. Fix is group commit or larger batches — trade-off: slightly higher per-batch latency and more to replay on crash.",
+        "**Block-cache thrash on scans:** symptom is point-read latency collapses during a range scan. Large sequential scans evict hot blocks. Fix is a separate scan path that bypasses or partitions the cache — trade-off: scans run slightly slower to protect point reads."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Minimal model in code"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "lsm_core.py",
+      "code": "class LSM:\n    def __init__(self, mem_limit=10000):\n        self.wal = []          # durable sequential log (fsync in prod)\n        self.mem = {}          # MemTable: ordered map in prod (skiplist)\n        self.levels = []       # list of SSTables, newest first; immutable dicts\n        self.seq = 0\n        self.mem_limit = mem_limit\n\n    def put(self, k, v):\n        self.seq += 1\n        self.wal.append((self.seq, k, v))  # 1. WAL append + fsync\n        # fsync(wal) before ack -- durability before visibility\n        self.mem[k] = (self.seq, v)        # 2. in-memory ordered insert\n        if len(self.mem) >= self.mem_limit:\n            self._flush()\n\n    def delete(self, k):\n        self.put(k, None)  # tombstone: None masks older versions\n\n    def _flush(self):\n        # One large sequential write in prod; here: freeze as immutable run\n        self.levels.insert(0, dict(self.mem))\n        self.mem.clear()\n        # WAL can be truncated after flush -- replay window shrinks\n\n    def get(self, k):\n        if k in self.mem:\n            _, v = self.mem[k]\n            return None if v is None else v  # tombstone in MemTable\n        # In prod: check Bloom filter + block cache before each file probe\n        for sst in self.levels:  # newest -> oldest\n            if k in sst:\n                v = sst[k]\n                return None if v is None else v\n        return None"
+    },
+    {
+      "type": "paragraph",
+      "text": "This model is deliberately missing what makes production fast: Bloom filters, sparse indexes, block cache, leveled compaction, and compression. That omission is the point to state in an interview. The code shows the correctness contract — WAL-before-memory, newest-wins merge, tombstone-masks-old — while the performance comes from everything around it that avoids HDD seeks. If you present this, immediately follow with what you would add first under memory pressure and why: Bloom filters before cache, because a 10-bit-per-key filter eliminates most disk probes for far less RAM than caching the blocks themselves. **Trade-off: correctness is 30 lines; speed is the memory budget you spend guarding the disk.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "State the HDD constraint first",
+          "text": "Open with numbers: ~10 ms random seek versus ~150 MB/s sequential. Conclude: no in-place updates on the write path. Interviewers score this in the first 60 seconds."
+        },
+        {
+          "title": "Draw the write path before the read path",
+          "text": "WAL append -> MemTable -> flush as sorted run -> background compaction. Justify each hop: durability, ordering, sequentiality, garbage collection. Do not draw caches until writes are durable."
+        },
+        {
+          "title": "Make deletes explicit",
+          "text": "Say tombstone out loud, show where reads stop, and state when space returns. Most candidates hand-wave deletes and lose the follow-up on space amplification."
+        },
+        {
+          "title": "Quantify the guards",
+          "text": "Give Bloom sizing (~10 bits/key for ~1% false positives), MemTable size (tens to hundreds of MB), block size (4-64 KB). Vague terms like large cache signal you have never sized one."
+        },
+        {
+          "title": "Close with backpressure and tuning",
+          "text": "Explain what happens when compaction lags: stall writes to protect reads, or accept slower reads to absorb writes. Pick one for the stated workload and name what you sacrificed."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Zeroing the disk makes writes faster.** No. Write speed comes from sequential layout and batch size, not prior contents. A full sequential flush streams the same whether the sectors held old data or zeroes.",
+        "**`fsync` per write is free if you have a WAL.** No. `fsync` is the write bottleneck on HDD. Throughput requires group commit and batching — trade-off: higher commit latency per batch for far higher ops/sec.",
+        "**Bloom filters prevent disk reads.** No. They only prevent *unnecessary* reads for absent keys. False positives still hit disk, and present keys always hit disk on cache miss. Size them from the false-positive budget, not from hope.",
+        "**Compaction is housekeeping you can defer forever.** No. Deferred compaction is deferred read cost plus unbounded space growth. L0 overlap directly multiplies read probes; tombstones never disappear without it.",
+        "**Adding block cache fixes a compaction backlog.** No. Cache hides hot-read latency but does nothing for L0 file count, write stalls, or space amplification. The backlog needs merge bandwidth, not more RAM for reads."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, when to avoid it"
+    },
+    {
+      "type": "table",
+      "caption": "Fit for HDD-backed persistence.",
+      "headers": [
+        "Use it when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Write-heavy or bursty ingest must persist on HDD with sequential throughput",
+          "Read-heavy point lookups need single-seek latency — use update-in-place index with large cache instead"
+        ],
+        [
+          "Deletes are frequent and must be fast logically without seeking to erase",
+          "Space must be reclaimed instantly on delete — tombstone delay violates the requirement"
+        ],
+        [
+          "Range scans matter: sorted runs make scans sequential after merge",
+          "Strong per-key recency with tiny RAM: deep levels force multi-probe reads you cannot guard"
+        ],
+        [
+          "Crash durability is mandatory: WAL replay gives a clean recovery story",
+          "Lowest possible write amplification on limited HDD endurance/bandwidth and no background I/O budget exists"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Persist on HDD by **appending to a WAL, sorting in a RAM MemTable, flushing large immutable SSTables sequentially, and merging in the background** — deletes are tombstones — which trades read and space amplification plus compaction I/O for write throughput with zero random seeks."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:44:07.965Z",
+    "problems": []
+  }
+}

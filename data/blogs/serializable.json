@@ -1,0 +1,266 @@
+{
+  "slug": "serializable",
+  "title": "Serializable",
+  "summary": "Serializable means concurrent transactions behave as if executed one after another in some total order. This guide explains the guarantee, how databases enforce it, and what it costs.",
+  "kind": "HLD",
+  "problemSlug": "serializable-96-216",
+  "topic": "Data consistency in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔒",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Consistency",
+    "Transactions",
+    "Isolation"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Explain like i'm five - what is Serializable? : r/javahelp - Reddit",
+      "url": "https://www.reddit.com/r/javahelp/comments/1cdo4k2/explain_like_im_five_what_is_serializable/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Serializability - Jepsen",
+      "url": "https://jepsen.io/consistency/models/serializable",
+      "source": "jepsen.io",
+      "kind": "article"
+    },
+    {
+      "title": "What is serialization and how does it work? - Hazelcast",
+      "url": "https://hazelcast.com/foundations/distributed-computing/serialization/",
+      "source": "hazelcast.com",
+      "kind": "article"
+    },
+    {
+      "title": "A Deep Dive into Java Serialization - Medium",
+      "url": "https://medium.com/@AlexanderObregon/a-deep-dive-into-java-serialization-e514346ac2b2",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Serializable does not mean fast, fresh, or available — it means every multi-step transaction looks atomic in some single global order.** If you can explain why that order need not respect wall-clock time, you already understand the difference between serializable and strictly serializable, and why the former still permits stale reads."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Serializable Actually Guarantees"
+    },
+    {
+      "type": "paragraph",
+      "text": "Serializable is the strongest standard transaction isolation level. It says: take every committed transaction in your history, with all of its reads, writes, and predicate evaluations, and there exists **some** serial execution — T1 then T2 then T3, in some permutation — that would have produced the same observable effect. Intermediate states never leak. No transaction ever sees half of another transaction. That is the whole contract. It covers multiple objects at once, and it covers predicates like **the set of accounts with balance > 100** or **all seats on flight 404**, not just single keys. This is why it stops lost updates, write skew, and phantoms together, where weaker levels stop only a subset. The trade-off is explicit from the definition: you buy a clean mental model — reason as if the system were single-threaded — and you pay with coordination, aborts, and loss of availability under partition."
+    },
+    {
+      "type": "paragraph",
+      "text": "What it pointedly does **not** promise is recency or per-process causality. A serializable store may order a read transaction *before* a write that finished in real time just before the read started, and still be correct. A client can write in T1, then fail to see its own write in T2, because T2 was logically placed earlier. A read-only transaction that touches nothing can be placed at time zero and return empty state forever without violating the model. That sounds broken, and in practice engines add extra machinery to avoid such pathological orderings, but the distinction matters for interviews: **serializable is about conflict-equivalence to a serial order, not about linearizability.** If you need **if A finishes before B starts, B must see A**, you need strict serializability — serializability plus a real-time constraint. Do not conflate this database concept with Java's `Serializable` marker interface, which is only about converting objects to bytes. Same word, unrelated problem."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The Mechanism: How Engines Fake a Single Thread"
+    },
+    {
+      "type": "paragraph",
+      "text": "No production engine actually runs transactions one at a time. It runs them concurrently and then proves the result was *equivalent* to running them serially. There are three dominant ways to do that, and your choice dictates your failure mode. **Two-phase locking (2PL)** takes shared locks on read and exclusive locks on write and holds them until commit, so conflicting transactions block. **Optimistic concurrency control (OCC)** lets transactions execute on private snapshots and validates read-sets and write-sets at commit, aborting on overlap. **Serializable Snapshot Isolation (SSI)** runs on snapshots like snapshot isolation but tracks dangerous read-write dependency patterns and aborts one side before a non-serializable cycle can commit. WHY one over another: 2PL gives deterministic blocking and is simple to reason about under high contention, OCC wins when conflicts are rare because it avoids locking overhead, SSI preserves snapshot-reader performance while closing the write-skew hole. Every path has the same trade-off: either wait or abort."
+    },
+    {
+      "type": "mermaid",
+      "title": "Enforcing a serial order",
+      "caption": "Concurrent execution must collapse to a single commit point or abort.",
+      "code": "graph TD\n  B[BEGIN transaction] --> E[Execute reads and writes on snapshot or with locks]\n  E --> V{Commit check}\n  V -->|lock conflict or read-write overlap| A[ABORT and retry]\n  V -->|no dangerous dependency| C[COMMIT at single logical point]\n  C --> S[Visible as if serially ordered]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk through that diagram with a money transfer: T1 reads A=100 and B=100, T2 reads the same, T1 moves 50 from A to B, T2 moves 50 from B to A. Under read-committed both commit and the invariant **A+B=200** can still break under interleaving with constraint checks. Under serializable, the engine must serialize them: either T1 entirely before T2, or vice versa. With 2PL, the second writer blocks on the row lock until the first commits. With OCC, both build private write-sets, the first to validate wins, the second sees its read-set was invalidated and aborts with a serialization failure. With SSI, the engine detects the read-write anti-dependency cycle between the two and kills one. WHY abort instead of merge: merging would require understanding application semantics. The engine does not know that addition commutes but overdraft checks do not, so it takes the safe path and forces the client to retry. That pushes complexity to you: every serializable transaction must be idempotent and retryable."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, Honestly on Both Sides"
+    },
+    {
+      "type": "table",
+      "caption": "What serializable buys and what it bills you.",
+      "headers": [
+        "Dimension",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Correctness model",
+          "Single-threaded reasoning; no lost update, write skew, or phantom",
+          "Must handle serialization aborts and retries in application code"
+        ],
+        [
+          "Concurrency",
+          "Safe multi-object, multi-row predicates",
+          "Lower throughput; blocking in 2PL, abort rate spikes under contention in OCC/SSI"
+        ],
+        [
+          "Freshness",
+          "Consistent snapshot across all objects in the transaction",
+          "No real-time guarantee; may still read stale data unless strict"
+        ],
+        [
+          "Availability",
+          "Strong invariant preservation when the system is up",
+          "Cannot be fully available during a network partition; some side must stall or reject"
+        ],
+        [
+          "Latency",
+          "Predictable result for complex invariants",
+          "Higher p99 from lock waits, deadlocks, and retry storms"
+        ],
+        [
+          "Operability",
+          "Fewer subtle data-corruption incidents to debug",
+          "More visible transient errors, deadlock logs, and client-side retry tuning"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The core trade-off to name in an interview: **you trade liveness for safety.** Weaker levels keep requests flowing and push anomaly-handling into business logic. Serializable centralizes that logic in the database but makes the database say **no** more often — blocked, deadlocked, or aborted. That is a good deal for money, inventory, and bookings where a single anomaly costs more than a retry. It is a bad deal for counters, feeds, and analytics where an approximate answer is acceptable and a retry storm is not."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How It Fails in Production, and the Symptom You Would See"
+    },
+    {
+      "type": "paragraph",
+      "text": "Serializable does not fail by returning wrong answers — it fails by refusing to make progress in ways that look like application bugs if you are not expecting them. Under contention, 2PL systems develop lock waits that turn into deadlocks: two transfers locking accounts in opposite order each hold one lock and want the other. The engine picks a victim and kills it. OCC and SSI systems develop abort storms instead: fifty workers decrementing the same inventory row will commit one and abort forty-nine, each retry re-colliding. Predicate locking makes it worse: a range scan for **all free seats** can conflict with an insert anywhere in that range, so throughput collapses even when transactions touch different rows. The symptom you actually page on is not corruption, it is a cliff — p99 latency explodes, `40001 serialization_failure` or deadlock errors flood logs, queues back up because workers are retrying instead of working. WHY this surprises teams: they tested correctness with ten threads and deployed to ten thousand. Serializable cost is superlinear in contention."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Deadlock victim errors under 2PL:** logs show two transactions waiting on each other's row or range locks. Fix is consistent lock ordering plus short transactions, not a bigger instance.",
+        "**Serialization failures under OCC/SSI:** elevated abort rate on commit, especially on hot keys or range predicates. Fix is retry with jitter, smaller write-sets, or splitting hot rows.",
+        "**Phantom-driven contention:** read-heavy reports that scan a predicate block writers that insert into that predicate. Symptom is writers stalling behind a long reader. Fix is shorter read transactions or a replica for analytics.",
+        "**Retry amplification:** naive immediate retry turns one abort into ten. Symptom is CPU saturation with flat goodput. Fix is bounded exponential backoff with jitter and idempotency keys."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The retry contract is part of the design",
+      "text": "If you choose serializable and do not ship **idempotent transactions + bounded retries**, you have not finished the design. The database is allowed to abort you at any time. Treat `serialization_failure` as expected control flow, not an exception. Test the retry path under load, not just the happy path."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code Where It Clarifies: Retryable Transfer"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "transfer.py",
+      "code": "import time, random\nimport psycopg2\nfrom psycopg2 import extensions\n\ndef transfer(conn, from_id, to_id, amount, max_retries=5):\n    for attempt in range(max_retries):\n        try:\n            cur = conn.cursor()\n            # SERIALIZABLE = appear as some total order, not necessarily real-time order.\n            cur.execute(\"BEGIN ISOLATION LEVEL SERIALIZABLE;\")\n            cur.execute(\"SELECT balance FROM accounts WHERE id = %s\", (from_id,))\n            bal = cur.fetchone()[0]\n            if bal < amount:\n                conn.rollback()\n                return False  # business failure, do NOT retry\n            cur.execute(\"UPDATE accounts SET balance = balance - %s WHERE id = %s\", (amount, from_id))\n            cur.execute(\"UPDATE accounts SET balance = balance + %s WHERE id = %s\", (amount, to_id))\n            conn.commit()\n            return True\n        except psycopg2.errors.SerializationFailure:\n            conn.rollback()\n            # Trade-off made visible: engine aborted us to preserve serial order.\n            # Back off so retries do not re-collide.\n            time.sleep((2 ** attempt) * 0.01 + random.random() * 0.01)\n            continue\n    raise RuntimeError(\"serializable retry budget exhausted\")"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet shows WHY serializable changes application code, not just a config flag. The `BEGIN ISOLATION LEVEL SERIALIZABLE` forces the transfer's two updates plus the balance check to commit as one atomic point in the global order. If a concurrent transfer or audit touches the same rows or predicate, one side gets `SerializationFailure` and must retry. The branch matters: insufficient funds is a deterministic business rejection and must not retry, while a serialization error is transient and must retry with backoff and jitter. The retry must be idempotent — re-running the whole function is safe because it re-reads state inside a fresh transaction. Miss any of those three — distinguish transient from permanent, bound retries, add jitter — and serializable will turn contention into an outage."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How It Shows Up in an Interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the anomaly first",
+          "text": "Do not say serializable reflexively. Start from the invariant: booking must not double-book, ledger must conserve sum, inventory must not go negative. Show lost update or write skew under read-committed with a two-transaction interleaving, then justify why only serializable closes it."
+        },
+        {
+          "title": "Place it on the isolation ladder",
+          "text": "Sketch read-committed -> repeatable-read -> snapshot isolation -> serializable -> strict serializable. State what each adds and what pathology remains. Interviewers grade whether you know snapshot isolation still allows write skew."
+        },
+        {
+          "title": "Pick an enforcement mechanism and defend it",
+          "text": "For low contention and short transactions, argue SSI or OCC for non-blocking reads. For high contention on few hot rows, argue 2PL with ordered locking or argue against serializable entirely and propose partitioning or queueing. Name the trade-off every time."
+        },
+        {
+          "title": "Design the client contract",
+          "text": "Show the retry loop, idempotency key, and bounded backoff. Explain why the transaction body must be pure and side-effect free until commit — no emails or charges inside the retry window."
+        },
+        {
+          "title": "Quantify the cost and the escape hatch",
+          "text": "Say when you would drop down: counters and leaderboards stay at read-committed with atomic increments, reporting goes to a snapshot replica, only the money movement stays serializable. Strongest level on the smallest scope — that sentence scores points."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions That Fail Interviews"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Serializable means linearizable / strictly serializable.** It does not. Serializable allows stale reads that violate real-time order. Strict adds the wall-clock constraint and typically needs consensus or true-time coordination.",
+        "**Serializable means serial execution.** No engine runs one transaction at a time. It means *equivalent* to some serial order. Concurrency is still there; conflicts are resolved by waiting or aborting.",
+        "**It eliminates all retries or deadlocks.** It creates them. Stronger isolation converts silent corruption into loud aborts. If your code cannot handle `40001`, you are less reliable than before.",
+        "**Snapshot isolation is serializable.** It is not. Classic example is write skew: two doctors each check the other is on call, then both go off call. Both pass snapshot checks, invariant breaks. You need SSI or full serializable to catch it.",
+        "**Java `Serializable` is related.** Unrelated. One is a marker interface for byte conversion, the other is a transactional isolation guarantee. Mentioning the distinction unprompted signals you read the question carefully."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to Use It and When Not To"
+    },
+    {
+      "type": "table",
+      "caption": "Scope serializable narrowly; it is a scalpel, not a default.",
+      "headers": [
+        "Use Serializable when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Multi-row invariants must hold: ledger sums, unique bookings, inventory >= 0",
+          "Single-row atomic ops suffice: increments, compare-and-set, last-writer-wins registers"
+        ],
+        [
+          "Consequences of anomaly exceed cost of retry: double-charge, double-book, oversell",
+          "Approximation is fine: analytics, feeds, view counts, recommendations"
+        ],
+        [
+          "Contention is low to moderate and transactions are short",
+          "Hot-key contention is extreme: flash-sale stock, global counters — partition, queue, or use esrow-style sharding instead"
+        ],
+        [
+          "You control the client and can guarantee idempotent retries",
+          "Transactions trigger external side effects you cannot roll back or deduplicate"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The senior answer is always scoped: run serializable only on the narrow transaction that guards the invariant, keep everything else weaker and faster. Put the transfer in serializable, put the receipt rendering in read-committed, put the nightly report on a replica. WHY: coordination cost grows with conflict footprint — rows touched, predicates scanned, time held. Shrink all three and you keep the safety without paying the availability and latency bill everywhere."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "**Serializable makes concurrent transactions appear as if they ran one after another in some total order — which kills write skew and phantoms but costs blocking or aborts, so I would use it narrowly on invariant-guarding transactions with idempotent retries, not as a global default.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:34:56.930Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,264 @@
+{
+  "slug": "trade-offs-opposite-framework-in-play",
+  "title": "Trade Offs & Opposite Framework in Play",
+  "summary": "Social network design is not picking components, it is picking pains. This concept page breaks down the five opposite pairs — push vs pull, strong vs eventual, graph vs document, cache vs compute, sync vs async — and when to choose each side.",
+  "kind": "HLD",
+  "problemSlug": "trade-offs--opposite-framework-in-play-144-305",
+  "topic": "Building Social Network",
+  "difficulty": "Medium",
+  "coverEmoji": "⚖️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Social Network",
+    "Trade-offs"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Modeling roles and trade-offs in multiplex networks - Nature",
+      "url": "https://www.nature.com/articles/s41467-026-68896-1",
+      "source": "nature.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "There is no correct social network design, only a **chosen pain**. Every major decision is an opposite pair: if you make writes cheap, you make reads expensive. If you make reads fast, you make writes fragile. The interview is testing whether you can name both sides, pick one for an explicit reason, and state what breaks because of your pick."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "The Trade-Offs and Opposite Framework is a way to reason about a social network as five forced choices, not as a box diagram. A social network has three brutal properties that force the opposites: **write amplification** where one post fans out to millions of followers, **read skew** where 1% of users generate 90% of load, and **mixed consistency needs** where a like count can be wrong but a block list cannot. You cannot optimize for all three at once. The framework says: enumerate the opposite, quantify both directions with back-of-the-envelope math, then bind your choice to a product requirement. No hand-waving about scalability. If you say fan-out on write, you must say why you accept 10 million writes for one celebrity post and how you cap that cost. If you say fan-out on read, you must say why you accept a 500ms timeline build that hits 800 followees at read time."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why opposites instead of a component list? Because interviewers have seen the standard diagram — load balancer, app servers, cache, database, message queue — a thousand times. That diagram tells them nothing about judgment. What separates a medium candidate from a strong one is whether you see that **social graphs are multiplex**: follow, close-friend, block, message, and notification relationships behave differently and want different storage and consistency. Treating them as one graph in one database is the classic failure. The opposite framework forces you to split the problem: dependency where status matters versus interdependence where mutual interaction matters, hot versus cold data, read-heavy versus write-heavy paths. You choose per relationship, per access pattern, not globally."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: where the opposites live"
+    },
+    {
+      "type": "mermaid",
+      "title": "Opposite decision points",
+      "caption": "Every request in a social network hits at least two opposite choices.",
+      "code": "graph TD\n  Client --> Gateway\n  Gateway --> WritePath\n  Gateway --> ReadPath\n  WritePath --> FanoutChoice\n  FanoutChoice --> PushCache\n  FanoutChoice --> PullCompute\n  ReadPath --> TimelineBuild\n  TimelineBuild --> CacheHit\n  TimelineBuild --> DBFallback\n  PushCache --> GraphStore\n  PullCompute --> GraphStore\n  CacheHit --> Ranker\n  DBFallback --> Ranker"
+    },
+    {
+      "type": "paragraph",
+      "text": "Follow a post through that graph and you hit the opposites in order. On the write path, **push versus pull** decides whether you precompute timelines or compute on demand. Pushed timelines make reads O(1) — just fetch a list — because you paid O(number of followers) on write. Pulled timelines make writes O(1) — just store one post — because you pay O(number of followees) scattered reads on every timeline load. There is no third option, only hybrids that move the boundary. On the read path, **cache versus source of truth** decides whether a timeline miss collapses your database. On storage, **graph structure versus document store** decides whether traversals like friends-of-friends are fast and writes are painful, or writes are fast and traversals require application-side joins. The mechanism is always the same: you shift cost between write and read, between memory and CPU, between freshness and availability. Say that shift out loud."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The five opposites that decide the design"
+    },
+    {
+      "type": "table",
+      "caption": "The five forced choices in a social network. Pick a side and own the cost.",
+      "headers": [
+        "Opposite pair",
+        "Left side wins when",
+        "Right side wins when",
+        "Cost of choosing it"
+      ],
+      "rows": [
+        [
+          "Push on write vs Pull on read",
+          "Normal users with <5k followers, read-heavy feed, need <100ms timeline",
+          "Celebrities with >100k followers, write bursts, followers mostly inactive",
+          "Push: write amplification and hot keys. Pull: slow tail reads and DB scatter"
+        ],
+        [
+          "Strong vs Eventual consistency",
+          "Blocks, mutes, privacy, message send, auth — correctness required",
+          "Like counts, follower counts, feed ordering, suggestions — staleness acceptable",
+          "Strong: higher latency, lower availability, harder to shard. Eventual: user-visible anomalies"
+        ],
+        [
+          "Graph store vs Document and relational",
+          "2-hop queries: mutuals, suggestions, path checks, spam rings",
+          "Post CRUD, profile fetch, timeline pagination by key",
+          "Graph: expensive writes, hard horizontal scaling. Document: fast key access, painful traversals"
+        ],
+        [
+          "Cache timeline vs Compute timeline",
+          "Hot users polled every minute, pre-ranked feed",
+          "Cold long-tail users, chronological or rarely viewed feeds",
+          "Cache: memory explosion and invalidation storms. Compute: CPU and latency on every read"
+        ],
+        [
+          "Sync vs Async fanout",
+          "Need immediate feedback for poster, small fanout, moderation must precede visibility",
+          "Large fanout, ranking and notifications can lag seconds",
+          "Sync: write latency coupled to slowest follower. Async: backlog, out-of-order delivery, retry complexity"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Push versus pull deserves the most airtime because it is where most candidates bluff. Push on write means when user A posts, you append post ID to every follower timeline in cache. For 500 followers that is trivial: 500 cache writes, sub-second propagation, and reads are a single range scan. The math flips at 10 million followers: one post becomes 10 million cache writes, most to users who will never open the app that day. You burn network, memory, and queue capacity for nothing. That is why pure push is indefensible at scale. The trade-off is **read latency for write amplification**. Choose push and you buy predictable fast reads with unpredictable write storms. The production fix is never pure — it is a threshold: push to active normal followers, pull for celebrities and inactive users. Name the threshold, for example follower count above 10k or inactive for 30 days goes to pull, and explain why: it bounds write amplification while keeping the 99th percentile read under control."
+    },
+    {
+      "type": "paragraph",
+      "text": "Consistency is the second place candidates fail because they say eventual consistency for everything. That is wrong and interviewers will punish it. A like count being off by 20 for 5 seconds costs nothing. A blocked user seeing your posts for 5 seconds is a privacy incident. A message appearing out of order is annoying; a mute not applying before a notification fires is a trust violation. The trade-off is **freshness and correctness for availability and latency**. Strong consistency requires quorum reads, conditional writes, or a single primary for that entity, which means higher p99 and reduced fault tolerance during partitions. Eventual consistency lets every replica accept writes and converge later, which means fast and available but visibly wrong under race conditions. The correct design splits by entity: privacy graph, block list, and auth sessions on the strongly consistent path with caching kept short and invalidated synchronously; feed, counts, and recommendations on the eventually consistent path with version vectors or last-write-wins plus background repair. If you do not split, you either overpay on latency for data nobody cares about or under-protect data that creates real harm."
+    },
+    {
+      "type": "paragraph",
+      "text": "Storage is the third opposite and the most opinionated: do not put the social graph and the content in the same store because they scale on different axes. A graph store or adjacency index answers who follows whom, mutual friends, and should-I-show-this-post checks in milliseconds without application joins. That is why you want it for authorization and suggestion traversals. The trade-off is **traversal speed for write scalability**. Graph partitions are painful because edges cut across shards, and a celebrity node becomes a hotspot that no hash can balance. A document or wide-column store keyed by `user_id` or `timeline_id` does the opposite: posts, profiles, and precomputed timelines scale linearly by key, but any friends-of-friends query becomes N round trips stitched in application code. The working answer is both: adjacency lists in a graph-capable or key-value store optimized for edge lookups, content and timelines in a sharded document or columnar store keyed for pagination. State the split explicitly, or your design will either choke on suggestions or choke on feed pagination."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is the celebrity post at peak hour. With pure push fanout, one post enqueues millions of timeline writes into a message queue. Queue depth spikes from near zero to millions in seconds. Consumers lag, cache write throughput saturates, and then normal users posting to 200 followers get stuck behind the celebrity backlog. The symptom you see is inverted: **post latency is fine for the celebrity but timeline freshness collapses for everyone else**, and p99 write latency climbs from 80ms to 8 seconds. Dashboards show cache eviction rate spiking because precomputed timelines for inactive users evict hot data. The fix is admission control you should have named in the interview: cap synchronous fanout, push only to recently active followers, mark celebrity posts as pull-only, and let cold followers merge on read. If you do not name the cap, you have not solved the problem."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure is subtler and more damaging: stale privacy. You cache the follow and block graph aggressively to keep feed builds fast, with a 60-second TTL and no invalidation on write. User B blocks user A, but A's client still holds a cached edge saying follow is true, and the timeline service serves B's restricted posts to A for a full minute. The symptom is not a latency graph — it is a correctness complaint that bypasses all your performance dashboards. You only see it in audit logs as reads served after a block timestamp. The trade-off you mispriced was **cache hit rate for correctness**. The correction is to separate cache lifetimes: feed content can live for minutes, but authorization edges must be read-through or invalidated synchronously via a pub-sub invalidation channel, even if that costs you 15ms per check. Say that in the interview before being asked."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Timeline p99 spikes only when high-follower accounts post — you chose pure push with no celebrity bypass.",
+        "Database CPU spikes on every feed refresh — you chose pure pull with no precomputation or ranking cache.",
+        "Like counts flicker up and down under load — last-write-wins counters without sharded atomic increments.",
+        "Blocked content visible for seconds after block — cached auth graph with TTL and no synchronous invalidation.",
+        "Message queue depth grows unbounded during events — async fanout with no backpressure, priority lanes, or drop policy for cold followers."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Do not average the opposites",
+      "text": "The worst answer is we will do a little of both everywhere. That gives you **both costs and neither benefit**: partial push still storms on celebrities, partial caching still serves stale blocks. Thresholds must be explicit and per path: push below N followers, pull above N; strong consistency for auth graph, eventual for counts. Vagueness here reads as not having operated the system."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Where the code makes the trade-off explicit"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "fanout.py",
+      "code": "CELEBRITY_THRESHOLD = 10000\nACTIVE_WINDOW_SEC = 7 * 24 * 3600\n\ndef publish_post(post, author):\n    post_id = content_store.insert(post)  # single write, always pullable\n    followers = graph_store.get_followers(author.id)  # adjacency read\n\n    if len(followers) > CELEBRITY_THRESHOLD:\n        # Pull-only: do NOT fan out. Mark for merge-on-read.\n        timeline_index.mark_celebrity_post(author.id, post_id)\n        notify_queue.enqueue_lazy(author.id, post_id)\n        return post_id\n\n    # Hybrid push: only to recently active, normal followers\n    targets = [f for f in followers if presence.is_active(f, ACTIVE_WINDOW_SEC)]\n    # Trade-off made visible: bound write amplification, accept merge cost for cold users\n    fanout_queue.enqueue_batch(\n        [(f, post_id) for f in targets],\n        priority=\"high\" if len(targets) < 2000 else \"bulk\"\n    )\n    return post_id\n\ndef read_timeline(user_id, cursor, limit=20):\n    cached = timeline_cache.get_range(user_id, cursor, limit)  # O(1) fast path\n    # Merge pull-only celebrity posts at read time: pay CPU to save writes\n    celebrities = graph_store.get_followed_celebrities(user_id)\n    fresh = timeline_index.fetch_since(celebrities, since=cached.watermark)\n    return ranker.merge(cached.items, fresh, limit=limit)"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet is the whole interview in miniature. `content_store.insert` is the single source of truth that makes pull possible — writes stay O(1) even for celebrities. The `CELEBRITY_THRESHOLD` branch is the explicit opposite choice: above the threshold you refuse to pay write amplification and shift the cost to read-time merge. Below it you pay cache writes but only for active users, which bounds memory waste on dormant timelines. The trade-off is visible in two places a reviewer can challenge: why 10k and why 7 days, and what happens when `fetch_since` fans out to 800 celebrities on every scroll. Your answer should be back-of-the-envelope math: 10k times average post rate times retention equals cache write budget, and merge cost is capped by limiting pulled celebrities per read plus a ranked cache for the top ones. Code without those numbers is just syntax."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from requirements, not boxes",
+          "text": "Say: 500M users, read-heavy 100 to 1, timeline p99 under 200ms, celebrity posts must not break the system. That framing forces the opposites to appear naturally instead of reciting components."
+        },
+        {
+          "title": "Force the push versus pull math",
+          "text": "Draw both paths. Calculate: 1 post x 10M followers = 10M writes versus 1 timeline load x 800 followees = 800 scattered reads. Then propose hybrid with a concrete threshold. Interviewers promote candidates who quantify before choosing."
+        },
+        {
+          "title": "Split consistency by entity",
+          "text": "State out loud: blocks and privacy are strongly consistent with synchronous invalidation; likes and feed order are eventual with background repair. Give the staleness window you accept, for example counts lag 5 seconds, feed lags 10 seconds."
+        },
+        {
+          "title": "Split storage by access pattern",
+          "text": "Adjacency and auth checks go to the graph or edge index; posts and timelines go to sharded document storage keyed for pagination. Justify with query shape: traversals versus key lookups."
+        },
+        {
+          "title": "Close with failure and mitigation",
+          "text": "End each choice with what breaks: hot keys, queue backlog, stale blocks, thundering herd on cache miss. Name the guardrail: backpressure, request coalescing,hedged reads, priority lanes. That is the opposite framework in action."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Pure push or pure pull scales — neither does. Pure push dies on celebrities; pure pull dies on read latency. The only scalable answer is hybrid with an explicit cutoff.",
+        "Eventual consistency works for everything — it does not for blocks, mutes, and privacy. Those need synchronous invalidation even if it costs latency.",
+        "One database handles graph and content — it will not. Traversal-optimized and key-lookup-optimized workloads shard differently and must be stored separately.",
+        "More cache always helps — precomputed timelines for inactive users waste memory, evict hot data, and amplify invalidation storms. Cache only what is re-read.",
+        "Async fanout means no backpressure needed — queues hide the spike for minutes then collapse freshness for everyone. You need priority lanes and a drop-to-pull policy.",
+        "Feed ordering must be globally consistent — users tolerate slightly out-of-order feeds but not missing posts from close friends. Optimize for recall of important edges, not total order."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use which side"
+    },
+    {
+      "type": "table",
+      "caption": "Decision cheat sheet: bind each choice to a measurable condition.",
+      "headers": [
+        "Decision",
+        "Use left side when",
+        "Use right side when"
+      ],
+      "rows": [
+        [
+          "Push vs Pull",
+          "Follower count < threshold and follower active in last 7 days; need fast paginated reads",
+          "Follower count > threshold or follower dormant; celebrity or event burst traffic"
+        ],
+        [
+          "Strong vs Eventual",
+          "Authorization, blocks, privacy scope, payment-adjacent actions; violation has trust cost",
+          "Counts, ordering, suggestions, trending; error is cosmetic and self-heals"
+        ],
+        [
+          "Graph vs Document",
+          "Need 1-2 hop traversal: mutuals, visibility check, spam cluster detection",
+          "Need key-based CRUD and range pagination: posts, timelines, profiles"
+        ],
+        [
+          "Precompute vs On-demand",
+          "Hot feeds read 10x more than written; ranking is expensive and reusable",
+          "Cold feeds, exploratory queries, filters that vary per request"
+        ],
+        [
+          "Sync vs Async write",
+          "Small fanout, moderation gate, poster expects immediate visibility",
+          "Large fanout, ranking and notifications can lag; need isolation from slow consumers"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **I use hybrid fanout with push for active normal followers and pull for celebrities and dormant users, strong consistency only for the privacy graph and eventual for counts and ordering — because that bounds write amplification without serving stale authorization.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:36:20.070Z",
+    "problems": []
+  }
+}

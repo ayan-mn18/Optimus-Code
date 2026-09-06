@@ -1,0 +1,339 @@
+{
+  "slug": "network-layer",
+  "title": "Network Layer",
+  "summary": "Network Layer (L3) is how packets cross network boundaries: global addressing, hop-by-hop forwarding, and distributed routing. This concept page explains the mechanism, the control/data-plane split, and the production failures interviewers actually probe.",
+  "kind": "HLD",
+  "problemSlug": "network-layer-94-186",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "🌐",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "Network Layer",
+    "Routing"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Network Layer in OSI Model - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/computer-networks/network-layer-in-osi-model/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "What is the network layer? | Learning Center - Cloudflare",
+      "url": "https://www.cloudflare.com/learning/network-layer/what-is-the-network-layer/",
+      "source": "cloudflare.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is OSI Model | 7 Layers Explained - Imperva",
+      "url": "https://www.imperva.com/learn/application-security/osi-model/",
+      "source": "imperva.com",
+      "kind": "article"
+    },
+    {
+      "title": "Network layer - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Network_layer",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**L2 gets a frame to the next box. L3 gets a packet to the right *network*, no matter how many boxes are in between.** Everything at this layer — IP addressing, forwarding tables, routing protocols, fragmentation, NAT — exists because direct delivery stops working the moment source and destination are not on the same wire. If you remember nothing else, remember: **L3 trades per-hop simplicity for end-to-end reach.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "The Network Layer is layer 3 of the OSI model. Its job is **host-to-host delivery across multiple networks**. It assigns every endpoint a globally scoped logical address — an IP address — wraps transport payloads into packets stamped with source and destination, and moves each packet hop-by-hop through routers until it reaches the destination network. It does not promise delivery, order, or duplicate suppression. That is deliberate. By staying best-effort and stateless per packet, L3 stays simple enough to scale to internet size. Reliability, if you want it, is pushed up to L4. Trade-off: you gain a waist that every network can agree on, you lose any guarantee the packet arrives."
+    },
+    {
+      "type": "paragraph",
+      "text": "Draw the boundaries crisply or you will confuse yourself in design discussions. **L2** handles node-to-node delivery inside one broadcast domain using hardware addresses and switches; it has no concept of a path beyond one hop. **L3** handles network-to-network delivery using logical addresses and routers; it picks the next hop at every router independently. **L4** handles process-to-process delivery using ports plus reliability and congestion control. So when someone says TCP routes packets, correct them: IP routes, TCP recovers. When someone says a switch routes, correct them: a switch forwards on flat identifiers, a router forwards on hierarchical prefixes. That hierarchy is the whole scalability trick."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: address, forward, route, fragment"
+    },
+    {
+      "type": "paragraph",
+      "text": "A packet leaves a host with two critical header fields: **source IP** and **destination IP**. The source host checks whether the destination is on-link via its subnet mask. If yes, it sends directly at L2. If no, it sends to its default gateway. From there every router repeats the same loop: extract destination IP, perform **longest-prefix match** against its forwarding table, push the packet out the winning interface toward the next hop. No router knows the full path. Each one only knows the best next step. That is why the internet survives partial failures — there is no central path to invalidate. Trade-off: independent per-hop decisions give resilience and decentralisation, but permit transient loops, asymmetry, and out-of-order delivery."
+    },
+    {
+      "type": "mermaid",
+      "title": "Hop-by-hop forwarding",
+      "caption": "Each router only decides the next hop, not the full path.",
+      "code": "flowchart TD\n  H1[Host A - attaches IP src and dst]\n  R1[Router R1 - longest prefix lookup]\n  R2[Router R2 - longest prefix lookup]\n  R3[Router R3 - longest prefix lookup]\n  H2[Host B - reassembles and delivers]\n  H1 --> R1\n  R1 --> R2\n  R2 --> R3\n  R3 --> H2"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The four jobs you must separate"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Logical addressing:** hierarchical IPs encode *where* in the topology you are, not *who* you are. Prefixes aggregate. That aggregation is what keeps core tables at ~1M routes instead of billions of hosts. Trade-off: renumbering on topology change vs flat addresses that never aggregate.",
+        "**Forwarding (data plane):** per-packet, per-router table lookup from input interface to output interface. Must happen in nanoseconds at line rate, usually in hardware. This is the hot path.",
+        "**Routing (control plane):** background process that *builds* the forwarding table via static config or dynamic protocols that exchange reachability. Slow path, runs in software, converges over seconds.",
+        "**Fragmentation and reassembly:** split packets larger than a link MTU into fragments that fit, reassemble only at the destination. IPv4 allows en-route fragmentation. IPv6 forbids it and forces source discovery of path MTU. Trade-off: adaptation to heterogeneous links vs state, overhead, and security holes."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The control-plane vs data-plane split is the most important design decision in all of networking, and interviewers expect you to state it unprompted. Forwarding must be dead simple and fast because it runs on every packet. Routing can be complex, policy-laden, and slow because it runs on topology change. If you mix them — for example, doing a routing-protocol computation per packet — you melt the router. Modern designs push this further: centralised controllers compute routes, dumb fast hardware forwards. Same split, different placement. Trade-off: centralised computation is easier to reason about and optimise, distributed computation survives partition of the controller."
+    },
+    {
+      "type": "mermaid",
+      "title": "Control vs data plane",
+      "caption": "Slow path builds tables, fast path uses them.",
+      "code": "flowchart LR\n  CP[Control Plane - routing protocols]\n  FT[Forwarding Table - prefixes to next hop]\n  DP[Data Plane - per packet forward]\n  CP --> FT\n  FT --> DP"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every L3 choice buys scale and pays in guarantees or state.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Connectionless best-effort IP",
+          "Stateless routers, trivial failure recovery, massive scale",
+          "Loss, duplication, reordering; L4 must fix it"
+        ],
+        [
+          "Hop-by-hop routing",
+          "No source needs full topology; local repair on failure",
+          "No end-to-end path control; loops and asymmetry possible"
+        ],
+        [
+          "Hierarchical addressing + longest-prefix match",
+          "Aggregation keeps core tables small; flexible subnetting",
+          "Renumbering pain; lookup cost grows with table size"
+        ],
+        [
+          "En-route fragmentation (IPv4 model)",
+          "Packets traverse any MTU link without sender knowledge",
+          "Reassembly state, amplification for attacks, middlebox breakage"
+        ],
+        [
+          "Dynamic routing protocols",
+          "Automatic convergence around failures and policy",
+          "Churn, slow convergence, misconfiguration blast radius"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The best-effort choice deserves emphasis because juniors call it a flaw. It is not. If every router had to hold per-flow state and guarantee delivery, the core would collapse under connection count and need distributed transactions on failure. By dropping guarantees at L3, the core stays memory-light and fate-sharing stays at the edges: only sender and receiver hold end-to-end state. That is why IP won over connection-oriented alternatives for inter-networking. The cost is real — TCP exists precisely to paper over L3 behaviour — but the alternative does not scale. Trade-off stated bluntly: **dumb network, smart edges scales; smart network, dumb edges does not.** Choose based on which side you want to scale."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Core protocols at L3"
+    },
+    {
+      "type": "paragraph",
+      "text": "IP is the payload carrier, but it cannot operate alone. A working L3 needs helpers for signalling, membership, and mapping, and you should be able to name what each one is for without hand-waving. In an HLD interview, dropping ICMP, ARP-adjacent behaviour, and routing protocol categories signals you have operated real networks rather than memorised a diagram."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**IPv4 / IPv6:** packet format, addressing, header fields including `TTL` and fragmentation controls. `TTL` is not time — it is a hop count that kills looping packets. IPv6 removes header checksum, removes en-route fragmentation, restores end-to-end discipline.",
+        "**ICMP / ICMPv6:** error and diagnostic signalling — destination unreachable, time exceeded, echo, plus path-MTU and neighbour discovery in v6. `ping` and `traceroute` are just ICMP plus TTL tricks, not separate magic.",
+        "**Routing protocols:** interior protocols flood link state or exchange distance vectors inside one administration; exterior protocols exchange policy-constrained path vectors between administrations. The interior optimises for convergence speed, the exterior optimises for policy control. Different goals, different protocols.",
+        "**Multicast support (IGMP / PIM):** one-to-many delivery without sender replication. Powerful when audience is dense, operationally painful when sparse. Trade-off: bandwidth saved vs control-state complexity.",
+        "**IPsec / encapsulation:** confidentiality and tunnelling at or just above L3. Adds crypto or extra headers so packets can cross untrusted or incompatible networks. Trade-off: isolation and security vs MTU shrinkage and debugging opacity."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "L3 failures are nasty because the symptom appears far from the cause. The packet is dropped at hop four, the user times out at hop zero, and every dashboard in between is green. Learn to map symptom back to layer. If L2 is broken you see ARP failures or interface errors on one link. If L3 is broken you see reachability that depends on *which pair* of hosts you test, packet loss that appears only above a size threshold, or paths that change mid-flow."
+    },
+    {
+      "type": "table",
+      "caption": "Common L3 failures and what you actually observe.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Why it happens"
+      ],
+      "rows": [
+        [
+          "Routing loop or slow convergence",
+          "`traceroute` cycles or TTL-expired ICMP; latency spikes then recovers",
+          "Inconsistent tables during update; hop-by-hop has no loop prevention except TTL"
+        ],
+        [
+          "MTU / PMTU blackhole",
+          "Small requests work, large transfers hang; `ping -s` threshold reproduces it",
+          "ICMP Packet-Too-Big filtered, sender never learns to fragment or reduce size"
+        ],
+        [
+          "Asymmetric path + stateful middlebox",
+          "TCP connects one way, stalls the other; works after middlebox bypass",
+          "Return packets take different path, firewall/NAT has no state on that path"
+        ],
+        [
+          "NAT exhaustion / port collision",
+          "New connections fail under load, old ones survive; gateway logs port pressure",
+          "Many private hosts multiplexed to few public IPs; state table is finite"
+        ],
+        [
+          "Prefix leak / wrong aggregation",
+          "Sudden traffic shift, overload on one link, distant users unreachable",
+          "One router advertises prefixes it should not; others prefer the bad advertisement"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The MTU blackhole is the classic interview trap. A firewall blocks ICMP for security, which also blocks the fragmentation-needed signal. Small packets flow, so health checks pass. Large packets vanish silently, so database replication or image upload stalls forever. The fix is not bigger buffers — it is MSS clamping, correct PMTU handling, or consistent MTU end-to-end. General rule for debugging L3: **vary size, vary source, vary destination**. If behaviour changes with size, suspect fragmentation. If it changes with pair, suspect routing or policy. If it flaps, suspect convergence."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "lpm.py",
+      "code": "def longest_prefix_match(dst_ip: str, table: list[tuple[str, int, str]]):\n    # table: list of (prefix_ip, prefix_len, next_hop)\n    # Real routers do this in TCAM/trie; this shows the semantics.\n    import ipaddress\n    dst = int(ipaddress.IPv4Address(dst_ip))\n    best = None\n    best_len = -1\n    for net_ip, plen, nh in table:\n        mask = (0xFFFFFFFF << (32 - plen)) & 0xFFFFFFFF\n        net = int(ipaddress.IPv4Address(net_ip)) & mask\n        if (dst & mask) == net and plen > best_len:\n            best, best_len = nh, plen\n    return best  # None => drop + ICMP unreachable\n\ntable = [(\"0.0.0.0\", 0, \"default-gw\"), (\"10.0.0.0\", 8, \"corp\"), (\"10.1.2.0\", 24, \"rack-7\")]\nassert longest_prefix_match(\"10.1.2.44\", table) == \"rack-7\"\nassert longest_prefix_match(\"10.9.9.9\", table) == \"corp\""
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Subnetting, NAT, and version reality"
+    },
+    {
+      "type": "paragraph",
+      "text": "Subnetting is just applied longest-prefix match: carve a large prefix into smaller ones so each link gets its own broadcast scope and policy boundary. A `/24` gives you 254 usable hosts on one LAN; a `/30` gives you a point-to-point link with no waste beyond two endpoints. The mask in the host decides on-link vs via-gateway, the prefix in the router decides next hop. Design implication: allocate hierarchically by topology and region so aggregation holds. Fragment your allocation randomly and your upstream table explodes. Trade-off: tight subnets conserve addresses and limit blast radius, but cost operational overhead and renumbering when a site outgrows its block."
+    },
+    {
+      "type": "paragraph",
+      "text": "NAT exists because addresses ran out, not because it is good architecture. It multiplexes many private addresses behind few public ones by rewriting source IP and port and holding that mapping as state. That conserves addresses and accidentally hides topology, but it breaks end-to-end addressability, complicates peer-to-peer protocols, and creates a stateful chokepoint that must see both directions. IPv6 restores the original model with effectively unlimited space and no need for address translation. The honest position: **NAT is a survival hack with real costs, not a security strategy**. Use it where you must for v4 interop, eliminate it where you can with v6. Trade-off: deploy NAT and pay in state and breakage, deploy v6 and pay in dual-stack operation and middlebox upgrades."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Explain what happens when I type a name and press enter",
+          "text": "They want layering discipline: DNS to IP, TCP handshake, then L3 — source checks subnet, forwards to gateway, each router does longest-prefix match, TTL decrements, ICMP on failure. Do not drift into L4 congestion control unless asked."
+        },
+        {
+          "title": "Design multi-region connectivity",
+          "text": "They want addressing plan, routing separation, and failure domains: private prefixes per VPC, peering vs transit gateway, static vs dynamic routes, how a region failure withdraws prefixes. State convergence behaviour explicitly."
+        },
+        {
+          "title": "Debug: small packets work, large ones hang",
+          "text": "Answer MTU/PMTU blackhole immediately. Propose reproduction with size sweep, check ICMP filtering, propose MSS clamp or MTU alignment. This separates people who ran networks from people who read about them."
+        },
+        {
+          "title": "Static vs dynamic routing — which and where?",
+          "text": "Answer: static at the edge where topology is a stub and determinism matters; dynamic in the core/mesh where links flap and manual updates do not converge. Trade-off is operational simplicity vs automatic recovery."
+        },
+        {
+          "title": "IPv4 exhaustion, NAT, IPv6 plan",
+          "text": "Answer with costs: NAT overload sizing, state limits, logging for traceability, then dual-stack migration, translation points, and why you keep v4 at the edge during transition. Never say NAT is security."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**IP guarantees delivery.** No. IP is best-effort by design. Loss, reorder, and duplication are normal. Guarantees live in TCP/QUIC or the application.",
+        "**TTL is a timer.** No. It is a hop counter decremented per router to kill loops. `traceroute` exploits exactly this by sending increasing TTLs.",
+        "**Routers know the full path.** No. They know only the next hop for each prefix. End-to-end path is an emergent property, which is why asymmetry and loops are possible.",
+        "**NAT is a firewall.** No. It is address multiplexing with incidental obscurity. Filtering policy is separate; conflating them leaves inbound holes and breaks audit.",
+        "**More specific route always wins, regardless of source.** Largely true for destination lookup, but policy routing, metrics, and administrative distance can override. Longest-prefix is the default, not the only rule.",
+        "**Fragmentation is free.** No. It costs CPU, buffers, and security surface. Modern guidance is: avoid it, discover path MTU, segment at the source."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Apply L3 mechanisms where their trade-offs pay off.",
+      "headers": [
+        "Use this",
+        "When it fits",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Dynamic routing",
+          "Mesh or multi-path core where links flap and manual repair is too slow",
+          "Single-homed stub where a default static route is deterministic and auditable"
+        ],
+        [
+          "Aggressive aggregation",
+          "Core and transit where table size and churn dominate cost",
+          "Edge where traffic engineering needs de-aggregated specifics"
+        ],
+        [
+          "Fragmentation / jumbos",
+          "Controlled fabric with uniform MTU and hardware support",
+          "Across the public internet or past untrusted filters — clamp MSS instead"
+        ],
+        [
+          "NAT overload",
+          "Forced v4 conservation at the enterprise edge",
+          "As security boundary, for peer-to-peer, or where v6 can remove state"
+        ],
+        [
+          "IPsec / L3 tunnel",
+          "Crossing untrusted networks or stitching disjoint address spaces",
+          "Inside a trusted fabric where extra headers only shrink effective MTU and hide telemetry"
+        ]
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "**The Network Layer provides scalable host-to-host delivery across networks via hierarchical addressing and independent hop-by-hop forwarding, deliberately best-effort so routing can converge without per-flow state — reliability and ordering are someone else's job.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:02:44.713Z",
+    "problems": []
+  }
+}

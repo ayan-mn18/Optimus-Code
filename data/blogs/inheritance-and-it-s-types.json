@@ -1,0 +1,312 @@
+{
+  "slug": "inheritance-and-it-s-types",
+  "title": "Inheritance and It's types",
+  "summary": "Inheritance is behavioral subtyping coupled to code reuse — the five shapes differ only in how many parents and levels you allow, and each adds coupling you must justify.",
+  "kind": "LLD",
+  "problemSlug": "inheritance-and-its-types-29-65",
+  "topic": "Object oriented Programming (OOPS)",
+  "difficulty": "Medium",
+  "coverEmoji": "🌳",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "OOPS",
+    "Inheritance"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Inheritance in Java - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/java/inheritance-in-java/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Types of Inheritance in OOP | PDF | Class (Computer Programming)",
+      "url": "https://www.scribd.com/document/307414498/c",
+      "source": "scribd.com",
+      "kind": "article"
+    },
+    {
+      "title": "Inheritance in C++ - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/cpp/inheritance-in-c/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding Different Types of Inheritance - ScholarHat",
+      "url": "https://www.scholarhat.com/tutorial/oops/understanding-inheritance-and-different-types-of-inheritance",
+      "source": "scholarhat.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Inheritance is not code sharing. It is a **public promise that a subclass can stand in for its parent without breaking callers**. If that substitutability does not hold, you did not reuse code — you coupled two classes that will break together. Every type of inheritance is just a different topology for that promise."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What inheritance is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Inheritance lets a subclass acquire the **interface and implementation** of a parent class, then extend or replace parts of it. The parent defines fields, methods, invariants, and a contract: what each method expects, guarantees, and never does. The child reuses that implementation, adds new state and behavior, and may override virtual methods to specialize behavior. The trade-off is immediate: you save duplication, but the child now depends on the parent's *implementation details*, not just its interface. Change the parent's internals — field layout, method call order, protected helper semantics — and every descendant can silently change behavior. That is why inheritance is the strongest coupling in object-oriented design, stronger than composition or interface dependency."
+    },
+    {
+      "type": "paragraph",
+      "text": "The test is not syntactic, it is behavioral. `class Dog extends Animal` is only valid if every property a caller relies on for `Animal` still holds for `Dog`. This is the Liskov Substitution Principle, and it is the whole interview filter. A `Square extends Rectangle` that breaks `setWidth` independently fails even though it compiles. A `Stack extends ArrayList` that exposes `insertAt(0)` fails even though it reuses storage. Use `extends` when the child **is** a more specific kind of the parent in behavior, not merely when it wants to borrow code. If you only want reuse, use composition and delegation. If you only want polymorphism, use an interface. Choose class inheritance only when you want both and you accept the coupling."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How the mechanism actually works"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three things happen when you write `extends`, and confusing them causes most bugs. First, **construction chains upward**: the parent constructor runs before the child constructor, because the child contains the parent's state and its invariants must be established first. Calling an overridable method from a constructor is therefore dangerous — it executes child code before child fields are initialized. Second, **name resolution is split**: field access and `static` methods bind at compile time to the reference type, while instance method dispatch binds at runtime to the *object* type via a virtual table. That is why `Animal a = new Dog(); a.sound()` runs `Dog.sound()` but `a.speciesName` reads the `Animal` field. Third, **access is filtered by modifiers**: `private` members are never inherited, `protected` members leak implementation to all descendants, and package or default visibility creates invisible coupling across files. The trade-off: dynamic dispatch gives you extensibility without modifying callers, but you pay with indirection, harder reasoning about which code actually runs, and initialization-order hazards."
+    },
+    {
+      "type": "mermaid",
+      "title": "Inheritance topologies",
+      "caption": "Single, multilevel, and hierarchical shapes on one diagram.",
+      "code": "classDiagram\n  Animal <|-- Dog\n  Animal <|-- Cat\n  Vehicle <|-- Car\n  Car <|-- ElectricCar"
+    },
+    {
+      "type": "paragraph",
+      "text": "The diagram shows the three shapes you should actually defend in an interview. `Dog` and `Cat` are **hierarchical** — two siblings sharing one parent. `Vehicle` to `Car` is **single** inheritance. `Vehicle` to `Car` to `ElectricCar` is **multilevel**. Each arrow means the child reuses the parent's storage and contract, and each arrow also means the child breaks if the parent's contract shifts. Deeper chains reuse more but amplify the blast radius: a change at the top recompiles and re-tests everything below. That is why experienced designers keep hierarchies shallow — depth one or two — and push variation into strategy objects instead of a third level."
+    },
+    {
+      "type": "mermaid",
+      "title": "Virtual dispatch",
+      "caption": "How a call on a parent reference reaches child code.",
+      "code": "flowchart TD\n  A[Call sound on Animal reference] --> B{Runtime type?}\n  B --> C[Dog object]\n  B --> D[Cat object]\n  B --> E[Plain Animal object]\n  C --> F[Run Dog sound]\n  D --> G[Run Cat sound]\n  E --> H[Run Animal sound]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The five types, without mystique"
+    },
+    {
+      "type": "paragraph",
+      "text": "Textbooks list five types because they enumerate graph shapes, not because all five are equally advisable. The shape determines where method conflicts and initialization complexity can appear. Single and hierarchical inheritance keep conflict resolution trivial because each class has at most one class parent. Multilevel inheritance keeps it linear but stacks initialization and override layers, so debugging means walking the whole chain. Multiple and hybrid inheritance allow two or more parents and introduce the diamond: two paths to the same ancestor, with duplicate state and ambiguous methods. Java bans class-level multiple inheritance for exactly this reason and recovers the capability through interfaces. The trade-off across all five is identical: more parents and levels mean more reuse in the short term and more ambiguity, construction order, and coupling cost in the long term."
+    },
+    {
+      "type": "table",
+      "caption": "The five inheritance topologies and what each costs you.",
+      "headers": [
+        "Type",
+        "Shape",
+        "Honest cost"
+      ],
+      "rows": [
+        [
+          "Single",
+          "`Car extends Vehicle` — one child, one parent",
+          "Simplest to reason about. Still couples child to parent internals; overused for mere code borrowing."
+        ],
+        [
+          "Multilevel",
+          "`ElectricCar extends Car extends Vehicle` — a chain",
+          "Reuses transitively. Each level adds override and constructor ordering. Depth beyond two becomes undebuggable."
+        ],
+        [
+          "Hierarchical",
+          "`Dog extends Animal`, `Cat extends Animal` — siblings share a parent",
+          "Enables polymorphic collections like `List<Animal>`. Parent becomes a chokepoint: any change hits all siblings."
+        ],
+        [
+          "Multiple (interfaces)",
+          "`Duck implements Flyable, Swimmable` — one child, many contracts",
+          "Gets polymorphism without state duplication. Default-method collisions must be resolved explicitly in the child."
+        ],
+        [
+          "Hybrid / Diamond",
+          "Class D reaches A via both B and C — two paths to one ancestor",
+          "Models real tangles like `TeachingAssistant is Student and Staff`. Duplicated ancestor state and ambiguous calls unless virtual inheritance or interfaces are used."
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "HierarchyShapes.java",
+      "code": "// Single + multilevel + hierarchical in one file. Keep chains shallow.\nclass Vehicle {\n    void start() { System.out.println(\"vehicle starts\"); }\n}\nclass Car extends Vehicle { // single inheritance\n    void honk() { System.out.println(\"car honks\"); }\n}\nclass ElectricCar extends Car { // multilevel: ElectricCar -> Car -> Vehicle\n    @Override void start() { System.out.println(\"silent start\"); }\n}\nclass Animal {\n    void sound() { System.out.println(\"generic sound\"); }\n}\nclass Dog extends Animal { // hierarchical: Dog and Cat share Animal\n    @Override void sound() { System.out.println(\"bark\"); }\n}\nclass Cat extends Animal {\n    @Override void sound() { System.out.println(\"meow\"); }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "MultipleViaInterfaces.java",
+      "code": "interface Flyable {\n    default void move() { System.out.println(\"fly\"); }\n}\ninterface Swimmable {\n    default void move() { System.out.println(\"swim\"); }\n}\n// Java forbids class Duck extends Bird, Fish. Interfaces recover the shape\n// without duplicating ancestor state. The trade-off: YOU resolve collisions.\nclass Duck implements Flyable, Swimmable {\n    @Override public void move() {\n        // Must disambiguate. No implicit winner is the safe rule.\n        Flyable.super.move();\n        Swimmable.super.move();\n    }\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs — no free reuse"
+    },
+    {
+      "type": "table",
+      "caption": "What inheritance buys and what it bills you later.",
+      "headers": [
+        "Benefit",
+        "Price you pay",
+        "Verdict"
+      ],
+      "rows": [
+        [
+          "Eliminates duplication across related types",
+          "Fragile base class: parent edits silently alter child behavior",
+          "Worth it only when the shared abstraction is stable"
+        ],
+        [
+          "Polymorphic collections and open extension",
+          "Virtual dispatch hides which code runs; harder to trace and test",
+          "Worth it when callers genuinely treat siblings uniformly"
+        ],
+        [
+          "Fast modeling of is-a domains",
+          "Taxonomy lock-in: wrong hierarchy is expensive to unwind",
+          "Model behavior roles, not real-world labels"
+        ],
+        [
+          "Protected reuse of helpers and template methods",
+          "`protected` is public to an unbounded set of future subclasses",
+          "Prefer private plus narrow hooks over broad protected surface"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The fragile-base-class problem is the trade-off to name by name. Because a subclass depends on *how* the parent implements a method — which helpers it calls, in what order, under what invariants — a seemingly safe parent refactor such as adding a logging call, caching a result, or calling one public method from another can double-execute, skip, or reorder child overrides. Composition does not have this failure mode: the wrapper only depends on the public contract and forwards explicitly. So the rule is blunt: inheritance optimizes for writing code today at the expense of changing it tomorrow. Use it where the abstraction is mature and unlikely to churn — collections, domain entities with fixed invariants — and refuse it where the shared code is still evolving or the relationship is uses-a rather than is-a."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "First failure is the **broken override**: a parent adds or renames a method and the child's method silently stops overriding or starts colliding, especially without an `@Override` annotation. Symptom: behavior changes after a library upgrade with no compile error — the old method still runs. Second is the **constructor escape**: a parent constructor calls an overridable method that touches uninitialized child fields. Symptom: null fields or zero values only on certain construction paths, never in unit tests that set fields directly. Third is the **diamond duplication**: in languages permitting stateful multiple inheritance, the grandchild holds two copies of the grandparent's fields. Symptom: updates to one path — say `Employee.salary` via the `Staff` path — are invisible via the `Student` path. Fourth is **hierarchy explosion**: `Manager`, `SeniorManager`, `ContractManager`, `RemoteContractManager` multiply because each new flag becomes a subclass. Symptom: a change like adding parental leave requires edits in a dozen classes, and no one dares touch the base. Each symptom points to the same cure: flatten the hierarchy and move variation into composed policies."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Override silently lost after parent signature change — runtime behavior regresses with a clean build.",
+        "Null or default values inside overridden methods called from parent constructors — order-dependent crash.",
+        "Two copies of ancestor state after a diamond — writes through one path do not read back through the other.",
+        "Protected field mutated by a distant subclass — invariant violation far from the mutation site.",
+        "Subclass used where parent promised immutability or thread safety — callers observe aliasing and races."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The fragile base class trap",
+      "text": "If your parent class calls its own public methods internally, every subclass override changes the parent's behavior too. Either document that self-call pattern as part of the contract, or make the internal path `private`/`final` so children cannot intercept it accidentally."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Inheritance versus composition: the decision you will be judged on"
+    },
+    {
+      "type": "table",
+      "caption": "Say this table out loud when the interviewer asks why not inheritance.",
+      "headers": [
+        "Use inheritance when",
+        "Use composition when",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Substitutability is required and tested: callers hold parent references",
+          "You only want to borrow implementation",
+          "Inheritance couples to implementation; composition couples only to interface"
+        ],
+        [
+          "The taxonomy is shallow and stable: one or two levels",
+          "Variations multiply: permissions, pricing rules, notification channels",
+          "Behavior combinations explode exponentially as subclasses but compose linearly as policies"
+        ],
+        [
+          "Template-method is intended: parent skeleton, child hooks",
+          "Child needs to restrict or hide parent operations",
+          "A subclass cannot remove public parent methods without violating substitutability"
+        ],
+        [
+          "Language idiom demands it: exceptions, UI widgets, test fixtures",
+          "Lifetime or ownership differs between whole and part",
+          "Composition lets parts be shared, replaced, or decorated at runtime"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "PreferComposition.java",
+      "code": "// WRONG SHAPE: Stack is-not-a ArrayList, it uses one.\n// class Stack extends ArrayList<String> { } // inherits insertAt(0), clear, all sins.\nimport java.util.*;\n// RIGHT SHAPE: expose only the stack contract, delegate to the list.\nclass Stack {\n    private final Deque<String> store = new ArrayDeque<>(); // composition\n    void push(String s) { store.push(s); }\n    String pop() { return store.pop(); }\n    String peek() { return store.peek(); }\n    boolean isEmpty() { return store.isEmpty(); }\n    // No insertAt, no set(index), no way to violate LIFO. The trade-off:\n    // slightly more forwarding code now, zero taxonomy risk forever.\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Define the contract before the hierarchy",
+          "text": "State the parent's invariants and which methods are overridable. Interviewers score this higher than drawing the tree. Say what a subclass must never break."
+        },
+        {
+          "title": "Draw one level, then stop",
+          "text": "Sketch the parent, two or three siblings, and the polymorphic call site. If you reach for a third level, say why a composed policy would not serve instead."
+        },
+        {
+          "title": "Name the dispatch explicitly",
+          "text": "Walk through a call on a parent reference and identify which implementation runs. Mention constructor chaining and why you never call virtual methods from constructors."
+        },
+        {
+          "title": "Resolve the diamond on the board",
+          "text": "When asked about multiple inheritance, explain why class diamonds duplicate state, how interfaces plus explicit default-method resolution avoid it, and where you would still prefer delegation."
+        },
+        {
+          "title": "Refactor a bad hierarchy live",
+          "text": "Expect a prompt like a bloated employee or notification hierarchy. Flatten it: extract an interface for the polymorphic role, inject varying behavior as composed strategies, keep inheritance only for genuine is-a substitutability."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Inheritance is for code reuse: reuse is the side effect, substitutability is the license. Reuse alone points to composition.",
+        "Private members are inherited: they are not accessible and not overridable; the child carries no usable copy, only the parent's encapsulated state.",
+        "Overriding and overloading are interchangeable: overriding replaces a virtual method by signature and runtime type, overloading adds a compile-time variant by parameters — different binding, different risks.",
+        "More levels mean better design: depth multiplies coupling and constructor ordering hazards; shallow hierarchies with composed behaviors survive longer.",
+        "Interfaces and abstract classes are the same tool: interfaces define capability contracts with no mandated state, abstract classes define a partial is-a identity with shared implementation — pick by whether state belongs in the parent.",
+        "If it compiles as extends, the modeling is correct: compilation checks syntax, not behavioral substitutability. Only caller-facing tests of parent promises validate the hierarchy."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Inheritance models behavioral substitutability with coupled reuse — one parent for single, chains for multilevel, siblings for hierarchical, interfaces for multiple — so I use it only when substitutability holds and the hierarchy stays shallow; otherwise I compose.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:49:49.540Z",
+    "problems": []
+  }
+}

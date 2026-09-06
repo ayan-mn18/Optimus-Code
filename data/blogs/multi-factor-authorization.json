@@ -1,0 +1,318 @@
+{
+  "slug": "multi-factor-authorization",
+  "title": "Multi factor Authorization",
+  "summary": "MFA for APIs is fresh proof of intent bound into the token, not a second login screen. How to enroll, challenge, verify, and enforce step-up without breaking availability.",
+  "kind": "HLD",
+  "problemSlug": "multi-factor-authorization-93-207",
+  "topic": "Application Programming Interface (API)",
+  "difficulty": "Medium",
+  "coverEmoji": "🔐",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "hld",
+    "api",
+    "security",
+    "authentication"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is: Multifactor Authentication | Microsoft Support",
+      "url": "https://support.microsoft.com/en-us/security/what-is-multifactor-authentication",
+      "source": "support.microsoft.com",
+      "kind": "article"
+    },
+    {
+      "title": "Overview of multi factor authentication - YouTube",
+      "url": "https://www.youtube.com/watch?v=JCFAoMPFq-Q",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Multi-Factor Authentication? - MFA Explained - AWS",
+      "url": "https://aws.amazon.com/what-is/mfa/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Multi-Factor Authentication (MFA) and How does it Work? - RSA",
+      "url": "https://www.rsa.com/resources/blog/multi-factor-authentication/what-is-mfa/",
+      "source": "rsa.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "For APIs, **multifactor is not about logging in twice — it is about binding a second, independent proof to the access token** with a timestamp and method list. If your gateway cannot tell *how* and *when* the user proved possession, you do not have MFA. You have two single-factor logins taped together."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Multifactor authorization means the API refuses a sensitive operation unless the caller presents **two proofs from different compromise domains**: typically knowledge plus possession, or knowledge plus inherence. Knowledge is a password, PIN, or API secret. Possession is a phone authenticator, hardware key, or registered device key. Inherence is biometric match done locally on the device, never sent to your server. The critical distinction for interviews: **authentication** answers *who is this*, **authorization** answers *what may they do*, and MFA sits between them. It upgrades the strength of an already-authenticated session so the authorization check can trust it for a higher-risk scope. That is why the correct term in API design is usually **step-up authentication for authorization** — you demand stronger proof before you grant `transfer:write`, `secret:read`, or `admin:*`."
+    },
+    {
+      "type": "paragraph",
+      "text": "Bearer tokens broke naive MFA. Once you issue an opaque token or JWT after a web login, any service that accepts that token cannot know if the second factor happened unless you encode it. The design that survives review is explicit: the identity provider emits `amr` (methods used, e.g. `pwd`, `otp`, `hwk`), `acr` (assurance level reached, e.g. `0`, `1`, `2`), and `auth_time` (when the last strong proof happened). Every downstream API then enforces a policy like *read profile accepts `acr>=1`, move money requires `acr==2` and `auth_time` within 10 minutes*. You chose this because the alternative — keeping a central session-lookup on every API call — trades a simple token check for a latency and availability dependency. Encoding proof in the token trades revocation speed for scale, and you must name that trade-off."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are four phases and only the middle two are time-critical. **Enrollment** binds a factor to an identity: scan a TOTP secret, register a WebAuthn public key, or link a push device with attestation. Do this once, behind full identity proofing, because a weak enrollment poisons everything after it. **Challenge** is the server issuing a fresh, single-use, time-bound nonce tied to a session or transaction. **Verification** checks the response without ever learning the long-term secret. **Binding** mints or upgrades a short-lived credential that records the result. The reason the challenge must be server-chosen and bound to context — session ID, operation hash, amount, payee — is to kill replay and cross-operation reuse. A TOTP code valid for any action for 60 seconds is weaker than a WebAuthn signature over *challenge + origin + transaction* that is valid once for one action. You pay in client complexity for that strength."
+    },
+    {
+      "type": "mermaid",
+      "title": "MFA issuance and enforcement flow",
+      "caption": "Primary auth, conditional challenge, and token binding with method and time.",
+      "code": "flowchart TD\n  A[Client presents password] --> B[Primary auth passes]\n  B --> C{Risk or policy requires second factor}\n  C -->|No| D[Issue token with amr pwd]\n  C -->|Yes| E[Issue bound challenge]\n  E --> F[User completes possession check]\n  F --> G[Verify response and bind to session]\n  G --> H[Issue token with amr pwd plus totp and auth_time]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Under the hood the three common factors work differently, and you should be able to draw each in 30 seconds. **TOTP** shares a secret at enrollment, then both sides compute `HMAC(secret, floor(time/30))` and compare 6 digits. No network round trip during verify, which is why it scales, but the server must store the secret or an encrypted copy — a breach leaks future codes unless sealed in an HSM. Trade-off: deployability versus server-side secret storage. **Push with number matching** sends the challenge over a separate channel and requires the user to pick the displayed number on the registered device. It resists accidental approve and basic push bombing, but it depends on push delivery and device attestation. Trade-off: usability versus external availability dependency. **WebAuthn and passkeys** store a private key in secure hardware and sign a server nonce with origin binding. Nothing shareable leaves the device, phishing fails because a fake origin produces a useless signature. Trade-off: strongest phishing resistance for highest client and enrollment complexity."
+    },
+    {
+      "type": "table",
+      "caption": "Factor choice is a security, cost, and recovery trade-off. Pick deliberately.",
+      "headers": [
+        "Factor",
+        "What you gain",
+        "What you pay",
+        "Verdict"
+      ],
+      "rows": [
+        [
+          "SMS or voice code",
+          "Works on any phone, no app install",
+          "SS7 interception, SIM swap, delivery delays, per-message cost; weak proof of possession",
+          "Use only as fallback with strict rate limits, never for high value"
+        ],
+        [
+          "TOTP app",
+          "Offline verify, cheap, no extra network hop, easy to scale",
+          "Shared secret stored server-side, phishing still works, manual backup codes needed",
+          "Default for developer and mid-risk APIs"
+        ],
+        [
+          "Push with number match",
+          "Good UX, resists blind approve, binds to device",
+          "Requires push infrastructure, fails when notifications delayed or denied",
+          "Good for consumer apps where UX drives adoption"
+        ],
+        [
+          "WebAuthn and passkeys",
+          "Phishing-resistant, no shared secret, origin and transaction binding",
+          "Enrollment and recovery harder, older clients lack support",
+          "Require for admin, payout, key rotation, and privileged scopes"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "MFA rarely fails in crypto. It fails in state, clock, delivery, and recovery. The symptom interviewers want to hear is not *attacker bypassed HMAC* — it is *legitimate users locked out at 2am* or *attacker never touched the second factor because the API forgot to check it*. The most expensive failure is inconsistent enforcement: web requires a second factor but the legacy mobile endpoint or service-to-service path accepts a password-only token for the same scope. Attackers enumerate the weakest path. You chose uniform gateway enforcement precisely to avoid per-service drift, at the cost of central policy rollout risk. The second most expensive failure is recovery abuse. Helpdesk reset becomes the de facto single factor. If reset is easier than the factor itself, your assurance level is the reset flow, not the hardware key."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Factor fatigue approvals:** symptom is a burst of push prompts followed by one acceptance at 03:14. Cause is no number matching and no rate limit on challenges. Fix with number match, exponential backoff, and auto-revoke on anomaly.",
+        "**Clock or counter drift lockouts:** symptom is valid TOTP codes rejected for a slice of users. Cause is server clock skew or overly tight window. Fix with NTP monitoring, plus-or-minus one step window, and metrics on verify failure rate.",
+        "**SMS delivery outage blocks logins:** symptom is login success rate drops while primary auth is healthy. Cause is carrier delay treated as hard dependency. Fix with fallback to TOTP or WebAuthn, cached device trust, and decoupling challenge issuance from delivery.",
+        "**Token does not carry proof:** symptom is gateway logs show `amr=pwd` calls reaching `transfer` scope. Cause is downstream service checked expiry but not `amr`, `acr`, or `auth_time`. Fix by failing closed on missing claims.",
+        "**Enrollment hijack:** symptom is new device added then immediate high-risk call. Cause is enrollment allowed on weak session. Fix by requiring fresh strong proof plus notification delay before new factor is trusted for sensitive scopes."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "Failure, observable symptom, and the design correction.",
+      "headers": [
+        "Failure",
+        "What you see in metrics or logs",
+        "Fix and its cost"
+      ],
+      "rows": [
+        [
+          "Challenge replay",
+          "Same `challenge_id` or code used twice from different IPs",
+          "Single-use challenges with idempotency store; costs a fast KV write per attempt"
+        ],
+        [
+          "Downgrade to weaker factor",
+          "Sudden shift to SMS on high-value accounts",
+          "Policy pins minimum `acr` per scope; costs user friction and support load"
+        ],
+        [
+          "Lost device lockout",
+          "Spike in recovery tickets, drop in activation",
+          "Pre-enrolled backup factor plus scoped recovery codes; costs secure storage and UX work"
+        ],
+        [
+          "Verify service down",
+          "Second-factor latency climbs, login SLO burns",
+          "Local TOTP verify and cached WebAuthn metadata with circuit breaker; costs key-management complexity"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Fail closed, but define closed",
+      "text": "If the verifier is down, **do not silently skip the second factor**. Fail closed for sensitive scopes and fail to a degraded read-only mode for low-risk reads if the business accepts it. State the choice explicitly: availability for reads, safety for writes. Interviewers reject answers that fail open everywhere or block everything including password reset status checks."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Enforcing it at the API layer"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "stepup_middleware.py",
+      "code": "from time import time\nSTEPUP_REQUIRED = {\"transfer:write\", \"secret:read\", \"admin:*\"}\nMAX_STEPUP_AGE_SEC = 600  # 10 minutes of strong-proof freshness\n\ndef authorize(token_claims: dict, required_scope: str):\n    # token_claims comes from verified JWT: sub, scope, amr, acr, auth_time\n    if required_scope not in token_claims.get(\"scope\", []):\n        return (False, \"deny: missing scope\")\n\n    if required_scope not in STEPUP_REQUIRED:\n        return (True, \"allow: low-risk scope\")\n\n    amr = set(token_claims.get(\"amr\", []))\n    acr = int(token_claims.get(\"acr\", 0))\n    auth_time = int(token_claims.get(\"auth_time\", 0))\n\n    # Require possession proof in addition to password, at high assurance.\n    if acr < 2 or not (amr & {\"otp\", \"push\", \"hwk\"}):\n        return (False, \"step_up_required: need second factor\")\n    if time() - auth_time > MAX_STEPUP_AGE_SEC:\n        return (False, \"step_up_required: proof too old\")\n    return (True, \"allow: fresh strong proof\")"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet looks trivial and that is the point. The gateway does three cheap checks after signature verification: scope present, assurance high enough, proof fresh enough. Why here and not in each microservice? Because per-service checks drift — one team forgets `auth_time`, another accepts `amr=pwd` for `admin:*`, and you discover it from an incident. Centralising trades local autonomy for uniform safety and one place to audit. The `600` second window is the core product trade-off: shorter windows shrink replay and session-theft blast radius but force re-prompt during legitimate long flows. Bind high-value transaction details into the challenge as well — amount and destination hash — so a stolen step-up token cannot be repointed. That costs client work to display and sign context, but it turns a bearer token into a single-transaction capability."
+    },
+    {
+      "type": "code",
+      "language": "json",
+      "filename": "stepup_token.json",
+      "code": "{\n  \"sub\": \"user_123\",\n  \"scope\": [\"profile:read\", \"transfer:write\"],\n  \"amr\": [\"pwd\", \"hwk\"],\n  \"acr\": 2,\n  \"auth_time\": 1757145600,\n  \"txn\": \"sha256:amount=500|payee=acct_987\",\n  \"exp\": 1757145900\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Risk, recovery, and scale"
+    },
+    {
+      "type": "paragraph",
+      "text": "Always-on MFA for every call is lazy design. Mature systems use **risk-based step-up**: evaluate device trust, network reputation, velocity, and operation value, then challenge only when risk or value crosses threshold. Low-risk read from a known device with a recent proof passes. New device plus payout triggers WebAuthn plus transaction binding. You chose this because it concentrates friction where loss concentrates, trading a scoring pipeline and explainability burden for 10x fewer prompts. Recovery must be at least as strong as the factor it replaces: encrypted backup codes, pre-registered second device, or supervised reset with delay and notifications — never a single emailed link that downgrades `acr 2` to *has inbox access*. For scale, keep verification stateless where possible: TOTP HMAC and WebAuthn signature checks need only the stored secret or public key plus a replay cache, so any verifier can handle any request. Push and SMS need delivery state and belong behind a queue with backpressure, not inline on the login hot path."
+    },
+    {
+      "type": "mermaid",
+      "title": "Risk-based step-up decision",
+      "caption": "Only high-risk or high-value calls pay the second-factor cost.",
+      "code": "graph TD\n  R[API request with bearer token] --> S{Sensitive scope}\n  S -->|No| T[Allow]\n  S -->|Yes| U{Fresh strong proof present}\n  U -->|Yes| T\n  U -->|No| V[Score device plus behavior plus value]\n  V -->|Low risk| T\n  V -->|High risk| W[Return 403 step up required]\n  W --> X[Client completes bound challenge]\n  X --> T"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with scopes, not screens",
+          "text": "Say: reads need `acr 1`, money movement and admin need `acr 2` with 5-10 minute freshness. This reframes MFA from login page to API policy in one sentence."
+        },
+        {
+          "title": "Draw enrollment separately from login",
+          "text": "Show where the secret or public key is stored, how it is encrypted, and why enrollment requires stronger proofing than login. Interviewers probe here for hijack paths."
+        },
+        {
+          "title": "Design the challenge lifecycle",
+          "text": "Cover issuance, single-use storage, expiry, rate limits, and transaction binding. State storage: fast KV with TTL for `challenge_id`, replay set for codes."
+        },
+        {
+          "title": "Show the token contract",
+          "text": "Write `amr`, `acr`, `auth_time`, `exp` on the board. Show the gateway check. Explain why missing claims deny sensitive scopes."
+        },
+        {
+          "title": "Handle loss, reset, and support",
+          "text": "Propose backup codes, second device, delayed reset with alerts. Name the trade-off: every recovery path caps your real assurance."
+        },
+        {
+          "title": "Close with abuse and scale",
+          "text": "Mention push bombing defenses, TOTP brute-force limits, HSM sealing, and stateless verification. Give numbers: QPS, p99 verify latency, lockout thresholds."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "What is graded is not whether you list factors but whether you reason about **binding, freshness, and weakest path**. Strong answers volunteer that SMS is a notifier with a code-shaped vulnerability, that TOTP without rate limiting falls to online guessing, and that WebAuthn without origin checks is just expensive TOTP. They also state what happens when each dependency fails. If you cannot answer *what does the API return when the push provider is down*, you have drawn a happy-path diagram, not a design."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Two passwords equal two factors:** two pieces of knowledge from the same store are one compromise away from failure. Different domains is the requirement, not different strings.",
+        "**MFA fixes authorization bugs:** it does not. An over-scoped token with strong proof is still over-scoped. Keep scopes narrow and proofs fresh.",
+        "**Biometrics are sent to the server:** correct designs match locally and release a hardware signature. If your API receives a fingerprint image, the design is wrong.",
+        "**SMS is sufficient for money movement:** SIM swap and interception make it a fallback at best. Sensitive scopes should pin to app, push with match, or hardware.",
+        "**Remember this device means skip MFA forever:** device trust is a risk signal that shortens challenges, not a permanent exemption. Re-challenge on anomaly and cap trust lifetime."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to require it and when to skip"
+    },
+    {
+      "type": "table",
+      "caption": "Apply friction proportional to loss, not uniformly.",
+      "headers": [
+        "Situation",
+        "Require step-up?",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Login from known device, read profile",
+          "No — accept password plus device trust",
+          "Loss is low; prompting trains users to approve blindly"
+        ],
+        [
+          "New device, change payout destination",
+          "Yes — hardware or push with match",
+          "Classic takeover pattern; strength must exceed inbox access"
+        ],
+        [
+          "Every API poll or read",
+          "No — cache proof for session window",
+          "Per-call prompts destroy UX and push users to weaker fallbacks"
+        ],
+        [
+          "Admin, key rotation, policy change",
+          "Yes — phishing-resistant factor plus fresh proof",
+          "Blast radius justifies the cost; this is where breaches cascade"
+        ],
+        [
+          "Service-to-service calls",
+          "No — use workload identity, not human MFA",
+          "Machines need attestation and short-lived certs; human factors do not apply"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The opinionated default: **TOTP as baseline, WebAuthn pinned for privileged and payment scopes, risk engine to skip prompts on boring reads, transaction-bound challenges on anything irreversible.** You accept higher enrollment and support cost for privileged paths because loss there is nonlinear — one admin bypass outweighs a thousand skipped read prompts. For everything else you optimize for adoption, because MFA users disable is worse than MFA with a 10-minute freshness window. Measure prompt rate, bypass rate, verify p99, and recovery abuse rate; if you cannot graph those, you are guessing about both safety and friction."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Require a fresh, single-use possession proof bound to the session and transaction, record its method and time in the token, and enforce minimum assurance and freshness at the gateway per scope.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:52:48.735Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,288 @@
+{
+  "slug": "what-is-high-level-design",
+  "title": "What is High Level Design ?",
+  "summary": "HLD is the set of hard-to-reverse architecture decisions — components, boundaries, data flow, and NFR trade-offs — made before any class or schema detail.",
+  "kind": "HLD",
+  "problemSlug": "what-is-high-level-design-89-181",
+  "topic": "Introduction to High Level Design",
+  "difficulty": "Easy",
+  "coverEmoji": "🏗️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Architecture",
+    "System Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "System Design Introduction - LLD & HLD - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/getting-started-with-system-design/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Introduction to High level Design - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/what-is-high-level-design-learn-system-design/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "High-level design - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/High-level_design",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Writing a High Level Design - David Van Couvering - Medium",
+      "url": "https://david-vancouvering.medium.com/writing-a-high-level-design-26280ee88480",
+      "source": "david-vancouvering.medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**HLD is not drawing boxes. It is choosing which decisions become expensive to reverse.** If your document does not lock component boundaries, data ownership, request flow, and how you meet scale, availability, and consistency targets, it is decoration. Everything else — class names, exact schemas, library choices — is deliberately left out because changing those later is cheap."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What HLD actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "High-Level Design is the **macro-level blueprint** of a software system. It names the major components — edge, gateway, services, data stores, queues, observers — and defines **how they interact, who owns what data, and what guarantees hold across failures**. It operates one level above implementation: APIs as contracts, not method bodies; tables as ownership and access patterns, not column-by-column DDL; flows as sequences across services, not lines of code. The reason for that altitude is economic. A wrong service boundary or a wrong consistency choice costs you a rewrite. A wrong for-loop costs you a commit. HLD spends its budget on the first kind of decision and refuses to spend it on the second."
+    },
+    {
+      "type": "paragraph",
+      "text": "That puts HLD in a precise slot in the lifecycle. **Requirements** say what the system must do and how well — functional behavior plus non-functional targets like throughput, latency, durability, and availability. **HLD** translates those into structure: which pieces exist, where state lives, how requests and writes move, where you scale and where you isolate failure. **Low-Level Design** then takes one component and specifies its internals: classes, interfaces, invariants, state machines, exact schemas, algorithms. If you mix the levels you get the classic failure — a 30-page HLD full of getters and setters that says nothing about what happens when a zone dies. Keep the separation brutal: HLD answers *what talks to what, with what contract, under what load and failure model*. LLD answers *how one box keeps its promises*."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**System architecture and boundaries:** which services or modules exist and why the cut is there. The cut is the design — it decides team ownership, deploy independence, and blast radius.",
+        "**Data architecture:** which data lives where, who is the single writer, how it is partitioned, replicated, and cached. If two services both think they own the same entity, you have no HLD.",
+        "**Application flow:** the critical request and write paths end to end — read path, write path, auth path — including sync vs async splits.",
+        "**Interfaces and contracts:** service APIs, events, and queue schemas at the field-and-semantics level. Enough to build against, not enough to compile.",
+        "**Non-functional strategy:** how scalability, availability, consistency, reliability, security, and observability are achieved — with numbers, not adjectives.",
+        "**Technology and deployment shape:** compute model, storage classes, network topology, and dependency map. Chosen to fit the NFRs, not to follow fashion."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from requirements to running system"
+    },
+    {
+      "type": "paragraph",
+      "text": "A good HLD is built in the same order every time because each step constrains the next. You start with **scenarios and NFRs with numbers** — not just “users can order” but “5k checkouts per second, p99 under 400ms, no lost orders on single-zone loss, read-after-write for the buyer’s own order.” Those numbers force the architecture. Then you build a **domain model** in the language of the business — Order, Payment, Inventory — and decide ownership: one entity, one writer. Shared mutable entities across services are where consistency goes to die, so this is where you kill them. From there you derive **components and flows**: what is synchronous on the user path, what is pushed behind a queue, what is cached, what is authoritative. The trade-off is always the same: putting work on the request path buys freshness and simplicity but sells latency and availability; pushing it async buys resilience and throughput but sells immediate consistency and operability. HLD makes that split explicit per flow."
+    },
+    {
+      "type": "mermaid",
+      "title": "Canonical request and write path",
+      "caption": "The flow almost every internet system reduces to. Learn to draw it from memory.",
+      "code": "flowchart TD\n  U[Users] --> E[CDN / Edge: TLS, cache, filter]\n  E --> G[Load Balancer / API Gateway]\n  G --> A[App Services: auth + logic]\n  A --> C[Cache: hot reads]\n  A --> DB[(Authoritative stores: SQL / NoSQL / Object / Search)]\n  A --> Q[Message Queue: side effects]\n  Q --> W[Async Workers: email, reindex, billing]\n  W --> DB\n  A --> O[Observability: logs, metrics, traces]\n  A --> R[Response via Gateway and Edge]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the diagram as a set of **load-bearing choices**, not plumbing. Edge exists so repeatable bytes and hostile traffic never reach your logic — the trade-off is staleness and invalidation complexity for massive read offload. The gateway exists so routing, auth enforcement, rate limiting, and versioning have one throat to choke — the trade-off is a critical hop that must itself scale and fail open or closed by policy. Services fan out to cache and authoritative stores because hot reads and durable writes have opposite needs; merging them gives you a store that is bad at both. Queues exist to **decouple fate**: the user request succeeds even if the email sender, search indexer, or webhook dispatcher is down — the trade-off is eventual consistency and a whole second system to monitor, retry, poison-queue, and backpressure. If you cannot point at each arrow and state what breaks when it is cut, you do not have an HLD yet."
+    },
+    {
+      "type": "mermaid",
+      "title": "Decomposition into ownership boundaries",
+      "caption": "HLD cuts by data ownership and failure isolation, not by entity size.",
+      "code": "graph LR\n  Client[Client] --> Gateway[API Gateway]\n  Gateway --> Catalog[Catalog Service]\n  Gateway --> Orders[Order Service]\n  Gateway --> Payments[Payment Service]\n  Catalog --> CDB[(Catalog DB + Cache)]\n  Orders --> ODB[(Order DB)]\n  Payments --> LDB[(Ledger Store)]\n  Orders --> Q[Order Events Queue]\n  Q --> Fulfill[Fulfillment Workers]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every HLD abstraction buys something and hides something. Say both.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Stay at component-and-contract level",
+          "Document survives 6-12 months of code churn; reviewers debate structure, not style",
+          "Implementers must still resolve schema, edge cases, and failure handling — ambiguity if contracts are vague"
+        ],
+        [
+          "Split into services by ownership",
+          "Independent deploy, scale, and failure isolation; clear data writer per entity",
+          "Network, serialization, versioning, distributed tracing, and eventual consistency overhead"
+        ],
+        [
+          "Put reads behind CDN + cache",
+          "Order-of-magnitude read scale and lower p99; origin survives spikes",
+          "Staleness, invalidation races, and thundering-herd on expiry — you now own a consistency story"
+        ],
+        [
+          "Push side effects to queues/workers",
+          "Request path stays fast and available when downstream is sick; natural retry and smoothing",
+          "At-least-once semantics, duplicates, ordering limits, poison messages, and a second operational surface"
+        ],
+        [
+          "Insert gateway / load balancer tier",
+          "Single place for routing, auth, throttling, and rollout control; even load spread",
+          "Extra latency hop and a hard dependency — misconfig here is a global outage, not a local bug"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The meta-trade-off is **precision vs shelf life**. The more implementation detail you freeze in HLD — exact columns, class diagrams, library versions — the faster the document rots, because those facts change weekly while boundaries change yearly. But go too abstract and the HLD cannot guide anyone: two teams will build the same entity twice with different semantics. The fix is to be ruthlessly precise only about **contracts, ownership, flows, and NFR math**, and deliberately vague about everything else. State request rates, data sizes, retention, consistency windows, and timeout/retry budgets in numbers. Leave method names to LLD."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How HLD fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bad HLD does not fail at review time. It fails at 2 a.m. six months later, and the symptom always traces back to something the diagram waved away. The most expensive failures are not missing boxes — they are missing **ownership, failure, and load stories**. When nobody named a single writer for an entity, you get dual writes and silent divergence. When nobody defined timeout, retry, and idempotency, a transient blip becomes a duplicate-charge storm. When nobody sized caches, queues, and connection pools against real numbers, the first traffic spike turns every arrow in the diagram red at once. A serious HLD therefore reads like a pre-mortem: for each dependency, what happens on slow, down, and saturated — and what the user still gets."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Dual-owned data with no single writer:** symptom is entities that disagree — order says paid, ledger says not. Reads flip-flop by which replica or service you hit. Fix is ownership, not more sync jobs.",
+        "**Synchronous fan-out on the critical path:** symptom is p99 latency that tracks your slowest dependency and cascading timeouts. One sick downstream takes the whole checkout with it. Fix is cache, degrade, or move to async.",
+        "**Cache without invalidation and stampede control:** symptom is stale catalog or pricing after writes, then origin collapse on key expiry when thousands refill at once. Fix is TTL plus versioning or write-through/invalidate plus request coalescing.",
+        "**Queue as fire-and-forget:** symptom is silently dropped side effects, duplicate emails or charges on retry, and a dead-letter queue nobody alarms on. Fix is idempotent consumers, explicit ordering guarantees, and alerts on lag and poison.",
+        "**Gateway as single policy blob:** symptom is one bad rate-limit or auth rule producing a global outage with no safe rollback. Fix is staged rollout, per-route limits, and fail-closed vs fail-open decided per endpoint in advance."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The symptom to memorise",
+      "text": "If users see **different truth from different paths** — my order exists here but not there, balance changes on refresh — suspect ownership and consistency, not the database. That is an HLD bug. No index or query rewrite fixes a system where two components both believe they are authoritative."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "A concrete HLD fragment, not implementation"
+    },
+    {
+      "type": "code",
+      "language": "yaml",
+      "filename": "checkout-hld.yaml",
+      "code": "system: checkout\nnon_functional_targets:\n  throughput: 5000 checkouts/sec sustained\n  latency_p99: <400ms end-to-end\n  availability: survive single-zone loss for reads+writes\n  consistency: read-after-write for buyer's own order; eventual elsewhere\ncomponents:\n  - edge: serves static assets, terminates TLS, caches GET /catalog/*\n  - gateway: routes, enforces auth, per-route rate limits\n  - order-service: SOLE WRITER of Order; exposes POST /orders (idempotent via Idempotency-Key)\n  - payment-service: SOLE WRITER of Ledger; exposes POST /charges\n  - catalog-service: serves reads from cache, authoritative in catalog-db\nflows:\n  write_path:\n    - client -> gateway -> order-service: create PENDING order\n    - order-service -> payment-service [sync, timeout 800ms, retry 1x, idempotent]: charge\n    - order-service -> order-events [async]: OrderPlaced\n    - workers consume OrderPlaced: reserve inventory, send confirmation, update search\nfailure_policy:\n  payment_slow: fail order fast, do NOT retry blindly; reconcile via ledger query\n  queue_down: accept orders, page on lag > 60s, shed non-critical consumers first"
+    },
+    {
+      "type": "paragraph",
+      "text": "This fragment clarifies because it contains **zero classes and zero columns** yet an engineer could build against it. It names writers, gives the idempotency contract, splits sync from async with a timeout and retry budget, and states consistency in testable terms — read-after-write for one scope, eventual for the rest. That is why HLD lives in contracts and numbers: they are stable enough to coordinate teams and precise enough to catch the duplicate-charge and split-brain bugs before they ship. If your HLD cannot be turned into monitors and alerts — queue lag, gateway error budget, cache hit rate, cross-zone write success — it described hopes, not a system."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Frame requirements and NFRs first",
+          "text": "Restate functional scope in 2-3 scenarios, then force numbers: users, reads vs writes, data size, retention, latency, availability. Interviewers fail candidates who draw boxes before asking for scale — without numbers every architecture is defensible and every choice is arbitrary."
+        },
+        {
+          "title": "Name domain entities and ownership",
+          "text": "List 3-5 core entities and assign each exactly one writer service. Say it out loud: Order belongs to Order Service, nobody else writes it. This one sentence prevents most consistency follow-up traps."
+        },
+        {
+          "title": "Draw the happy-path flow, then the write path",
+          "text": "Sketch client to edge to gateway to services to data, plus the async branch. Mark what is sync with timeouts and what is eventual. The split is the design; be ready to defend why each hop is or is not on the user path."
+        },
+        {
+          "title": "Attach the NFR math",
+          "text": "Show back-of-envelope sizing: requests per second × payload, cache hit assumption, DB partitions, queue depth under peak. You do not need exact arithmetic — you need to show capacity follows from stated targets, not vibes."
+        },
+        {
+          "title": "Pre-empt failure and deep-dive",
+          "text": "Volunteer what happens when the cache, queue, or one zone dies, then invite the deep dive: consistency, caching, sharding, or auth. Strong candidates spend the last third on one component’s trade-offs instead of adding more boxes."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "What separates a pass from a fail is not completeness — it is **explicit trade-offs under questioning**. A passing candidate says: I cache catalog reads so origin survives flash sales, which means I accept seconds of staleness and must version or invalidate on price change. A failing candidate says: I added cache for performance. Interviewers probe exactly where you hand-waved: Why SQL here and not object storage? Why sync charge instead of async? What breaks if the queue lags an hour? If your answer is another box, you lose. If your answer is a cost you accepted and a mitigation you named, you win."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**HLD is the diagram.** No — the diagram is the index. The design is the contracts, ownership, flows, and NFR decisions the diagram points to. A pretty diagram with no idempotency, timeout, or consistency story is a blank page.",
+        "**HLD should list every technology version.** Pinning versions in HLD guarantees rot. Pin the *properties you need* — durable single-writer store with range scans — and let LLD pick the product. Choose tech to fit NFRs, not resumes.",
+        "**More services means better HLD.** Each boundary adds latency, failure modes, versioning, and ops load. Start from a modular monolith in your head and split only where scale, ownership, or blast radius forces it — and say which force forced it.",
+        "**Async fixes everything.** Queues trade availability for consistency and operability. If the user must know the result now — payment authorised or not — async just moves the wait and adds duplicates and ordering pain.",
+        "**Non-functionals are adjectives.** Saying scalable, reliable, and fast commits you to nothing. Saying 5k writes/sec, p99 400ms, RPO zero for ledger, RTO minutes for zone loss commits you to partitions, replicas, caches, and runbooks — which is the whole point."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to write HLD and when to skip it"
+    },
+    {
+      "type": "table",
+      "caption": "HLD pays off when reversal cost is high. Otherwise it is overhead.",
+      "headers": [
+        "Situation",
+        "Do HLD?",
+        "Why"
+      ],
+      "rows": [
+        [
+          "New service with multiple teams or dependencies",
+          "Yes — full HLD",
+          "Boundaries, contracts, and data ownership are coordination; getting them wrong means cross-team rework"
+        ],
+        [
+          "Scaling, multi-region, or strict availability target",
+          "Yes — failure-first HLD",
+          "You need explicit replication, failover, consistency windows, and load math before code"
+        ],
+        [
+          "Single-team CRUD with low scale and churn",
+          "Lightweight sketch only",
+          "A one-page flow plus entity ownership is enough; heavy HLDD slows you without reducing risk"
+        ],
+        [
+          "Prototype to validate product idea",
+          "Skip or time-box to an hour",
+          "Speed of learning dominates reversal cost; build thin, then write HLD once the shape survives contact"
+        ],
+        [
+          "Change confined inside one component",
+          "No — write LLD instead",
+          "No cross-boundary or NFR impact means HLD adds no information; specify classes, schemas, and tests"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**HLD is the macro-level decision set — components, data ownership, flows, contracts, and how we hit scale and failure targets — made before and to constrain detailed design.** Say that, then prove it by naming one boundary, one owner, one sync-vs-async split, and the trade-off you accepted."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:07:21.702Z",
+    "problems": []
+  }
+}

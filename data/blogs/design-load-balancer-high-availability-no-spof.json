@@ -1,0 +1,412 @@
+{
+  "slug": "design-load-balancer-high-availability-no-spof",
+  "title": "Design Load Balancer (High Availability - No SPOF)",
+  "summary": "HA load balancer design that kills the SPOF at DNS, LB, and backend layers — with active-active data plane, consensus-driven control plane, and explicit L4/L7 trade-offs.",
+  "kind": "HLD",
+  "problemSlug": "design-load-balancer-high-availability---no-spof-97-319",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Medium",
+  "coverEmoji": "🌐",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "hld",
+    "load-balancer",
+    "high-availability",
+    "fault-tolerance",
+    "consensus"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.hellointerview.com/community/questions/nlb-design/cmf3jun8g045m07ad10qtzokk",
+      "title": "Design a Load Balancer - Hello Interview",
+      "source": "hellointerview.com",
+      "kind": "aggregate",
+      "companies": [
+        {
+          "name": "Amazon",
+          "quote": "Asked at: Amazon"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "Load Balancer — System Design Interview Question | by Anu Upadhyay",
+      "url": "https://medium.com/@anuupadhyay1994/load-balancer-system-design-interview-question-60e3ba231e3c",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Load Balancing Strategies for System Design Interviews - LinkedIn",
+      "url": "https://www.linkedin.com/posts/ankit-pangasa_a-simple-system-design-question-that-filters-activity-7419703249676652544-TLEU",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "Load Balancer - System Design Interview Question - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/load-balancer-system-design-interview-question/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Noob: How to correctly use load balancers to scale a system? - Reddit",
+      "url": "https://www.reddit.com/r/devops/comments/9aqxsa/noob_how_to_correctly_use_load_balancers_to_scale/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Interview Questions on Load Balancer - Hands On Example - YouTube",
+      "url": "https://www.youtube.com/watch?v=6740ozO_j6U",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design a Load Balancer - Hello Interview",
+      "url": "https://www.hellointerview.com/community/questions/nlb-design/cmf3jun8g045m07ad10qtzokk",
+      "source": "hellointerview.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the interviewer is really testing",
+      "text": "Nobody cares if you can recite round-robin. The real test is: **can you spot every single point of failure you just drew and eliminate it without creating a new one?** A single load balancer in front of N servers is a better bottleneck, not a solution. They want DNS to LB redundancy, LB-to-LB state sync, health checking that does not flap, L4 vs L7 placement, and what happens when the control plane partitions. If you do not talk about consensus, failure detection, and connection fate on LB death, you fail the Medium bar."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a highly available load-balancing tier that fronts a fleet of application servers and has **no single point of failure**. Clients arrive over the public internet with mixed traffic: short HTTP requests, long-lived WebSockets, and TLS-terminated API calls. The tier must spread load evenly, route around slow or dead backends in seconds, survive the death of any load-balancer node, any availability zone, and a control-plane partition, and scale horizontally from thousands to millions of requests per second without manual VIP moves. You must pick where L4 and L7 live, how backends are chosen, how health is decided, and how configuration propagates safely."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Route `TCP/UDP` flows at L4 and `HTTP/gRPC/WebSocket` requests at L7 behind one stable endpoint.",
+        "Detect unhealthy backends and stop sending them new flows while draining in-flight flows gracefully.",
+        "Survive loss of any LB node, any zone, and stale config with no manual failover and minimal connection drop.",
+        "Add and remove LB nodes and app servers with bounded reshuffling — no full rehash on every membership change.",
+        "Expose explicit trade-offs: latency vs intelligence, consistency vs availability of routing state, cost of statefulness."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you design"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "What traffic mix?",
+          "text": "Short stateless HTTP is trivial for any algorithm. Long-lived WebSockets, gRPC streams, and sticky sessions force least-connections or consistent hashing and make LB death expensive because connection state dies. Pin this down first because it dictates L4 vs L7 and whether you need connection migration or just retry."
+        },
+        {
+          "title": "L4, L7, or both?",
+          "text": "L4 is cheap, fast, protocol-agnostic, handles millions of packets per core but cannot see URL, header, or cookie. L7 can do path routing, auth, retries, and stickiness but terminates TLS and burns CPU. Most passing answers run L4 at the edge and L7 one hop inside. Ask which the interviewer wants."
+        },
+        {
+          "title": "Stateful or stateless clients?",
+          "text": "If sessions must stick, you need hash-on-cookie or hash-on-IP plus a story for backend death: rehash or replicate session. If stateless, you can be ruthless — any healthy backend will do. This choice decides whether backend churn causes user-visible logouts."
+        },
+        {
+          "title": "Failure and consistency budget?",
+          "text": "How fast must a dead backend be ejected — 1s, 5s, 30s? Can two LBs briefly disagree on membership? They can, and they should, because strong agreement on every packet kills throughput. Agree that data-plane routing is eventually consistent while control-plane config is versioned and consensus-backed."
+        },
+        {
+          "title": "Scale and blast radius?",
+          "text": "100 RPS in one region needs two LBs and DNS failover. 2M RPS across three zones needs Anycast, ECMP, horizontal LB scale-out, and zone-aware pools. Ask for RPS, connection duration, TLS share, and region count so you do not overbuild or underbuild."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements agreed"
+    },
+    {
+      "type": "table",
+      "caption": "Scope locked before drawing boxes.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Single virtual endpoint for L4 + L7, stable across node loss",
+          "Clients cannot track LB membership"
+        ],
+        [
+          "Functional",
+          "Pluggable selection: weighted round-robin, least-conn, consistent hash",
+          "Heterogeneous servers and sticky traffic need different policies"
+        ],
+        [
+          "Functional",
+          "Active health checking + passive outlier ejection",
+          "Active probes catch dead nodes; passive catches slow nodes probes miss"
+        ],
+        [
+          "Non-functional",
+          "No SPOF: N+2 LB capacity, multi-AZ, no shared fate",
+          "Any one LB or zone can vanish"
+        ],
+        [
+          "Non-functional",
+          "P99 added latency <2ms at L4, <10ms at L7; failover <5s",
+          "LB must not become the tail-latency source"
+        ],
+        [
+          "Non-functional",
+          "Bounded reshuffle on churn: O(K/N) flows move",
+          "Naive modulo rehash melts the fleet on every scale event"
+        ],
+        [
+          "Non-functional",
+          "Versioned, rollback-safe config via consensus",
+          "Bad push must not blackhole all zones at once"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the single smart LB"
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive drawing is `DNS -> one LB -> N servers`. The LB keeps a list, round-robins, runs a health ping, and everyone goes home. It looks correct because it solves distribution. It fails because it concentrates fate: the LB is a throughput bottleneck, a failure domain, a deployment freeze, and a state graveyard. One kernel panic, one bad config push, one TLS cert expiry, one zone outage — and every backend is healthy but unreachable. Even with a hot standby, failover needs detection plus VIP movement plus connection rebuild, which means seconds of blackhole plus reset of every long-lived flow. Trade-off named: simplicity and perfect global view in exchange for total availability coupling. That is never acceptable for a front door."
+    },
+    {
+      "type": "mermaid",
+      "title": "Naive tier with built-in SPOF",
+      "caption": "One VIP, one box, total fate sharing.",
+      "code": "flowchart LR\n  C[Client] --> DNS[DNS single A record]\n  DNS --> LB[Single LB]\n  LB --> S1[App 1]\n  LB --> S2[App 2]\n  LB --> S3[App 3]"
+    },
+    {
+      "type": "paragraph",
+      "text": "DNS makes it worse, not better. A single A record with a 300-second TTL means clients and resolvers cache the dead VIP long after you fail over. Health checks inside one LB do not help because there is no one to check the checker. And round-robin on heterogeneous hardware actively harms tail latency: the weak box gets the same share as the 64-core box, queues, then poisons P99 for everyone. This is why interviewers push immediately to: who watches the load balancer, how does the VIP survive, and what happens to open connections when that box dies. If your answer is 까 put another LB in standby, you have only moved the SPOF to the failover mechanism itself unless failover is automatic, tested, and hitless."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Real design: remove SPOF at every layer"
+    },
+    {
+      "type": "paragraph",
+      "text": "The fix is three independent redundancies stacked: redundant entry, redundant LB data plane, redundant decision-making. Entry uses a combination of **Anycast or DNS with short TTL plus ECMP** so no single VIP lives on one box. The data plane is **active-active stateless-ish LBs** — all serving, all sharing the same backend view, none owning connections that cannot be retried elsewhere. The control plane that computes that backend view runs **consensus for config and gossip plus versioning for propagation**, so LBs can keep routing on last-known-good state even when the brain is partitioned. Trade-off named explicitly: you give up instant global agreement on the hot path to keep packets flowing during partitions, and you pay for extra LB capacity and cross-zone chatter to buy survival. That is the correct trade for a front door."
+    },
+    {
+      "type": "mermaid",
+      "title": "HA tier: Anycast + active-active L4/L7",
+      "caption": "Every layer has N+1. No box is special.",
+      "code": "flowchart TB\n  C[Clients] --> ANY[Anycast VIP plus ECMP]\n  ANY --> L4A[L4 LB AZ-a active]\n  ANY --> L4B[L4 LB AZ-b active]\n  ANY --> L4C[L4 LB AZ-c active]\n  L4A --> L7A[L7 Pool A]\n  L4B --> L7B[L7 Pool B]\n  L4C --> L7B\n  L7A --> P1[Backend Pool v42]\n  L7B --> P1\n  P1 --> S1[App 1]\n  P1 --> S2[App 2]\n  P1 --> S3[App N]\n  CP[Control Plane Raft] -. config v42 .-> L4A\n  CP -. config v42 .-> L4B\n  CP -. config v42 .-> L7A"
+    },
+    {
+      "type": "paragraph",
+      "text": "Place **L4 at the edge, L7 one hop in**. L4 nodes do DSR or full-proxy TCP forwarding with ECMP from the top-of-rack: they never parse HTTP, never terminate TLS, and push ~10x the packets per core of an L7 box. That keeps edge latency flat and lets you scale by just announcing the same Anycast prefix from more racks. L7 nodes behind them terminate TLS, enforce path and header routing, apply least-connections or consistent hashing, and own retries with budgets. Why split? Because mixing them forces every byte through TLS and HTTP parsing even for traffic that only needs forwarding. Trade-off: two hops add ~0.5-1ms and an extra fleet to operate, but isolate CPU-heavy L7 faults from edge availability. When L7 saturates, L4 still answers and sheds by queueing, not by dying."
+    },
+    {
+      "type": "paragraph",
+      "text": "Health is two signals, not one. **Active probes** from every LB — TCP connect, HTTP `/healthz`, plus synthetic request latency — build a per-backend score every 2-5 seconds with `2 failures to eject, 3 successes to rejoin`. **Passive outlier detection** watches real traffic: 5xx rate, P99 spike, connection timeouts over a 30-second window eject the slow-but-not-dead node that active pings always miss. Each LB decides locally and gossips suspicions; the control plane promotes to authoritative eject only on quorum. Why local-first? Waiting for consensus on every flap would keep sending traffic to a burning box for seconds. Trade-off: brief disagreement between LBs causes slightly uneven spread, but buys sub-second reaction. Flap damping with exponential backoff stops a grey node from rejoining and getting hammered every 10 seconds."
+    },
+    {
+      "type": "mermaid",
+      "title": "Separation of hot path and brain",
+      "caption": "Data plane never blocks on consensus.",
+      "code": "classDiagram\n  class DataPlane {\n    +routeFlow(flowKey) string\n    +drainOnEject(endpoint) void\n    +enforceRetryBudget() bool\n  }\n  class ControlPlane {\n    +proposeConfig(version) bool\n    +rolloutCanary(percent) bool\n    +rollback(version) bool\n  }\n  class BackendPool {\n    +addEndpoint(addr) void\n    +markUnhealthy(addr) void\n    +getHealthy() list\n  }\n  class HashRing {\n    +addNode(node) void\n    +removeNode(node) void\n    +getNode(key) string\n  }\n  DataPlane --> BackendPool\n  ControlPlane --> BackendPool\n  DataPlane --> HashRing\n  ControlPlane --> HashRing"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Core routing logic"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not use `hash % N` and do not use pure round-robin on mixed hardware. Use **consistent hashing with bounded loads for sticky traffic and weighted least-connections for stateless traffic**, keyed on a stable flow ID. Each backend gets 100-200 virtual nodes on the ring so adding node 11 of 10 moves roughly `1/11` of keys, not everything. Weights encode CPU and memory headroom and are decayed by outstanding requests. This is the code you should be able to write cold: a ring lookup plus a health filter plus a load cap. Trade-off stated out loud: consistent hashing costs a lookup and some imbalance to buy minimal churn; least-connections costs per-request bookkeeping to buy heterogeneity awareness. Run both and select by route: `/api` stateless goes least-conn, WebSocket upgrade goes hashed."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "HaPicker.java",
+      "code": "import java.util.*; \npublic class HaPicker {\n    private final TreeMap<Long, String> ring = new TreeMap<>();\n    private final Map<String, Integer> weights = new HashMap<>();\n    private final Map<String, Integer> inflight = new HashMap<>();\n    private final Set<String> healthy = new HashSet<>();\n    private static final int VNODES = 160;\n    public synchronized void addBackend(String addr, int weight) {\n        weights.put(addr, weight);\n        inflight.putIfAbsent(addr, 0);\n        healthy.add(addr);\n        for (int i = 0; i < VNODES; i++) {\n            long h = hash(addr + \"#\" + i);\n            ring.put(h, addr);\n        }\n    }\n    public synchronized void setHealthy(String addr, boolean up) {\n        if (up) healthy.add(addr); else healthy.remove(addr);\n    }\n    public synchronized String pickSticky(String flowKey) {\n        if (ring.isEmpty()) return null;\n        long h = hash(flowKey);\n        for (int i = 0; i < ring.size(); i++) {\n            Map.Entry<Long, String> e = ring.ceilingEntry(h);\n            if (e == null) e = ring.firstEntry();\n            String cand = e.getValue();\n            h = e.getKey() + 1;\n            if (healthy.contains(cand) && !overloaded(cand)) return cand;\n        }\n        return pickLeastConn();\n    }\n    public synchronized String pickLeastConn() {\n        String best = null; double bestScore = Double.MAX_VALUE;\n        for (String b : healthy) {\n            double score = (double) inflight.getOrDefault(b, 0) / weights.getOrDefault(b, 1);\n            if (score < bestScore) { bestScore = score; best = b; }\n        }\n        return best;\n    }\n    private boolean overloaded(String b) {\n        int cap = weights.getOrDefault(b, 1) * 4;\n        return inflight.getOrDefault(b, 0) >= cap;\n    }\n    public synchronized void acquired(String b) { inflight.merge(b, 1, Integer::sum); }\n    public synchronized void released(String b) { inflight.merge(b, -1, Integer::sum); }\n    private long hash(String s) {\n        long h = 1125899906842597L;\n        for (int i = 0; i < s.length(); i++) { h = 31 * h + s.charAt(i); }\n        return h & Long.MAX_VALUE;\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "health_daemon.py",
+      "code": "import time, collections\nFAIL_TO_EJECT = 2\nOK_TO_REJOIN = 3\nBACKOFF_BASE = 5\nfails = collections.defaultdict(int)\noks = collections.defaultdict(int)\nbackoff_until = {}\ndef probe(addr):\n    # tcp + /healthz + p99 sample; return (up: bool, latency_ms: float)\n    raise NotImplementedError\ndef should_route(addr, now):\n    return now >= backoff_until.get(addr, 0)\ndef loop(backends, eject, rejoin):\n    while True:\n        now = time.time()\n        for b in backends:\n            try:\n                up, _ = probe(b)\n            except Exception:\n                up = False\n            if up:\n                fails[b] = 0\n                oks[b] += 1\n                if oks[b] >= OK_TO_REJOIN:\n                    rejoin(b)\n                    oks[b] = 0\n            else:\n                oks[b] = 0\n                fails[b] += 1\n                if fails[b] >= FAIL_TO_EJECT and should_route(b, now):\n                    eject(b)\n                    fails[b] = 0\n                    # flap damping: doubling quarantine on repeated eject\n                    prev = backoff_until.get(b, 0)\n                    wait = BACKOFF_BASE if prev <= now else min(300, (prev - now) * 2)\n                    backoff_until[b] = now + wait\n        time.sleep(2)"
+    },
+    {
+      "type": "table",
+      "caption": "Cost model to quote when asked about scale.",
+      "headers": [
+        "Operation",
+        "Cost",
+        "Note"
+      ],
+      "rows": [
+        [
+          "Route one flow (L4)",
+          "O(1) hash + table lookup",
+          "No consensus, no cross-node RPC on hot path"
+        ],
+        [
+          "Sticky pick (L7 ring)",
+          "O(log V) ring walk, V ~ backends x vnodes",
+          "Bounded scan + load cap avoids hot vnode"
+        ],
+        [
+          "Least-conn pick",
+          "O(H) over healthy set",
+          "H is small per zone; cache top-K if H > 1k"
+        ],
+        [
+          "Membership change",
+          "O(K/N) keys move, K keys, N nodes",
+          "Vs O(K) for modulo hash — the whole point of the ring"
+        ],
+        [
+          "Health probe fan-out",
+          "O(L x B) probes per interval",
+          "L LBs x B backends; jitter + zone-local probing to avoid thundering probe"
+        ],
+        [
+          "Config push",
+          "O(L) versioned pull, canary by percent",
+          "Control plane never in packet path"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Hardest follow-up: consensus without stalling packets"
+    },
+    {
+      "type": "paragraph",
+      "text": "The trap is putting consensus on the packet path. Do not. The data plane routes on **local, version-stamped snapshot `v42`** and keeps serving it even if the control plane is partitioned — availability over consistency where it matters. The control plane uses **Raft for leader election and config commits**: membership changes, weight updates, and eject decisions are proposed, quorum-committed, then pulled by LBs with version vectors and checksums. Rollouts are canary: 1% then 10% then 100% of LBs, with automatic rollback if error budget burns. If two zones disagree, the older version keeps serving and the newer one wins only after quorum — brief imbalance, zero blackhole. Trade-off to say verbatim: strong consistency for who *should* get traffic, eventual consistency for who *does* get traffic this millisecond. An LB that dies takes only its in-flight flows with it; clients retry idempotent requests against the Anycast VIP and land on a surviving LB with the same ring version, so at most `1/L` of flows reset and sticky flows rehash deterministically."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Three ways candidates die here",
+      "text": "First, **retry storms**: L7 retries 3x to a different backend on every 500 and triples load exactly when the fleet is sickest — fix with a retry budget of ~3% and hedge only after P95. Second, **split-brain VIP**: two LBs both claim the same IP after a partition and blackhole half of ECMP — fix with BGP session health tied to LB liveness so dead speakers withdraw routes. Third, **TLS fate sharing**: one cert, one termination fleet, one expiry — pin expiry monitoring and hot-reload into the design or your HA story is fiction."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "L4 vs L7 — where does this header route?",
+          "text": "Answer with a packet walk: SYN hits ECMP to any L4, forwarded by 5-tuple hash to preserve flow affinity, then L7 terminates TLS and routes on path or cookie. Say when you would collapse them: tiny scale or pure TCP proxy where HTTP parsing is pure overhead."
+        },
+        {
+          "title": "How do health checks avoid flapping and herding?",
+          "text": "Answer: per-LB thresholds, jittered intervals, flap backoff, zone-local probing aggregated by quorum. Never have every LB probe every backend in lockstep or you DDoS your own fleet every 2 seconds."
+        },
+        {
+          "title": "What happens when an LB dies mid-connection?",
+          "text": "Answer: L4 flows reset unless you replicate conntrack — which you should not at scale — so design for fast retry: idempotency keys, 408 + Retry-After, client backoff with jitter. Sticky WebSockets reconnect and rehash to the next healthy backend; drain on voluntary removal with 30s linger."
+        },
+        {
+          "title": "How does config propagate safely?",
+          "text": "Answer: Raft-committed version, signed, pulled not pushed, canary by LB percent and zone, auto-rollback on burn. Show version in every routing decision log so a bad push is attributable in seconds."
+        },
+        {
+          "title": "Kubernetes or cloud-native variant?",
+          "text": "Answer: replace ECMP with kube-proxy or service mesh sidecars for east-west, keep Anycast L4 at ingress, use endpoint slices as the backend pool feed. Same principles, different membership source — the ring and health logic do not change."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Slow backend that passes TCP ping but P99 is 8s — needs passive outlier ejection, not just active probes.",
+        "Heterogeneous pool after a hardware refresh — equal-share round-robin will drown the old boxes; weights must be mandatory.",
+        "Thundering reconnect after a zone blip — all clients retry at once; require jittered backoff and L4 queue-based shedding.",
+        "Sticky session backend dies — caller must get a clean rehash plus session-miss signal, not an infinite redirect loop.",
+        "Config version skew during rollout — two LBs route same key differently; bound skew window and log version per decision.",
+        "BGP/ECMP imbalance hashing only on IP — elephant flows collide; hash on full 5-tuple and rebalance prefix weights.",
+        "TLS rotation and cipher mismatch — hot-reload certs, support two live certs during rotation, fail closed with clear alert."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak vs strong signals for this prompt.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "SPOF removal",
+          "Adds a standby LB, calls it HA",
+          "Active-active + Anycast/ECMP + automatic route withdrawal, quantified N+2"
+        ],
+        [
+          "Routing",
+          "Round-robin for everything",
+          "Weighted least-conn vs consistent hash chosen by traffic type, with churn math"
+        ],
+        [
+          "Health",
+          "One HTTP ping",
+          "Active + passive, quorum eject, flap damping, drain semantics"
+        ],
+        [
+          "Consistency",
+          "Consensus on every request",
+          "Raft for config, local snapshots for packets; names the AV-over-C trade"
+        ],
+        [
+          "Failure story",
+          "No SPOF, therefore safe",
+          "Walks LB death, zone death, partition, retry storm with budgets and client behavior"
+        ],
+        [
+          "Operations",
+          "It just scales",
+          "Versioned canary rollout, rollback trigger, per-version observability, TLS lifecycle"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "45-minute plan",
+      "text": "Spend it like this: **0-5** clarify traffic, L4/L7, stickiness, scale. **5-12** requirements and the single-LB takedown. **12-28** draw Anycast plus active-active L4/L7, ring picker, dual health signals. **28-38** go deep on consensus-separated control plane, failover walk, and retry budgets — this is where offers are won. **38-45** edge cases and canary rollout. If you are still debating algorithms at minute 35, you are behind; force the failure discussion."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:41:53.966Z",
+    "problems": []
+  }
+}

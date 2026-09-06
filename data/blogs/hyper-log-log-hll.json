@@ -1,0 +1,310 @@
+{
+  "slug": "hyper-log-log-hll",
+  "title": "Hyper Log Log (HLL)",
+  "summary": "HyperLogLog estimates distinct counts in kilobytes by trading exactness for mergeable, bounded memory — hash, register max, harmonic mean.",
+  "kind": "HLD",
+  "problemSlug": "hyper-log-log-hll-149-317",
+  "topic": "Resources Efficient & Extensible System Design",
+  "difficulty": "Medium",
+  "coverEmoji": "📊",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "hyperloglog",
+    "count-distinct",
+    "probabilistic-data-structures",
+    "system-design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "HyperLogLog - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/HyperLogLog",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "My favorite algorithm (and data structure): HyperLogLog",
+      "url": "https://odino.org/my-favorite-data-structure-hyperloglog/",
+      "source": "odino.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "HyperLogLog never stores what it counted. It stores **how lucky the hashes got**, and infers how many draws must have happened to get that lucky. That is the entire trade-off: **bounded memory and mergeability in exchange for ~2% error and no per-item recall.** If you need to list *who* was seen, you picked the wrong structure."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "HyperLogLog (HLL) answers one question: **how many distinct inputs have I seen?** It does not answer whether a specific input was seen, how often it appeared, or what the top items were. Input elements are hashed to fixed-width pseudo-random bitstrings, and only a small array of `m = 2^p` byte-sized registers is kept — typically 256 to 16384 entries. Each `add(x)` updates at most one register. Each `count()` folds all registers into a single estimate with a correction for small and very large ranges. `merge()` takes the element-wise maximum of two sketches with the same precision. Memory stays flat no matter how many billions of distinct values flow through, and error stays proportionally flat as well. That flat-memory property is why it belongs in counting paths, rollups, and pre-aggregation layers where exact sets would blow up state, network, and storage."
+    },
+    {
+      "type": "paragraph",
+      "text": "Put numbers on it or you do not understand it. With precision `p=14`, you keep `16384` registers of ~6 bits each, roughly **12 KB**. Standard error is `1.04 / sqrt(m)`, so about **0.81%**. With `p=10`, you keep `1024` registers in under **1 KB** at about **3.25%** error. Cardinality range with a 64-bit hash is effectively up to billions without saturating, versus an exact hash set that costs tens of bytes *per distinct value* plus overhead. The trade-off is explicit: you buy three orders of magnitude less memory and the ability to merge sketches from a thousand shards, and you pay with an estimate that jitters run to run, collapses at tiny cardinalities unless corrected, and cannot be unwound back into members."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: luck as a measuring instrument"
+    },
+    {
+      "type": "paragraph",
+      "text": "Start with uniformity. A good 64-bit hash maps arbitrary strings to bitstrings where each bit is effectively an independent fair coin. The chance a fresh hash starts with `k` leading zeros followed by a one is `1 / 2^(k+1)`. Seeing a `k=0` pattern is ordinary. Seeing `k=10` in a small sample is suspicious. Seeing `k=20` means you probably drew on the order of a million values, because only then does a 1-in-a-million pattern become likely to appear. HLL inverts that logic: track the largest `k` observed, and estimate cardinality as roughly `2^k`. A single maximum is far too noisy — one lucky outlier doubles your answer — so the real algorithm does not keep one global maximum. It shards the observation space so outliers average out. That sharding is the reason HLL is stable where naive hit-a-rare-pattern counting is useless."
+    },
+    {
+      "type": "mermaid",
+      "title": "HLL add and estimate flow",
+      "caption": "One hash fans out to one register update; count folds all registers harmonically.",
+      "code": "flowchart LR\n    IN[raw element] --> H[hash to 64 bits]\n    H --> S[split bitstring]\n    S --> IDX[register index from first p bits]\n    S --> W[remaining bits]\n    W --> LZ[count leading zeros]\n    LZ --> REG[keep max per register]\n    REG --> EST[harmonic mean over registers]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Sharding works like this: take the first `p` bits of the hash as a register index `i`, and count leading zeros `rho` in the remaining bits. Keep `M[i] = max(M[i], rho)`. You now have `m` independent sub-experiments instead of one. If the true cardinality is `n`, each sub-stream sees about `n/m` values, so each register holds an estimate of `log2(n/m)`. Averaging them inverts back to `n`. Why the harmonic mean instead of an arithmetic mean or a median? Because the distribution of `2^M[i]` is heavily right-skewed — a single large register would dominate an arithmetic mean and inflate the answer. The harmonic mean damps large outliers by averaging reciprocals, which is exactly what you want when one shard got lucky. The trade-off: harmonic averaging buys robustness to variance, but it introduces systematic undercounting at small cardinalities and needs explicit bias tables or linear-counting fallback to stay honest below roughly `2.5 * m`."
+    },
+    {
+      "type": "paragraph",
+      "text": "The raw estimator is `E = alpha_m * m^2 / sum(2^-M[i])` where `alpha_m` is a bias constant per `m`. Production implementations then patch two ends. At the low end, when many registers are still zero, they switch to linear counting on the fraction of empty registers: `m * ln(m / V)`. That is why tiny sets — hundreds of distinct values in a `p=14` sketch — can still read accurately instead of returning zero or noise. At the high end with 32-bit hashes, collisions and saturation near `2^32` require a large-range correction; 64-bit hashes push that problem so far out that most systems ignore it. Later refinements keep a sparse representation while the sketch is mostly empty and only densify after a threshold, which cuts memory and network further for the common case of many small sketches. The trade-off every time: each correction buys accuracy in one regime and costs code paths, lookup tables, and subtle merge rules you must keep identical across writers."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The three operations"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "hll_core.py",
+      "code": "import hashlib\n\nclass TinyHLL:\n    def __init__(self, p=10):\n        self.p = p\n        self.m = 1 << p\n        self.regs = bytearray(self.m)\n\n    def _hash64(self, x: str) -> int:\n        # Use a uniform non-crypto hash in prod (e.g. xxhash/murmur).\n        # hashlib here is only for readability.\n        return int.from_bytes(hashlib.sha256(x.encode()).digest()[:8], \"big\")\n\n    def add(self, x: str):\n        h = self._hash64(x)\n        idx = h >> (64 - self.p)          # first p bits: which register\n        w = (h << self.p) & ((1 << 64) - 1)  # remaining bits\n        # rank = leading zeros in w plus 1, capped to fit a register\n        rank = 1\n        bit = 1 << 63\n        while bit & w == 0 and rank < 64 - self.p:\n            rank += 1\n            bit >>= 1\n        if rank > self.regs[idx]:\n            self.regs[idx] = rank\n\n    def merge(self, other: \"TinyHLL\"):\n        assert self.p == other.p, \"p must match or merge is garbage\"\n        for i in range(self.m):\n            if other.regs[i] > self.regs[i]:\n                self.regs[i] = other.regs[i]\n\n    def count(self) -> float:\n        import math\n        m = self.m\n        inv_sum = sum(2.0 ** -r for r in self.regs)\n        alpha = 0.7213 / (1 + 1.079 / m) if m >= 128 else 0.673 if m == 64 else 0.697 if m == 32 else 0.709\n        est = alpha * m * m / inv_sum\n        zeros = self.regs.count(0)\n        if est <= 2.5 * m and zeros:\n            est = m * math.log(m / zeros)  # linear counting fallback\n        return est"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that code for what it guarantees. `add` is idempotent and order-independent: replaying the same element cannot move a register backward, so duplicates, retries, and reordered delivery do not corrupt the estimate. That is why HLL survives at-least-once pipelines where exact counting would double-count. `merge` is just element-wise `max`, which is commutative, associative, and idempotent — shards, days, and regions can be combined in any order, re-merged after backfills, and cached without coordination. The trade-off: you gain a coordination-free rollup algebra, but you lose everything a set gives you — no subtraction, no intersection without much larger error, no listing, no per-key frequency. If your follow-up is *unique users who did A and B*, HLL alone cannot answer it without inclusion-exclusion hacks that explode variance."
+    },
+    {
+      "type": "table",
+      "caption": "HLL trade-offs, stated honestly.",
+      "headers": [
+        "Property",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Memory",
+          "Flat KBs for billions of distincts; sparse mode even smaller for tiny sketches",
+          "Fixed cost even when exact set would be smaller; register array per key/slice multiplies fast"
+        ],
+        [
+          "Accuracy",
+          "Predictable relative error 1.04/sqrt(m); good enough for funnels, quotas, capacity",
+          "Never exact; relative error means small sets jitter badly without linear-counting patch"
+        ],
+        [
+          "Mergeability",
+          "Max-merge is order-free and retry-safe; ideal for sharded pre-aggregation",
+          "No delete, no subtract, no reliable intersection; different p or hash = unmergeable"
+        ],
+        [
+          "Compute",
+          "O(1) add, tiny CPU per event; count is O(m) but amortised over reads",
+          "Hash quality is load-bearing; weak hash biases every estimate silently"
+        ],
+        [
+          "Operability",
+          "Sketches serialise to bytes; easy to store, ship, and cache",
+          "Version skew in constants, sparse-vs-dense encoding, or hash seed forks history"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "It fails first at the edges of its range. Below roughly `2.5 * m` distincts, the harmonic estimator under-reads unless the linear-counting fallback fires, so a dashboard counting distinct devices per small cohort wobbles by tens of percent or pins near zero if you skipped the correction. At the top end with 32-bit hashes, saturation and collisions flatten growth — your distinct-active-users curve mysteriously plateaus while raw event volume keeps climbing. Symptom to watch: estimate-to-exact ratio diverges only for small slices or only at huge scale, while mid-range slices look fine. Fix is not a bigger cluster; it is the right `p`, 64-bit hashes, and always-on range corrections tested against exact counts on sampled slices."
+    },
+    {
+      "type": "paragraph",
+      "text": "It fails second on identity and coordination, not math. Change the hash function, change the seed, change `p`, mix sparse and dense encodings across writers, or feed non-uniform IDs like sequential integers without hashing, and merges silently produce garbage — usually an undercount or a step-change after a deploy. There is no checksum that catches this; the bytes still parse. Symptom to watch: merged rollups disagree with the sum-of-parts logic you expect, estimates jump discontinuously at a release boundary, or backfilled partitions cannot be re-merged with live ones. Treat `hash + p + encoding version` as a contract pinned in config and validated at read time. Reject or upconvert mismatched sketches loudly instead of maxing arrays of different widths."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Estimate stuck while traffic grows: saturated registers, 32-bit hash, or capped rank width — check max register value and hash width.",
+        "Small slices read 0 or swing wildly: missing linear-counting fallback or `p` too large for the slice size — compare against exact count on a sample.",
+        "Step-change after deploy: hash function, seed, or serialisation changed — diff sketch headers before and after.",
+        "Merge makes counts drop: mixed `p` or mixed sparse/dense writers — assert equal `p` and normalise encoding on ingest.",
+        "Per-tenant memory blowup: one sketch per user/key with large `p` — switch to smaller `p` per slice or sparse encoding, roll up less selective dimensions."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Merging different precisions is not averaging",
+      "text": "You cannot merge a `p=10` sketch with a `p=14` sketch by truncating or padding. Register boundaries mean different things, so element-wise max is meaningless. Either **rebuild from raw**, keep **parallel sketches**, or downscale the higher-precision sketch with a defined fold — and only if every writer agrees on the rule beforehand."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Tuning precision: the only knob that matters"
+    },
+    {
+      "type": "table",
+      "caption": "Precision p sets memory and error together. Pick by slice size, not global cardinality.",
+      "headers": [
+        "p",
+        "Registers (m)",
+        "Sketch size",
+        "Std error",
+        "Sane use"
+      ],
+      "rows": [
+        [
+          "10",
+          "1024",
+          "~1 KB",
+          "~3.2%",
+          "Per-page / per-cohort slices where 3% jitter is fine"
+        ],
+        [
+          "12",
+          "4096",
+          "~3 KB",
+          "~1.6%",
+          "Default for product analytics rollups"
+        ],
+        [
+          "14",
+          "16384",
+          "~12 KB",
+          "~0.8%",
+          "Global uniques, billing-adjacent metering with sampling cross-checks"
+        ],
+        [
+          "16",
+          "65536",
+          "~48 KB",
+          "~0.4%",
+          "Rare; only when error budget demands it and slice count is small"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Choose `p` from your smallest slice, not your largest total. Error is relative, so 3% on a 200-distinct cohort is useless noise while 3% on 200 million is a fine business answer. That pushes you toward two tiers: smaller `p` for high-cardinality slicing dimensions, larger `p` only for the few global counters that justify the bytes times the number of time buckets times the number of shards. Sparse encoding complicates this in your favour — mostly-empty sketches cost proportional to non-zero registers — but only if every reader and store understands both forms. The trade-off: higher `p` buys lower variance at linear memory cost per sketch, and that cost multiplies by every dimension you slice on. Ten thousand slices at `p=14` is 120 MB per time bucket before replication; the same at `p=10` is under 10 MB."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Pin the boring parts",
+      "text": "Hash algorithm, seed, `p`, 64-bit width, sparse threshold, and bias constants are part of the data format. Version them, expose them in the sketch header, and reject unknown versions at merge time. Most HLL incidents are schema incidents wearing a statistics costume."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Count distinct users / devices / queries at scale",
+          "text": "State the constraint first: exact sets cost memory proportional to distincts and cannot be merged without shipping sets. Propose per-shard HLL, periodic max-merge, and serving from merged sketches. Name the trade-off: bounded error for bounded memory."
+        },
+        {
+          "title": "Defend the error bound",
+          "text": "Write `1.04 / sqrt(2^p)` on the board. Size `p` from the error budget and the slice count, not vibes. Say when you would cross-check with exact counts on a sampled window."
+        },
+        {
+          "title": "Handle the follow-ups",
+          "text": "Duplicates and retries are free because add is idempotent. Late and backfilled data merges with max. Small cohorts need linear-counting fallback; intersections and funnels need a different sketch or inclusion-exclusion with honest variance."
+        },
+        {
+          "title": "Draw the data flow",
+          "text": "Sketch the path: event → hash → per-shard registers → periodic serialise → rollup merge by time and dimension → read path computes estimate. Mark where `p` and hash version are enforced."
+        },
+        {
+          "title": "Name what you would not do",
+          "text": "No per-member lookup, no deletes, no exact billing from HLL alone, no merging across different `p`. If the interviewer asks for *who*, pivot to sets, bitmaps, or sampling — do not stretch HLL past count-distinct."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "It stores a sample of users — it stores no members at all, only per-register maxima. You cannot enumerate or test membership.",
+        "More memory always fixes small counts — below ~2.5m, accuracy comes from linear counting and sparse handling, not just larger p.",
+        "Merging is averaging — merging is element-wise max. Averaging estimates double-counts overlap; max correctly unions without knowing overlap.",
+        "Any hash works — uniformity is the estimator. A weak or seeded-differently hash biases every register and silently shifts the count.",
+        "It can do intersections and funnels natively — single HLLs cannot subtract or intersect reliably. Reach for inclusion-exclusion with wide error bars, or a sketch built for set operations.",
+        "Error means it drifts over time — error is bounded relative error, not accumulating drift. Re-merging the same data does not grow error."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, when to avoid it"
+    },
+    {
+      "type": "table",
+      "caption": "Use HLL when mergeable approximate distincts are enough; avoid it when identity matters.",
+      "headers": [
+        "Use HLL when",
+        "Avoid HLL when"
+      ],
+      "rows": [
+        [
+          "Counting distincts across shards, regions, or days that must roll up without coordination",
+          "You must list members, audit membership, or answer *was X present?* — use a set, index, or filter"
+        ],
+        [
+          "Memory or network forbids shipping exact sets: billions of IDs, high-cardinality dimensions",
+          "Cardinality is small enough that an exact set is cheaper than m registers times slice count"
+        ],
+        [
+          "Duplicates, retries, and out-of-order delivery are normal — idempotent adds absorb them",
+          "You need deletes, TTL per member, or subtraction — HLL registers only move upward"
+        ],
+        [
+          "Product, growth, or capacity decisions tolerate 1-3% relative error",
+          "Exactness is contractual: billing, quotas with hard limits, compliance counts"
+        ],
+        [
+          "You control hash, p, and encoding versions across all writers and backfills",
+          "Writers cannot agree on parameters, or you need ad-hoc intersections and funnel overlap"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The extensibility argument is the real reason HLL survives in platform designs. Because sketches are tiny, versioned bytes with a max-merge algebra, you can add dimensions, retention windows, and regions without re-architecting the pipeline — just emit more sketches and merge them lazily at read time. That composability is what exact counting cannot copy: exact unions require moving identity, while HLL unions require moving kilobytes. The price is discipline — a registry of sketch contracts, sampled exact-count audits, and explicit error budgets per surface. Build those three and HLL scales from a single service counter to an organisation-wide distinct-counting layer; skip them and you get plausible-looking numbers that quietly fork after every deploy."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**HyperLogLog estimates distincts in kilobytes by keeping the maximum leading-zero run per hash shard and harmonically averaging them — mergeable and retry-safe, at the cost of a few percent error and no way to recover members.** Say the error formula and the merge rule, then stop."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:23:10.205Z",
+    "problems": []
+  }
+}

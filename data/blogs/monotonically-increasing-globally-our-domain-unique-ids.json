@@ -1,0 +1,289 @@
+{
+  "slug": "monotonically-increasing-globally-our-domain-unique-ids",
+  "title": "Monotonically Increasing Globally(our domain) Unique IDs",
+  "summary": "Why globally unique and roughly time-ordered IDs force you to solve clocks, coordination, and failure handling — not randomness.",
+  "kind": "HLD",
+  "problemSlug": "monotonically-increasing-globallyour-domain-unique-ids-97-321",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Medium",
+  "coverEmoji": "🔢",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Unique IDs",
+    "Fault Tolerance",
+    "Consensus"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Is it possible to generate unique ids based on monotonic clock in python?",
+      "url": "https://stackoverflow.com/questions/79678438/is-it-possible-to-generate-unique-ids-based-on-monotonic-clock-in-python",
+      "source": "stackoverflow.com",
+      "kind": "article"
+    },
+    {
+      "title": "L15: Distributed System Design Example (Unique ID) - YouTube",
+      "url": "https://www.youtube.com/watch?v=W6qURtqrldc",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "What's the problem with monotonically increasing relational database ids?",
+      "url": "https://www.quora.com/What-s-the-problem-with-monotonically-increasing-relational-database-ids",
+      "source": "quora.com",
+      "kind": "article"
+    },
+    {
+      "title": "How Do you Generate an Incremental Global Unique in a Distributed System",
+      "url": "https://edward-huang.com/distributed-system/programming/architecture/system-thinking/2021/01/07/how-do-you-generate-an-incremental-global-unique-in-a-distributed-system/",
+      "source": "edward-huang.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "You cannot have **global uniqueness + time order + zero coordination** at the same time. Every working design picks which one bends: either you coordinate to hand out node identities and time bounds, or you accept gaps, clock stalls, and wasted sequence space. If you try to get monotonicity from `wall-clock + random prefix` with no coordination, you have built a collision generator, not an ID generator."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A monotonically increasing globally unique ID is a 64- to 128-bit number where two properties hold across every process in the fleet. First, no two successful generations ever return the same value, even across crashes, restarts, clock corrections, and network partitions. Second, IDs sort in roughly the order they were created: if generation A completes well before generation B starts, then `id(A) < id(B)` with overwhelming probability. Note the qualifiers. It is not strictly contiguous — there are gaps from unused sequence numbers and dead nodes. It is not strictly monotonic under concurrency — two IDs minted in the same millisecond on different nodes can invert by a few positions. What you are buying is *K-sorted order*: good enough to append to a log-structured index without random inserts, and good enough to sort by ID instead of joining to a timestamp column."
+    },
+    {
+      "type": "paragraph",
+      "text": "This is why the requirement lives under fault tolerance and consensus, not under formatting. Uniqueness is a safety property that must survive the worst day: NTP stepping the clock backwards, a container freezing for 800 ms and resuming, two schedulers assigning the same worker number after a partition, a host losing its in-memory counter on reboot. Ordering is a liveness-adjacent performance property: you want new keys to land at the right edge of the B-tree or LSM so writes stay sequential and range scans over recent time do not touch every partition. Lose uniqueness and you corrupt data. Lose ordering and you pay it back as hot partitions, page splits, and scatter-gather reads. The design exists to protect the first without destroying the second."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Why roughly increasing is enough"
+    },
+    {
+      "type": "paragraph",
+      "text": "Strict global sequence — one atomic counter for the whole system — gives perfect order and trivial uniqueness, then collapses under its own coordination cost. Every ID becomes a round trip to a single writer or a consensus quorum, which caps you at thousands per second and makes that writer the blast radius for the entire write path. Relax to *roughly increasing* and you unlock local generation: each node mints IDs from its own timestamp plus a unique node slot plus a per-tick counter, with no per-ID network call. The trade-off is explicit: you accept gaps and bounded reordering in exchange for 100k+ IDs per second per node and survival when the coordinator is unreachable. That is almost always the correct trade for request IDs, event logs, message keys, and storage primary keys. Only ledger-style settlement or strict FIFO queues justify paying for gapless order, and then you should not use time-ordered IDs at all — use a consensus log."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Mechanism: timestamp | node | sequence"
+    },
+    {
+      "type": "paragraph",
+      "text": "The only layout that survives at scale splits the bits by failure domain. High bits are milliseconds or microseconds since a custom epoch, so lexicographic order equals time order. Middle bits are the node or shard identity, assigned once and never reused concurrently. Low bits are a per-timestamp sequence that disambiguates multiple IDs minted in the same tick on the same node. Decoding is trivial bit-shifting, which is why this beats opaque random strings: you get the creation time and the origin node for free during debugging, and the database gets a key that increases over time. The reason the order is high-to-low matters — timestamp must dominate comparison, otherwise two nodes interleave and your range scans fragment."
+    },
+    {
+      "type": "mermaid",
+      "title": "Local generation path",
+      "caption": "No per-ID RPC; coordination happens only for node assignment and clock bounds.",
+      "code": "flowchart TD\n  R[Request next ID] --> T[Read wall clock in ms]\n  T --> C{clock vs last_seen?}\n  C -->|clock ahead| S[Reset sequence to 0, set last_seen = clock]\n  C -->|clock equal| I[sequence = sequence + 1]\n  C -->|clock behind, small drift| W[Stall until last_seen, refuse to go backwards]\n  C -->|clock behind, large jump| H[Halt and alert, never mint smaller ID]\n  S --> P[Pack timestamp, node_id, sequence]\n  I --> Q{sequence overflow?}\n  Q -->|no| P\n  Q -->|yes| W\n  W --> P\n  P --> O[Emit 64-bit ID]"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "id_layout.py",
+      "code": "# 64-bit layout: 41 bits time | 10 bits node | 12 bits seq\n# WHY this split: time dominates sort, node prevents cross-host\n# collision, seq prevents same-tick collision on one host.\nEPOCH = 1704067200000  # custom epoch keeps high bits small\nNODE_BITS = 10\nSEQ_BITS = 12\nMAX_SEQ = (1 << SEQ_BITS) - 1\n\ndef pack(ts_ms: int, node_id: int, seq: int) -> int:\n    return ((ts_ms - EPOCH) << (NODE_BITS + SEQ_BITS)) | (node_id << SEQ_BITS) | seq\n\ndef unpack(v: int):\n    seq = v & MAX_SEQ\n    node = (v >> SEQ_BITS) & ((1 << NODE_BITS) - 1)\n    ts = (v >> (NODE_BITS + SEQ_BITS)) + EPOCH\n    return ts, node, seq"
+    },
+    {
+      "type": "paragraph",
+      "text": "Bit widths are capacity planning, not aesthetics. With 41 bits of milliseconds you get about 69 years from your epoch — pick the epoch at launch or you burn half the space on dates before your system existed. With 10 bits of node identity you get 1024 concurrent minters; exceed that and you either widen the field and shrink time or sequence, or you introduce multi-tenant node reuse with leases. With 12 bits of sequence you get 4096 IDs per millisecond per node; exceed that and the generator must stall to the next tick, which turns a bit-size decision into tail latency. The trade-off is three-way: more time bits extends lifespan but delays overflow of the integer type, more node bits raises fleet size but forces a harder assignment problem, more sequence bits raises per-node burst but coarsens time resolution or shortens lifespan. Size it from measured peak IDs per millisecond per host, not from average throughput."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clocks lie: the only hard part"
+    },
+    {
+      "type": "paragraph",
+      "text": "Wall clocks go backwards. That is not an edge case, it is scheduled behavior when NTP or PTP corrects a drifted oscillator, when a VM migrates, when a leap second is smeared, or when an operator steps the clock. A naive `prefix + wall_time` scheme then reuses timestamps it already minted, and if the sequence counter reset on the same tick, it reuses full IDs. The `monotonic` clock does not save you: it never goes backwards on one boot, which protects ordering within a single process lifetime, but it has no epoch meaning across hosts and it resets on reboot, so `monotonic_ns()` from two machines cannot be compared and a restarted process can re-emit smaller values than it emitted before the crash. The trade-off is sharp: wall time gives cross-node comparability but can regress; monotonic time gives local non-regression but is meaningless globally. Production generators therefore use wall time for the high bits and monotonic time plus a persisted `last_seen` watermark to *detect* regression and refuse to mint."
+    },
+    {
+      "type": "mermaid",
+      "title": "Clock regression policy",
+      "caption": "Small drift stalls, large jump halts — never emit a smaller timestamp.",
+      "code": "stateDiagram-v2\n  [*] --> Normal: clock >= last_seen\n  Normal --> Stalled: clock < last_seen and drift < threshold\n  Stalled --> Normal: clock catches up\n  Normal --> Halted: clock < last_seen and drift >= threshold\n  Stalled --> Halted: stall exceeds max wait\n  Halted --> [*]: operator re-syncs clock, drain and restart node"
+    },
+    {
+      "type": "paragraph",
+      "text": "Worker identity is the second consensus problem hiding in this design. The middle bits must be unique among all *currently minting* nodes, which means assignment cannot be `hash(hostname) % 1024` or a config file copied to 2000 containers — both collide silently after autoscaling or restarts. You need a coordination service with ephemeral leases: a strongly consistent store hands out a node number with a TTL heartbeat, fences it on expiry, and refuses to hand the same number to two live holders. The trade-off is availability versus safety. If the lease service is down, new nodes cannot join and must either block ID generation or fall back to a degraded random-ID path that abandons ordering. Blocking preserves uniqueness at the cost of refusing to scale during the outage; falling back preserves availability at the cost of polluting the keyspace with unordered keys that fragment your index. Choose blocking for primary keys, fallback only for non-authoritative trace IDs."
+    },
+    {
+      "type": "table",
+      "caption": "Candidate approaches scored on uniqueness, order, and failure cost.",
+      "headers": [
+        "Approach",
+        "Uniqueness guarantee",
+        "Ordering",
+        "Price you pay"
+      ],
+      "rows": [
+        [
+          "Single DB auto-increment",
+          "Strong while leader lives; single point of loss",
+          "Gapless and perfect",
+          "Write throughput capped at one writer; failover risks duplicate or skipped values"
+        ],
+        [
+          "Random 128-bit (UUIDv4 style)",
+          "Probabilistic; safe if entropy is real",
+          "None — random insert order",
+          "Index fragmentation, larger keys, range-by-time requires second column"
+        ],
+        [
+          "Timestamp + node + sequence, local gen",
+          "Strong if node IDs leased and clock guarded",
+          "Roughly increasing (K-sorted)",
+          "Lease service + clock monitoring; stalls on sequence overflow"
+        ],
+        [
+          "Central range allocator (blocks of 10k)",
+          "Strong; replay from persisted high-water mark",
+          "Roughly increasing with larger gaps",
+          "Periodic write to durable store; burnt ranges after crash inflate gaps"
+        ],
+        [
+          "DB ticket server per request",
+          "Strong",
+          "Increasing but not gapless under retries",
+          "One RPC per ID; latency and availability coupled to ticket service"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every outage of this component looks like someone else's bug first. Duplicate IDs surface as primary-key violations or, worse, silent overwrites when the key is used as an idempotency token. Clock-driven stalls surface as p99 latency spikes with no CPU saturation — threads parked waiting for the next millisecond. Node collisions surface as intermittent duplicates that correlate with deploys or autoscale events, never with load. Sequence exhaustion surfaces as throughput cliffs at exact millisecond boundaries on exactly one hot partitioner. The discipline is to expose the internals: emit `last_seen`, `clock_delta`, `sequence_used`, and `node_id` as metrics on every host, and log the packed fields on duplicate-key errors so you can decode timestamp and node in seconds."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Clock stepped backwards 200 ms after NTP correction. Symptom: all mint threads on that host park for 200 ms, p99 jumps, then recovers. If you instead clamped to `max(clock, last_seen)` without stalling the sequence, you would reuse timestamps with reset counters and emit duplicates — the stall is the correctness mechanism.",
+        "Two containers hold node 17 simultaneously after a partition and lease expiry race. Symptom: rare duplicate-key errors from two source IPs with identical timestamp and node fields. Fix is fencing: the old holder must stop minting when its lease cannot be renewed, not keep minting hopefully.",
+        "Hot key partitioner mints 9000 IDs in one millisecond with only 12 sequence bits. Symptom: throughput flatlines at 4096/ms on that host while others are idle. Fix is not more threads — it is wider sequence bits, coarser time quantum, or sharding the hot key so generation spreads across nodes.",
+        "Host reboots and loses in-memory `last_seen`. Symptom: first IDs after restart are smaller than pre-crash IDs, breaking K-sorted consumers. Fix is persisting the high-water timestamp periodically and on graceful shutdown, then starting with `max(wall_clock, persisted + 1)` and blocking until wall clock passes it.",
+        "Someone uses `monotonic_ns()` plus a per-process random prefix as the global ID. Symptom: uniqueness holds for months, then duplicates after a fast restart reuses the same random prefix from a bad seed, or same-nanosecond calls on a coarse-resolution timer return identical values. Monotonic means never-decreasing, not strictly increasing — repeats are legal."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "monotonic does not mean unique",
+      "text": "A monotonic source may return the **same value twice** — resolution can be coarser than precision, and concurrent calls can land in the same tick. `prefix + monotonic_ns()` without a sequence counter and without cross-process prefix uniqueness is a duplicate under load. Add a per-tick counter under a lock, and make the prefix a leased node ID, not process randomness."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Reference generator that refuses to go backwards"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "mono_id.py",
+      "code": "import threading, time\n\nclass MonoId:\n    def __init__(self, node_id: int, max_drift_ms: int = 500):\n        self.node = node_id\n        self.lock = threading.Lock()\n        self.last_ms = -1\n        self.seq = 0\n        self.max_drift = max_drift_ms\n\n    def _now_ms(self) -> int:\n        return time.time_ns() // 1_000_000  # wall clock: comparable across hosts\n\n    def next_id(self) -> int:\n        with self.lock:\n            now = self._now_ms()\n            if now < self.last_ms:\n                drift = self.last_ms - now\n                # WHY stall-or-halt instead of clamp: clamping reuses\n                # (timestamp, seq) pairs already emitted. Trade-off:\n                # small drift costs latency, large drift costs availability.\n                if drift > self.max_drift:\n                    raise ClockWentBackwards(drift)\n                while now < self.last_ms:\n                    time.sleep(0.001)\n                    now = self._now_ms()\n            if now != self.last_ms:\n                self.last_ms = now\n                self.seq = 0\n            else:\n                self.seq += 1\n                if self.seq > 4095:  # 12-bit sequence exhausted\n                    # WHY spin to next ms: dropping or wrapping seq would\n                    # duplicate. Trade-off: burst throughput capped at 4096/ms.\n                    while now <= self.last_ms:\n                        time.sleep(0.001)\n                        now = self._now_ms()\n                    self.last_ms = now\n                    self.seq = 0\n            return pack(self.last_ms, self.node, self.seq)\n\nclass ClockWentBackwards(Exception):\n    pass"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the code for what it refuses to do. It never decrements `last_ms`, never wraps the sequence within the same millisecond, and never catches the large-drift exception internally — that exception must page, because minting through a 5-second clock jump means either duplicates or hours of stalled writes, and that decision belongs to an operator with the lease dashboard open. The lock serialises minting on one host, which is intentional: an atomic counter without the timestamp check would be faster but would happily emit decreasing IDs after a clock step. The trade-off is contention on a single hot lock versus correctness of order; at 4096 IDs per millisecond the lock is not your bottleneck, the millisecond quantum is. Persist `last_ms` to disk every N seconds and on shutdown, reload it at boot, and this small class survives the reboot case that defeats pure in-memory counters."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "State the real requirements",
+          "text": "Say: unique across fleets and restarts, roughly sorted by creation time, 10k+ per second per node, no per-ID RPC. Ask whether gaps are acceptable and whether IDs are user-visible — visible sequential IDs leak creation rate and invite enumeration."
+        },
+        {
+          "title": "Reject the two naive poles",
+          "text": "Show why single-writer auto-increment fails throughput and fault isolation, and why pure random fails index locality and time-range queries. Name the trade-off out loud: coordination cost versus order quality."
+        },
+        {
+          "title": "Draw the bit layout and size it",
+          "text": "Propose timestamp/node/sequence, pick widths from the interviewer's numbers: fleet size sets node bits, peak IDs per millisecond per host sets sequence bits, lifespan sets time bits. Do the arithmetic on the whiteboard."
+        },
+        {
+          "title": "Solve clocks and node assignment",
+          "text": "This is the Medium/Hard filter. Describe NTP regression handling (stall small drift, halt large drift), persisted high-water mark across restarts, and leased node IDs with fencing. Interviewers promote on this section, not on the packing code."
+        },
+        {
+          "title": "Name failure modes and sizing escapes",
+          "text": "Close with sequence exhaustion behavior, hot-node skew, clock-monitoring alerts, and when you would abandon this entirely for a consensus log or a random ID plus secondary time index."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`monotonic` means strictly increasing — it does not; it means non-decreasing, so repeats in the same tick are normal and must be disambiguated by a sequence.",
+        "Nanosecond precision equals nanosecond resolution — most timers quantise to tens of nanoseconds or worse under virtualization, so two back-to-back calls routinely collide.",
+        "A random per-process prefix makes IDs globally unique — only if seeding never repeats across restarts and containers, which it does after image clones and fast reboots. Use leased node IDs.",
+        "More bits automatically means better — wider IDs bloat every index entry, every foreign key, and every log line; 64 bits with a custom epoch beats 128 bits you never needed.",
+        "Monotonic IDs give strict ordering for distributed transactions — they give K-sorted arrival, not linearizability; if two writers race, timestamp order and commit order can disagree. Use consensus timestamps for that."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use rough order where it pays for index locality; avoid it where gaps or leakage hurt.",
+      "headers": [
+        "Use it when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Primary keys for append-heavy tables where right-edge inserts protect the index",
+          "You need gapless sequences for invoicing or audit numbering — use a ledger, not time IDs"
+        ],
+        [
+          "Event, log, and message keys where sorting by ID approximates sorting by time",
+          "IDs are exposed in URLs and enumeration or rate inference is a threat — use random IDs"
+        ],
+        [
+          "Idempotency keys scoped to a time window where recency scans dominate",
+          "Fleet size or burst wildly exceeds your bit budget and you cannot widen the key width"
+        ],
+        [
+          "Sharded storage where the node field doubles as a routing hint",
+          "You cannot run a lease service or persist high-water marks — without those, uniqueness is hope"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Mint locally from **leased node ID plus wall-clock timestamp plus per-tick sequence**, stall on small clock drift, halt on large drift, and persist the high-water mark — gaps and bounded reordering are the price of per-node throughput without per-ID coordination."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:58:40.415Z",
+    "problems": []
+  }
+}

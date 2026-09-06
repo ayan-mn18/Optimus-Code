@@ -1,0 +1,380 @@
+{
+  "slug": "design-online-offline-indicator-how-to-approach-systems-systematically-core-prop",
+  "title": "Design Online/Offline Indicator (How to approach Systems systematically - Core Property & Access Pattern)",
+  "summary": "Design a presence system for hundreds of millions of users: heartbeat writes, TTL-based expiry, and push fan-out. Why polling and RDBMS die, and what survives flapping, reconnect storms, and celebrity watchers.",
+  "kind": "HLD",
+  "problemSlug": "how-to-approach-high-level-system-design-89-196",
+  "topic": "Introduction to High Level Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🟢",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "hld",
+    "system-design",
+    "presence",
+    "websockets",
+    "redis"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "System Design Interview Prep & Questions (2026 Guide) - Exponent",
+      "url": "https://www.tryexponent.com/blog/system-design-interview-guide",
+      "source": "tryexponent.com",
+      "kind": "article"
+    },
+    {
+      "title": "How to Prepare for System Design Interviews w/ Meta Staff Engineer",
+      "url": "https://www.youtube.com/watch?v=Ru54dxzCyD0",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "A 3-Step Framework to Nail Your System Design Interview",
+      "url": "https://interviewing.io/guides/system-design-interview/part-three",
+      "source": "interviewing.io",
+      "kind": "article"
+    },
+    {
+      "title": "System Design: Online Presence Indicator - YouTube",
+      "url": "https://www.youtube.com/watch?v=D84KrBwLDtU",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "How I Would Prepare for a System Design Interview in 2026",
+      "url": "https://interviewnoodle.com/how-i-would-prepare-for-a-system-design-interview-in-2026-5941a974499d",
+      "source": "interviewnoodle.com",
+      "kind": "article"
+    },
+    {
+      "title": "How do you approach sys design interviews (as the interviewee)?",
+      "url": "https://www.reddit.com/r/ExperiencedDevs/comments/163q1n1/how_do_you_approach_sys_design_interviews_as_the/",
+      "source": "reddit.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "This is not a database problem. It is an **ephemeral-state + timeliness** problem. Anyone can store `is_online=true`. The test is whether you see the access pattern: **massive, continuous, low-value writes (heartbeats) and bursty, fan-out-heavy reads (watchers)**. They want to hear you say the core property out loud: **freshness beats accuracy** — a stale `offline` for 10 seconds is fine, a down database is not. If you reach for strong consistency or per-poll SQL, you have already failed. If you talk about TTL expiry, push instead of pull, and coalesced fan-out, you pass."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design an online/offline indicator for a chat application with hundreds of millions of users. Each user has a contact list (20-500 watchers on average, some with millions). When user A opens the app, A must see which contacts are currently online, and when a contact comes online or goes offline, watchers must be notified within a few seconds. Presence must work across multiple devices per user, survive app kills, network flaps, and datacenter failures, and must not take down the rest of the system when 10 million clients reconnect at once."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`heartbeat(userId, deviceId, timestamp)` — called periodically by each active client, e.g. every 20-30s, plus explicit `connect` / `disconnect` events from the gateway.",
+        "`getPresence(userIds[])` — bulk read of current status for a contact list on login or app foreground. Returns `online | offline | last_seen_ts` per id.",
+        "`subscribe(watcherId, targetIds[])` — open a push channel (typically WebSocket/SSE) so the watcher gets `PresenceChanged(targetId, status, ts)` without polling."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not start drawing boxes. The numbers you agree in the first 5 minutes decide every later choice — TTL length, Redis vs Scylla, polling vs push. Force the interviewer to pin down freshness, multi-device semantics, and privacy, because each one forks the design."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "What is the freshness SLA?",
+          "text": "Is 5 seconds from disconnect to `offline` required, or is 30-60 seconds acceptable? This single number sets heartbeat interval and TTL. Shorter SLA means 3-6x more writes. Most products accept 30-45s of false-online — say so and buy yourself 3x headroom."
+        },
+        {
+          "title": "What does online mean with N devices?",
+          "text": "If phone is offline but desktop is active, is the user online? Answer is almost always yes: user-level presence = OR over devices. That forces a per-device key with a user-level aggregate, not one boolean per user. Lock this in now."
+        },
+        {
+          "title": "Pull, push, or both?",
+          "text": "Do watchers poll on fridge-door opening, or do they hold open subscriptions? Correct answer for modern chat is both: bulk pull on login plus push for deltas. If the interviewer says poll-only, push back — you will DDoS yourself."
+        },
+        {
+          "title": "Privacy and last-seen?",
+          "text": "Do we need `last seen at 14:32`, invisible mode, or per-contact blocking? `last_seen` changes storage from ephemeral TTL to durable history. Invisible mode changes the read path to check ACLs before fan-out. Scope it or it will ambush you later."
+        },
+        {
+          "title": "Scale and watcher distribution?",
+          "text": "How many DAU, average contacts, peak reconnect rate? Agree on something like 200M DAU, 100 contacts, 5M concurrent connections per region. And ask about celebrities: a user with 2M watchers breaks naive fan-out and needs special-casing."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Scope agreed before any architecture.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Report user-level online/offline with multi-device OR-semantics",
+          "Single boolean per user is wrong; need per-device liveness"
+        ],
+        [
+          "Functional",
+          "Bulk `getPresence` for contact list in <100ms p99",
+          "Login path must not fan out to 100 sequential RPCs"
+        ],
+        [
+          "Functional",
+          "Push deltas to active watchers in <5s",
+          "Polling at scale is the failure mode you are avoiding"
+        ],
+        [
+          "Non-functional",
+          "Tolerate staleness: false-online for TTL window is allowed",
+          "Lets you choose AP + TTL expiry over consensus"
+        ],
+        [
+          "Non-functional",
+          "Survive 10M simultaneous reconnects without cascading failure",
+          "Thundering herd is the real load test, not steady state"
+        ],
+        [
+          "Non-functional",
+          "Presence writes must never block messaging",
+          "Trade-off: isolate presence fleet and shed its load first"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the naive approach (and why it dies)"
+    },
+    {
+      "type": "paragraph",
+      "text": "The obvious answer: a `users(is_online, last_heartbeat)` table in Postgres/MySQL, clients `UPDATE` on heartbeat and `SELECT` on every screen open, watchers poll every 5 seconds. It is correct on a whiteboard and catastrophic in production, for three independent reasons. First, write amplification kills you. 200M DAU with a 25s heartbeat is 8M writes/sec sustained — no single-leader RDBMS survives that, and sharding does not help because every row is hot and constantly rewritten. Second, read amplification kills you worse. If 20M concurrent watchers poll 100 contacts every 10s, that is 200M reads/sec of mostly unchanged data. You are paying full database cost to learn nothing changed. Third, failure detection is broken: an app kill or tunnel drop never sends `I am offline`, so `is_online` sticks true forever unless you add a reaper sweeper that full-scans the table — itself a thundering herd. The naive design couples liveness to explicit logout, which mobile networks never give you. That is why every real presence system is built on **expiry, not notification**."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Why expiry beats explicit logout",
+      "text": "Mobile clients do not log out — they vanish. **Design for disappearance, not goodbye.** The only robust signal is: *I have not heard from this device in T seconds, therefore it is offline.* That means every write must carry a TTL, and offline is the absence of state, not a state you write. Once you accept that, the database choice is forced: you need an in-memory store with native expiry, not a durable row."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design: heartbeat + TTL + push fan-out"
+    },
+    {
+      "type": "paragraph",
+      "text": "Name the approach systematically. **Core property: timeliness with weak consistency.** A watcher seeing `online` 20 seconds stale is harmless; a watcher blocked on a quorum read is not. So choose availability and partition tolerance, accept last-write-wins and false-online windows. **Access pattern: high-frequency blind writes, low-frequency bulk reads, spiky push fan-out.** Heartbeats dominate by 50-100x. That splits the system into three paths with different stores: a hot write path optimized for TTL refresh, a hot read path optimized for pipelined bulk get, and an async fan-out path that coalesces and sheds load. Durable storage is only for `last_seen`, never on the critical path. WebSocket gateways own connection truth; the presence service owns aggregated truth; Redis owns ephemeral truth; Kafka decouples state change from notification so a celebrity going online does not block heartbeats."
+    },
+    {
+      "type": "mermaid",
+      "title": "Presence architecture",
+      "caption": "Write path is TTL refresh; read path is pipelined bulk get; notify path is async via log.",
+      "code": "flowchart LR\n  A[Mobile Client] --> B[WS Gateway]\n  D[Desktop Client] --> B\n  B --> P[Presence Service]\n  P --> R[(Redis Cluster)]\n  P --> K[Kafka presence-events]\n  K --> F[Fanout Service]\n  F --> B\n  B --> W[Watcher Client]\n  P --> S[(Cassandra last-seen)]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Follow one heartbeat end to end. Client sends `heartbeat` every 25s over its existing WebSocket — no separate HTTP call, because you already pay for the socket. The gateway that holds that socket appends `connId` and forwards to the presence service, partitioned by `hash(userId)` so all devices for a user land on the same workers and aggregation needs no cross-shard RPC. Presence service does two things: `SET device:u123:d456 online EX 45 NX/XX` in Redis Cluster — a single O(1) refresh — and recomputes `user:u123 = EXISTS any device key`. Only on transition (offline->online or vice versa) does it append to Kafka. No transition, no Kafka message. That one filter cuts log traffic by 99% because 99% of heartbeats change nothing. Reads never touch Kafka: `getPresence(ids[])` is a Redis pipeline of 100 `EXISTS` + `GET last_seen` in one round trip. Subscriptions are registered at the gateway: `watcher -> set of targetIds`. Fan-out service consumes Kafka, looks up *which gateways hold watchers for this target* via a reverse index (`target -> gateway set` in Redis), and sends one message per gateway, which fans out locally to sockets. Trade-off stated plainly: you duplicate watcher routing state to avoid a global broadcast, at the cost of handling gateway crashes by re-subscribing on reconnect."
+    },
+    {
+      "type": "mermaid",
+      "title": "Service and state model",
+      "caption": "Ephemeral device keys expire; user status is derived, not stored durably.",
+      "code": "classDiagram\n  class PresenceService {\n    +heartbeat(userId, deviceId, ts)\n    +getBulk(userIds) Map\n    +onExpire(deviceKey)\n  }\n  class Gateway {\n    +connections: Map\n    +subscriptions: Map\n    +pushUpdate()\n  }\n  class DevicePresence {\n    +userId: string\n    +deviceId: string\n    +expiresAt: int\n  }\n  class UserAggregate {\n    +userId: string\n    +online: bool\n    +lastSeen: int\n  }\n  PresenceService --> DevicePresence : refreshes TTL\n  PresenceService --> UserAggregate : derives OR\n  Gateway --> PresenceService : forwards"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code — the paths that matter"
+    },
+    {
+      "type": "paragraph",
+      "text": "In the interview, write only the heartbeat + bulk-read path. That is where TTL, idempotency, and transition-suppression live. Everything else is configuration. Show Redis pipelining and that Kafka publish happens only on flip — interviewers grade that `if flipped` line more than any framework."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "PresenceService.java",
+      "code": "public class PresenceService {\n    private final RedisCluster redis; // JedisCluster / Lettuce\n    private final EventLog log;       // Kafka producer\n    private static final int TTL_SEC = 45;\n\n    public void heartbeat(String userId, String deviceId, long ts) {\n        String dKey = \"d:\" + userId + \":\" + deviceId;\n        String uKey = \"u:\" + userId;\n        // 1. Refresh ephemeral device liveness. Idempotent, last-write-wins.\n        redis.setex(dKey, TTL_SEC, String.valueOf(ts));\n        // 2. Derive user aggregate. SET if first device, refresh otherwise.\n        // Lua keeps check-and-set atomic without a lock.\n        boolean flippedToOnline = redis.evalFlipOnline(uKey, TTL_SEC);\n        if (flippedToOnline) {\n            log.publish(\"presence-events\", userId,\n                new StatusEvent(userId, true, ts));\n        }\n    }\n\n    // Called by Redis keyspace notification on device-key expiry.\n    public void onDeviceExpire(String userId, long now) {\n        // Re-check: any surviving device key? If none, flip to offline.\n        if (!redis.existsByPattern(\"d:\" + userId + \":*\")) {\n            redis.del(\"u:\" + userId);\n            log.publish(\"presence-events\", userId,\n                new StatusEvent(userId, false, now));\n            durableLastSeen.write(userId, now); // async, off critical path\n        }\n    }\n\n    public Map<String, String> getBulk(List<String> userIds) {\n        // One pipelined round-trip, not N round-trips. This is the login path.\n        return redis.mget(userIds.stream()\n            .map(id -> \"u:\" + id).toList());\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "client_heartbeat.py",
+      "code": "import asyncio, random, time\n\nHEARTBEAT = 25  # must be < TTL (45s); gap absorbs one lost packet\n\nasync def heartbeat_loop(ws, user_id, device_id):\n    while True:\n        try:\n            await ws.send({\"type\": \"hb\", \"user\": user_id,\n                           \"device\": device_id, \"ts\": int(time.time())})\n            # Jitter prevents 10M clients from re-syncing after an outage.\n            await asyncio.sleep(HEARTBEAT + random.uniform(-5, 5))\n        except ConnectionError:\n            await asyncio.sleep(2)  # backoff; server expires us via TTL\n            ws = await reconnect()  # server treats reconnect as hb\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity and scale math"
+    },
+    {
+      "type": "table",
+      "caption": "Numbers for 200M DAU; say them out loud.",
+      "headers": [
+        "Operation",
+        "Load",
+        "Cost"
+      ],
+      "rows": [
+        [
+          "Heartbeat writes",
+          "200M * 1 per 25s = 8M/s",
+          "O(1) Redis SETEX, ~100 bytes; shard by userId, ~40 nodes handle it"
+        ],
+        [
+          "Bulk presence read",
+          "Login burst 100 keys * 50k logins/s = 5M gets/s",
+          "O(k) pipelined MGET, one RTT; cache contact list for 10s client-side"
+        ],
+        [
+          "Transitions to Kafka",
+          "~1% of heartbeats flip state ~ 80k events/s",
+          "O(1) publish; fan-out dominates, not the log"
+        ],
+        [
+          "Fan-out (average user)",
+          "80k events/s * 100 watchers = 8M pushes/s",
+          "Coalesce per gateway; one msg per gateway, not per watcher"
+        ],
+        [
+          "Fan-out (celebrity, 2M watchers)",
+          "Single event -> 2M pushes",
+          "Trade-off: pull-only for celebrities, never push; cap with sampling"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency and the hardest follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "The follow-up that kills candidates is: **what happens when 10M clients disconnect and reconnect in 60 seconds?** Three pile-ups coincide. First, gateways flap: every reconnect triggers `heartbeat` + `subscribe` re-registration, so presence service sees 10x write spike plus subscription churn. Mitigation is jittered heartbeats, exponential backoff on the client, and gateway-side dedup — hold the socket open for 10s grace before declaring disconnect, because TCP half-open lies. Second, Redis expiry storm: 10M TTLs fire at once via keyspace notifications, each triggering an `EXISTS` scan. Do not do a scan per expiry. Instead, debounce: on expiry, sleep 5s and re-check, coalesce per userId in a local queue, and rate-limit `offline` publishes. A user flapping between WiFi and LTE should generate one `online` event, not twelve. Third, fan-out hot keys: if a celebrity reconnects, 2M watchers wake up. Naive push melts the fan-out tier. The production answer is asymmetric: normal users get push, users with >10k watchers get **pull-on-open + sampled push** — watchers fetch on next app open, only currently-connected watchers get live push, and you cap per-second pushes with a token bucket. Also handle multi-device races explicitly: two devices heartbeating with skewed clocks must not flap user state. Use server-arrival time, not client `ts`, for ordering, and make `heartbeat` idempotent — replaying it ten times yields the same TTL refresh. Partition presence workers by `userId` hash so all devices for one user serialize on one worker; that removes the need for distributed locks and turns concurrency into a single-threaded queue per user. Trade-off: a hot partition for a celebrity's own heartbeats is trivial (one user writes rarely); the hot spot is on the read/fan-out side, which is why you split them."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Never trust disconnect",
+      "text": "There is no reliable `offline` message on mobile. Tunnels drop, OS kills sockets, users enter elevators. **If your design requires an explicit logout to show offline, it is wrong.** Offline must be derived from TTL expiry on the server, with a grace window (e.g. TTL = 1.8x heartbeat interval) so one lost packet does not flap the dot. Say this sentence verbatim in the interview."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Last-seen and invisible mode?",
+          "text": "Keep `last_seen` in a durable wide-column store (Cassandra/Scylla) written only on online->offline flip. Serve it from Redis cache with 60s TTL. For invisible mode, check a privacy bit in the fan-out service before pushing — never in Redis — so the hot path stays O(1) and ACL logic ships independently."
+        },
+        {
+          "title": "How do you handle the celebrity problem?",
+          "text": "Threshold at ~10k watchers: flip from push to pull. Celebrity transitions still go to Kafka, but fan-out only notifies currently-connected gateways and drops offline watchers. Document the trade-off: celebrities get slightly staler presence to protect everyone else's liveness."
+        },
+        {
+          "title": "Cross-region presence?",
+          "text": "Pin each user to a home region for writes (active-passive per user), replicate only transitions cross-region via Kafka MirrorMaker. A European watcher of a US user reads a cached replica with 1-2s lag. Trade-off: you accept cross-region staleness to avoid global consensus on every heartbeat."
+        },
+        {
+          "title": "Gateway crash and re-subscription?",
+          "text": "Gateways are stateless plus local subscription tables rebuilt by clients on reconnect with backoff and jitter. Reverse index `target -> gateways` has its own short TTL so dead gateways age out without manual cleanup."
+        },
+        {
+          "title": "Cost control?",
+          "text": "Heartbeats are 95% of cost. Offer knobs: adaptive interval (25s foreground, 120s background), delta-only Kafka, and 10s client-side negative caching of offline. Each knob trades freshness for money — name which one you would turn first."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Flapping on WiFi/LTE handoff: debounce transitions — require two consecutive missed TTL windows or a 10s hold-down before publishing `offline`.",
+        "Clock skew: ignore client `ts` for ordering; use server arrival time. Client `ts` is only for `last_seen` display.",
+        "Duplicate heartbeats after retry: `SETEX` is idempotent — replays are safe, no dedup table needed.",
+        "Half-open sockets: gateway sends TCP keepalive + app ping; declare dead only after missed pong, not on single read timeout.",
+        "Midnight reconnect storm after push outage: enable load shedding — presence returns stale cached values and drops non-transition heartbeats first.",
+        "Privacy race: user blocks watcher mid-fan-out — enforce ACL at delivery time in gateway, not at publish time.",
+        "Contact list of 10k (bots/imports): paginate `getBulk` in chunks of 100; reject unbounded `userIds[]` to prevent a single login from fanning out to Redis."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak vs strong signals for this problem.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Core property",
+          "Starts with schema, argues SQL vs NoSQL",
+          "States freshness-over-accuracy in first 2 minutes, justifies AP + TTL"
+        ],
+        [
+          "Access pattern",
+          "Treats reads and writes symmetrically",
+          "Quantifies 8M writes/s vs 80k transitions/s; filters Kafka on flip only"
+        ],
+        [
+          "Liveness",
+          "Relies on explicit offline message",
+          "Derives offline from TTL expiry + grace window + debounced reaper"
+        ],
+        [
+          "Fan-out",
+          "One push per watcher from single service",
+          "Per-gateway coalescing, reverse index, celebrity pull-only with cap"
+        ],
+        [
+          "Resilience",
+          "No answer for reconnect storm",
+          "Jitter, backoff, grace hold, shedding, partition by userId"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "45-minute plan",
+      "text": "0-5 min: pin SLA, multi-device OR, push+pull, scale numbers. 5-12 min: kill the naive (write/read math, no logout). 12-28 min: draw gateway → presence → Redis + Kafka → fan-out; explain TTL, bulk MGET, transition-only publish. 28-38 min: hardest follow-up — reconnect storm, flapping, celebrity cap. 38-45 min: close with last-seen, privacy, cross-region, and cost knobs. If you are still discussing schema at minute 20, you are behind."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:39:20.709Z",
+    "problems": []
+  }
+}

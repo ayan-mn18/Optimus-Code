@@ -1,0 +1,285 @@
+{
+  "slug": "what-a-proxy-is-and-why-do-we-use-it",
+  "title": "What a proxy is and why do we use it ?",
+  "summary": "A proxy is a deliberate middlebox that splits one connection into two — what you gain in control and caching you pay for in latency, trust, and a new single point of failure.",
+  "kind": "HLD",
+  "problemSlug": "what-a-proxy-is-and-why-do-we-use-it-94-213",
+  "topic": "Networking",
+  "difficulty": "Easy",
+  "coverEmoji": "🔀",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "Proxy",
+    "System Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is a Proxy Server? Definition, Uses & More - Fortinet",
+      "url": "https://www.fortinet.com/resources/cyberglossary/proxy-server",
+      "source": "fortinet.com",
+      "kind": "article"
+    },
+    {
+      "title": "Proxy Server - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/computer-networks/what-is-proxy-server/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "What is a Proxy Server and How Does it Work? - Varonis",
+      "url": "https://www.varonis.com/blog/what-is-a-proxy-server",
+      "source": "varonis.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A proxy **terminates your connection and opens a second one on your behalf**. That split is the entire value and the entire cost: it lets you enforce policy, hide identity, and reuse work at one choke point — but every byte now depends on that choke point being fast, correct, and alive."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A proxy is an intermediary process that accepts a client connection, makes its own policy decision, then initiates a separate upstream connection to fetch, forward, or block the request. It is not a router and not a tunnel. A router forwards packets without understanding the request; a proxy understands the request at layer 4 or layer 7 and can say no, change it, serve it from memory, or send it to a different backend than the client asked for. That is why you place it deliberately: you want a place where identity ends and policy begins. The trade-off is immediate — you gain a single place to observe and control traffic, and you pay with an extra network hop plus a component that must scale with all traffic passing through it."
+    },
+    {
+      "type": "paragraph",
+      "text": "There are exactly two orientations, and confusing them kills interviews. A **forward proxy** sits near the client and acts on behalf of the client toward many origins: corporate egress filtering, school content controls, anonymity services, scrape throttling. The origin sees the proxy, not you. A **reverse proxy** sits near the servers and acts on behalf of many clients toward few origins: load balancing, TLS termination, caching, request shaping, WAF filtering in front of your API. The client sees the proxy, not your app servers. Same mechanism — two connections joined by policy — opposite trust direction. Choose wrong and your security story inverts: a forward proxy protects clients from the internet, a reverse proxy protects the internet from your broken rollout."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: two connections, one policy"
+    },
+    {
+      "type": "mermaid",
+      "title": "Forward proxy flow",
+      "caption": "Client connects to proxy; proxy connects to origin.",
+      "code": "flowchart LR\n  C[Client] -->|1 TCP + TLS to proxy| P[Forward Proxy]\n  P -->|2 policy: allow, filter, cache?| P\n  P -->|3 new TCP + TLS to origin| O[Origin Server]\n  O -->|4 response| P\n  P -->|5 filtered or cached response| C"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk a `GET https://api.example/internal` through a forward proxy. The client does not open TLS to the origin. It opens TCP to the proxy and either sends the full URL in plaintext HTTP or issues `CONNECT api.example:443` and then tunnels TLS through the proxy. The proxy parses the destination, checks allow-list, authentication, rate limit, and content rules, then opens its own TCP and TLS session upstream using *its* IP and *its* handshake parameters. The origin logs the proxy address, negotiates ciphers with the proxy, and returns bytes to the proxy. The proxy can then inspect, cache, strip headers, inject authentication, or drop the response before the client ever sees it. The power comes from that clean break: neither side holds an end-to-end socket to the other. The cost is that end-to-end guarantees break too — certificate validation, client IP visibility, and encryption semantics all now depend on proxy configuration, which is why misconfigured proxies cause silent downgrades and mysterious `403` or certificate errors."
+    },
+    {
+      "type": "mermaid",
+      "title": "Reverse proxy flow",
+      "caption": "Many clients hit one proxy; proxy fans out to backends.",
+      "code": "flowchart LR\n  A[Client 1] --> R[Reverse Proxy]\n  B[Client 2] --> R\n  C[Client 3] --> R\n  R -->|TLS terminated here| S1[App Server 1]\n  R -->|header: X-Forwarded-For| S2[App Server 2]\n  R -->|cached responses served directly| A"
+    },
+    {
+      "type": "paragraph",
+      "text": "Reverse the direction and the same split serves a different master. Clients resolve your public hostname to the reverse proxy. They handshake TLS with the proxy certificate, not your app. The proxy terminates TLS — meaning it decrypts, which costs CPU but frees your app servers from doing handshake work — then applies routing rules on path, host, header, or cookie, adds `X-Forwarded-For` and `X-Request-ID`, picks a healthy backend, and reuses a pooled keepalive connection upstream. If the response is cacheable, the next identical request never touches your app at all. You chose this because terminating TLS and routing once at the edge is an order of magnitude cheaper than doing it on every heterogeneous app instance. The trade-off you accepted: your backends no longer see the real client connection, so logging, rate limiting, and mutual TLS must be rebuilt from forwarded headers, and anyone who can reach a backend directly bypasses every protection you just built."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why teams add one: the five real jobs"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Egress control and identity hiding.** Hide fleet IPs behind a few stable addresses, enforce per-user auth and per-domain allow-lists, log who fetched what. *Why:* origins cannot be allow-listed and audited without a fixed choke point. *Trade-off:* you concentrate all external reputation on a few IPs — one abusive tenant gets everyone rate-limited.",
+        "**Caching and bandwidth reduction.** Serve repeated `GET`s for static assets, package registries, and API reads from memory instead of recomputing upstream. *Why:* a 60% hit rate removes more load than doubling your backend fleet. *Trade-off:* you buy staleness bugs, invalidation complexity, and RAM that scales with working set, not request rate.",
+        "**TLS and protocol offload.** Terminate TLS, HTTP/2, and HTTP/3 at the edge, speak plain HTTP/1.1 to simple backends. *Why:* one tuned TLS stack beats ten ad-hoc ones on handshakes per second and cipher hygiene. *Trade-off:* plaintext inside your VPC plus CPU concentration — the proxy becomes your hottest box.",
+        "**Load balancing and shaping.** Health-check backends, spread load, retry idempotent failures, queue or shed excess with 429s instead of cascading. *Why:* clients are dumb; someone must decide who is healthy. *Trade-off:* retry and queueing logic can amplify a partial outage into a full one if timeouts and budgets are wrong.",
+        "**Inspection and mutation.** Strip secrets, validate schemas, enforce WAF rules, inject tracing headers, compress responses. *Why:* fixing this once in the proxy ships to every service behind it. *Trade-off:* the proxy now understands your payload format, so every API change risks a silent proxy rejection."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every proxy benefit has a priced counterpart.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "When the price hurts most"
+      ],
+      "rows": [
+        [
+          "Single policy enforcement point",
+          "Extra hop latency + proxy processing time",
+          "p99-sensitive APIs where 5-15ms added edge time blows SLO"
+        ],
+        [
+          "Cache hits absorb origin load",
+          "Stale reads, invalidation races, memory pressure",
+          "Personalised or rapidly mutating data cached by mistake"
+        ],
+        [
+          "Hidden topology and client IPs",
+          "Loss of end-to-end identity and debugging signal",
+          "Abuse investigation, per-user rate limiting, audit trails"
+        ],
+        [
+          "Central TLS, auth, WAF",
+          "Concentrated CPU and blast radius",
+          "TLS storms on deploy, WAF false positives blocking checkout"
+        ],
+        [
+          "Backends simplify and scale horizontally",
+          "Proxy becomes stateful bottleneck to scale and operate",
+          "Sticky sessions, large uploads, long-lived WebSockets through memory-limited proxies"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Junior answers list only the left column. Senior answers price the right column without prompting. Caching is the classic example: a forward proxy caching Linux packages saves enormous egress bandwidth, so teams set aggressive TTLs and forget that a cached `200` for an auth endpoint or a versioned API schema is a correctness bug, not a performance win. Similarly, TLS offload looks free until the proxy fleet hits 80% CPU during a reconnect storm and adds queuing delay to every request precisely when backends are healthiest. State the rule explicitly in an interview: **do not add a proxy to fix a backend problem you have not measured**. If origin latency is 800ms because of a missing index, caching at the proxy hides the symptom for the cacheable 10% and leaves the tail untouched while adding operational complexity you now own forever."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Proxies fail loudly at the edge, which is both a blessing and a curse: you see errors fast, but every failure affects all routes at once. The symptoms rarely say *proxy* — they look like origin bugs, client bugs, or network partitions. Learn to recognise the proxy signature: uniform errors across healthy backends, correct origin behaviour on direct access but wrong behaviour through the public URL, or a cliff in traffic where the proxy stops forwarding rather than degrading gracefully."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Proxy fleet overloaded → 502 / 503 / 504 everywhere while backends are idle.** Symptom: CPU or connection table saturated at the edge, upstream dashboards green. You will see queuing latency spike, then timeouts. Fix is not more backends — it is more proxy capacity, lower-cost TLS settings, or shedding load with fast 429s.",
+        "**Stale or poisoned cache → users see old prices, old flags, or each other's data.** Symptom: `Age` header grows, direct-to-origin returns fresh data, purge fixes it temporarily. Caused by caching keyed only on URL without `Authorization`, `Cookie`, or `Vary` headers. Fix by narrowing what is cacheable to anonymous `GET`s and including identity in the cache key.",
+        "**Header and IP spoofing → rate limiter bypassed, wrong geo, audit garbage.** Symptom: one IP generates impossible traffic volume, `X-Forwarded-For` contains chains of private addresses. Caused by trusting client-supplied forwarding headers instead of the address the proxy appended. Fix by overwriting, not appending, at the trusted edge and dropping direct backend access.",
+        "**TLS or CONNECT misconfiguration → intermittent certificate errors, broken streaming.** Symptom: mobile clients fail while curl works, large uploads stall, WebSockets close after 60 seconds. Caused by SNI mismatch, missing intermediate chain at the proxy, or body buffering that breaks long-lived connections. Fix by streaming bodies, raising idle timeouts, and testing handshake paths per client type.",
+        "**Single point of failure → full outage on proxy deploy or AZ loss.** Symptom: zero traffic reaches any backend; health checks flap simultaneously. Caused by running one proxy instance, shared fate config push, or DNS pointing at one IP. Fix with multi-AZ proxy pools, staged config rollout, and passive health checks that eject bad backends without ejecting the proxy itself."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The outage you will own",
+      "text": "The most common production proxy outage is **not a crash — it is a correct proxy enforcing a stale rule**. An expired allow-list, an over-strict WAF regex, or a cached error page served as success. Monitor policy version, cache hit rate by status code, and never cache `5xx` with the same TTL as `200`."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete shape: what config actually says"
+    },
+    {
+      "type": "paragraph",
+      "text": "Abstractions hide the decisions. Look at a minimal reverse proxy with caching and the trade-offs become lines of config: what to cache, who to trust, how long to wait before declaring a backend dead. Every line is policy you must defend in review."
+    },
+    {
+      "type": "code",
+      "language": "nginx",
+      "filename": "reverse-proxy.conf",
+      "code": "proxy_cache_path /var/cache/edge levels=1:2 keys_zone=edge:64m max_size=1g inactive=10m;\n\nserver {\n  listen 443 ssl http2;\n  ssl_certificate /etc/tls/edge.crt;\n  ssl_certificate_key /etc/tls/edge.key;\n\n  location /static/ {\n    proxy_cache edge;\n    proxy_cache_valid 200 5m;   # cache only success, short TTL\n    proxy_cache_valid 404 30s;  # negative caching, even shorter\n    proxy_cache_key \"$scheme$host$uri\"; # no Cookie -> shared entry\n    proxy_pass http://app_upstream;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Request-ID $request_id;\n  }\n\n  location /api/ {\n    proxy_pass http://app_upstream;\n    proxy_buffering off;          # stream uploads, do not spool\n    proxy_read_timeout 5s;\n    proxy_next_upstream error timeout http_502; # retry elsewhere\n  }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read this as intent, not syntax. TLS lives only at the edge, so backends stay simple — at the cost of plaintext hops internally that must be isolated by network policy. `/static/` is cacheable because it is anonymous and versioned; the cache key deliberately excludes cookies so one entry serves everyone, which is exactly why you must never point this block at authenticated responses. `/api/` disables buffering so large uploads stream instead of filling proxy disk, and sets a tight 5-second upstream timeout with retry on a different backend — fast failure instead of slow queueing. Each choice names its loser: caching risks staleness, streaming risks slower clients holding upstream connections, retries risk amplifying a struggling backend. Good config comments state the loser."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in interviews"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Define direction first",
+          "text": "Say: is this forward (protect clients, control egress) or reverse (protect servers, control ingress)? Draw two sockets, not one arrow. Interviewers pass candidates who name the trust boundary in the first minute."
+        },
+        {
+          "title": "Place it on a system diagram",
+          "text": "Put the proxy between clients and your API gateway or between your services and the internet. Explain what terminates where: DNS, TLS, auth. State what the origin now sees — proxy IP, forwarded headers — and what breaks if someone bypasses it."
+        },
+        {
+          "title": "Price the hop",
+          "text": "Quantify added latency, CPU for TLS, and memory for cache or buffers. Offer the escape hatch: cacheable reads justify it, chatty authenticated writes often do not. Numbers beat adjectives."
+        },
+        {
+          "title": "Design for its death",
+          "text": "Describe health checks, multi-AZ pools, staged config pushes, and what clients see when the proxy is gone. No single proxy, no shared-fate deploy, no caching of errors as success."
+        },
+        {
+          "title": "Answer the follow-up: transparent vs explicit",
+          "text": "Explicit proxy requires client config and can authenticate users; transparent proxy intercepts without client knowledge but cannot easily do per-user auth or TLS inspection without installing trust. Name the operational and ethical cost of interception."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**A proxy is the same as a VPN or NAT.** No. NAT rewrites addresses blindly; a VPN extends your network with encryption. A proxy makes a new application-level decision per request and can refuse, rewrite, or serve from cache — neither NAT nor VPN can do that.",
+        "**A proxy guarantees anonymity.** No. It shifts trust from the origin to the proxy operator. The proxy logs source IPs, destinations, and often payloads. Anonymity requires no-logging policy plus jurisdictional separation — configuration and law, not technology.",
+        "**Caching always makes things faster.** Only for repeated, shared, cacheable reads. Caching authenticated or rapidly changing responses makes things wrong faster, and cache misses add latency versus going direct.",
+        "**Reverse proxy and load balancer are synonyms.** A load balancer is one job a reverse proxy can do. A reverse proxy also terminates TLS, caches, rewrites, and enforces WAF — which is why it needs more CPU and more careful failure modes than a pure L4 balancer.",
+        "**Adding a proxy always improves security.** It centralises enforcement, but it also centralises attack surface and often terminates TLS, creating a plaintext segment and a high-value target. Security improves only if backends reject direct access and forwarding headers are set by trusted infrastructure, not by clients."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use a proxy for shared policy; skip it for private, fast paths.",
+      "headers": [
+        "Use a proxy when",
+        "Avoid it when",
+        "What to do instead"
+      ],
+      "rows": [
+        [
+          "Many clients need one egress identity, allow-list, or audit trail",
+          "Single service calls one stable upstream with no policy need",
+          "Direct connection with client-side timeouts and retries"
+        ],
+        [
+          "Public traffic needs TLS termination, WAF, and rate limiting in one place",
+          "End-to-end encryption must survive intermediaries untouched",
+          "Pass-through L4 balancing or mutual TLS directly to backends"
+        ],
+        [
+          "Read-heavy, shared, versioned content dominates traffic",
+          "Payloads are personalised, uncacheable, or strict real-time",
+          "Cache at CDN edge only for truly static assets; keep API direct"
+        ],
+        [
+          "Backends are heterogeneous and cannot each implement auth and shaping well",
+          "You need ultra-low latency or long-lived bidirectional streams",
+          "Lightweight L4 proxy or direct mesh with connection pooling per service"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **a proxy splits one connection into two so I can enforce policy, hide topology, and reuse responses at a single choke point — worth it when shared control outweighs the extra hop and new failure domain.**"
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:15:07.587Z",
+    "problems": []
+  }
+}

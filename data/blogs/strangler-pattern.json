@@ -1,0 +1,305 @@
+{
+  "slug": "strangler-pattern",
+  "title": "Strangler Pattern",
+  "summary": "Strangler Pattern: starve the monolith behind a routing facade instead of rewriting it, and pay for safety with operational complexity.",
+  "kind": "HLD",
+  "problemSlug": "strangler-pattern-90-199",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🌿",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Microservices",
+    "Migration",
+    "Strangler Pattern"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Strangler Pattern in Micro-services | System Design - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/strangler-pattern-in-micro-services-system-design/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Pattern: Strangler application - Microservices.io",
+      "url": "https://microservices.io/patterns/refactoring/strangler-application.html",
+      "source": "microservices.io",
+      "kind": "article"
+    },
+    {
+      "title": "The Strangler Pattern: Kill Legacy Like a Boss | by José Sousa | Medium",
+      "url": "https://medium.com/@josesousa8/the-strangler-pattern-kill-legacy-like-a-boss-db3db41564ed",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Strangler fig pattern - AWS Prescriptive Guidance",
+      "url": "https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/strangler-fig.html",
+      "source": "docs.aws.amazon.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "You do not replace the monolith. You **starve it**. Put a router in front, carve off one capability at a time behind that router, and let the old system shrink until deleting it is boring. The trade-off you are buying: **slower migration in exchange for never having to bet the business on a cutover.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "The Strangler Pattern is an incremental replacement strategy for a system you cannot afford to turn off. You place an interception layer — an edge proxy, API gateway, or in-code facade — in front of a legacy monolith. That layer owns routing decisions. Initially it sends 100% of traffic to the monolith. You then build one bounded context as an independent service, switch only that slice of traffic to the new service, run both side by side, and repeat until the monolith has nothing left worth keeping. The monolith and the new services coexist for months, sometimes years. The point is control of blast radius: each cutover affects one capability, one data set, one team, not the whole product."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape and not a rewrite? A big-bang rewrite fails for organizational reasons, not just technical ones. While you rewrite, the business still needs features, bug fixes, and scale improvements in the old system, so you end up maintaining two full systems with one team. You also lose feedback: you discover integration mistakes only on launch day. The strangler inverts that. Every extracted service goes to production immediately and takes real load, so routing, data ownership, observability, and team ownership are proven while the monolith is still there to fall back to. You pay for that safety with duplication — two code paths, two data stores, two deployment pipelines — for the duration of the migration. That is the core trade-off, and you should state it upfront."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: intercept, extract, retire"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are only three moves, repeated in a loop. **Intercept** means all callers go through a single decision point that can route by path, header, tenant, or percentage. No caller is allowed to bypass it and hit the monolith directly, or you cannot measure or roll back. **Extract** means you pick one vertical slice — behavior plus its data — reimplement it behind a clean contract, and migrate reads then writes under the router. **Retire** means you remove the old code path from the monolith and reclaim its tables only after the new path has held production traffic through at least one full business cycle. Skip the third step and you do not have a strangler; you have a distributed monolith with twice the maintenance cost."
+    },
+    {
+      "type": "mermaid",
+      "title": "Strangler routing",
+      "caption": "Edge router progressively drains traffic from monolith to new services.",
+      "code": "flowchart LR\n    C[Client] --> F[Edge Router / Facade]\n    F --> N1[New Orders Service]\n    F --> N2[New Payment Service]\n    F --> M[Monolith]\n    N1 --> MDB[(Orders DB)]\n    N2 --> PDB[(Payments DB)]\n    M --> LEG[(Legacy DB)]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The interception layer is the design decision that makes or breaks the migration. Put it at the edge — gateway, load balancer with path rules, or a thin facade service — not scattered `if newServiceEnabled` flags across clients. Why at the edge? Because you need one place to change routing without redeploying every caller, one place to compare old versus new responses, and one place to flip back in seconds. The cost is a new critical hop: it adds latency, it must be highly available itself, and its routing table becomes shared mutable state. Mitigate that by keeping its logic dumb — match on path prefix, version header, or tenant ID — and pushing business logic into the services behind it."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**New capabilities first.** Build greenfield features as services outside the monolith. Zero migration risk, proves deployment and ownership, gives the business a reason to fund the work.",
+        "**Hot, painful, well-bounded edges next.** Rate-limited, independently scalable, or organizationally contested domains like checkout, auth, or notifications. You get scaling and team-autonomy payoff early, which justifies the overhead.",
+        "**High-churn core last.** Order management, pricing, ledger — anything with deep transactional coupling and shared tables. Do these only after you have solved identity, data sync, and rollback on easier slices.",
+        "**Never start with shared utilities.** Extracting logging, common models, or a tangled `UserManager` first creates a distributed dependency every service inherits. Strangle vertical behavior, not horizontal helpers."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly stated"
+    },
+    {
+      "type": "table",
+      "caption": "What the strangler buys you and what it charges.",
+      "headers": [
+        "Dimension",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Risk",
+          "Each release affects one slice; rollback is a route change, not a redeploy",
+          "Migration drags on for quarters; leadership loses patience"
+        ],
+        [
+          "Availability",
+          "Old path remains as instant fallback; canary by percentage or tenant",
+          "Router is a new single point of failure; needs its own HA and testing"
+        ],
+        [
+          "Scalability",
+          "Extracted hot paths scale independently; monolith load drops over time",
+          "During coexistence you run two stacks; capacity and on-call cost go up"
+        ],
+        [
+          "Data consistency",
+          "Forces explicit ownership boundaries early",
+          "Temporary dual-writes, backfills, and reconciliation jobs weaken consistency"
+        ],
+        [
+          "Velocity",
+          "New services ship independently with clean contracts",
+          "Changes spanning old and new require coordinated deploys plus adapter work"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The strangler is deliberately slower than a rewrite on paper and faster in practice. Why accept months of duplication? Because the alternative risk is correlated failure: one schema mistake or missed edge case takes down everything at once. Duplication decouples failure. A bug in the new payment service only affects payment routes, and the router can send that 5% of traffic back to the monolith while you fix it. You are trading steady-state simplicity for migration-time survivability. If the system is small, stable, and well-tested, that trade is stupid — just rewrite it. If it carries revenue and nobody fully understands its coupling, that trade is the only sane option."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Stranglers rarely fail because the new service crashes. They fail because the boundary was wrong and the two worlds diverge silently. The symptoms look like data bugs, not outages, which is why they survive to on-call pages at 2 AM. You must instrument for divergence from day one: compare status codes, latency percentiles, and business outcomes per route, and log which implementation served each request. Without that, you cannot tell whether the new service is correct or just fast."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Split-brain writes.** Both monolith and new service accept writes to the same concept during transition. Symptom: orders exist in one store but not the other, refunds fail intermittently, reconciliation queues grow unbounded. Fix is single-writer per entity plus a one-way backfill, never bidirectional sync without idempotency keys.",
+        "**Leaky adapter.** The anti-corruption layer passes through legacy status codes, null semantics, or chatty N+1 calls to preserve compatibility. Symptom: new service shows monolith-like p99 latency and inherits monolith outages. If your adapter imports legacy models, you did not extract — you relocated.",
+        "**Sticky router.** Routing rules accrete `if tenant == X and path == Y` exceptions nobody dares delete. Symptom: deploys to the router become high-risk, canary analysis is meaningless, rollback takes 30 minutes of config archaeology. Keep rules prefix-based and versioned; expire canary flags.",
+        "**Half-retired monolith.** Team ships the new service but never deletes the old code path because *someone might still call it*. Symptom: two dashboards, two alerts, schema changes require double migrations. Retirement needs an owner and a date, or it never happens.",
+        "**Transaction撕裂 across the boundary.** A business operation now spans monolith and service with no distributed transaction. Symptom: partial success — payment captured, order not created — with no saga to compensate. Design the saga or keep the operation inside one boundary until you can."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Data is where stranglers die"
+    },
+    {
+      "type": "paragraph",
+      "text": "Behavior is easy to route; data is hard to split. The monolith almost always has one relational database where every domain joins to every other table. You cannot strangle behavior without deciding who owns the rows. The correct principle is brutal: **one entity, one writer, one owner at a time**. Shared tables with writes from both sides guarantee divergence. So migrate data with the service, not after it. Create the new store, backfill historically, stream changes forward, then flip writes, then flip reads, then cut the old foreign keys. Each step is reversible until the write flip. After the write flip, rollback means forward-fixing, not rewinding."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Branch by Abstraction:** put a repository interface in the monolith, implement it twice (legacy SQL vs. new service client), toggle via config. Lets you switch callers without changing business logic.",
+        "**Parallel run / shadow read:** new service serves shadow traffic, responses compared but not returned. Catches contract mismatches before users do. Costs double read load — use sampling.",
+        "**Single-writer backfill:** bulk copy history, then change-data-capture for deltas, then promote new store to writer. Readers cut over last. Never allow dual writes without idempotency keys and a reconciliation job.",
+        "**Saga for cross-boundary writes:** replace an ACID transaction with orchestrated steps plus compensations. Explicitly weaker than before — say so, and show the compensating action for each step."
+      ]
+    },
+    {
+      "type": "mermaid",
+      "title": "Strangler lifecycle",
+      "caption": "Coexistence with a safe rollback path until retirement.",
+      "code": "stateDiagram-v2\n    [*] --> MonolithOnly\n    MonolithOnly --> DualRun: route first slice\n    DualRun --> PartialStrangle: migrate hot paths\n    PartialStrangle --> DualRun: rollback on divergence\n    PartialStrangle --> Retired: all traffic migrated\n    Retired --> [*]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What the glue actually looks like"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers do not want framework trivia; they want to see where the routing decision lives and how you prevent leakage. Show a dumb edge router plus a translating adapter. The router matches prefixes and knows nothing about business rules. The adapter translates between the legacy payload and the new contract so legacy quirks never infect the new domain. Why two pieces? Because routing changes daily during migration and must be safe for an operator to flip, while translation changes with domain understanding and must be tested like business logic. Mixing them gives you untestable operator-owned code."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "edge_router.py",
+      "code": "ROUTES = [\n    (\"/api/v2/payments/\", \"payment-svc:8080\"),\n    (\"/api/v2/orders/\", \"orders-svc:8080\"),\n]\n\ndef route(path: str, tenant: str, pct: dict) -> str:\n    # Dumb by design: prefix match + explicit canary map.\n    # Trade-off: config churn here vs. redeploys everywhere else.\n    for prefix, target in ROUTES:\n        if path.startswith(prefix):\n            # canary by tenant before global flip\n            if tenant in pct.get(prefix, {}).get(\"allowlist\", []):\n                return target\n            if pct.get(prefix, {}).get(\"percent\", 0) >= 100:\n                return target\n            break\n    return \"monolith:8080\"  # default stays on legacy"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "PaymentAdapter.java",
+      "code": "// Anti-corruption layer: legacy quirks die here, never in the new domain.\nclass PaymentAdapter {\n    Payment toDomain(LegacyPaymentRow row) {\n        // WHY translate: legacy uses -1 for unknown, nullable currency,\n        // and stringly-typed status. New service uses explicit enums.\n        if (row == null) throw new NotFoundException();\n        String currency = row.currency == null ? \"USD\" : row.currency;\n        PaymentStatus s = switch (row.statusStr) {\n            case \"OK\", \"SETTLED\" -> PaymentStatus.CAPTURED;\n            case \"PEND\", \"WAIT\" -> PaymentStatus.PENDING;\n            default -> PaymentStatus.FAILED;\n        };\n        return new Payment(row.id, row.amountCents, currency, s);\n    }\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Frame the constraint",
+          "text": "Say: *We cannot stop the world, so big-bang is rejected. We will strangle to bound blast radius.* Name the cost immediately: temporary duplication and eventual-consistency windows."
+        },
+        {
+          "title": "Draw the router first",
+          "text": "Sketch clients → facade/gateway → monolith + one new service. Show routing by path prefix and a default-to-monolith rule. Explain why callers never bypass the facade and how you roll back by changing a route."
+        },
+        {
+          "title": "Choose the first slice",
+          "text": "Pick one vertical, low-coupling, high-value domain. Justify it: independent scaling, clear ownership, minimal joins. Explicitly defer shared tables and cross-domain transactions."
+        },
+        {
+          "title": "Solve data on the board",
+          "text": "Walk through backfill + CDC + single-writer flip + saga if needed. Interviewers promote you here, not on the box diagram. State the consistency downgrade and the compensating action."
+        },
+        {
+          "title": "Define done",
+          "text": "Give retirement criteria: traffic %, error-budget parity, reconciliation lag near zero, old tables read-only for one release, then delete. No retirement plan means no strangler — say that out loud."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**It is not just an API gateway.** The gateway is the mechanism; the pattern is the sequencing of extraction, data ownership transfer, and retirement. A proxy with no retirement plan is decoration.",
+        "**It does not preserve ACID across the boundary.** Once a transaction spans monolith and service, you have a saga with compensations. Claiming *we will use 2PC* signals you have never operated one.",
+        "**New services do not have to mirror legacy contracts.** Mirroring drags legacy coupling forward. Put an adapter at the boundary, let the new service expose a clean contract, and kill the adapter when the monolith dies.",
+        "**Strangling UI routes is not strangling the domain.** Routing `/v2/*` to a thin proxy that still queries legacy tables changes nothing about coupling or scalability. Ownership of writes and data must move.",
+        "**It is not always slower.** For large revenue systems it is faster to value because each slice ships independently. The slowness is total calendar time, not time-to-first-production win."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use the strangler when continuity matters more than speed.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Large monolith, must keep shipping features",
+          "Use it",
+          "Only approach that lets migration and feature work proceed in parallel"
+        ],
+        [
+          "Hot subdomain needs independent scaling or ownership",
+          "Use it",
+          "Early extraction pays for overhead with scaling and velocity wins"
+        ],
+        [
+          "Small codebase, low traffic, good test coverage",
+          "Do not use it",
+          "Rewrite is cheaper; strangler overhead exceeds risk reduction"
+        ],
+        [
+          "No access to monolith code or DB",
+          "Do not use it",
+          "Cannot insert facade or split data; consider wrap-and-replace via interfaces only"
+        ],
+        [
+          "Deeply entangled transactions with no saga tolerance",
+          "Do not use it yet",
+          "Split behavior first conceptually; strangling now just creates distributed failures"
+        ]
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "**We put a dumb router in front of the monolith, extract one vertical slice at a time with its data under single-writer ownership, and delete the old path only after production parity — accepting temporary duplication to avoid a risky cutover.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:15:44.534Z",
+    "problems": []
+  }
+}

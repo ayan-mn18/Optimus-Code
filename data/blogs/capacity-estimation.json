@@ -1,0 +1,352 @@
+{
+  "slug": "capacity-estimation",
+  "title": "Capacity Estimation",
+  "summary": "Capacity estimation translates vague product scale into QPS, storage, bandwidth, and server counts that force architecture decisions. Fermi math, explicit assumptions, and peak-aware reasoning.",
+  "kind": "HLD",
+  "problemSlug": "capacity-estimation-90-182",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "📊",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Capacity Estimation"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Capacity Estimation in Systems Design - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/capacity-estimation-in-systems-design/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Capacity Estimation in System Design - Rurutia1027",
+      "url": "https://rurutia1027.medium.com/capacity-estimation-in-system-design-thinking-beyond-the-numbers-2854dda59254",
+      "source": "rurutia1027.medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is Capacity Planning? - IBM",
+      "url": "https://www.ibm.com/think/topics/capacity-planning",
+      "source": "ibm.com",
+      "kind": "article"
+    },
+    {
+      "title": "How to Do Capacity Estimation in System Design Interviews (5-Step ...",
+      "url": "https://designgurus.substack.com/p/the-5-step-capacity-estimation-worksheet",
+      "source": "designgurus.substack.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Capacity estimation is **not prediction, it is translation**. You convert fuzzy product inputs — users, behaviors, retention — into four infrastructure outputs — **QPS, storage, bandwidth, servers** — that justify every box you draw next. If a number does not change your architecture, you wasted time computing it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Capacity estimation is Fermi arithmetic applied to a distributed system under time pressure. You start with three untrusted inputs: **how many actors**, **what they do**, and **how long you keep the result**. You end with four defensible outputs: **average and peak queries per second, total bytes stored over the retention window including replication, egress bandwidth per second, and the rough fleet size to serve it**. The precision target is order-of-magnitude correctness, not spreadsheet accuracy. Being off by 2x is fine. Being off by 100x means you picked a single database when you needed sharding, or you added caching where no cache could ever pay off. That is why interviewers care: the numbers expose whether your architecture is reasoned or decorative."
+    },
+    {
+      "type": "paragraph",
+      "text": "A complete estimate always separates **reads from writes**, **average from peak**, and **logical size from physical size**. Reads and writes scale different components — reads punish the cache and replicas, writes punish the primary, the log, and the disks. Average tells you cost, peak tells you survival. Logical size tells you product growth, physical size tells you what you actually buy after replication, indexing overhead, and encoding. Skip any of those distinctions and the estimate lies to you. The trade-off is deliberate: you accept crude assumptions now to buy **decision leverage** later, because a wrong-but-bounded number that forces sharding, backpressure, or async paths beats a precise number delivered after the design is frozen."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Throughput (QPS / TPS):** requests per second the front door, cache, and database must absorb at average and at peak. Drives server count, connection pools, and whether you need a queue.",
+        "**Storage volume:** `writes_per_day * average_object_size * retention_days * replication_factor`. Drives SQL vs object store, partitioning, and tiering to cold storage.",
+        "**Bandwidth:** `QPS * average_response_size` for egress, plus `writes * object_size` for ingress, plus cross-region replication traffic. Drives NIC, CDN, and regional placement.",
+        "**Compute / memory footprint:** requests per core per second, working-set size for cache, buffer memory for bursts. Drives fleet size and cache sizing, and tells you when you are memory-bound versus CPU-bound."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The method is always the same five-step pipeline: **scope, divide by time, multiply by size, multiply by time and copies, then convert to machines**. Scope pins down daily active users, actions per user, and read-to-write ratio. Divide by time turns daily actions into per-second load. Multiply by size turns operations into bytes. Multiply by retention and replication turns bytes into durable footprint. Convert to machines turns load into cores, RAM, and disks using a per-node budget. Each step makes one assumption explicit so the interviewer can challenge it. That is the point — you are showing how you reason under uncertainty, not that you memorized a constant. The trade-off: explicit rounding and clean powers of ten make you fast and checkable, but you must state the rounding or a 2.5x error compounds silently across steps."
+    },
+    {
+      "type": "mermaid",
+      "title": "Estimation pipeline",
+      "caption": "Inputs flow left to right; every output must point at a design decision.",
+      "code": "flowchart LR\n  S[Scope: DAU, actions, R:W] --> Q[QPS avg and peak]\n  Q --> B[Bandwidth: QPS x size]\n  Q --> ST[Storage: writes x size x retention x replicas]\n  Q --> M[Machines: QPS / per-core budget]\n  B --> D[Decisions: CDN, async, sharding]\n  ST --> D\n  M --> D"
+    },
+    {
+      "type": "paragraph",
+      "text": "Memorize a tiny table of reference numbers and never derive them live. Powers of ten are your friend: treat a day as `10^5` seconds (actual 86,400), use `1 KB` for text posts, `200 KB` for images, `2 MB` for short video chunks, `10 KB` for metadata rows. Assume a commodity app core handles low-hundreds of simple requests per second, a database node holds single-digit terabytes comfortably, and cross-region bytes cost far more than same-rack bytes. Why memorize? Because in an interview you have four minutes, not forty. The trade-off is accuracy for speed: rounding a day to `10^5` introduces ~15% error, which is irrelevant when your real uncertainty is whether DAU is 5 million or 50 million."
+    },
+    {
+      "type": "table",
+      "caption": "Reference numbers worth memorizing; round aggressively.",
+      "headers": [
+        "Quantity",
+        "Rule of thumb",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "1 day",
+          "`~10^5` seconds",
+          "Turns daily counts into QPS in one division"
+        ],
+        [
+          "QPS from DAU",
+          "`DAU * actions_per_user / 10^5`",
+          "Average baseline; multiply by 2-5x for peak"
+        ],
+        [
+          "Text / metadata",
+          "`1-10 KB` per record",
+          "Keeps storage math sane without a calculator"
+        ],
+        [
+          "Image",
+          "`200 KB - 1 MB`",
+          "Bandwidth explodes here, not on text"
+        ],
+        [
+          "Single app core",
+          "`200-500 simple RPS`",
+          "Converts QPS to fleet size"
+        ],
+        [
+          "Single DB node",
+          "`1-5 TB` usable",
+          "Forces sharding discussion early"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Worked example in 60 seconds"
+    },
+    {
+      "type": "paragraph",
+      "text": "Take a concrete prompt: 10 million daily active users, each posting once and reading 50 times per day, 1 KB per post, keep for 5 years, 3x replication. Writes per day are `10^7`, reads are `5*10^8`. Average write QPS is `10^7 / 10^5 = 100`, average read QPS is `5,000`. Peak at 3x is `300 writes/sec` and `15,000 reads/sec`. Storage logical is `10^7 * 1 KB * 365 * 5 ≈ 18 PB`, physical at 3x is `~54 PB` — you are not putting that on one Postgres box, you need an object store plus an index tier. Egress at peak is `15,000 * 1 KB ≈ 15 MB/s` for text, trivial, which tells you bandwidth is not the constraint and caching is about latency, not cost. Fleet at 300 RPS per core is `~50 cores` for reads, a handful of load-balanced app nodes. Every sentence ends in a decision. That is what good looks like. The trade-off you just made: you ignored indexes, compression, and deletes to stay fast — name that omission out loud so it does not look like ignorance."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "estimate.py",
+      "code": "DAU = 10_000_000\nWRITES_PER_USER = 1\nREADS_PER_USER = 50\nSEC_PER_DAY = 100_000  # rounded for speed, ~15% error, state it\n\navg_write_qps = DAU * WRITES_PER_USER / SEC_PER_DAY\navg_read_qps = DAU * READS_PER_USER / SEC_PER_DAY\npeak_factor = 3  # diurnal + event spike assumption\npeak_write = avg_write_qps * peak_factor\npeak_read = avg_read_qps * peak_factor\n\nobj_bytes = 1024\nretention_days = 365 * 5\nreplicas = 3\nlogical = DAU * WRITES_PER_USER * obj_bytes * retention_days\nphysical = logical * replicas\n\neggress_peak_bps = peak_read * obj_bytes\nprint(f\"avg W:{avg_write_qps:.0f} R:{avg_read_qps:.0f}\")\nprint(f\"peak W:{peak_write:.0f} R:{peak_read:.0f}\")\nprint(f\"logical TB:{logical/1e12:.1f} physical TB:{physical/1e12:.1f}\")\nprint(f\"egress peak MB/s:{eggress_peak_bps/1e6:.1f}\")"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly stated"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every estimation choice buys one virtue and sells another. Over-provision and you survive the spike but bleed money and hide inefficient queries behind idle headroom. Under-provision and you are cheap until the first flash crowd melts your tail latency. Use averages and your math is clean but your system dies at 8pm. Use peaks everywhere and you design a system for a load it sees 1% of the time. The senior move is to **name the direction of your bias** and tie it to the business: overestimate stateful storage because re-sharding under pressure is agony, underestimate stateless compute because autoscaling covers a 2x miss in minutes. Never present a single number without its assumption and its blast radius."
+    },
+    {
+      "type": "table",
+      "caption": "Each shortcut has a price. Say it.",
+      "headers": [
+        "Shortcut",
+        "What you gain",
+        "What you lose"
+      ],
+      "rows": [
+        [
+          "Round day to 10^5 sec",
+          "One-step mental division, checkable math",
+          "~15% systematic undercount of QPS; compounds if chained"
+        ],
+        [
+          "Single peak factor (3-5x)",
+          "Captures diurnal shape without a traffic model",
+          "Misses event spikes and thundering herds; tail latency still blows up"
+        ],
+        [
+          "Average object size",
+          "Fast storage and bandwidth math",
+          "Hides bimodal distribution — 1% large objects dominate disk and egress"
+        ],
+        [
+          "Ignore index / overhead (2-3x)",
+          "Keeps example moving",
+          "Understates DB footprint by 2x+; sharding trigger arrives late"
+        ],
+        [
+          "Stateless core = 300 RPS",
+          "Instant fleet sizing",
+          "Collapses CPU vs IO vs GC differences; useless for heavy compute or chatty DB access"
+        ],
+        [
+          "Assume uniform sharding",
+          "Clean per-node math",
+          "Ignores hot keys and celebrity skew that create the real bottleneck"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Estimation failures do not page you as arithmetic errors. They page you as **latency, saturation, and backlogs** weeks after launch. The most common corpse is the average-based design: dashboards look healthy at noon, then `p99` climbs vertically during peak while CPU sits at 60% because threads are parked on connection pools, lock contention, or downstream timeouts. Disk fills faster than projected because nobody counted secondary indexes, write-ahead logs, or delete tombstones. Kafka consumer lag grows monotonically because peak ingress was modeled but sustained catch-up throughput was not. Cache hit ratio collapses because working set was sized on total data, not hot data, so every peak becomes a cache stampede on the database."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Symptom: p99 spikes but avg latency flat** — you sized for average QPS. Check peak-to-average ratio, connection queue depth, and downstream timeout retries amplifying load 2-3x.",
+        "**Symptom: disk at 85% months early** — you used logical size. Check replication factor, index overhead, and retained logs or backups you forgot to multiply.",
+        "**Symptom: broker lag never recovers after spike** — you provisioned for ingress, not drain rate. Check consumer throughput under backpressure and partition count.",
+        "**Symptom: DB CPU fine, app timeouts anyway** — you modeled cores, not connections or memory. Check pool exhaustion, GC pauses, and hot-partition skew.",
+        "**Symptom: egress bill shock** — you multiplied request count by request size, not response size plus CDN miss rate plus cross-region replica traffic."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Peak blindness kills",
+      "text": "If you remember one failure mode, remember this: **average QPS sets cost, peak QPS sets survival**. Design autoscaling, queues, and caches for the peak; negotiate retention and replication for the average. Teams that size everything for the average get paged. Teams that size everything for the peak go over budget and get ignored next time."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Making it observable"
+    },
+    {
+      "type": "paragraph",
+      "text": "An estimate without a feedback loop is fiction. In production you close the loop with four signals: **ingest rate, saturation, working set, and backlog**. Ingest rate validates your QPS model. Saturation — CPU, memory, disk IO, connection usage — tells you which resource binds first, which is rarely the one you guessed. Working-set size versus cache size tells you whether your memory math holds. Backlog — queue depth, replication lag, compaction pending — tells you whether bursts are absorbed or accumulating. The trade-off is cardinality versus insight: per-endpoint, per-partition metrics explain skew beautifully and explode your monitoring bill, so aggregate by default and drill down only on the top offenders."
+    },
+    {
+      "type": "code",
+      "language": "yaml",
+      "filename": "capacity-alerts.yaml",
+      "code": "# Alert on the estimate's assumptions breaking, not just on downtime.\ngroups:\n- name: capacity\n  rules:\n  - alert: PeakAssumptionBreached\n    expr: rate(http_requests_total[5m]) > 3 * avg_over_time(rate(http_requests_total[1h])[30d:1h])\n    for: 10m\n    labels: { severity: warning }\n    annotations: { summary: \"Ingress > 3x trailing average: peak factor invalid\" }\n  - alert: StorageBurnRateHigh\n    expr: predict_linear(disk_used_bytes[6h], 86400 * 30) > disk_total_bytes * 0.85\n    for: 1h\n    labels: { severity: warning }\n    annotations: { summary: \"30-day disk projection exceeds 85%: retention or replication assumption wrong\" }"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers do not grade arithmetic. They grade **assumption discipline and linkage to design**. Spend three to five minutes, narrate every assumption, round loudly, and land each number on a decision. If you spend ten minutes chasing exact bytes, you signal you cannot prioritize. If you skip estimation, you signal your architecture is ungrounded. The winning shape is: clarify two inputs, compute QPS first, derive storage and bandwidth second, size the fleet third, then explicitly state what you ignored."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Clarify scale inputs",
+          "text": "Ask for DAU vs total users, actions per user per day, and read-to-write ratio. If they will not give them, assert them: `Assume 10M DAU, 1 write + 50 reads`. Stating beats stalling."
+        },
+        {
+          "title": "Compute QPS, avg then peak",
+          "text": "Divide by `10^5` for average, multiply by `3x` for peak and say why. Split reads and writes. This one number drives everything else."
+        },
+        {
+          "title": "Derive storage",
+          "text": "Show `writes/day * size * retention * replicas` in one line. Call out what you excluded — indexes, compression — and which direction it biases you."
+        },
+        {
+          "title": "Derive bandwidth and memory",
+          "text": "Multiply peak QPS by response size for egress. Size cache by hot working set, not total data. Say whether you are network-, memory-, or CPU-bound."
+        },
+        {
+          "title": "Convert to machines and decisions",
+          "text": "Divide QPS by per-node budget to get fleet size, then land it: `54 PB physical means object store + metadata index, 15k read RPS means cache + read replicas`. No orphan numbers."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Say the sentence that scores",
+      "text": "After each calculation, append **so therefore**. `Peak reads are 15k RPS, *so therefore* we need a cache tier and read replicas — a single primary cannot absorb that fan-out.` Numbers without *so therefore* are trivia."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail candidates"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Precision equals rigor.** No — defensible rounding with stated assumptions beats false precision. `~20 PB logical` with assumptions is senior; `18.73 PB` with silence is junior.",
+        "**Storage is `users * size`.** Wrong shape. Storage is `writes per day * size * retention * copies`. Users who never write store nothing.",
+        "**QPS is one number.** There are four: read-avg, write-avg, read-peak, write-peak. Blending them hides that writes need durability and reads need fan-out.",
+        "**Cache fixes any QPS.** Cache only helps read-heavy, skewed, reusable data. Write-heavy or unique-per-user reads get ~0% hit rate and you just added a hop.",
+        "**Bandwidth means ingress.** Egress plus replication plus CDN miss traffic is what bills and saturates. Text systems are latency-bound; media systems are egress-bound.",
+        "**One peak factor fits all.** Diurnal 2-3x is not launch-day 10x or celebrity-driven 100x on one key. Name which spike you modeled and which would still kill you."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Estimation is leverage in some rooms, theater in others.",
+      "headers": [
+        "Scenario",
+        "Estimate?",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Early HLD: choosing sharding, cache, queue",
+          "Yes, always",
+          "Order-of-magnitude load picks the topology; getting this wrong is unrecoverable"
+        ],
+        [
+          "Media, feed, messaging at scale",
+          "Yes, deeply",
+          "Bytes dominate cost and egress; retention math decides tiering"
+        ],
+        [
+          "Prototype / MVP with <10k users",
+          "Back-of-envelope only",
+          "Any single node survives; detailed math costs more time than it saves"
+        ],
+        [
+          "Latency-critical path tuning",
+          "No — measure",
+          "Queuing and GC effects dwarf arithmetic; you need profiling, not Fermi"
+        ],
+        [
+          "Highly bursty or viral workloads",
+          "Bound, don't point-estimate",
+          "Give p50/p99/burst bands plus backpressure plan instead of one fragile QPS"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The judgment call is effort proportional to irreversibility. Stateful decisions — retention, replication, partition key, cold tier — deserve careful bytes math because migration is painful. Stateless decisions — app fleet size, within 2-3x — deserve a one-liner because autoscaling and load balancing absorb the error. Spend your minutes where the cost of being wrong is highest. That prioritization is exactly what the interviewer is watching for. The trade-off every time: **time spent estimating versus risk reduced** — lavish it on storage topology, economize on elastic compute."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Capacity estimation turns DAU, behavior, and retention into peak QPS, physical bytes, and bandwidth — so we can prove we need sharding, caching, or async paths instead of asserting it.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:11:13.658Z",
+    "problems": []
+  }
+}

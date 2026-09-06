@@ -1,0 +1,347 @@
+{
+  "slug": "cost-efficient-architecture",
+  "title": "Cost efficient Architecture",
+  "summary": "Cost-efficient architecture for high-throughput systems: maximize throughput per dollar by removing work, batching the rest, and pushing data to cheaper tiers.",
+  "kind": "HLD",
+  "problemSlug": "multi-tier-cost-efficient-architecture-145-312",
+  "topic": "High Throughput Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "💰",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "High Throughput",
+    "Cost Efficiency"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "(PDF) Cost effective architecture - Academia.edu",
+      "url": "https://www.academia.edu/91622840/Cost_effective_architecture",
+      "source": "academia.edu",
+      "kind": "article"
+    },
+    {
+      "title": "ROI: Reducing up-front costs | AIA - The American Institute of Architects",
+      "url": "https://www.aia.org/resource-center/roi-reducing-up-front-costs",
+      "source": "aia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Cost Effective Architecture: Reduce costs in all architectural design ...",
+      "url": "http://cost-effective-architecture.com/",
+      "source": "cost-effective-architecture.com",
+      "kind": "article"
+    },
+    {
+      "title": "How Architects Prepare a Cost-Benefit Analysis: Key Factors ...",
+      "url": "https://www.fuentesarchitecture.com/blog/how-architects-prepare-a-cost-benefit-analysis-key-factors-and-considerations",
+      "source": "fuentesarchitecture.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Cost efficiency at high throughput is not about cheaper machines. It is about **doing less expensive work per request**. Every request that hits cache, batches with 100 others, or avoids a cross-zone call is money you never spend. If you cannot state cost per 10k requests, you are not designing, you are guessing."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A cost-efficient architecture holds a throughput SLO — requests per second, sustained and peak — while minimizing total cost of ownership per unit of useful work. That unit is `cost per million requests`, `cost per GB ingested`, or `cost per GB retained`, not the monthly bill in isolation. A $50k/month system doing 200k rps is cheap; a $5k/month system doing 2k rps is expensive. High throughput changes the math because fixed costs amortize to zero and variable costs dominate. Compute seconds, memory GB-seconds, network bytes, storage IOPS, and external API calls become the bill. The design job is to attack those variables in order of size: first eliminate work with caching and filtering, then cheapen work with batching and async execution, then cheapen placement with autoscaling, spot capacity, and tiered storage. If a component does not reduce one of those variables, it is not a cost optimization."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why throughput makes this different: at 100 rps you can afford synchronous writes, on-demand instances, and one storage tier. At 50k rps those choices multiply into ruin. A 20ms synchronous dependency that costs $0.01 per 10k calls is noise at low scale and a second compute fleet at high scale because threads block, timeouts retry, and retries amplify load. Cost-efficient design therefore treats amplification as the enemy. Fan-out, retries, unbatched writes, chatty serialization like verbose JSON, and cross-availability-zone traffic all multiply a small per-request cost by throughput and by retry factor. The trade-off is always the same: you pay in latency, staleness, or operational complexity to buy back throughput-per-dollar. There is no free reduction."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: kill cost where it multiplies"
+    },
+    {
+      "type": "mermaid",
+      "title": "Where money is spent on the request path",
+      "caption": "Each stage is a place to eliminate, batch, or defer work.",
+      "code": "flowchart LR\n    Client --> LB[Load Balancer]\n    LB --> App[Stateless Compute]\n    App --> Cache[Cache Layer]\n    Cache --> Queue[Async Queue]\n    Queue --> Worker[Batch Workers]\n    Worker --> Store[Tiered Storage]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Follow a request left to right and ask at each hop: can this be skipped, served from memory, or deferred? The load balancer should terminate TLS once and keep connections alive, because connection setup and TLS handshakes burn CPU that scales linearly with requests. Stateless compute should do validation and routing only, no heavy work inline. The cache layer absorbs repeats — and high-throughput workloads almost always have skew where 10% of keys cause 80% of traffic. The queue decouples acceptance from processing so you can batch 500 writes into one storage call and smooth peaks without provisioning for peaks. Workers run on cheap, interruptible or autoscaled capacity because batch work tolerates delay and retry. Storage is tiered: memory for hot, cheap object storage for warm and cold, with lifecycle rules. The reason this shape wins: it converts per-request variable cost into shared fixed cost. One cache lookup replaces ten database reads. One batched write replaces 500 row inserts. Trade-off: you add latency, eventual consistency, and a queue to operate."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The five levers that actually move the bill"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Eliminate work: cache, deduplicate, filter early.** Drop invalid, duplicate, or unauthorized requests at the edge before they touch compute or storage. Trade-off: you pay in staleness and invalidation complexity.",
+        "**Batch work: buffer, compress, aggregate.** Turn 1,000 small writes, RPCs, or billed API calls into 10 large ones. Throughput loves large sequential I/O. Trade-off: you pay in added tail latency and memory for buffers.",
+        "**Defer work: async queues and tiered processing.** Accept fast, process slow. Hot path returns in milliseconds; cold path runs when capacity is cheap. Trade-off: you pay in eventual consistency and queue operations burden.",
+        "**Right-place work: autoscale, bin-pack, keep traffic zonal.** Match capacity to actual load curve and keep data and compute in the same zone. Cross-zone bytes are a silent tax at scale. Trade-off: you pay in autoscaling lag and risk of under-provisioning during spikes.",
+        "**Expire work: TTLs, downsampling, tiered retention.** Most high-throughput data loses value in hours. Store full fidelity for hours, aggregates for weeks, samples for months. Trade-off: you pay in lost debuggability and inability to reprocess raw history."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "Each cost lever and what it costs you back.",
+      "headers": [
+        "Lever",
+        "What it saves",
+        "What you pay back",
+        "When it backfires"
+      ],
+      "rows": [
+        [
+          "Edge cache + CDN",
+          "Origin compute and egress bytes, 10x-100x on skewed reads",
+          "Staleness, invalidation logic, cache memory",
+          "Write-heavy or per-user unique keys with no reuse"
+        ],
+        [
+          "Request batching and compression",
+          "RPC count, storage IOPS, billed third-party calls",
+          "Buffer latency, larger blast radius on failure",
+          "Strict per-request latency SLO under 50ms"
+        ],
+        [
+          "Async queue + batch workers",
+          "Peak provisioned compute, absorbs 5x spikes without 5x fleet",
+          "Queue lag, ordering and exactly-once complexity",
+          "Work that must be synchronous for correctness"
+        ],
+        [
+          "Autoscale + bin-packing",
+          "Idle compute, often 40-60% of on-demand bill",
+          "Cold starts, scaling lag, throttling during flash crowds",
+          "Spiky unpredictable traffic with no headroom"
+        ],
+        [
+          "Tiered storage + TTLs",
+          "Expensive high-IOPS storage for cold data",
+          "Rehydration latency, lifecycle management",
+          "Regulatory or ML workloads that need full raw history"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Where the money really goes"
+    },
+    {
+      "type": "paragraph",
+      "text": "Decompose the bill before proposing anything. In most high-throughput systems the order is: compute, then data transfer, then storage, then managed-service premiums. Compute dominates because blocked threads are expensive — a service at 30% CPU but 90% thread utilization is paying for waiting, not working. Fix that with non-blocking I/O, connection pooling, and timeouts with budgets, not by adding instances. Data transfer is next: serialization size, polling, and cross-zone reads. A 4KB JSON payload at 50k rps is 200MB/s sustained; compress it to 800 bytes and you cut egress and downstream CPU together. Storage cost is retention multiplied by replication — three replicas of 90 days of raw events dwarfs compute if you keep everything. Managed queues, search clusters, and stream processors charge for throughput plus retention, which is why you set aggressive TTLs and pre-aggregate before indexing. Opinion: if you have not measured bytes per request and storage bytes per ingested byte, any cost proposal is theater. Instrument those two ratios first. Trade-off of instrumentation itself is cardinality cost, so aggregate by endpoint and status, not by user ID."
+    },
+    {
+      "type": "table",
+      "caption": "Cost driver breakdown for a typical high-throughput API or ingest pipeline.",
+      "headers": [
+        "Driver",
+        "Symptom in metrics",
+        "Cheap fix",
+        "Trade-off"
+      ],
+      "rows": [
+        [
+          "Blocked compute threads",
+          "Low CPU, high latency, thread pool saturation",
+          "Async I/O, bulkheads, aggressive timeouts",
+          "More complex error handling and partial failures"
+        ],
+        [
+          "Egress and cross-zone bytes",
+          "Network bill grows faster than request count",
+          "Keepalives, compression, zonal affinity, edge cache",
+          "Less resilience to zonal failure if too sticky"
+        ],
+        [
+          "Small random writes",
+          "Storage IOPS throttled, cost per GB written is high",
+          "Buffer 1-5s and flush as single batch object",
+          "Data loss window on crash, higher tail latency"
+        ],
+        [
+          "Hot keys on database",
+          "One partition throttles while others idle",
+          "In-memory cache + request coalescing",
+          "Stale reads and thundering herd on expiry"
+        ],
+        [
+          "Infinite retention",
+          "Storage grows linearly forever",
+          "Downsample after 7 days, delete raw after 30",
+          "Cannot backfill or audit old raw events"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Cost-efficient systems fail in specific, recognizable ways because every saving introduces a cliff. Aggressive autoscaling saves 50% on a normal day and then lags a flash spike by 2-3 minutes, so you see a sawtooth: latency explodes exactly when traffic rises fastest, then recovers after new capacity warms. Batching saves IOPS until a worker dies with a full buffer — then you see correlated loss or a duplicate storm on replay, because at-least-once plus retry equals duplicates unless the sink is idempotent. Tiered storage saves 80% until a cold key becomes hot again; rehydration latency jumps from 5ms to 500ms and the cache stampede hammers the origin. Spot or preemptible workers get reclaimed in bulk and queue depth grows unbounded; the symptom is ever-increasing consumer lag paired with idle expensive on-demand fallback that was supposed to be temporary. The nastiest failure is retry amplification: a slow downstream causes timeouts, timeouts cause retries, retries double effective throughput, and autoscaling adds capacity that only adds more retries. The bill spikes the same day availability drops. Fix with budgets — capped retries, jittered backoff, circuit breakers, and load shedding — because unbounded reliability spending is unbounded cost."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Scaling lag during spikes:** p99 jumps 10x for 2 minutes after traffic jump, queue depth spikes then drains. Cause: target-tracking autoscale with slow warmup. Fix: headroom + scheduled scaling + rate limiting.",
+        "**Duplicate writes after batch replay:** counts jump 2-3x after worker restart. Cause: non-idempotent sink with at-least-once queue. Fix: idempotency keys and dedup window.",
+        "**Cold-tier stampede:** cache miss rate goes 1% to 60% in seconds, origin throttles. Cause: TTL expiry synchronized or cold key went viral. Fix: request coalescing, jittered TTLs, stale-while-revalidate.",
+        "**Network tax surprise:** transfer cost exceeds compute. Symptom: bill grows even as CPU falls. Cause: verbose payloads, polling, cross-zone fan-out. Fix: compression, push instead of poll, zonal routing.",
+        "**Storage never stops growing:** steady cost climb with flat traffic. Cause: no lifecycle policy, full-fidelity retention. Fix: rollups and deletes enforced by automation, not policy docs."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Do not cut headroom to zero",
+      "text": "The classic junior mistake is sizing for average load to save money. High-throughput systems live or die on peaks and on retry storms. Run at 60-70% steady utilization with fast scale-up and aggressive load shedding above that. The 30% headroom looks wasteful until it absorbs the one spike that would have caused a retry loop costing more than a month of headroom."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete levers in code and config"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "batching.py",
+      "code": "import time, zlib, json\n\nclass BatchSink:\n    def __init__(self, max_items=500, max_bytes=256*1024, max_wait_s=2.0):\n        self.buf = []\n        self.bytes = 0\n        self.max_items = max_items\n        self.max_bytes = max_bytes\n        self.max_wait_s = max_wait_s\n        self.last_flush = time.monotonic()\n\n    def offer(self, event: dict):\n        # Deduplicate cheaply before buffering: idempotency key in memory window\n        payload = json.dumps(event, separators=(',', ':')).encode()\n        self.buf.append(payload)\n        self.bytes += len(payload)\n        if self.should_flush():\n            self.flush()\n\n    def should_flush(self):\n        return (len(self.buf) >= self.max_items\n                or self.bytes >= self.max_bytes\n                or time.monotonic() - self.last_flush >= self.max_wait_s)\n\n    def flush(self):\n        if not self.buf:\n            return\n        # One large compressed write replaces N small writes.\n        # Trade-off: 0-2s extra latency + loss window if process dies.\n        joined = b'\\n'.join(self.buf)\n        compressed = zlib.compress(joined, level=3)  # fast, not max\n        self.write_once(compressed, count=len(self.buf))\n        self.buf, self.bytes = [], 0\n        self.last_flush = time.monotonic()\n\n    def write_once(self, blob: bytes, count: int):\n        # Must be idempotent: include batch_id so replay is safe.\n        pass"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cache_policy.py",
+      "code": "# Cost-aware read path: coalesce + stale-while-revalidate + jittered TTL\n# Trade-off: bounded staleness for 10-100x fewer origin reads.\nimport time, random, threading\n\ncache = {}\nlocks = {}\nHOT_TTL = 60          # hot keys: short TTL, high hit rate\nCOLD_TTL = 600        # cold keys: longer TTL, fewer origin hits\nSTALE_WINDOW = 30     # serve stale while refreshing in background\n\ndef get(key, loader):\n    now = time.time()\n    entry = cache.get(key)\n    if entry and now < entry['exp']:\n        return entry['val']\n    if entry and now < entry['exp'] + STALE_WINDOW:\n        # Amortize origin cost: only one thread refreshes.\n        if locks.setdefault(key, threading.Lock()).acquire(blocking=False):\n            try:\n                threading.Thread(target=refresh, args=(key, loader)).start()\n            finally:\n                locks[key].release()\n        return entry['val']  # stale but cheap\n    val = loader(key)  # cache miss: pay full cost once\n    ttl = HOT_TTL if is_hot(key) else COLD_TTL\n    ttl += random.uniform(0, ttl * 0.2)  # jitter prevents synchronized expiry\n    cache[key] = {'val': val, 'exp': now + ttl}\n    return val\n\ndef refresh(key, loader):\n    try:\n        val = loader(key)\n        cache[key] = {'val': val, 'exp': time.time() + HOT_TTL}\n    except Exception:\n        pass  # keep serving stale; origin errors must not evict cache\n\ndef is_hot(key):\n    return True  # replace with sketch: Count-Min or recent-hit counter"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why these two snippets carry the design: batching attacks the per-call tax — connection setup, request headers, storage transaction overhead — which dominates at high request counts. Flushing by items, bytes, and time bounds all three risks: too many items blows memory, too many bytes blows payload limits, too much waiting blows latency SLO. Compression level 3 is deliberate; higher levels save 5% more bytes and cost 3x CPU, a bad trade at 50k rps. The cache snippet attacks repeats and stampedes. Stale-while-revalidate means a slow origin does not block the hot path, single-flight refresh means 1,000 concurrent misses become one origin call, and jittered TTLs prevent the synchronized expiry that takes down origins at the top of every minute. Both patterns share the same contract: the sink and the loader must tolerate duplicates and staleness. If the business requires strong consistency on every read and zero data loss on every write, you cannot have these savings — say so explicitly."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Caching and async: the two biggest wins"
+    },
+    {
+      "type": "mermaid",
+      "title": "Cheap read path vs cheap write path",
+      "caption": "Serve reads from memory, absorb writes in a queue.",
+      "code": "graph TD\n    A[Hot Path] --> B{Cache Hit?}\n    B -->|Yes| C[Serve from Memory]\n    B -->|No| D[Compute and Backfill]\n    D --> E[Async Write to Cheap Store]\n    E --> F[Batch Worker Flush]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Treat reads and writes asymmetrically because their cost profiles differ. Reads benefit from reuse: even a 70% hit rate cuts origin load by more than 3x, and origin load is what forces you to provision expensive low-latency capacity. Size the cache for the working set, not the dataset — 10GB of hot keys in memory beats 1TB of lukewarm data on fast disks. Writes benefit from grouping: disks and object stores charge per operation and love sequential bulk. Accepting a write into a durable queue in milliseconds and flushing it seconds later in bulk cuts IOPS by orders of magnitude and lets workers run on the cheapest capacity available. The trade-off you must name: reads become eventually consistent and writes become at-risk for a short window. Durable queue with replication shrinks that window from seconds of memory to milliseconds of disk, at higher queue cost. Choose the window from the business: financial ledger entries cannot wait, click impressions can. Do not apply one consistency level to the whole system."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with a cost model, not a diagram",
+          "text": "Say: assuming 50k rps, 2KB average request, 30-day retention, here is where money goes. Estimate bytes per second, writes per second, and working-set size. Interviewers promote candidates who quantify before drawing boxes, because quantification selects the right boxes."
+        },
+        {
+          "title": "Draw the cheap path first",
+          "text": "Show edge validation, cache lookup, and async accept on the hot path. Push aggregation, enrichment, and indexing to background workers. Narrate each move as eliminated work versus deferred work and name the consistency trade-off out loud."
+        },
+        {
+          "title": "Handle peaks without provisioning for peaks",
+          "text": "Propose autoscaling on queue depth and CPU, plus load shedding and backpressure when scaling lags. Explain headroom: why 65% steady utilization is cheaper than 95% plus retry storms. This is where medium difficulty is graded."
+        },
+        {
+          "title": "Tier the data lifecycle",
+          "text": "State TTLs explicitly: hot cache 60s, raw events 7 days on cheap object storage, rollups 90 days, samples beyond. Explain rehydration cost and who pays it. Vague infinite retention is an automatic downgrade."
+        },
+        {
+          "title": "Close with guardrails",
+          "text": "End with budgets: retry budget, payload size cap, per-tenant quotas, and cost alerts on bytes-per-request and cost-per-million-requests. Cost efficiency without guardrails is just fragility with better slides."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Cheaper instances equal cheaper system.** A fleet of tiny instances with low bin-packing and high orchestration overhead often costs more per request than fewer dense instances. Price per hour is irrelevant; price per sustained rps at target latency is the metric.",
+        "**Caching fixes a write-heavy workload.** If every key is written once and read once, cache hit rate tends to zero and cache memory is pure waste. Cache helps skew and reuse, not volume. For write-heavy flows, batch and tier instead.",
+        "**Async means lossy and unsafe.** A replicated queue with idempotent consumers is more durable than a synchronous chain of three RPCs with retries. Async adds delay, not necessarily risk — but only if replay safety is designed in.",
+        "**Autoscaling handles any spike.** Scaling takes minutes; spikes take seconds. Without shedding, coalescing, and pre-warmed headroom, autoscaling amplifies the spike with retries. Scaling is a cost optimizer for slow trends, not a shield for flash crowds.",
+        "**Compression and batching are always worth it.** Below ~1KB payloads or below ~100ms latency SLOs, batching delay and CPU can hurt more than network savings. Measure bytes-per-request first; do not compress already-compressed media."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Apply cost pressure where it pays, back off where correctness dominates.",
+      "headers": [
+        "Situation",
+        "Use cost-efficient pattern",
+        "Avoid it, pay full price"
+      ],
+      "rows": [
+        [
+          "Read skew with repeat keys",
+          "Edge + in-memory cache with stale-while-revalidate",
+          "Per-user unique uncacheable data — cache would just waste RAM"
+        ],
+        [
+          "High-volume event ingest",
+          "Queue + 1-5s batch flush + compressed object writes",
+          "Low-latency transactional writes that need immediate durability"
+        ],
+        [
+          "Spiky diurnal traffic",
+          "Autoscale on queue depth + scheduled headroom",
+          "Unpredictable flash crowds with strict SLO — keep provisioned buffer"
+        ],
+        [
+          "Large historical dataset",
+          "Downsample and tier to cheap storage with TTLs",
+          "Audit, billing, or training data requiring full-fidelity replay"
+        ],
+        [
+          "Third-party billed APIs",
+          "Aggregate, cache, and quota per tenant aggressively",
+          "Real-time verification where staleness equals fraud or outage"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "**Serve repeats from memory, batch the rest async, autoscale to the average not the peak, and expire everything by value — and name the latency and staleness you traded for each saving.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:47:04.895Z",
+    "problems": []
+  }
+}

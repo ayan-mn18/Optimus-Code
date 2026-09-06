@@ -1,0 +1,333 @@
+{
+  "slug": "web-sockets",
+  "title": "Web Sockets",
+  "summary": "WebSockets trade stateless HTTP scalability for low-latency server push over a persistent TCP connection. This concept covers handshake, framing, failure modes, and how to scale stateful connections.",
+  "kind": "HLD",
+  "problemSlug": "web-sockets-94-210",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "🔌",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "WebSockets",
+    "Realtime"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "WebSocket - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/WebSocket",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "WebSockets explained: What they are and how they work - Ably Realtime",
+      "url": "https://ably.com/topic/websockets",
+      "source": "ably.com",
+      "kind": "article"
+    },
+    {
+      "title": "How Do WebSockets Work? - Postman Blog",
+      "url": "https://blog.postman.com/how-do-websockets-work/",
+      "source": "blog.postman.com",
+      "kind": "article"
+    },
+    {
+      "title": "WebSocket API (WebSockets) - Web APIs - MDN Web Docs",
+      "url": "https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API",
+      "source": "developer.mozilla.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A WebSocket is **not faster HTTP**. It is a **stateful TCP connection you pay to keep open** so the server can push without being asked. You trade effortless horizontal scale for push latency. Every hard question after that is the same: **where does connection state live when a server dies?**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What WebSocket is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "WebSocket is a message-oriented, full-duplex protocol over a single TCP connection, standardized as RFC 6455. It starts as a normal HTTP request that asks to `Upgrade` to `websocket`, and if the server agrees with `101 Switching Protocols`, the socket stops speaking request-response and starts exchanging **frames** in both directions until either side closes it. After the upgrade there is no method, no path, no headers per message — just lightweight frames with an opcode, a length, and a payload."
+    },
+    {
+      "type": "paragraph",
+      "text": "That framing distinction is the whole point. TCP gives you an unordered-by-message byte stream with no notion of where one chat message ends and the next begins. HTTP gives you messages but only when the client asks first. WebSocket adds a thin message layer on top of TCP: `text` frames carrying UTF-8, `binary` frames carrying opaque bytes, and control frames — `ping`, `pong`, `close` — interleaved on the same connection. Either peer can send at any time. The server does not need a pending request to speak. That is why polling disappears, and that is also why your servers suddenly hold 500k idle connections instead of handling 500k short requests per second."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Mechanism: upgrade once, frame forever"
+    },
+    {
+      "type": "mermaid",
+      "title": "Handshake then persistent frames",
+      "caption": "HTTP is used only to negotiate; all realtime traffic is frames.",
+      "code": "flowchart TD\n  C[Client] -->|GET + Upgrade: websocket + Sec-WebSocket-Key| S[Server]\n  S -->|101 Switching Protocols + Accept hash| C\n  C <-->|text / binary / ping / pong / close frames| S\n  S -->|TCP teardown on close frame or timeout| C"
+    },
+    {
+      "type": "paragraph",
+      "text": "The handshake exists for one cynical reason: to smuggle a long-lived, non-HTTP protocol through infrastructure that only understands HTTP. By starting on port 80 or 443 with a standard `GET` plus `Connection: Upgrade` and `Upgrade: websocket`, the connection traverses firewalls, NAT, corporate proxies, and load balancers that would drop arbitrary TCP. The `Sec-WebSocket-Key` and accept hash do not authenticate anything — they prove the server actually understands the upgrade and prevent a misconfigured HTTP cache from replaying a cached `101`. Once upgraded, use `wss` — WebSocket over TLS — everywhere. Unencrypted `ws` leaks message contents and breaks on any proxy that tries to buffer or inspect HTTP bodies. The trade-off: TLS costs you a handshake and per-record encryption, but without it intermediaries will silently mangle frames."
+    },
+    {
+      "type": "code",
+      "language": "http",
+      "filename": "handshake.http",
+      "code": "GET /chat?room=42 HTTP/1.1\nHost: realtime.example\nUpgrade: websocket\nConnection: Upgrade\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\nSec-WebSocket-Version: 13\n\nHTTP/1.1 101 Switching Protocols\nUpgrade: websocket\nConnection: Upgrade\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+    },
+    {
+      "type": "paragraph",
+      "text": "After `101`, everything is frames. Each frame has a 2-to-14 byte header: FIN bit for fragmentation, opcode (`0x1` text, `0x2` binary, `0x8` close, `0x9` ping, `0xA` pong), a masked bit, payload length, and optional masking key. Client-to-server frames **must** be masked with a random 32-bit key — a historical defense against cache-poisoning proxies, not encryption. Server-to-client frames are never masked. Large messages can be fragmented across multiple frames with FIN=0 until the last fragment, which means a receiver must buffer and reassemble. Ping/pong are the built-in heartbeat: either side can send a ping and expects a pong with the same payload. If you ignore them, you will never detect half-open connections where the peer vanished without a FIN."
+    },
+    {
+      "type": "code",
+      "language": "javascript",
+      "filename": "ws-client.js",
+      "code": "const ws = new WebSocket('wss://realtime.example/chat?room=42');\nws.onopen = () => {\n  // Application heartbeat: LB idle timeout is typically 60s.\n  // Send ping at 25s; expect pong or close and reconnect.\n  setInterval(() => {\n    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping', t: Date.now() }));\n  }, 25000);\n};\nws.onmessage = (e) => {\n  const msg = JSON.parse(e.data); // text frame; use ArrayBuffer for binary\n  render(msg);\n};\nws.onclose = (e) => scheduleReconnect(e.code); // 1000 normal, 1006 abnormal, 1011 server error"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Why you pay for push with state.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Server push with ~2-14 byte overhead per message",
+          "One open file descriptor + TCP + TLS state per client",
+          "10k requests/sec stateless is easy; 1M idle sockets needs tuning of ulimits, memory, and kernel"
+        ],
+        [
+          "Full-duplex, low latency, no polling delay",
+          "Connection is pinned to one server; no free load balancing",
+          "HTTP can route each request anywhere. WebSocket routes to where the socket lives."
+        ],
+        [
+          "Message boundaries over TCP",
+          "No multiplexing, no per-message flow control",
+          "One slow reader blocks its own connection; head-of-line blocking still applies at TCP level"
+        ],
+        [
+          "Works over 80/443 through most firewalls",
+          "Breaks on naive L7 proxies, buffers, and idle timeouts",
+          "You must configure proxy for Upgrade passthrough and long timeouts"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The central trade-off is **stateless scale versus push freshness**. Polling and long-polling keep servers stateless at the cost of latency and redundant headers on every poll. WebSocket removes that overhead — no headers, no new TLS handshake per update — but converts every viewer into resident memory and a slot in your connection table. That is cheap when 1,000 traders watch prices and expensive when 2 million dormant mobile tabs hold sockets open all night. Choose persistence only when the server genuinely initiates traffic faster than the client would reasonably poll. Otherwise you bought operational pain for no latency win."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "WebSocket outages rarely look like crashes. They look like messages that silently stop, fans that spin on reconnect storms, and servers that run out of file descriptors at 2am. The protocol gives you almost no reliability — no acknowledgments, no redelivery, no ordering across connections. If you assume TCP means delivered-to-application, you will lose messages during deploys and network blips and never know."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Half-open connections:** peer loses power or NAT drops mapping without FIN. Symptom: user appears online but never receives messages. Fix: application ping/pong every 20-30s plus server-side idle killer.",
+        "**Proxy idle timeout:** LB or ingress kills silent connections after 60s. Symptom: disconnects exactly every minute. Fix: heartbeat below timeout, and configure LB for `Upgrade` passthrough with 3600s+ timeout.",
+        "**Sticky routing loss:** server behind LB restarts, all its sockets die. Symptom: one availability zone loses all realtime at deploy time. Fix: clients reconnect with jittered backoff, resync by last-seen ID.",
+        "**No backpressure:** browser `WebSocket` API buffers unsent messages in memory with no pause signal. Symptom: tab OOM or 100% CPU when server floods. Fix: server-side rate limit per connection, drop or conflate updates, use binary frames.",
+        "**Broadcast fan-out overload:** one message to 100k subscribers means 100k writes. Symptom: publisher latency spikes linearly with audience. Fix: do not fan out on the publishing server; publish once to a backbone and let each edge server fan out locally.",
+        "**Masking / fragmentation bugs:** custom parser rejects masked frames or splits UTF-8 across fragments. Symptom: random `1007 invalid payload` closes. Fix: use a tested library; never hand-roll the frame parser."
+      ]
+    },
+    {
+      "type": "mermaid",
+      "title": "Connection lifecycle",
+      "caption": "Design reconnect and resync around the abnormal close path.",
+      "code": "stateDiagram-v2\n  [*] --> CONNECTING: new WebSocket()\n  CONNECTING --> OPEN: 101 Switching Protocols\n  CONNECTING --> CLOSED: handshake fail\n  OPEN --> OPEN: text / binary / ping / pong\n  OPEN --> CLOSING: close frame sent\n  CLOSING --> CLOSED: close ack + TCP teardown\n  OPEN --> CLOSED: TCP drop / timeout\n  CLOSED --> CONNECTING: backoff retry + resync"
+    },
+    {
+      "type": "table",
+      "caption": "Symptom to cause to fix.",
+      "headers": [
+        "Symptom in prod",
+        "Likely cause",
+        "Fix you ship"
+      ],
+      "rows": [
+        [
+          "Presence shows ghost users",
+          "Half-open sockets, no heartbeat",
+          "Server ping every 25s, kill after 2 missed pongs"
+        ],
+        [
+          "Periodic mass disconnect",
+          "LB 60s idle timeout",
+          "Client heartbeat 25s, LB timeout 3600s"
+        ],
+        [
+          "Message gap after deploy",
+          "Sockets pinned to drained server, no replay",
+          "Sequence IDs + resync on reconnect"
+        ],
+        [
+          "Reconnect thundering herd",
+          "Fixed retry interval",
+          "Exponential backoff with jitter, 1s to 30s cap"
+        ],
+        [
+          "Memory climb on edge",
+          "Unbounded per-connection queue",
+          "Bounded queue + conflation, drop oldest + counter"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Scaling: the part interviews actually test"
+    },
+    {
+      "type": "paragraph",
+      "text": "A single server holds tens to hundreds of thousands of concurrent sockets if tuned — epoll, high `ulimit -n`, lean per-connection state. The wall is not CPU, it is affinity: a socket exists on exactly one machine. If Client A is on Server 1 and Client B is on Server 2, they cannot exchange messages without help. Naive sticky load balancing solves routing but creates hot shards and total loss on restart. The production answer is therefore two layers: **sticky edge for termination, shared backbone for routing**. Edge servers terminate TLS and hold sockets. A pub/sub backbone carries each published event once to every edge server that has subscribers. The trade-off: you add backbone latency and operational complexity to regain horizontal scale that stateful connections took away."
+    },
+    {
+      "type": "mermaid",
+      "title": "Scaled WebSocket tier",
+      "caption": "Edge holds state, backbone restores routability.",
+      "code": "graph TD\n  A[Client A] --> LB[Layer 7 LB with stickiness]\n  B[Client B] --> LB\n  LB --> E1[Edge Server 1 - holds A]\n  LB --> E2[Edge Server 2 - holds B]\n  E1 --> BUS[PubSub Backbone]\n  E2 --> BUS\n  BUS --> E1\n  BUS --> E2\n  E1 --> A\n  E2 --> B"
+    },
+    {
+      "type": "paragraph",
+      "text": "Make the edge dumb and the protocol resumable. Store no chat history, no room membership, no auth session in edge memory — look it up or subscribe on connect. Give every event a monotonic `seq` per channel and have clients send `lastSeenSeq` on reconnect. The server replays from backbone log or store. Without that, every rolling deploy is data loss. Add per-connection write queues with a cap: if a slow client falls behind, drop and count, then force a full resync rather than OOMing the edge. This is why senior answers mention conflation for tickers and game snapshots — you send latest state, not every intermediate frame. The trade-off is completeness versus liveness: at scale you deliberately drop to stay live."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "edge_fanout.py",
+      "code": "import asyncio\n# Edge holds sockets; backbone delivers once per edge, edge fans out locally.\n# Bounded queue per connection: drop, don't grow.\nSUBSCRIBERS: dict[str, set] = {}  # channel -> set of ws\nSEQ: dict[str, int] = {}\n\nasync def on_backbone_event(channel: str, payload: bytes):\n    SEQ[channel] = SEQ.get(channel, 0) + 1\n    dead = []\n    for ws in SUBSCRIBERS.get(channel, ()):\n        if ws.queue.qsize() > 100:\n            # Conflate: drop oldest, keep liveness. Trade completeness for memory.\n            try: ws.queue.get_nowait()\n            except asyncio.QueueEmpty: pass\n            ws.dropped += 1\n        try: ws.queue.put_nowait((SEQ[channel], payload))\n        except asyncio.QueueFull:\n            dead.append(ws)\n    for ws in dead:\n        await close_with_resync(ws, SEQ[channel])"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Draw the handshake",
+          "text": "Sketch client, LB, server. Show `GET` with `Upgrade`, `101` back, then bidirectional frames. Say why 443 matters: firewall traversal. This signals you know it is not a separate port protocol."
+        },
+        {
+          "title": "Design chat or live dashboard",
+          "text": "Start with one server and in-memory map of channel to sockets. Then kill it: what happens on restart? Introduce sticky LB plus pub/sub backbone and `lastSeenSeq` replay. Interviewers promote you when you volunteer the failure."
+        },
+        {
+          "title": "Handle 1M concurrent viewers",
+          "text": "Do the math: 1M fds, ~50-150KB per connection with TLS buffers means 50-150GB RAM spread across edges. Shard by consistent hash, publish once to backbone, fan out at edge. Mention kernel tuning and that naive broadcast is O(subscribers) on the publisher."
+        },
+        {
+          "title": "Heartbeat and reconnect",
+          "text": "Specify intervals: ping every 20-30s below 60s LB timeout, server kills after 2 misses, client reconnects with exponential backoff plus jitter and resyncs. If you omit jitter, call out the thundering herd you just created."
+        },
+        {
+          "title": "Defend the choice",
+          "text": "Compare against SSE for server-only push, long polling for restrictive proxies, and WebTransport or raw TCP for multiplexing and unreliable delivery. Pick WebSocket only for true bidirectional low-latency over browsers. Say the trade-off aloud."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the interviewer is listening for",
+      "text": "Can you name where state lives? Weak answers describe the API. Strong answers say: **socket on edge, routing on backbone, truth in store, resume by sequence**. Then they discuss heartbeat, stickiness loss, and bounded queues without being prompted."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**WebSocket is reliable messaging.** No. It is framed TCP. No acks, no redelivery, no history. You build at-least-once with sequence IDs and replay, or you lose data on reconnect.",
+        "**HTTP polling is always worse.** False for mostly-idle, mostly-read workloads. Polling keeps servers stateless and cacheable. WebSocket holding 2M idle sockets to deliver one alert per day is pure cost.",
+        "**One connection equals one stream.** Wrong. One TCP connection carries interleaved frames with no priorities. A large binary upload stalls chat messages behind it. Need parallel priorities? You need multiple sockets or WebTransport.",
+        "**Load balancers just work.** Only if configured for `Upgrade` passthrough, long timeouts, and stickiness. Default 60s idle kill plus round-robin routing silently breaks realtime.",
+        "**`ws://` is fine internally.** It breaks the moment a proxy buffers or inspects traffic and leaks everything. Default to `wss://` end to end, terminate TLS at the edge, re-encrypt to origin.",
+        "**The browser API handles overload.** The classic `WebSocket` interface has no backpressure — it buffers until the tab dies. The server must throttle, conflate, and drop. Never trust the client to keep up."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use WebSocket for bidirectional push, not as default transport.",
+      "headers": [
+        "Use WebSocket when",
+        "Do not use when",
+        "Use instead"
+      ],
+      "rows": [
+        [
+          "Both sides initiate: chat, games, collaborative editing",
+          "Only server pushes: scores, feeds, notifications",
+          "Server-Sent Events — simpler, HTTP-cacheable, auto-reconnect"
+        ],
+        [
+          "Low-latency bidirectional at browser scale",
+          "Clients are IoT with lossy links and sleep cycles",
+          "MQTT over TCP with QoS and session resume"
+        ],
+        [
+          "Need message boundaries without polling overhead",
+          "Need multiplexed streams with priorities",
+          "WebTransport or HTTP/2+ SSE with multiple streams"
+        ],
+        [
+          "Long-lived sessions with frequent exchanges",
+          "Infrequent updates or mostly offline readers",
+          "Long polling or push notifications + fetch on open"
+        ],
+        [
+          "Controlling both client and edge tuning",
+          "Behind proxies you do not control that kill upgrades",
+          "Long polling fallback, then upgrade opportunistically"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Frame the decision as frequency times direction. If updates are frequent and bidirectional — keystrokes, cursor moves, game ticks, order books — the persistent frame tax beats repeated HTTP handshakes and polling delay. If traffic is rare, bursty, or one-directional, persistence buys nothing and costs resident connections, sticky routing, and heartbeat chatter. SSE wins for server-to-client text over HTTP with automatic resume. Long polling wins where upgrades are blocked. WebRTC data channels or WebTransport win where you need unreliable delivery, multiple streams, or true flow control. Saying no to WebSocket for a notification feed is a senior signal, not a gap."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "WebSocket upgrades one HTTP request into a persistent full-duplex frame stream so either side can push with minimal overhead — **which forces you to hold per-client state on an edge and route via a shared backbone with sequence-based resume**."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:09:56.838Z",
+    "problems": []
+  }
+}

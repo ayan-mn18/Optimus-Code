@@ -1,0 +1,247 @@
+{
+  "slug": "punching-bag-pattern",
+  "title": "Punching Bag Pattern",
+  "summary": "The Punching Bag Pattern isolates hot social entities onto a sacrificial read path so one celebrity can take the beating without taking down everyone else.",
+  "kind": "HLD",
+  "problemSlug": "punching-bag-pattern-144-306",
+  "topic": "Building Social Network",
+  "difficulty": "Medium",
+  "coverEmoji": " F94A",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Social Network",
+    "Hot Keys",
+    "Caching"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "How to Make a Homemade Punching Bag - RossTraining.com",
+      "url": "https://rosstraining.com/blog/2020/05/how-to-make-a-homemade-punching-bag/",
+      "source": "rosstraining.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "In a social network **one key gets 10,000x the traffic of the average key**. The Punching Bag Pattern gives that key its own isolated serving path — extra replicas, dedicated cache, separate concurrency limits — so the hot entity absorbs its own beating instead of melting your shared database, cache, and fan-out workers. Isolation is the feature. Everything else is details."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What the Punching Bag pattern actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "The Punching Bag is a hot-key isolation strategy: you detect the tiny set of entities — celebrity users, viral posts, top comment threads, trending hashtags — that attract disproportionate reads and writes, and you route them to a physically or logically separate path with its own capacity, replication, and failure budget. Normal users continue to hit the standard sharded store plus look-aside cache. Hot entities hit pre-materialized replicas, read-only copies, or push-fan-out inboxes that are allowed to be stale, rate-limited, and over-provisioned without punishing everyone else. The reason this exists is skew. Social graphs are Zipfian. You cannot provision every partition for celebrity load, and you cannot let one partition dictate tail latency for the whole fleet. So you stop pretending all keys are equal and you pay for two systems: a cheap correct one for the 99.9%, and an expensive sacrificial one for the 0.1% that would otherwise kill you."
+    },
+    {
+      "type": "paragraph",
+      "text": "This is not just caching, and it is not just sharding. A cache helps if the hot key fits and stays hot; it hurts when a viral key evicts everything else and then stampedes the database on expiry. Sharding helps if load spreads; it hurts when consistent hashing sends 80% of requests to one shard because they all ask for the same `user_id`. The Punching Bag says: **detect heat dynamically, replicate the hot value N ways, and serve it without touching the hot shard**. Writes to the hot entity go to a single serialized writer or append log, then fan out asynchronously to read replicas. Reads never touch the primary. The trade-off you are buying is explicit: you accept seconds of staleness and extra write amplification on hot keys in exchange for bounded latency and survival on everything else. If you are not willing to be stale on the celebrity, you do not have this pattern — you have a bottleneck."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Heat must be measured, not guessed. Every front-end or proxy counts accesses per entity key over a sliding window — typically requests per second per `post_id`, `timeline_id`, or `feed_key` — and publishes the top-K to a control plane. Once a key crosses threshold, the control plane promotes it: it bumps replication factor from 1 to R, pre-warms edge and regional caches with a long TTL plus background refresh, pins the value in memory on a dedicated pool, and flips the router to serve that key from the replica pool. Demotion is just as important and usually forgotten. When heat decays, you collapse replicas and return to the normal path, otherwise you leak memory and keep serving stale data forever. The router is the whole pattern. Everything before it is telemetry. Everything after it is capacity you were willing to waste."
+    },
+    {
+      "type": "mermaid",
+      "title": "Punching Bag routing",
+      "caption": "Hot keys bypass the primary shard and hit replicated read bags.",
+      "code": "flowchart LR\n  C[Clients] --> R[Router]\n  R --> D[Heat Detector]\n  D -->|normal key| P[Primary Shard + Cache]\n  D -->|hot key| B[Bag Pool Replicas]\n  W[Hot Writer] --> L[Append Log]\n  L --> B\n  B --> C"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk a celebrity post through it. A writer publishes `post:88421`. The write goes to the authoritative store once, through a single-writer queue so concurrent likes, comments, and reposts do not contend on one row. That commit appends to a log. Bag builders — typically async fan-out workers — materialize R copies: full post payload plus first page of comments, like count snapshot, and author header, each copy keyed as `bag:88421:replica-i`. The router, which holds a small in-memory hot-set versioned every few seconds, directs the next 500,000 reads across those R replicas round-robin, plus CDN and regional cache in front. If a replica dies, the router just skips it. If the origin lags, replicas keep serving the last good snapshot with a `stale-while-revalidate` header. The critical choice is that **read availability no longer depends on write freshness**. That decoupling is why the site stays up during the spike. The price is that two users can see two different like counts for ten seconds, and you have to defend that as correct."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Heat signal:** per-key QPS, cache miss rate, and shard CPU attributed by key. Use a sliding 10-30s window with decay. Thresholds must be relative — top 0.01% by volume — not absolute, or a traffic doubling pages you at 3am.",
+        "**Router hot-set:** a versioned map of under 10,000 keys pushed to every edge, not pulled on miss. Lookup must be O(1) and local. If routing requires a remote call, you rebuilt the bottleneck.",
+        "**Bag pool:** stateless replica servers or cache shards holding only hot payloads, over-provisioned by 3-10x, with independent connection pools, thread pools, and rate limits. Shared pools mean shared fate.",
+        "**Single serialized writer:** one queue per hot entity for mutations. It bounds write contention and gives you a clean point to batch counters and coalesce fan-out.",
+        "**Refresh and demote loop:** background revalidation every few seconds while hot, exponential backoff on origin errors, automatic demotion when QPS drops below threshold for N minutes."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs — no free isolation"
+    },
+    {
+      "type": "table",
+      "caption": "What the bag buys you and what it charges.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why the trade is usually worth it"
+      ],
+      "rows": [
+        [
+          "Bounded tail latency for 99.9% of keys during a viral spike",
+          "Staleness on hot keys: seconds to minutes of divergence across replicas",
+          "Users tolerate a stale like count; they do not tolerate a dead feed"
+        ],
+        [
+          "Survival of primary shards and caches — no eviction storms",
+          "Write amplification: R replicas + CDN invalidations per hot write",
+          "Reads dominate social traffic 100:1, so multiplying writes to save reads wins"
+        ],
+        [
+          "Independent scaling and rate-limiting of hot traffic",
+          "Operational complexity: heat detection, promotion, versioned routing, demotion",
+          "Complexity is contained to one subsystem instead of smeared across every service"
+        ],
+        [
+          "Graceful degradation: serve last-good snapshot on origin failure",
+          "Temporary inconsistency: replicas disagree, counters drift, ordering blurs",
+          "Availability during the peak matters more than linearizability for a timeline"
+        ],
+        [
+          "Blast-radius containment for abusive or scraped keys",
+          "Wasted capacity when prediction is wrong — idle bag replicas",
+          "Over-provisioning 0.1% of keys is cheaper than over-provisioning 100% of shards"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Name this in the interview or you sound junior: the Punching Bag trades **consistency and efficiency for isolation and availability**, and only on a tiny subset of keys. If your workload is uniform, this pattern is pure overhead — extra hops, extra copies, extra code paths for no benefit. If your workload is skewed, there is no alternative. You either isolate the hot key or you let it define your p99. My bias is blunt: default to eventual consistency on hot social reads. Anyone demanding strong consistency on a celebrity timeline has not done the math on what a single-row atomic counter does at 200,000 likes per second. Shard the counter, batch it, expose an approximation, and spend the correctness budget where it counts — on auth, on payments, on writes — not on whether two followers see `1.2M` versus `1,203,441`."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The most common failure is detection lag. Heat spikes in seconds; promotion pipelines that aggregate metrics, push config, and warm caches often take 30-90 seconds. During that window every request still hits the primary shard. What you see is unmistakable: one database partition jumps to 100% CPU while the rest sit at 20%, cache hit ratio collapses because the viral key churns the LRU, connection queues grow on exactly one pool, and p99 climbs from 40ms to 4 seconds while p50 barely moves. That p50/p99 split is the fingerprint of skew. If you alert only on average latency or fleet CPU, you will miss it until the shard tips over and failover makes it worse by replaying the same hot load onto a cold standby."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second class of failure is stale forever and replica skew. A bag replica that fails to revalidate but stays in rotation serves minutes-old comments; a demotion bug keeps a dead meme pinned in memory and evicts live traffic; a single-writer queue that backs up turns likes into a growing lag that never drains because each fan-out write is slower than the arrival rate. Symptoms: users report different reply orderings on refresh, counters jump backward, CDN serves a deleted post after takedown because the bag bypassed the delete path. The fix is never bigger bags. It is versioned payloads with origin timestamps, monotonic sequence numbers per hot entity, `max-staleness` caps that force fallback to origin or error instead of ancient data, and a kill switch that drains a bag key in seconds. Every bag needs a TTL even while hot — unbounded hot is just another leak."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`shard_cpu{partition=X}` at 95%+ while fleet median <30% + `cache_hit_ratio` dropping 10+ points in 2 minutes = promotion too slow or threshold too high.",
+        "`replica_age_seconds{key}` p99 > `max_staleness` or rising `fanout_queue_depth{key}` = writer or revalidator saturated; shed expirations, batch counters, drop non-critical fan-out.",
+        "Rising `router_hotset_version_age` or disagreement across edges = control-plane push stuck; reads split between bag and origin and amplify the origin.",
+        "Post-incident: bag memory held by demoted keys growing week over week = demotion never fires; add decay-based auto-demote and audit."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Isolating a celebrity read in code"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "bag_router.py",
+      "code": "import time, random\nHOT_SET: dict[str, dict] = {}  # key -> {replicas: int, version: int, updated_at: float}\nMAX_STALENESS_S = 15.0\n\ndef is_hot(key: str) -> bool:\n    meta = HOT_SET.get(key)\n    if not meta:\n        return False\n    # Expire promotion locally even if control plane stalls.\n    # WHY: serving ancient bag data after demotion is worse than one origin hit.\n    if time.time() - meta[\"updated_at\"] > 120:\n        HOT_SET.pop(key, None)\n        return False\n    return True\n\ndef get_post(key: str, origin_get, bag_get, stat):\n    if not is_hot(key):\n        return origin_get(key)  # normal path: shard + look-aside cache\n    n = HOT_SET[key][\"replicas\"]\n    # Jitter replica choice so a dead replica does not thunder.\n    order = random.sample(range(n), n)\n    last_err = None\n    for i in order:\n        try:\n            payload, origin_ts = bag_get(f\"bag:{key}:{i}\")\n            age = time.time() - origin_ts\n            stat(\"bag_age\", age, key=key)\n            if age <= MAX_STALENESS_S:\n                return payload\n            # Stale replica: try next replica, refresh in background.\n            last_err = f\"stale {age:.1f}s\"\n            continue\n        except Exception as e:\n            last_err = e\n            continue\n    # All bags bad: degrade to origin once, with hedging budget.\n    # WHY: one bounded origin hit beats serving a minutes-old takedown candidate.\n    stat(\"bag_miss\", 1, key=key, reason=str(last_err))\n    return origin_get(key)"
+    },
+    {
+      "type": "paragraph",
+      "text": "The code is deliberately paranoid because the bag is a second source of truth and second sources lie. It caps staleness per read, not just per background job, so a stuck revalidator cannot poison users indefinitely. It randomizes replica order to avoid piling retries onto replica zero. It expires the hot-set entry locally so a wedged control plane cannot pin a key hot forever. And it keeps a bounded fallback to origin — one request, not a retry storm — because the entire point is to protect the origin. In an interview, point at `MAX_STALENESS_S` and the local expiry and say why they exist: without them you traded a latency outage for a correctness outage, which is not a trade, it is a transfer."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up when you design a social network"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the celebrity post, not the average post",
+          "text": "State the skew up front: posting is cheap, reading a viral post is 100,000x. Say you will design two paths from the beginning — standard pull for normal timelines, materialized bags plus push fan-out for hot authors — and size them separately."
+        },
+        {
+          "title": "Choose push versus pull per heat band",
+          "text": "Normal users: pull on read, fan-out on write to followers is fine. Celebrity with millions of followers: pure push explodes — millions of inbox writes per post — so push only to active followers plus a bagged post object that everyone else pulls. Name the write amplification explicitly."
+        },
+        {
+          "title": "Place the bag in the read path",
+          "text": "Draw client to edge cache to regional bag pool to origin. Explain what is stored in the bag: denormalized post + author + first N comments + approximate counters, versioned and timestamped. Reads never touch the primary shard while hot."
+        },
+        {
+          "title": "Serialize the hot writes",
+          "text": "Likes and comments on the hot post go through a per-key queue with batched counters and coalesced invalidations. Accept that counts are approximate for seconds. Show how deletes and reports bypass the bag with a synchronous purge — safety paths do not get to be eventually consistent."
+        },
+        {
+          "title": "Close with detection, demotion, and limits",
+          "text": "Define the heat signal, promotion threshold, replica count math, per-bag rate limits, and auto-demote condition. Interviewers promote candidates who finish with how the system returns to normal, not just how it survives the spike."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Just add cache will fix it.** A shared cache in front of a hot shard delays the outage by one TTL. Without isolation, expiry or eviction replays the full spike onto the same row. The bag works because capacity and fate are separated, not because there is more memory.",
+        "**Consistent hashing solves hot keys.** Hashing spreads keys across shards; it does nothing when all requests ask for the same key. One key still lands on one shard. Replication of the value, not redistribution of keys, is the answer.",
+        "**Strong consistency is required for feeds.** Timelines are the textbook case where staleness is acceptable and expected. Demanding linearizable likes at viral scale forces a single serialized counter that becomes the punching bag itself.",
+        "**More replicas always help.** Each replica multiplies invalidation traffic and divergence window. Beyond 5-10 read replicas per region plus edge caching, you gain little latency and pay real inconsistency and purge risk. Size from measured QPS, not fear.",
+        "**The bag is only for reads.** Hot writers — spam bursts, bot likes, mass follows — need their own bag: per-key queues, token buckets, and shed policies. An unguarded hot writer fills your fan-out queue and then your bag serves fresh garbage late."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to leave it out"
+    },
+    {
+      "type": "table",
+      "caption": "Apply the bag to skew, not to every service.",
+      "headers": [
+        "Use it",
+        "Do not use it"
+      ],
+      "rows": [
+        [
+          "Celebrity timelines, viral posts, trending hashtags, leaderboard heads — read skew >100x mean",
+          "Uniform workloads like per-user settings or DMs where every key has similar QPS"
+        ],
+        [
+          "Counter and feed fan-out that would otherwise write millions of inboxes per event",
+          "Low-traffic admin or internal tools where a bigger instance is cheaper than a second path"
+        ],
+        [
+          "Scrape-prone or abusive keys you want to rate-limit without harming normal users",
+          "Strongly consistent financial or inventory entities where staleness violates correctness"
+        ],
+        [
+          "Any single shard or cache key that repeatedly defines your p99 during incidents",
+          "Early-stage products with no measured skew — premature bags add bugs you cannot observe yet"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **The Punching Bag isolates the 0.1% of hot social keys onto replicated, stale-tolerant read replicas with a serialized writer, so viral traffic scales with bag copies instead of melting the primary shard.** Then point to the staleness cap and demotion loop — that is what proves you have run it, not just drawn it."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:39:04.134Z",
+    "problems": []
+  }
+}

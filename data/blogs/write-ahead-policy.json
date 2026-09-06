@@ -1,0 +1,295 @@
+{
+  "slug": "write-ahead-policy",
+  "title": "Write ahead policy",
+  "summary": "Write-ahead policy means persisting intent to an append-only log before mutating cache or backing store, trading write latency for crash-safe recovery and replay.",
+  "kind": "HLD",
+  "problemSlug": "write-ahead-policy-95-214",
+  "topic": "Caching Mechanisms",
+  "difficulty": "Medium",
+  "coverEmoji": "📓",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Caching",
+    "Durability",
+    "WAL"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Write-ahead logging - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Write-ahead_logging",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "The Write-Ahead Log: A Foundation for Reliability in Databases and ...",
+      "url": "https://www.architecture-weekly.com/p/the-write-ahead-log-a-foundation",
+      "source": "architecture-weekly.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Write-Ahead Logging (WAL) - ITU Online IT Training",
+      "url": "https://www.ituonline.com/tech-definitions/what-is-write-ahead-logging-wal/",
+      "source": "ituonline.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Log first, mutate second.** A write is not durable when you update the cache — it is durable when the *intent* sits on stable storage. Everything else — cache update, database flush, eviction — can crash and be rebuilt. If the intent is not on disk before you acknowledge, you will lose acknowledged writes. That is the entire policy."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Write-ahead is a durability ordering rule for any mutating path that touches a cache: append a record describing the mutation to a sequential, stable log and force it to disk **before** you change the cached value, the in-memory table, or the backing store page, and **before** you acknowledge success to the caller. The log record must contain enough to redo the operation — key, new value or delta, sequence number, and transaction boundary — not just a hint that something changed. On restart you replay committed records in order and discard incomplete tails. The cache and the database become derived state; the log is the source of truth for the recovery window. The reason this ordering exists is that in-place updates are not atomic. Overwriting a cache entry and a database row involves multiple unsynchronised writes across memory, page cache, and disk. A crash in the middle leaves torn state with no way to know what the client was promised. The log fixes this by making the commit decision a single sequential append."
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not confuse this with `write-through`, `write-back`, and `write-around`. Those answer *where and when* the backing store sees the data. Write-ahead answers *how you prove the write survived a crash*. It is orthogonal and composes with all three. You can run write-through **with** a WAL: append, fsync, then update cache and store synchronously. You can run write-back **with** a WAL: append, fsync, update cache immediately, flush to the store lazily. What you cannot do is claim durability from cache replication or database acknowledgement alone without an ordered intent record, because neither tells you on restart whether an in-flight mutation committed or not. The trade-off you are buying into: you accept one sequential disk or SSD append on the critical path of every acknowledged write in exchange for being able to buffer, batch, and reorder the expensive random writes behind the cache."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The normal path has five ordered steps, and the order is the design. First, assign the mutation a monotonically increasing sequence number so replay is deterministic. Second, serialise the record and append it to the current log segment in the OS page cache. Third, force that prefix of the log to stable storage with an `fsync` or equivalent before doing anything visible — this is the commit point. Fourth, only then apply the mutation to the in-memory structure and the cache entry and return success. Fifth, asynchronously flush dirty cache entries or memtables to the backing store in the background. A separate checkpoint process records a high-watermark: everything at or below sequence `N` is now safely in the store and will never need replay. It then truncates or archives the log prefix. Checkpoints do not make writes durable; they bound recovery time and disk usage. The interval between checkpoints directly sets how much log you must replay after a crash. Shorter intervals mean faster restart and more background write amplification. Longer intervals mean slower restart and cheaper steady-state throughput. There is no value that optimises both."
+    },
+    {
+      "type": "mermaid",
+      "title": "Write-ahead commit path",
+      "caption": "Commit is the fsync, not the cache update.",
+      "code": "flowchart TD\n    C[Client write] --> L[Append record to WAL]\n    L --> S[fsync to stable storage]\n    S --> A[Acknowledge commit]\n    A --> M[Apply to cache and memtable]\n    M --> D[Flush to backing store async]\n    D --> K[Checkpoint and truncate log]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Recovery is a filter, not a copy. On startup you open the last checkpoint watermark, then scan forward through surviving log segments in sequence order. For each record you ask one question: was its commit marker flushed before the crash. If yes, you redo it into the cache and the pending flush set, even if the backing store already has it — redo must be idempotent because a flush and a log prefix can overlap. If the tail record is torn, has a bad checksum, or lacks its commit marker, you truncate the log at that point and ignore it. That discarded tail corresponds exactly to writes you never acknowledged, which is correct. The reason redo and checkpoint watermarks must share the same sequence space is that without it you cannot tell applied-twice from lost-once. Systems that skip checksums or allow non-idempotent replay corrupt silently here: a partial replay double-applies a counter increment or resurrects a deleted key, and the cache then serves wrong data with full confidence."
+    },
+    {
+      "type": "mermaid",
+      "title": "Crash recovery flow",
+      "caption": "Replay committed prefix, discard torn tail.",
+      "code": "stateDiagram-v2\n    [*] --> Crash\n    Crash --> Replay\n    Replay --> RedoCommitted\n    Replay --> DiscardIncomplete\n    RedoCommitted --> Ready\n    DiscardIncomplete --> Ready"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "What write-ahead buys and what it costs.",
+      "headers": [
+        "Dimension",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Durability",
+          "Acknowledged writes survive process and OS crashes; replay reconstructs cache without full rebuild",
+          "Every acked write pays a sequential log append plus fsync latency on the critical path"
+        ],
+        [
+          "Write throughput",
+          "Random cache and store updates are buffered and batched; backing store sees large sequential flushes",
+          "Log device becomes the throughput ceiling; undersized log disk throttles all writes"
+        ],
+        [
+          "Recovery time",
+          "Restart replays only the delta since last checkpoint instead of scanning the whole dataset",
+          "Larger checkpoint intervals lengthen replay; frequent checkpoints add compaction and flush load"
+        ],
+        [
+          "Complexity",
+          "Single ordered commit point simplifies reasoning about commit vs applied state",
+          "Must operate log rotation, checksums, idempotent redo, fencing, and corruption handling forever"
+        ],
+        [
+          "Read path",
+          "Cache stays hot because writes do not force synchronous store reads or evictions",
+          "Stale or replayed entries can serve if invalidation and versioning are not tied to log sequence"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The central choice is **when you fsync**. Flushing on every write — full synchronous commit — gives the strongest promise: any acknowledgement means the record is on stable media. The trade-off is p99 latency tracks your storage fsync time, typically hundreds of microseconds to milliseconds, and throughput caps at log device IOPS. Batching with group commit — flushing once per few milliseconds across many concurrent writers — keeps the same correctness while amortising the cost, but adds a small artificial delay to every write and couples tail latency to batch timeout. Disabling fsync or flushing once per second is not a tuning tweak, it is a different promise: you will lose up to one second of acknowledged writes on power loss. Choose it only when that loss window is explicit in the product contract, such as counters or sessions, never for orders, payments, or inventory. Name the loss window out loud or you will mislead the reviewer."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Write-ahead does not eliminate failure, it concentrates it in the log subsystem where you can observe it. The most common failure is log growth outrunning checkpoints. A slow backing store, a stuck flusher, or an oversized hot keyset prevents the watermark from advancing, segments accumulate, and the disk fills. The symptom is distinctive: writes succeed with normal latency until the volume hits a threshold, then all writes stall at once while reads still hit the cache. Operators often misread this as a cache capacity problem and add cache nodes, which changes nothing because the blocked resource is log disk. The second classic is fsync latency contagion. When the log shares a device with compaction, snapshots, or noisy neighbours, p99 write latency spikes correlate exactly with fsync time, not with cache hit rate or database CPU. The third is silent corruption on replay: missing checksums let a torn tail apply half a record, and the cache serves phantom values after every restart until the entry is overwritten. If post-restart reads disagree with pre-crash acknowledged writes, suspect replay before you suspect the cache."
+    },
+    {
+      "type": "table",
+      "caption": "Failure to symptom mapping for operations and interviews.",
+      "headers": [
+        "Failure",
+        "Symptom you observe",
+        "Why it happens"
+      ],
+      "rows": [
+        [
+          "Unbounded log growth",
+          "Sudden global write stall, reads still fast, log disk 100% full",
+          "Checkpoint watermark cannot advance because flushes lag or deletion is disabled"
+        ],
+        [
+          "Slow fsync device",
+          "p99 writes jump to 10-100ms, throughput flat, cache hit rate unchanged",
+          "Log append blocks on stable storage; group commit cannot hide device latency"
+        ],
+        [
+          "Torn tail without checksum",
+          "After restart, missing updates, resurrected deletes, double-counted increments",
+          "Partial record treated as committed; redo is not idempotent or not validated"
+        ],
+        [
+          "Infrequent checkpoints",
+          "Fast steady state, then 10+ minute recovery replaying gigabytes",
+          "Recovery window equals all log since last watermark; operator optimised for throughput only"
+        ],
+        [
+          "Log and data on same disk",
+          "Checkpoint flush starves log appends; sawtooth latency and compaction stalls",
+          "Sequential log writes contend with random flush I/O; no isolation of failure domains"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Treat log capacity, fsync latency, and replay duration as first-class service-level indicators alongside hit rate. Alert on log disk utilisation, segment age, checkpoint lag in bytes and seconds, and fsync p99 separately from end-to-end write latency. Provision the log on its own device or volume with reserved headroom, and test restart with a full log — not an empty one — because replay time under production log volume is what determines your actual availability after a crash. The trade-off to state explicitly: isolating the log costs more storage and operational wiring, but sharing it couples every background flush to the durability path and turns routine compaction into user-visible stalls."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes it concrete"
+    },
+    {
+      "type": "paragraph",
+      "text": "The ordering constraint fits in thirty lines. Anything that reorders `persist` and `apply` or acknowledges before `fsync` is not write-ahead, it is write-hope. Read this as the contract your cache write path must obey:"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "wal_cache.py",
+      "code": "class WriteAheadCache:\n    def __init__(self, log, cache, store):\n        self.log = log      # sequential durable file, supports append + fsync\n        self.cache = cache  # fast lookup, lossy on crash\n        self.store = store  # backing DB, updated lazily\n        self.seq = 0\n\n    def put(self, key, value):\n        self.seq += 1\n        rec = (self.seq, \"PUT\", key, value)\n        self.log.append(rec)   # 1. intent first, in memory\n        self.log.fsync()       # 2. commit point: stable before visible\n        self.cache.set(key, (value, self.seq))  # 3. now mutate derived state\n        return self.seq\n\n    def recover(self, watermark):\n        # Redo only committed prefix; truncate torn tail.\n        for seq, op, key, value in self.log.scan_from(watermark):\n            if not self.log.is_committed(seq):\n                self.log.truncate_from(seq)\n                break\n            if op == \"PUT\":\n                cur = self.cache.get(key)\n                if cur is None or cur[1] < seq:\n                    self.cache.set(key, (value, seq))  # idempotent redo"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three details carry the correctness. First, `fsync` precedes `cache.set` and precedes the return, so no caller can observe success for a write that will not survive. Moving the acknowledgement one line earlier breaks durability even though all tests still pass without a crash. Second, redo compares sequence numbers before overwriting, which makes replay idempotent when the backing flush and the log overlap — without that guard a replayed put can clobber a newer value. Third, recovery truncates at the first uncommitted record instead of skipping it, because anything after a torn append is untrustworthy. The trade-off visible in code: every `put` blocks on I/O, so single-threaded throughput equals `1 / fsync_latency`. Production fixes are batching multiple appends under one `fsync` and sharding the log by key partition, both of which keep the ordering invariant while raising throughput."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Place it in the write path",
+          "text": "Draw client, cache, WAL, backing store. State the order: append, fsync, update cache, ack, async flush. Say what happens if you crash between each pair of boxes. Interviewers fail candidates who draw the log but cannot state the commit point."
+        },
+        {
+          "title": "Quantify durability vs latency",
+          "text": "Give numbers: synchronous fsync adds device latency to p99; group commit amortises it; one-second flush risks one second of acked loss. Ask which loss window the product tolerates for this workload, then pick the fsync policy to match."
+        },
+        {
+          "title": "Bound recovery with checkpoints",
+          "text": "Define the watermark, what gets truncated, and how replay time scales with bytes since checkpoint. Propose a target — for example, replay under 60 seconds — and derive checkpoint frequency and log retention from it. This turns hand-waving into capacity math."
+        },
+        {
+          "title": "Handle the cache interaction",
+          "text": "Explain invalidation by sequence: cache entries carry log versions, reads above the flushed watermark are safe, eviction never discards unflushed intent. Cover double-apply and resurrected deletes as the idempotency cases you must test."
+        },
+        {
+          "title": "Operate it",
+          "text": "List monitors and runbooks: log disk full, fsync stall, replay storm, corrupted tail. State where the log lives, how it rotates, and what you do when the backing store lags. Senior signal is treating the log as a separate failure domain with its own disk and alerts."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "What is graded is not whether you can spell WAL but whether you can reason about the promise you make at acknowledgement time. A strong answer names the loss window in seconds or zero, ties fsync policy to that window, and shows how checkpoint frequency trades steady-state cost against restart time. A weak answer says the log makes writes faster or safer in general without stating what fails, what is lost, or how long recovery takes. When the interviewer pushes with what if the log disk fills or what if we lose power after ack, they are checking whether your ordering holds under pressure. Walk the crash matrix box by box instead of asserting durability as a property of the technology."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**The WAL is a backup.** No — it is a bounded recovery window, not an archive. It is truncated at checkpoints and cannot restore arbitrary history. Retention and point-in-time restore need snapshots plus archived segments, with separate cost and testing.",
+        "**The WAL makes writes faster by itself.** It makes *random* writes avoidable by converting the commit to a sequential append, but each acknowledged write still pays log I/O. Without batching and a fast log device it makes p99 slower, not faster.",
+        "**`fsync` is optional if you replicate the cache.** Replication without an ordered stable commit still loses data when all replicas crash or restart together, and it cannot distinguish committed from in-flight. Replicas need the same log ordering or equivalent consensus.",
+        "**Checkpointing is just cleanup.** Truncation is the minor part. The major part is establishing a watermark below which replay is unnecessary. Skipping checkpoints does not just waste disk, it linearly increases outage duration.",
+        "**Eviction can drop anything not yet flushed.** If the cache drops a dirty entry whose intent lives only in the log prefix not yet flushed to the store, reads fall through to stale store data. Dirty entries must be pinned or re-readable from the log until flushed.",
+        "**Same-disk logging is fine at small scale.** It works until the first compaction or traffic spike, then log appends queue behind random I/O and every write stalls. Even at small scale, measure fsync p99 in isolation so you know what you traded away."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Decision guide for caching workloads.",
+      "headers": [
+        "Use write-ahead when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Acknowledged writes must survive crash: carts, orders, ledger deltas, session commits",
+          "Data is recomputable or loss-tolerant: rendered fragments, recommendations, best-effort counters"
+        ],
+        [
+          "Cache fronts a slower store and you want to buffer random writes safely",
+          "Write volume exceeds log device fsync budget and loss window can be relaxed — use async write-back with explicit loss"
+        ],
+        [
+          "Restart must be fast without warming the whole cache from the store",
+          "Dataset fits in the store scan and cold restart cost is already acceptable"
+        ],
+        [
+          "You need ordered replay, idempotent redo, or cross-partition replication feed",
+          "Workload is read-heavy with rare overwrites where synchronous logging adds latency for no recovery benefit"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The decision rule is blunt: if an acknowledgement implies the user can act — money moved, seat held, item reserved — you need write-ahead or an equivalent commit record, and you pay fsync plus operations on the critical path. If re-execution is cheap and staleness is acceptable, skip it and spend the budget on cache size and store throughput instead. For mixed workloads, split the policy by key class: durable log-backed writes for the narrow critical set, plain write-through or write-around for the rest. The trade-off to articulate in the room: a single uniform policy either overpays latency on trivial writes or under-protects critical ones. Partitioning durability by data value is what keeps both latency and loss promises honest."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "**Persist an ordered intent record with `fsync` before mutating cache or store and before acking, then replay the committed prefix on crash and bound replay with checkpoints — accepting per-write log latency to guarantee zero loss of acknowledged writes.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:40:35.816Z",
+    "problems": []
+  }
+}

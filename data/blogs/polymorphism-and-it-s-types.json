@@ -1,0 +1,263 @@
+{
+  "slug": "polymorphism-and-it-s-types",
+  "title": "Polymorphism and It's Types",
+  "summary": "Polymorphism is deferred behavior selection: one call site, many implementations. When to bind statically vs dispatch dynamically, and what each costs.",
+  "kind": "LLD",
+  "problemSlug": "polymorphism-and-its-types-29-65",
+  "topic": "Object oriented Programming (OOPS)",
+  "difficulty": "Medium",
+  "coverEmoji": "🔀",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "OOPS",
+    "polymorphism"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is polymorphism? - Sumo Logic",
+      "url": "https://www.sumologic.com/glossary/polymorphism",
+      "source": "sumologic.com",
+      "kind": "article"
+    },
+    {
+      "title": "Polymorphism - C# | Microsoft Learn",
+      "url": "https://learn.microsoft.com/en-us/dotnet/csharp/fundamentals/object-oriented/polymorphism",
+      "source": "learn.microsoft.com",
+      "kind": "article"
+    },
+    {
+      "title": "Polymorphism in C++ - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/cpp/cpp-polymorphism/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Polymorphism is not inheritance. It is deferred choice of code.** One call site, many possible behaviors. The only real question is *when* that choice is made: by the compiler from argument types, or at runtime from the object's actual type. Everything else — overloading, overriding, interfaces, vtables — is just machinery for those two binding times. Pick the wrong binding time and you get either rigid code or slow, fragile code."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Polymorphism means a single name or interface exhibits multiple behaviors depending on context. In statically typed OO languages that takes two concrete forms. **Ad-hoc compile-time polymorphism:** the same method name resolves to different implementations based on the static types and count of arguments. The compiler picks the target and bakes it in. **Subtype runtime polymorphism:** a base-class or interface reference points to a derived object, and a call through that reference executes the derived implementation. The caller codes against `Shape.draw()` or `Payment.authorize()` once; new subtypes extend behavior without editing the caller. No new syntax is required to add a new shape — that is the point."
+    },
+    {
+      "type": "paragraph",
+      "text": "The trade-off is made at binding time. Compile-time selection is fast, checkable, and closed: adding a new case means adding a new overload and recompiling callers that need it. Runtime dispatch is open and extensible: you can add a `Triangle` or `UpiPayment` without touching the loop that iterates over `List<Shape>` or `List<PaymentMethod>`. But you pay with indirection, weaker static guarantees about *which* code runs, and a larger surface for behavioral breakage when a base class changes. If you remember only one distinction, remember this: **overloading optimizes for caller convenience, overriding optimizes for future extension.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: how a call finds code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Overload resolution happens during compilation in roughly three passes: exact match on arity and type, then applicable widening and boxing, then varargs and generics resolution. The compiler looks only at the *declared* types of the arguments, never at runtime values. That is why `print(int)` vs `print(long)` vs `print(Object)` can surprise you when you pass a `short` or `null` — the most specific applicable signature wins, and a small change in parameter types silently retargets existing call sites. The reason languages do this is determinism and zero runtime cost, but the trade-off is brittleness: overloads are not a substitute for distinct names when semantics differ."
+    },
+    {
+      "type": "paragraph",
+      "text": "Subtype dispatch happens at runtime. Conceptually each object carries a pointer to its class's behavior table. Each entry corresponds to a virtual method. A call like `shape.draw()` compiles to: follow the object header to its class, index into the table at the slot for `draw`, jump. The declared type `Shape` only guarantees the slot exists; the object's runtime type decides which function pointer fills it. That indirection is why you can hold `Circle`, `Rectangle`, and `Triangle` in one `List<Shape>` and update them with one loop. The trade-off is explicit: one extra pointer hop plus inhibited inlining per virtual call, in exchange for not having to write a `switch` on type that must be edited for every new subtype."
+    },
+    {
+      "type": "mermaid",
+      "title": "Binding decision",
+      "caption": "Compiler vs runtime selection for the same call syntax.",
+      "code": "flowchart TD\n  Call[\"client calls obj.method(args)\"] --> Overload{\"compiler: which overload?\"}\n  Overload -->|\"static arg types\"| Slot[\"fix method slot + signature\"]\n  Slot --> Virt{\"runtime: is method virtual?\"}\n  Virt -->|\"no / final / static\"| Direct[\"direct call to fixed address\"]\n  Virt -->|\"yes, overridable\"| Lookup[\"lookup slot in object class table\"]\n  Lookup --> Impl[\"jump to derived implementation\"]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The two types, honestly compared"
+    },
+    {
+      "type": "table",
+      "caption": "Static vs dynamic polymorphism on the dimensions interviewers probe.",
+      "headers": [
+        "Dimension",
+        "Compile-time (overloading, templates/generics)",
+        "Run-time (overriding, interfaces)"
+      ],
+      "rows": [
+        [
+          "When bound",
+          "At compile time from declared argument types",
+          "At runtime from actual object type"
+        ],
+        [
+          "Typical machinery",
+          "Overloaded methods, constructors, operator overloads",
+          "`virtual` + `override`, abstract classes, interfaces"
+        ],
+        [
+          "Extension cost",
+          "Closed: new behavior needs new signature + caller awareness",
+          "Open: new subtype works with unchanged client loop"
+        ],
+        [
+          "Performance",
+          "Zero indirection; inlinable",
+          "Table lookup + virtual call; harder to inline"
+        ],
+        [
+          "Failure mode",
+          "Silent wrong-overload selection, ambiguity on `null`",
+          "Wrong override, fragile base class, broken Liskov substitution"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not treat them as interchangeable. Use overloading when the *caller* knows the variation and wants convenience — `add(int,int)` vs `add(double,double)`, or `createUser(name)` vs `createUser(name, role)`. Use overriding when the *object* knows the variation and the caller should not — `renderer.draw(shape)`, `notifier.send(notification)`. The test is simple: if adding a new variant should not require editing the dispatching code, you need runtime dispatch. If it should be visible and checked at the call site, you want an overload. Choosing overloading for extensibility forces cascading `instanceof` checks; choosing overriding for convenience forces pointless class hierarchies."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Polymorphism fails silently because the wrong code runs and still type-checks. The call succeeds but behavior is wrong, so tests that only assert no-exception pass while money, data, or rendering is incorrect. Three patterns dominate. First, overload traps: `equals(MyClass)` instead of `equals(Object)` compiles, overloads instead of overrides, and collections silently fall back to identity equality. Second, accidental hiding: a derived method with a slightly different signature or missing `virtual`/`override` annotation creates a second method rather than replacing the base one, so base references never reach it. Third, fragile bases: a base class adds a method or changes when it calls a virtual hook, and every derived class changes behavior without any edit to derived code."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Collections misbehave:** `HashSet` contains duplicates or `Map.get` returns `null` despite an equal key present. Cause is almost always an overload of `equals`/`hashCode` with the wrong signature instead of a true override.",
+        "**Base implementation runs when override was expected:** logs show `Base.draw` or `Base.validate` for objects you know are `Circle` or `PremiumOrder`. Look for missing `virtual`, `final` on the base method, signature mismatch, or static method hiding.",
+        "**`StackOverflowError` or infinite recursion in constructors/factories:** base constructor calls an overridable method that the derived override depends on uninitialized derived state. Symptom is nulls or half-built objects only on some subtypes.",
+        "**Performance cliff in hot loops:** profiler shows megamorphic virtual call sites in rendering, serialization, or per-message handling. Monomorphic code was inlined before; after adding the fifth or sixth subtype, the JIT gives up and every call pays full dispatch.",
+        "**Breakage after a base-class release:** no derived file changed, but behavior shifts everywhere. The base added an overload or changed a default hook implementation. This is fragile-base-class failure — the cost of open extension."
+      ]
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Dispatch.java",
+      "code": "interface PaymentMethod {\n    void authorize(int amountCents); // virtual by design: dispatch by runtime type\n}\n\nfinal class CardPayment implements PaymentMethod {\n    @Override public void authorize(int amountCents) {\n        System.out.println(\"card auth \" + amountCents);\n    }\n}\n\nfinal class WalletPayment implements PaymentMethod {\n    @Override public void authorize(int amountCents) {\n        System.out.println(\"wallet auth \" + amountCents);\n    }\n}\n\nclass BillingService {\n    // Overloading: caller convenience, bound at compile time.\n    void checkout(PaymentMethod m, int amountCents) { m.authorize(amountCents); }\n    void checkout(PaymentMethod m, double amountMajor) {\n        checkout(m, (int) Math.round(amountMajor * 100));\n    }\n\n    void chargeAll(List<PaymentMethod> methods, int amountCents) {\n        // One call site, N behaviors. Adding a new PaymentMethod\n        // requires zero edits here. That is why runtime dispatch exists.\n        for (PaymentMethod m : methods) m.authorize(amountCents);\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This example separates the two binding times deliberately. `checkout` is overloaded so callers can pass cents or major units without manual conversion — the compiler selects the conversion path and there is no runtime cost. `authorize` is virtual so `chargeAll` never branches on type. The reason this shape survives LLD follow-ups is that policy (which payment types exist) is decoupled from mechanism (how a batch is charged). The trade-off you are accepting is that `chargeAll` cannot be fully inlined or statically verified per subtype; a misbehaving `authorize` override affects every batch, which is exactly why overrides need contracts and tests at the interface level, not just per class."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "BrokenOverride.java",
+      "code": "class Order {\n    private final String id;\n    Order(String id) { this.id = id; }\n\n    // BUG: overloads instead of overrides. Missing Object signature.\n    // Collections will use Object.equals, not this.\n    public boolean equals(Order other) {\n        return other != null && id.equals(other.id);\n    }\n    // Missing hashCode override as well.\n}\n\nclass BaseParser {\n    // Fragile hook: called from constructor.\n    BaseParser() { parse(); }\n    void parse() { /* base default */ }\n}\n\nclass CsvParser extends BaseParser {\n    private final String delimiter = \",\";\n    @Override void parse() {\n        // Runs BEFORE delimiter is assigned when called via super().\n        System.out.println(\"parsing with \" + delimiter); // null on this path\n    }\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Write the overload set, then defend it",
+          "text": "Expect: design `Logger.log(...)` or `Cache.put(...)` with two or three overloads. Say aloud which call binds to which signature for `null`, widening, and boxing inputs. Interviewers fail candidates who add overloads with identical arity and near-identical types."
+        },
+        {
+          "title": "Replace conditional dispatch with subtype dispatch",
+          "text": "Expect: a `switch` on `type` or `instanceof` chain in billing, notification, or shape code. Refactor to an interface plus one virtual method. State the trade-off: you removed the edit-every-time switch at the cost of scattering behavior across files."
+        },
+        {
+          "title": "Break your own design on purpose",
+          "text": "Expect: what happens if the base adds a method with the same name, or if `equals` is overloaded wrong? Show `@Override` as a compiler guard, and explain why base constructors must never call overridable methods."
+        },
+        {
+          "title": "Defend the interface contract",
+          "text": "Expect: preconditions, postconditions, and invariants for the virtual method. An override that throws a new checked exception or silently weakens validation violates Liskov substitution even though it compiles. Say what callers are allowed to assume."
+        },
+        {
+          "title": "Discuss cost where it matters",
+          "text": "Expect: is virtual dispatch a problem here? Answer honestly: no for request-level handlers, maybe for per-pixel or per-message hot loops. Name the mitigation — `final`/`sealed` classes, devirtualization, or visitor pattern — instead of claiming it is free."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Overloading is overriding.** No. Overloading selects among same-named methods by static signature at compile time. Overriding replaces a base implementation for a fixed signature at runtime. One is caller convenience, the other is extensibility.",
+        "**Polymorphism requires inheritance.** Only subtype polymorphism does. Overloading, generics, and duck-typed protocols are polymorphic without a base class. In Python or Go the interface is structural, not inherited.",
+        "**`private`, `static`, and `final` methods are polymorphic.** They are not. They hide rather than override and bind statically. Calling them through a base reference never reaches a derived version, which is why annotating with `@Override` fails to compile there — and that failure is the guard you want.",
+        "**Return type alone distinguishes overloads.** It does not in Java, C++, or C#. Overloads must differ in arity or parameter types. Varying only the return type is a compile error, not a second overload.",
+        "**An override can do anything the base did.** Only if it honors the contract. Strengthening preconditions, weakening postconditions, or throwing broader exceptions breaks substitutability. Code that works for `Base` must work for `Derived` without the caller knowing the difference.",
+        "**More virtual methods means better design.** The opposite. Every virtual method is a promise that unknown future code will call it in unknown ways. Keep the virtual surface narrow; prefer a single `execute`/`authorize` hook plus composition over a wide overridable API."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Selection guide: default choice and the reason to deviate.",
+      "headers": [
+        "Situation",
+        "Use",
+        "Avoid",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Batch handling of related types",
+          "Interface + override, single loop",
+          "`instanceof` chain or type-field switch",
+          "New types must work without editing dispatch"
+        ],
+        [
+          "Caller-side convenience variants",
+          "Overloads with distinct, unambiguous signatures",
+          "Boolean flags or `Object` catch-all parameters",
+          "Compiler checks intent; flags push branching into the body"
+        ],
+        [
+          "Hot per-item path with few shapes",
+          "Overloads, generics, or `final` classes",
+          "Deep virtual hierarchies",
+          "Keeps call sites monomorphic and inlinable"
+        ],
+        [
+          "Cross-module extension point",
+          "Narrow interface, documented contract",
+          "Wide base class with many virtual hooks",
+          "Wide surface guarantees fragile-base breakage"
+        ],
+        [
+          "Behavior varies by one dimension only",
+          "Subtype per behavior",
+          "Parallel hierarchies for every combination",
+          "Combinatorial explosion; prefer composition or strategy over inheritance"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Polymorphism lets one call site run different code — picked by the compiler from argument types for convenience, or at runtime from the object's type for extension — so say which binding time you chose and what it costs.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:50:10.707Z",
+    "problems": []
+  }
+}

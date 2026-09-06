@@ -1,0 +1,291 @@
+{
+  "slug": "best-user-experience-best-ux",
+  "title": "Best User Experience (Best UX)",
+  "summary": "Best UX in a social network is perceived latency and relevance under load: the design trades fanout cost, ranking compute, and consistency to make posting feel instant and scrolling feel fresh.",
+  "kind": "HLD",
+  "problemSlug": "best-user-experience-best-ux-144-305",
+  "topic": "Building Social Network",
+  "difficulty": "Medium",
+  "coverEmoji": "⚡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Social-Network",
+    "UX",
+    "Feed"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "10 UX Best Practices to Follow in 2026",
+      "url": "https://uxpilot.ai/blogs/ux-best-practices",
+      "source": "uxpilot.ai",
+      "kind": "article"
+    },
+    {
+      "title": "7 fundamental UX design principles in 2026 (with examples)",
+      "url": "https://www.uxdesigninstitute.com/blog/ux-design-principles-2026/",
+      "source": "uxdesigninstitute.com",
+      "kind": "article"
+    },
+    {
+      "title": "The Best Practices and Key Principles of UX Design - Baymard",
+      "url": "https://baymard.com/learn/ux-design-principles",
+      "source": "baymard.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "In a social network, **UX is not a screen problem. It is a read/write latency problem.** Users judge you on two moments: did my post appear instantly, and did my feed load instantly with something worth reading. Everything else is secondary. If you nail those two under load and failure, you win. If you miss them, no visual polish saves you."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What best UX means here, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Best UX for a social network means three measurable guarantees. First, **perceived write latency near zero**: when a user hits post, like, or comment, the UI reflects it in under 200ms even if the backend has not finished. Second, **perceived read latency under one second at p95**: cold open of the home feed, profile, and thread shows usable content fast, on a mid-range phone on a lossy network. Third, **freshness without jank**: new content arrives without full reloads, duplicated items, jumping scroll position, or stale counts that visibly correct themselves seconds later. That is the whole definition. Notice what is missing: it says nothing about colors, fonts, or navigation. In an HLD interview, UX means system behavior under concurrency, scale, and partial failure. You are designing for *time-to-first-useful-pixel* and *time-to-confidence* that an action succeeded. State explicit targets: `POST /posts` acknowledged in <300ms at p95, feed first page in <800ms at p95, like applied optimistically in <100ms client-side. Without numbers you are hand-waving, and the interviewer will treat it as hand-waving."
+    },
+    {
+      "type": "paragraph",
+      "text": "Scope matters because social UX splits into three paths with different trade-offs. The **write path** is post, repost, comment, like, follow, message send. Here consistency can be faked with optimistic UI, and the trade-off is rollback complexity when the server rejects. The **read path** is home feed, profile timeline, notifications, search. Here the trade-off is precomputation versus on-demand assembly: precomputed feeds are fast to read but expensive to write and go stale on celebrity posts. The **live path** is counts, presence, typing indicators, new-post banners, and message delivery. Here the trade-off is push cost versus poll staleness: persistent connections give immediacy but cost connection state, battery, and fanout storms. A medium-difficulty answer names all three and picks a different strategy for each. A weak answer proposes one caching layer for everything and calls it UX."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: where UX is actually decided"
+    },
+    {
+      "type": "paragraph",
+      "text": "UX is decided before the client renders a single pixel, in how you move bytes from writer to readers. The naive path is synchronous: client posts, server writes to primary storage, server fans out to every follower, server acknowledges. That is correct and unusably slow for anyone with more than a few hundred followers. The production path is decoupled: accept the write fast, persist durably, acknowledge, then fan out asynchronously while the writer sees an optimistic local copy. Reads never hit the primary social graph directly. They hit a prebuilt, ranked, paginated feed store backed by cache, with fallbacks when ranking is slow or down. The reason this shape wins is fault isolation: a slow ranker or a hot celebrity account degrades relevance, not availability. The trade-off is explicit inconsistency — followers see the post at different times, counts disagree for seconds, and ordering is never globally total. You buy speed and resilience with temporary lies, then converge."
+    },
+    {
+      "type": "mermaid",
+      "title": "Write-to-read path that controls perceived UX",
+      "caption": "Optimistic write plus async fanout plus ranked cached reads.",
+      "code": "flowchart TD\n    A[Client App] --> B[Edge API]\n    B --> C[Post Writer]\n    C --> D[Durable Post Store]\n    C --> E[Ack to Client]\n    E --> F[Optimistic Cache]\n    C --> G[Fanout Queue]\n    G --> H[Fanout Workers]\n    H --> I[Feed Store per User]\n    J[Feed API] --> K[Feed Cache]\n    K --> L[Ranker]\n    L --> M[Assembled Page]\n    M --> A\n    N[Live Gateway] --> A"
+    },
+    {
+      "type": "paragraph",
+      "text": "Follow the diagram because each hop is a UX decision. `Edge API` to `Post Writer` must be fast and idempotent — you need request IDs so retries from a flaky mobile network do not create duplicate posts, which users read as broken UX. `Post Writer` to `Durable Post Store` is the only synchronous dependency before `Ack to Client`; everything after the ack is background. That is why posting feels instant: you return after one durable write, not after fanout. `Fanout Queue` to `Feed Store per User` absorbs bursts. If a user with 5 million followers posts, you do not do 5 million synchronous inserts on the request path. You enqueue and drain with backpressure, and the trade-off is that some followers see the post 10 seconds later. `Feed Cache` to `Ranker` to `Assembled Page` is where scrolling lives or dies. Cache hit with a pre-ranked page is ~50ms. Cache miss plus full ranking plus media metadata fetch is 800ms to seconds. So you always serve the cached page first and refresh relevance in the background. `Live Gateway` pushes invalidations like *3 new posts* instead of forcing a full reload, which preserves scroll position — the detail users actually notice."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The levers that actually move UX"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are only five levers worth discussing in the interview. Everything else is decoration. First, **optimistic mutations** for writes. Second, **feed materialization strategy** for reads. Third, **ranking placement** — on write, on read, or tiered. Fourth, **media delivery** — because in a social app images and short video dominate load time more than JSON ever will. Fifth, **pagination and sync protocol** — cursors, deltas, and idempotency that prevent duplicates, gaps, and scroll jumps. Each lever has a hard cost. Pick it, name the cost, and say how you bound it. If you propose a lever without its cost, you have not designed anything."
+    },
+    {
+      "type": "table",
+      "caption": "Core UX choices with honest costs. Every row is a trade.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Optimistic post, like, follow with local rollback",
+          "Perceived latency <100ms; usable on poor networks",
+          "Rollback UI, duplicate suppression, conflict logic; more client complexity"
+        ],
+        [
+          "Precomputed per-user home feed (fanout on write)",
+          "Feed reads are O(1) cache fetch; very fast scroll",
+          "Write amplification; hot authors cause queue lag; storage fanout"
+        ],
+        [
+          "On-demand feed assembly (fanout on read)",
+          "No write storms; always fresh; cheap for inactive users",
+          "Slow p95 reads; repeated ranking compute; cache stampedes"
+        ],
+        [
+          "Server-side ranked feed with cached scores",
+          "Better relevance; consistent across devices",
+          "Ranker latency on read path; fallback needed when ranker is down"
+        ],
+        [
+          "Chronological + small ranked injection",
+          "Predictable, debuggable, cheap to serve",
+          "Lower engagement; spam and low-quality rise unless filtered"
+        ],
+        [
+          "Autoplay muted video + progressive images",
+          "Feels instant; higher completion",
+          "Bandwidth and battery burn; need aggressive prefetch limits and data-saver mode"
+        ],
+        [
+          "Push deltas over persistent connection",
+          "Live counts and new-post banners without polling",
+          "Connection state, reconnect storms, battery cost; need fallback poll"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Skeletons beat spinners, but only if honest",
+      "text": "Use **skeleton placeholders** for feed and comments, not full-screen loaders. The reason is perceived progress: users tolerate 800ms if layout is stable and content fills in. The trade-off is layout shift if you guess wrong heights. Fix it by reserving aspect-ratio boxes from media metadata at upload time. Never show a skeleton for more than ~2 seconds without a retry path — at that point it is a lie, not a loading state."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Social UX failures are almost never clean errors. They are partial, visible inconsistencies that erode trust. The system stays up, but users conclude it is broken because their action vanished, their feed repeated, or their count jumped backwards. You must design for these explicitly, because the interviewer will probe them. The correct posture is: assume fanout lags, assume ranking times out, assume media is slow, assume the client retries. Then define degraded behavior for each. Good answers specify fallbacks: serve stale ranked feed with a *new posts available* pill when live fanout lags; serve chronological fallback when the ranker exceeds its deadline; show low-resolution placeholder with blurhash when the CDN is slow; queue the post locally with a *will send when online* state instead of dropping it. The trade-off every time is freshness or fidelity for availability. You keep the app usable by lowering quality in a bounded, visible way rather than failing the whole page."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Post disappears after refresh:** optimistic insert was never reconciled with server ID. Symptom is user reposts, creating duplicates. Fix is idempotency keys plus client mapping of temp ID to real ID.",
+        "**Feed duplicates or gaps on scroll:** offset pagination under concurrent inserts. Symptom is same post twice or skipped posts. Fix is opaque cursor based on `(score, post_id)`, never `page=2`.",
+        "**Celebrity post delays the whole feed:** synchronous fanout head-of-line blocking. Symptom is everyone’s home feed stalls for seconds. Fix is sharded fanout queue plus hybrid pull for very-high-follower authors.",
+        "**Like count flickers 1024 → 1023 → 1025:** uncoordinated counter replicas. Symptom is visible distrust. Fix is single-writer counter with cached reads and bounded staleness, not strong consistency.",
+        "**Video feed stalls on cellular:** aggressive autoplay + prefetch. Symptom is blank tiles and battery complaints. Fix is data-saver heuristics: preload one ahead, pause offscreen, downgrade to thumbnail on slow effective connection.",
+        "**Notifications arrive but feed does not have the post:** push and feed store diverge. Symptom is tapping a notification to a missing item. Fix is deep-link fetch by ID with a pending state, not reliance on feed cache."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Mechanics that clarify: pagination and optimistic writes"
+    },
+    {
+      "type": "code",
+      "language": "typescript",
+      "filename": "feedClient.ts",
+      "code": "type FeedCursor = string | null; // opaque: base64(score, postId)\n\nasync function fetchFeed(cursor: FeedCursor, limit = 20) {\n  const res = await api.get(\"/feed/home\", { params: { cursor, limit } });\n  // Server returns stable order + next cursor. Never use offset.\n  // On ranker timeout, server sets degraded: true and falls back to chrono.\n  return res.data as { items: Post[], nextCursor: FeedCursor, degraded: boolean };\n}\n\nasync function createPost(text: string, idemKey: string) {\n  const tempId = `temp:${idemKey}`;\n  store.optimisticInsert({ id: tempId, text, status: \"sending\" });\n  try {\n    const saved = await api.post(\"/posts\", { text }, { headers: { \"Idempotency-Key\": idemKey } });\n    store.reconcile(tempId, saved); // swap temp ID, keep scroll position\n  } catch (e) {\n    store.markFailed(tempId); // keep draft + explicit retry, do not silently drop\n  }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This small client contract carries most of the UX. The cursor is opaque so the server can change ranking without breaking pagination — the trade-off is that the client cannot jump to an arbitrary page, which is fine because social feeds have no meaningful page numbers. The `degraded` flag matters more than it looks: it lets the UI say *showing latest while personalization catches up* instead of mysteriously reordering items on the next pull. On the write side, the `Idempotency-Key` is the difference between a retry and a duplicate post. Mobile networks retry aggressively. Without a server-side dedup key, every tunnel or elevator creates a double post, which users experience as data loss of trust. The optimistic insert buys the sub-100ms feel; the `reconcile` step pays for it by handling the case where the server assigns a different ID, timestamp, or moderation state. Keep failed posts visible with retry. Silently dropping a failed post is the single most hostile UX choice in this whole design."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Feed, posting, interactions: where to spend budget"
+    },
+    {
+      "type": "paragraph",
+      "text": "Spend your read budget on the home feed, because that is the cold-open path every session hits. The winning shape is **tiered ranking with strict deadlines**. Serve per-user precomputed candidates from cache, re-rank only the top N on read with a 150–250ms deadline, and on timeout serve the precomputed order with a flag. Precompute heavy features offline — affinity, quality scores, media metadata — so the live ranker does a cheap merge. Prefetch next page and media thumbnails during idle scroll, capped by connection class. The trade-off is compute duplication: you rank twice, once offline and once live. You pay it because p95 read latency dominates retention more than perfect ordering does. Also reserve layout from upload-time dimensions so images do not push text down as they load. Scroll stability is a backend contract, not a frontend trick."
+    },
+    {
+      "type": "paragraph",
+      "text": "Spend your write budget on durability plus acknowledgment speed, not on synchronous fanout. Accept the post after one replicated write, return the canonical ID, enqueue fanout with priority by follower activity, not by follower ID order. Active followers first gives the illusion of instant global delivery because the people likely to look now get it first. The trade-off is unfairness: dormant followers lag more, which is acceptable. Handle the high-follower author as a special case: do not fan out to millions on write. Mark the post as *pull for this author* and merge it at read time for most viewers. That hybrid avoids the write storm at the cost of slightly slower reads for that one author’s content. For comments and likes, use the same optimistic pattern but separate the count from the entity. The entity write is durable; the count is an eventually consistent cached aggregate with a single writer to avoid flicker."
+    },
+    {
+      "type": "paragraph",
+      "text": "Spend your live budget sparingly, because persistent connections do not scale for free. Use one multiplexed gateway for presence, typing, new-post hints, and message delivery, with explicit reconnect with backoff and a sync-on-reconnect delta — *give me everything since cursor X*. Do not push full post bodies on the live channel. Push IDs and version stamps, then let the client fetch via the normal cached API. The trade-off is one extra round trip versus massive push payloads and ordering bugs. For messaging inside the network, show sent, delivered, and persisted states distinctly. A message stuck in *sending* with a local queue and manual retry feels reliable. A message that silently vanishes feels broken even if the backend eventually delivers it. Cap live updates that cause re-render: batch count updates every few seconds rather than streaming every like, or the feed will visibly thrash."
+    },
+    {
+      "type": "table",
+      "caption": "When to use each UX pattern, and when to drop it.",
+      "headers": [
+        "Pattern",
+        "Use when",
+        "Skip when"
+      ],
+      "rows": [
+        [
+          "Optimistic UI + reconcile",
+          "Likes, posts, follows, sends on flaky mobile",
+          "Irreversible or moderated actions where rollback confuses"
+        ],
+        [
+          "Precomputed home feed",
+          "Heavy read traffic, follow graph is core loop",
+          "Interest graph or search-led product with low repeat reads"
+        ],
+        [
+          "Hybrid celebrity pull",
+          "Follower counts skew 100x; fanout lags observed",
+          "Uniform small groups where full fanout is cheap"
+        ],
+        [
+          "Tiered ranking with deadline",
+          "Personalization matters but p95 matters more",
+          "Strict chronological promise or tiny corpus"
+        ],
+        [
+          "Persistent push channel",
+          "Messaging, live counts, new-post pills",
+          "Battery-constrained or mostly background users; use poll"
+        ],
+        [
+          "Aggressive media prefetch",
+          "Wi-Fi or flagship devices, short video core",
+          "Emerging markets, data-saver on, long text feeds"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Define UX in numbers first",
+          "text": "Open with p95 targets for cold feed, post ack, and optimistic apply. Say what you will degrade first: relevance before availability, fidelity before load success. This frames every later choice."
+        },
+        {
+          "title": "Draw the write path for instant feel",
+          "text": "Walk through idempotency key, durable write, fast ack, async fanout queue. Explain why fanout is never synchronous and how you prioritize active followers to fake global speed."
+        },
+        {
+          "title": "Draw the read path for fast scroll",
+          "text": "Show feed store, cache, tiered ranker with deadline, cursor pagination, media metadata for layout stability. Name the fallback when ranker or cache fails."
+        },
+        {
+          "title": "Handle the hot author and the retry storm",
+          "text": "This is the expected deep dive. Propose hybrid pull for very-high-follower accounts, sharded queues, dedup keys, and client temp-ID reconciliation. Quantify write amplification."
+        },
+        {
+          "title": "Close with live and offline behavior",
+          "text": "Describe push of IDs not bodies, sync-on-reconnect, queued offline posts, and batched count updates. State the trade-off each time: connection cost, staleness, or client complexity."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Best UX means strongest consistency.** No. Strong consistency on feeds and counts buys correctness users cannot see at the cost of latency they feel immediately. Use causal or eventual consistency with bounded staleness and explicit UI states.",
+        "**Faster database equals faster feed.** The bottleneck is usually ranking compute, media fetch, and fanout lag, not a single query. A faster primary store without cache, precomputation, and deadlines changes little.",
+        "**Polling is always worse than push.** Push wins for immediacy but costs connection state and reconnect storms at scale. For dormant users, infrequent poll or fetch-on-open is cheaper and indistinguishable in UX.",
+        "**Chronological is simpler and therefore better.** It is cheaper to build and easier to reason about, but it surfaces spam and buries relevance. The trade-off is engagement and abuse load, not just code simplicity.",
+        "**Optimistic UI means no error handling.** The opposite: optimistic UI *is* error handling. If you cannot show sending, failed, retrying, and reconciled states without losing scroll or duplicating, you should not be optimistic.",
+        "**Media is a frontend concern.** Layout shift, blank tiles, and stalled scroll are caused by missing dimensions, unbatched variants, and uncapped prefetch — all decided at upload and feed-assembly time on the backend."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **make writes feel instant with optimistic UI plus idempotent fast ack and async fanout, and make reads feel instant with precomputed cached feeds, tiered ranking under a deadline, and cursor pagination — trading temporary inconsistency for p95 speed.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:36:52.022Z",
+    "problems": []
+  }
+}

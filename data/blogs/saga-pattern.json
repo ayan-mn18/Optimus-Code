@@ -1,0 +1,310 @@
+{
+  "slug": "saga-pattern",
+  "title": "Saga Pattern",
+  "summary": "Saga replaces distributed atomic commit with a sequence of local transactions plus explicit compensations. This guide explains choreography vs orchestration, isolation loss, production failures, and when to use it.",
+  "kind": "HLD",
+  "problemSlug": "saga-pattern-90-199",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔄",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "saga",
+    "distributed-transactions",
+    "HLD",
+    "scalability"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Pattern: Saga - Microservices.io",
+      "url": "https://microservices.io/patterns/data/saga.html",
+      "source": "microservices.io",
+      "kind": "article"
+    },
+    {
+      "title": "SAGA Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/saga-design-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Saga Design Pattern - Azure Architecture Center | Microsoft Learn",
+      "url": "https://learn.microsoft.com/en-us/azure/architecture/patterns/saga",
+      "source": "learn.microsoft.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A saga does **not** give you atomicity. It gives you **eventual consistency with explicit undo**. You trade the blocking coordination of 2PC for availability and independent scalability — and you pay for it by designing every step to be reversible and every intermediate state to be visible."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a saga actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A saga is a sequence of **local transactions** `T1, T2, ..., Tn`, each owned by a different service and committed in its own database. Each `Ti` publishes an event or command that triggers `Ti+1`. If any step fails, the saga runs **compensating transactions** `C1...Ck` in reverse order to semantically undo what already committed. The key word is *semantically*: you are not rolling back a log, you are executing new business logic — refund payment, release inventory, cancel shipment — that returns the system to an acceptable end state."
+    },
+    {
+      "type": "paragraph",
+      "text": "This exists because of the **database-per-service** constraint. Once Orders, Payments, and Inventory each own their schema and cannot share a lock manager, there is no single commit point. Any protocol that tries to create one — typically two-phase commit — couples availability across services: if the coordinator or any participant stalls, everyone holds locks and stops scaling. Sagas accept that reality. Each service commits locally, makes progress without waiting for global agreement, and cleans up afterward if the business flow aborts. **Trade-off:** you gain independent deployability and throughput, you lose isolation."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: choreography vs orchestration"
+    },
+    {
+      "type": "paragraph",
+      "text": "In **choreography**, there is no central brain. Each service subscribes to domain events and decides locally what to do next. `OrderCreated` causes Payments to charge; `PaymentSucceeded` causes Inventory to reserve; `InventoryFailed` causes Orders to run its compensation. This is cheap to start and preserves full decoupling — no service knows the whole flow. That is exactly why it rots. The business process lives nowhere in code; it is smeared across five event handlers, version skews, and queue configurations. Add a fourth step or a conditional branch and nobody can answer *where are we in the saga?* **Trade-off:** zero coordination overhead for simple linear flows, unmanageable implicit coupling once the graph branches."
+    },
+    {
+      "type": "mermaid",
+      "title": "Choreography-based saga",
+      "caption": "Each service reacts to events. No central controller.",
+      "code": "graph TD\n  A[Order Service creates PENDING order] --> B[publishes OrderCreated]\n  B --> C[Payment Service charges card]\n  C --> D{Payment OK}\n  D -->|Yes| E[publishes PaymentSucceeded]\n  D -->|No| F[publishes PaymentFailed]\n  E --> G[Inventory Service reserves stock]\n  F --> H[Order Service marks CANCELLED]\n  G --> I{Stock OK}\n  I -->|Yes| J[Order Service marks CONFIRMED]\n  I -->|No| K[Payment Service refunds charge]"
+    },
+    {
+      "type": "paragraph",
+      "text": "In **orchestration**, one durable process — the orchestrator — owns the state machine and tells participants what to do via commands. The orchestrator persists *saga-id, current step, retry count, compensation stack* before sending each command, waits for an explicit reply, then advances. Participants are dumb executors: they run a local transaction and report success or business rejection. This centralizes timeouts, retries, and ordering in one place you can test, version, and observe. The cost is direct: the orchestrator is a stateful component you must make highly available, idempotent, and scalable by sharding on `saga-id`. **Trade-off:** explicit operational complexity in one service in exchange for debuggability everywhere else. For anything beyond three steps, choose this."
+    },
+    {
+      "type": "mermaid",
+      "title": "Orchestration-based saga",
+      "caption": "Orchestrator drives commands and tracks compensation stack.",
+      "code": "flowchart TD\n  O[Orchestrator starts saga] --> S1[Command Reserve Payment]\n  S1 --> R1{Reply}\n  R1 -->|Fail| C0[Compensate Cancel Order]\n  R1 -->|OK| S2[Command Reserve Inventory]\n  S2 --> R2{Reply}\n  R2 -->|OK| S3[Command Confirm Order]\n  R2 -->|Fail| C1[Compensate Refund Payment]"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The three step types you must name"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Compensable steps** can be semantically undone. `ReserveInventory` pairs with `ReleaseInventory`. Design the compensation *first* — if you cannot name the undo, you cannot put the step in a saga.",
+        "**Pivot step** is the point of no return. Before it, failure means compensating backward. After it, failure means retrying forward until success. Typical pivot: charging a card or dispatching a truck. Everything after the pivot must be retryable.",
+        "**Retryable steps** are guaranteed to eventually succeed because they have no business precondition left to violate — e.g., `SendConfirmationEmail` or `AppendToLedger`. They must be idempotent so duplicate delivery is harmless."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Isolation loss is the part candidates hand-wave. Between `T1` committing and `Ck` compensating, other transactions *see* your partial work. A customer sees a `PENDING` order, warehouse sees reserved stock, fraud checks see a charge that later disappears. You cannot prevent this with locks without reintroducing the coupling you tried to escape. You contain it: expose pending states in the schema (`PENDING`, `COMPENSATING`, `FAILED`), make reads filter them explicitly, and use semantic countermeasures like version checks or over-reservation. **Trade-off:** application-level dirty reads are accepted to keep each service non-blocking; correctness moves from the database into the domain model."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of the saga pattern.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why it matters at scale"
+      ],
+      "rows": [
+        [
+          "No distributed locks, no blocking coordinator",
+          "No isolation — intermediate states are visible",
+          "Throughput scales with each service independently, but every reader must handle pending states"
+        ],
+        [
+          "Each service keeps its own database and release cycle",
+          "Every step needs an explicitly designed compensation",
+          "Autonomy is real, but developer burden grows linearly with steps"
+        ],
+        [
+          "Survives single-service outages via retry and queueing",
+          "At-least-once delivery forces idempotency everywhere",
+          "Availability improves only if duplicates are safe to reprocess"
+        ],
+        [
+          "Clear ownership in orchestration mode",
+          "Orchestrator state must be durable and sharded",
+          "You replace a distributed transaction bottleneck with a state machine you must operate"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why 2PC loses for cross-service business flows"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two-phase commit gives you true atomicity: prepare on all participants, then commit or abort globally. To do that it holds locks and blocks throughput while waiting for the slowest voter, and a coordinator crash during the prepare window leaves participants uncertain and unavailable. That is the correct choice inside one database cluster with a fast, trusted network. It is the wrong choice across product boundaries where deploys, schemas, and failure domains are independent. Sagas invert the priority: commit fast and locally, reconcile on failure. Use 2PC when you need strict invariants across a few tightly coupled stores you control. Use sagas when you need independent scaling and can tolerate temporary divergence that compensation later repairs. **Trade-off:** certainty now versus availability now with repair later."
+    },
+    {
+      "type": "table",
+      "caption": "Saga vs alternatives for multi-service writes.",
+      "headers": [
+        "Approach",
+        "Consistency",
+        "Availability under partial failure"
+      ],
+      "rows": [
+        [
+          "Saga with compensations",
+          "Eventual, with visible intermediates",
+          "High — participants commit locally and retry via queue"
+        ],
+        [
+          "Two-phase commit",
+          "Strong atomic",
+          "Low — all participants block on coordinator and slowest voter"
+        ],
+        [
+          "Try-Confirm-Cancel",
+          "Stronger reservation semantics",
+          "Medium — requires hold-and-expire logic and still needs compensation paths"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Sagas do not fail with a clean rollback. They fail halfway, twice, and out of order. The dominant causes are not business rejections — those are the easy path — but infrastructure realities: lost replies, crashed orchestrators, non-idempotent handlers, and compensations that themselves fail. If you have not designed for a failing compensation, you do not have a saga, you have a hope. Every compensation must be retryable to success or parked in a dead-letter queue with an operator runbook, because a stuck compensation leaves the system permanently inconsistent."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Lost update from duplicate delivery:** broker redelivers `ReserveInventory` after a timeout. Without an idempotency key on `saga-id + step-id`, stock is decremented twice. Symptom: inventory drift that only reconciliation jobs catch.",
+        "**Orphaned pending state:** orchestrator crashes after sending a command but before persisting the step. On restart it re-sends; participant already committed. Symptom: orders stuck in `PENDING` until a sweeper times them out.",
+        "**Non-compensable step executed too early:** email sent or truck dispatched before the pivot, then a later step fails. Symptom: customer receives confirmation for a cancelled order — compensation cannot unsend.",
+        "**Cyclic choreography:** two services each wait on the other's event after a version change renames a topic. Symptom: silent stall, no errors, saga age metric climbs while queues look healthy.",
+        "**Poison compensation loop:** `RefundPayment` keeps failing due to a downstream outage and blocks the whole compensation chain. Symptom: saga stuck in `COMPENSATING` for hours; fix is to persist progress per step and continue backward independently."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The anomaly you must be able to draw",
+      "text": "Service A reserves the last unit of stock, Service B then rejects payment, Service A compensates by releasing stock. In between, a concurrent buyer saw *out of stock* and abandoned checkout. That lost sale is **correct behavior** under sagas. If the interviewer asks about isolation, draw this timeline — it proves you understand what you gave up."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The minimal contract that clarifies everything"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "saga_orchestrator.py",
+      "code": "class SagaOrchestrator:\n    def __init__(self, store, bus):\n        self.store = store  # durable: saga_id -> {state, step, compensations[]}\n        self.bus = bus\n\n    def execute(self, saga_id, steps):\n        # steps: [(action, compensation), ...]\n        state = self.store.load(saga_id) or {\"step\": 0, \"stack\": []}\n        for i in range(state[\"step\"], len(steps)):\n            action, comp = steps[i]\n            # persist BEFORE send: crash here must not lose intent\n            self.store.save(saga_id, {\"step\": i, \"stack\": state[\"stack\"]})\n            # idempotency key = saga_id + step index; handler must dedupe\n            ok = self.bus.send(action, idem_key=f\"{saga_id}:{i}\")\n            if not ok:\n                self.compensate(saga_id, state[\"stack\"])\n                return \"ABORTED\"\n            state[\"stack\"].append(comp)\n            state[\"step\"] = i + 1\n        self.store.save(saga_id, {\"step\": len(steps), \"stack\": state[\"stack\"]})\n        return \"COMMITTED\"\n\n    def compensate(self, saga_id, stack):\n        for comp in reversed(stack):\n            # compensations must be retryable; never give up silently\n            self.bus.send_until_ack(comp, idem_key=f\"{saga_id}:c:{comp}\")\n        self.store.mark_aborted(saga_id)"
+    },
+    {
+      "type": "paragraph",
+      "text": "This skeleton exists to force three decisions. First, **state is persisted before each send**, so a crash replays rather than skips. Second, **every send carries a deterministic idempotency key**, so at-least-once delivery from the queue cannot double-apply. Third, **compensation runs strictly in reverse and retries to acknowledgement** — a fire-and-forget undo is a data-loss bug. In a real system the store is a replicated table sharded by `saga-id` and the bus is a durable log with per-consumer offsets. **Trade-off:** you add a write per step and a dedupe lookup per handler; that latency is the price of surviving restarts without global locks."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Never compensate what you cannot retry",
+      "text": "If a compensation calls an external system with no idempotent API — wire transfer, third-party fulfillment — do not place it mid-saga. Either move it **after the pivot** so it only runs forward, or gate it behind a human approval step. Unretryable undo is how sagas become incident reports."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the constraint, not the pattern name",
+          "text": "Say: each service owns its database, so no shared transaction. 2PC would block all participants on the slowest voter and couple deploys. Therefore we accept eventual consistency and repair via compensation. This frames the trade-off before you draw anything."
+        },
+        {
+          "title": "Pick orchestration and justify it",
+          "text": "For an order flow with payment, inventory, and shipping, propose an orchestrator sharded by order-id. State explicitly: choreography hides the workflow and makes timeouts untestable. Only keep choreography if the interviewer constrains you to three steps with no branching."
+        },
+        {
+          "title": "Define states and the pivot on the whiteboard",
+          "text": "Write the order lifecycle: PENDING -> PAYMENT_RESERVED -> INVENTORY_RESERVED -> CONFIRMED, plus COMPENSATING -> CANCELLED. Mark payment capture as the pivot. Interviewers score this higher than any box diagram because it shows you handle visible intermediates."
+        },
+        {
+          "title": "Name failures before being asked",
+          "text": "Volunteer duplicate delivery, orchestrator crash between persist and send, and failing compensation. For each, give the fix: idempotency keys, persist-before-send with replay, retry-to-ack plus dead-letter queue. This is what separates a Medium answer from a junior one."
+        },
+        {
+          "title": "Close with scale and observability",
+          "text": "Mention sharding orchestrator state, per-step latency and saga-age metrics, and a sweeper for stuck PENDING sagas. End with the cost: N writes per saga plus dedupe storage, accepted to keep each service independently scalable."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Sagas are atomic.** They are not. Other readers observe partial results. If you need all-or-nothing visibility, you need reservations plus a pivot, not a saga alone.",
+        "**Compensation equals database rollback.** It does not. It is new forward business logic with its own failure modes. A compensation can fail, and must be designed to retry.",
+        "**Choreography is simpler at scale.** It is simpler to start and harder to operate. Without a central state record you cannot answer progress, timeout, or versioning questions.",
+        "**Exactly-once messaging fixes sagas.** It does not exist in practice. Design for at-least-once plus idempotent handlers keyed on saga-id and step-id.",
+        "**The orchestrator must be a separate framework.** It can be a library inside the entry service if state is durable. What matters is persisted step position and replay, not the process boundary."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use sagas for autonomous services; avoid them where strong invariants dominate.",
+      "headers": [
+        "Use a saga when",
+        "Avoid it when",
+        "What to do instead"
+      ],
+      "rows": [
+        [
+          "Business flow spans 3+ databases owned by different teams",
+          "All writes fit in one service database",
+          "Use a local ACID transaction — simpler and strictly stronger"
+        ],
+        [
+          "Temporary divergence is acceptable (pending orders, held credit)",
+          "Invariant cannot ever be violated even briefly (seat assignment, ledger balance)",
+          "Use reservations with expiry, pessimistic locking, or single-writer partitioning"
+        ],
+        [
+          "Steps have natural compensations (refund, release, cancel)",
+          "A step has no meaningful undo (fire missile, irreversibly publish)",
+          "Move that step after the pivot or require human approval"
+        ],
+        [
+          "You need independent scaling and deployability",
+          "Flow is two steps with strict ordering and low throughput",
+          "2PC or a shared transaction via a modular monolith is cheaper to reason about"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Break the business transaction into locally committed steps with explicit, idempotent compensations driven by a durable orchestrator — accepting visible intermediate states to keep services available and independently scalable."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:15:58.632Z",
+    "problems": []
+  }
+}

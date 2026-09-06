@@ -1,0 +1,335 @@
+{
+  "slug": "event-driven-architecture",
+  "title": "Event Driven Architecture",
+  "summary": "Event-Driven Architecture decouples producers from consumers through a durable event log to gain independent scalability — at the cost of eventual consistency, ordering pain, and operational complexity.",
+  "kind": "HLD",
+  "problemSlug": "event-driven-architecture-90-300",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "⚡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Event-Driven"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Event-Driven Architecture - AWS",
+      "url": "https://aws.amazon.com/event-driven-architecture/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is Event-Driven Architecture? | IBM",
+      "url": "https://www.ibm.com/think/topics/event-driven-architecture",
+      "source": "ibm.com",
+      "kind": "article"
+    },
+    {
+      "title": "Event-Driven Architecture (EDA): A Complete Introduction - Confluent",
+      "url": "https://www.confluent.io/learn/event-driven-architecture/",
+      "source": "confluent.io",
+      "kind": "article"
+    },
+    {
+      "title": "Event Driven Architecture EXPLAINED in 15 Minutes - YouTube",
+      "url": "https://www.youtube.com/watch?v=Fb_0UOD2X2I",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Event-Driven Architecture buys you **independent scalability and failure isolation** by forbidding direct calls: producers append facts to a log, consumers react on their own schedule. Every benefit comes from that decoupling. Every pain comes from it too — **you trade temporal coupling for consistency and observability pain**. If you cannot name that trade-off in the interview, you do not understand EDA."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Event-Driven Architecture is a style where state changes are published as immutable facts called events, stored durably in a broker or log, and consumed asynchronously by zero or more subscribers. There is no direct RPC between producer and consumer. The producer does not know who consumes, how many consumers exist, what they do, or whether they are currently up. The consumer does not call back. That ignorance is deliberate — it is what lets each side deploy, scale, and fail independently. An event is not a command and not a request. A command says *do this*. An event says *this already happened*: `OrderPlaced(orderId=842, items=[...], at=1718123401)`. The distinction matters because events can be replayed, fanned out, and reordered by design, while commands cannot. If your handler mutates the event to control the receiver, you have rebuilt RPC with extra latency and called it events."
+    },
+    {
+      "type": "paragraph",
+      "text": "A usable event has four parts, and you should be able to recite them without thinking: a **key** that defines ordering and partitioning scope (usually the entity ID like `orderId`), a **payload** that carries either a notification or full state, a **timestamp plus version** so consumers can handle out-of-order delivery and schema evolution, and **metadata** for correlation and causality (`correlationId`, `causationId`, source). The key choice is a scalability decision, not a modeling nicety. All events with the same key land on the same partition and are processed in order by one consumer at a time. Pick a high-cardinality key like `orderId` and you get parallelism. Pick a low-cardinality key like `country` and you get hot partitions and a scaling ceiling you cannot fix without rekeying. That is why experienced interviewers probe the key first."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three roles, one hard rule. Producers append events to named streams or topics. The broker persists them, orders them per partition, and retains them for hours or days. Consumers subscribe, track their own offset, and process at their own rate. The hard rule: **producers never wait for consumers**. That is what removes temporal coupling and lets a checkout API sustain 20k writes per second even when the email service is down or the analytics pipeline is backpressured. But it also means the producer gets no guarantee about *when* — or even *whether* — downstream effects happen. You gain availability and burst absorption. You lose end-to-end latency bounds and the simple mental model of `call -> response -> done`. Do not let anyone tell you EDA is faster. It is higher-throughput under load and usually *slower* for a single request because you added a broker hop, serialization, and queueing delay."
+    },
+    {
+      "type": "mermaid",
+      "title": "Core event flow",
+      "caption": "Producers append, broker persists, consumers pull independently.",
+      "code": "flowchart LR\n    P1[Producer: Checkout API] --> B[(Event Log / Broker)]\n    P2[Producer: IoT Ingest] --> B\n    B --> C1[Consumer: Inventory]\n    B --> C2[Consumer: Billing]\n    B --> C3[Consumer: Notifications]"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are two topologies and you must pick explicitly. In **broker topology** (also called choreography), producers publish to the log and each consumer independently decides what to do next, possibly emitting new events. There is no central controller. This scales best and adds the least coordination overhead, which is why high-throughput systems prefer it. The trade-off is that the workflow is implicit — no single place shows the order-fulfillment saga, so debugging requires distributed tracing across five services. In **mediator topology** (orchestration), a central orchestrator consumes events and issues commands to workers. This is easier to reason about, version, and time out, which is why multi-step sagas with compensation prefer it. The trade-off is that the orchestrator becomes a scaling bottleneck and a coupling point. Default to choreography for fan-out and notifications. Switch to orchestration the moment you need timeouts, rollbacks, or a definitive answer to *where is order 842 in the flow?*"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Core patterns you must name"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Event notification:** payload carries only IDs (`orderId created`). Consumers query back for details. Keeps events small and schema-stable. Trade-off: it reintroduces coupling and read load on the source — a thundering herd when 10 consumers all fetch the same row.",
+        "**Event-carried state transfer:** payload carries the full entity snapshot. Consumers never call back. Maximizes decoupling and is best for scale. Trade-off: large messages, stale copies everywhere, and painful schema evolution — every field rename becomes a migration.",
+        "**Event sourcing:** the log is the source of truth, current state is a fold over events. Gives auditability and replay. Trade-off: you now operate a database you built yourself — snapshots, compaction, upcasting, and read-model lag are yours to own.",
+        "**CQRS:** separate write path (validate commands, append events) from read path (materialized views built by consumers). Lets reads and writes scale independently. Trade-off: reads are eventually consistent by construction; any interviewer who hears CQRS will immediately ask how you handle *read-your-own-write*.",
+        "**Choreographed saga:** each service reacts to the previous event and emits the next (`PaymentTaken -> ReserveStock -> ShipmentBooked`). No coordinator. Trade-off: no global timeout or easy cancellation; compensating actions must be designed as first-class events, not afterthoughts."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of going event-driven.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why it matters at scale"
+      ],
+      "rows": [
+        [
+          "Producer and consumer scale, deploy, and fail independently",
+          "Eventual consistency everywhere; no linearizable read after write",
+          "You can add consumers without touching producers, but UI must handle pending states"
+        ],
+        [
+          "Natural fan-out and replay; new consumers bootstrap from history",
+          "Durable broker is now critical infrastructure to operate, partition, and monitor",
+          "Replay is a superpower for backfills, but retention cost and reprocessing semantics are real"
+        ],
+        [
+          "Burst absorption via queueing; producers survive consumer outages",
+          "Higher p50 latency and no end-to-end deadline by default",
+          "Throughput under spike improves, single-request latency gets worse — pick based on SLA"
+        ],
+        [
+          "Loose schema coupling if versioned carefully",
+          "Schema evolution, duplicate delivery, and ordering become your problem",
+          "At 10 events/sec you can ignore this; at 100k/sec duplicates and poison pills will page you"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it scales"
+    },
+    {
+      "type": "paragraph",
+      "text": "Scalability in EDA comes from two mechanisms: **partitioning** and **consumer groups**. A topic is split into N ordered partitions. Producers hash the event key to a partition. Each partition is consumed by exactly one worker within a group at a time, so you get N-way parallelism. Need more throughput? Add partitions and add workers. That is the entire scaling story, and it works linearly until it does not. The ceiling is set by key cardinality and ordering constraints. If all events for a hot entity must be ordered — all updates for a single payment account, all moves in a single game — they must share a partition, and that partition caps at the speed of one consumer. No amount of added hardware fixes a hot key. The fix is design, not capacity: split the key (`accountId + shardId`), shrink the ordered scope, or move strictly-ordered logic to an orchestrator and keep the rest unordered. Say this explicitly in an interview: **ordering and parallelism are the same knob turned opposite directions**."
+    },
+    {
+      "type": "mermaid",
+      "title": "Partitions and consumer groups",
+      "caption": "Add partitions and workers to scale; separate groups scale independently.",
+      "code": "flowchart LR\n    Prod[Producer] --> Topic[(Topic: order-events)]\n    Topic --> G1[Group: fulfillment]\n    Topic --> G2[Group: analytics]\n    G1 --> W1[Worker 1]\n    G1 --> W2[Worker 2]\n    G1 --> W3[Worker 3]\n    G2 --> A1[Worker A]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Backpressure handling is the second half of scaling and the part juniors miss. A healthy EDA system never pushes to consumers; consumers pull at their own pace and the log absorbs the spike. That means lag — the gap between newest event and last processed offset — is your primary scaling signal, not CPU. Alert on consumer lag per partition, autoscale workers on lag growth rate, and shed or degrade when lag exceeds retention. The trade-off: retention bounds your recovery window. If lag exceeds retention, events are lost and replay is impossible without an archive tier. So retention is not a cost knob, it is a correctness knob. Short retention saves disk and guarantees a 3 a.m. page. Long retention costs storage but buys you time to fix a stuck consumer, replay after a bad deploy, and bootstrap new read models. For anything money-related, keep days of retention plus an object-store archive."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "EDA does not fail like RPC. It fails silently, late, and downstream. The producer returns `200 OK` while the consumer is three hours behind, processing duplicates, or dead-lettering everything after a schema change. You will not see an error spike at the edge. You will see business symptoms: inventory oversell, emails never sent, dashboards frozen, balances that do not add up. Design for this by making every stage observable: publish rate, broker append latency, per-partition lag, processing latency, dead-letter rate, and end-to-end event age from production timestamp to consumption. If you cannot plot *how old is the newest unprocessed event for each consumer*, you are flying blind. And every consumer must be idempotent and transactional with its offset commit, or duplicates will corrupt state the first time a worker restarts — which is to say, weekly."
+    },
+    {
+      "type": "table",
+      "caption": "Failure modes, the symptom you actually see, and the fix.",
+      "headers": [
+        "Failure",
+        "Symptom in production",
+        "Mitigation that works"
+      ],
+      "rows": [
+        [
+          "Poison message crashes handler on every retry",
+          "One partition stalls, lag grows linearly on that partition only, others healthy",
+          "Catch, log with full payload, send to dead-letter topic after N tries; alert on DLQ rate, never block the partition forever"
+        ],
+        [
+          "Hot partition from bad key choice",
+          "One worker at 100% CPU, rest idle; end-to-end latency spikes for subset of entities",
+          "Rekey to higher cardinality; split ordered scope; pre-aggregate where order is unnecessary"
+        ],
+        [
+          "Schema change breaks old consumers",
+          "Deploy succeeds, then DLQ floods and downstream views go stale hours later",
+          "Schema registry with compatibility checks; versioned events; upcasting in consumer; expand-contract, never rename in place"
+        ],
+        [
+          "Duplicate delivery after rebalance or retry",
+          "Double charges, double emails, counts that drift upward",
+          "Idempotency keys + deduplication table; transactionally commit offset with state update"
+        ],
+        [
+          "Retention expiry before slow consumer catches up",
+          "Gap in read models with no error; replay impossible",
+          "Long retention + archive to object storage; lag-based autoscaling and paging before retention bound"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The poison-pill trap",
+      "text": "Default retry with no dead-letter queue will halt a partition forever on a single malformed event. One bad payload stops thousands of good ones behind it because order is per-partition. Always bound retries, always route to a **dead-letter topic with headers preserving original partition, offset, and failure reason**, and always alert on it. Unbounded retry is not resilience — it is a self-inflicted outage."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Delivery semantics without fairy tales"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers use delivery semantics to separate memorized definitions from understanding. There is no practical exactly-once delivery over a distributed log with independent consumers; there is at-most-once, at-least-once, and *effectively-once* built on top of at-least-once plus idempotence. At-most-once is fast and lossy — acceptable for metrics, unacceptable for money. At-least-once is the sane default: the broker retains until the consumer acknowledges, so crashes cause redelivery. The trade-off is duplicates on every retry, rebalance, and restart. Effectively-once means your handler tolerates those duplicates via idempotency keys and atomic offset commits, so the *effect* applies once even though delivery happens many times. If you claim exactly-once, be prepared to explain transactions between broker and store, fencing tokens, and the throughput cost. Otherwise say at-least-once plus idempotent consumers — that is what production systems actually run."
+    },
+    {
+      "type": "table",
+      "caption": "Delivery guarantees and when each is defensible.",
+      "headers": [
+        "Guarantee",
+        "How it behaves",
+        "When to pick it"
+      ],
+      "rows": [
+        [
+          "At-most-once",
+          "Event may be lost on crash; never duplicated",
+          "Loss-tolerant telemetry, counters where approximation is fine"
+        ],
+        [
+          "At-least-once",
+          "Event never lost but may be delivered multiple times",
+          "Default for orders, payments, inventory — correctness over duplicate cost"
+        ],
+        [
+          "Effectively-once",
+          "At-least-once delivery + idempotent handler + atomic offset commit",
+          "Anywhere duplicates cause money or user-visible harm; costs extra storage and design"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "idempotent_consumer.py",
+      "code": "import hashlib\n\n# Effectively-once = at-least-once delivery + idempotent effect + atomic offset commit.\n# Trade-off: extra write to dedup store per event, but duplicates become harmless.\n\ndef handle_event(event, db, producer):\n    # 1. Deterministic idempotency key from event identity, not random UUID.\n    key = f\"{event['type']}:{event['id']}\"\n    dedup_id = hashlib.sha256(key.encode()).hexdigest()\n\n    with db.transaction() as tx:\n        # 2. If seen, skip side effects but still commit offset forward.\n        if tx.exists(\"processed_events\", dedup_id):\n            tx.commit_offset(event.topic, event.partition, event.offset + 1)\n            return \"duplicate-skipped\"\n\n        # 3. Apply business effect and record processing atomically.\n        # If either fails, offset is NOT committed -> broker redelivers.\n        apply_business_logic(tx, event)  # e.g. decrement stock, insert shipment\n        tx.insert(\"processed_events\", {\"id\": dedup_id, \"at\": event[\"at\"]})\n        tx.commit_offset(event.topic, event.partition, event.offset + 1)\n\n    return \"applied\"\n\ndef apply_business_logic(tx, event):\n    # Must itself be safe to run once per dedup_id.\n    # Use conditional writes: INSERT .. ON CONFLICT DO NOTHING,\n    # UPDATE .. WHERE version = expected_version.\n    pass"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from requirements, not Kafka.",
+          "text": "Ask: read vs write rate, acceptable lag (seconds or minutes?), ordering scope (per entity or global?), loss tolerance, and replay needs. Your answers here dictate partitions, retention, and delivery semantics. Interviewers score this higher than naming tools."
+        },
+        {
+          "title": "Draw producers, log, and groups.",
+          "text": "Sketch one durable log in the middle, producers on the left, one consumer group per downstream concern on the right. Label topics, keys, and partition counts. State the key and justify it: why this key gives parallelism without breaking order where it matters."
+        },
+        {
+          "title": "Answer the consistency attack.",
+          "text": "They will ask: user places order then refreshes and sees nothing — what do you do? Have an answer: versioned read models, correlation IDs for tracing, pending states in UI, and read-your-own-write via synchronous path for the critical read. Never promise immediate consistency over events."
+        },
+        {
+          "title": "Go deep on one failure.",
+          "text": "Pick poison messages or hot partitions and drive it to the bottom: detection metric, alert threshold, mitigation, and recovery via replay. One failure explored with lag graphs and DLQ design beats five failures named superficially."
+        },
+        {
+          "title": "Close with numbers.",
+          "text": "Estimate: events/sec × average size × retention = storage. Partitions needed = target throughput / single-consumer throughput. State autoscaling on lag, not CPU. This is what turns a whiteboard sketch into a Medium-difficulty pass."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Events are just async RPC.** No — RPC has a caller, a return value, and a deadline. Events have none. If you need a reply now, use synchronous calls; faking request-response over events adds timeouts, correlation state, and worse tail latency.",
+        "**EDA is always more scalable.** It scales *fan-out and ingest* better. It scales *ordered workflows and consistent reads* worse. Global ordering caps throughput at one partition; strongly consistent reads need a synchronous path.",
+        "**The broker guarantees order globally.** It guarantees order *within a partition only*. Across partitions there is no order. Any design assuming cross-partition order will corrupt state under load.",
+        "**Replay fixes everything.** Replay only works if events are versioned, handlers are deterministic, and retention actually covers the window. Without those, replay re-applies bugs at high speed.",
+        "**Adding more consumers always helps.** Within one group, workers are capped by partition count. Beyond that, extra workers sit idle. To scale further you must repartition — which changes ordering — or split the workload into more groups.",
+        "**Decoupling means no coordination.** You removed compile-time coupling and bought runtime coupling: schema compatibility, key design, lag monitoring, and capacity planning across teams. The coordination moved, it did not vanish."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, when to avoid it"
+    },
+    {
+      "type": "table",
+      "caption": "Use EDA where decoupling pays; avoid it where consistency or simplicity wins.",
+      "headers": [
+        "Use events when",
+        "Avoid events when",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Many independent consumers need the same fact (order -> inventory, billing, fraud, analytics)",
+          "Single producer, single consumer with simple request-response",
+          "Broker overhead buys nothing; direct call is simpler, faster, and easier to debug"
+        ],
+        [
+          "Spiky ingest must survive downstream outages (IoT, checkouts, clickstream)",
+          "User is waiting for the result before proceeding (login, balance check)",
+          "Queueing helps throughput but hurts latency; synchronous path gives bounded response"
+        ],
+        [
+          "Audit trail and replay matter (ledger, state reconstruction, new read models)",
+          "Domain has heavy cross-entity transactions needing atomic commit",
+          "Sagas compensate, they do not isolate; distributed transactions over events are slow and fragile"
+        ],
+        [
+          "Services must evolve and deploy independently at team scale",
+          "Team is small and system fits in one deployable",
+          "Operational cost of broker, schemas, DLQs, and lag monitoring outweighs modularity benefit"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence",
+      "text": "Use this closer: **EDA scales producers and consumers independently through a durable partitioned log, accepting eventual consistency, at-least-once delivery, and per-partition ordering — so I would key by entity ID, run idempotent consumers with dead-letter queues, and scale on lag.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:19:55.534Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,298 @@
+{
+  "slug": "oauth",
+  "title": "Oauth",
+  "summary": "OAuth 2.0 for API interviews: delegated authorization via scoped, short-lived tokens, how Authorization Code + PKCE works, and when it beats API keys.",
+  "kind": "HLD",
+  "problemSlug": "oauth-93-207",
+  "topic": "Application Programming Interface (API)",
+  "difficulty": "Medium",
+  "coverEmoji": " f511",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "API",
+    "OAuth",
+    "AuthZ"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "API Keys vs OAuth: Which is More Secure for API Authentication?",
+      "url": "https://aembit.io/blog/api-keys-vs-oauth-authentication-security/",
+      "source": "aembit.io",
+      "kind": "article"
+    },
+    {
+      "title": "What is OAuth 2.0? Definition & Examples - Auth0",
+      "url": "https://auth0.com/intro-to-iam/what-is-oauth-2",
+      "source": "auth0.com",
+      "kind": "article"
+    },
+    {
+      "title": "OAuth Explained: How It Works and Why It Matters - Frontegg",
+      "url": "https://frontegg.com/blog/oauth",
+      "source": "frontegg.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "OAuth is **delegation without impersonation**. A user lets your API act **on their behalf, with limited scope, for a limited time, without ever giving you their password**. If you remember nothing else, remember this: **the token is not an identity, it is a permission slip that can be revoked**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What OAuth is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "OAuth 2.0 is an **authorization delegation framework**, not a login protocol. It defines how a **client** obtains a **scoped, revocable token** from an **authorization server** after the **resource owner** consents, and how a **resource server** validates that token before serving an API request. No passwords cross the wire to third parties. No long-lived secrets embedded in mobile apps. The client gets just enough power to call `GET /calendar` for the next hour, and nothing else. That narrowness is the entire point. You choose OAuth when you have three parties who do not fully trust each other — user, third-party app, and your API — and you still need them to cooperate safely."
+    },
+    {
+      "type": "paragraph",
+      "text": "What OAuth **does not do** is prove who the user is to your app. An access token says *this caller may do X*, it does not say *this caller is alice@example.com*. Confusing those two is how you build broken auth. If you need identity — name, email, login session — you add **OpenID Connect (OIDC)** on top of OAuth, which returns a separate **ID token** with authenticated claims about the user. Interviewers test this split deliberately. Say it crisply: **OAuth authorizes, OIDC authenticates**. If someone says *we log users in with OAuth*, they mean OIDC, and you should correct them without being pedantic about it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: four roles and one redirect dance"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are exactly four roles, and every interview diagram must label them or you look sloppy. The **resource owner** is the human who owns the data and clicks *Allow*. The **client** is the app asking for access — a backend that can hold a secret is *confidential*, a browser or mobile app that cannot is *public*, and that distinction drives which flow you pick. The **authorization server** issues tokens after authenticating the user and recording consent. The **resource server** is your API; it does not issue tokens, it only validates them and enforces **scopes** like `read:repos` or `write:billing`. Separation of issuer and verifier is why you can scale them independently — a trade-off you pay for in operational complexity."
+    },
+    {
+      "type": "mermaid",
+      "title": "Authorization Code with PKCE",
+      "caption": "The only flow you must be able to whiteboard cold.",
+      "code": "flowchart TD\n  U[Resource Owner - browser] -->|1. authorize scope + code_challenge| C[Client App]\n  C -->|2. redirect to authorize| AS[Authorization Server]\n  AS -->|3. login + consent| AS\n  AS -->|4. authorization code via redirect| C\n  C -->|5. code + code_verifier| AS\n  AS -->|6. access_token + refresh_token| C\n  C -->|7. API call + access_token| RS[Resource Server - your API]\n  RS -->|8. validate signature + scope + expiry| RS"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk it end to end because hand-waving here fails interviews. The client redirects the browser to the authorization server with `client_id`, `redirect_uri`, `scope`, `state`, and a `code_challenge` derived from a random `code_verifier` it keeps in memory. The user authenticates and approves scope. The server returns a single-use, short-lived **authorization code** to the `redirect_uri`. The client then exchanges that code **directly, server-to-server**, presenting the original `code_verifier`. If they match, the server returns a short-lived **access token** — typically 5 to 60 minutes — plus an optional **refresh token**. The client calls your API with `Authorization: Bearer <access_token>`. Your API validates signature, issuer, audience, expiry, and scope before doing anything else. **WHY PKCE?** Because the front channel via the browser is untrusted and codes can leak from history or logs. PKCE binds the authorize step to the token step with a secret that never travels in the redirect. Trade-off: one extra round trip and crypto bookkeeping in exchange for making intercepted codes useless."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The grants you actually need to know"
+    },
+    {
+      "type": "table",
+      "caption": "Only three flows matter for 95% of API design interviews.",
+      "headers": [
+        "Grant",
+        "Who uses it",
+        "Why it exists",
+        "Trade-off"
+      ],
+      "rows": [
+        [
+          "Authorization Code + PKCE",
+          "Web, mobile, SPA calling user data APIs",
+          "Keeps tokens out of browser history; public clients get safety without a client secret",
+          "Extra redirect + code exchange latency vs. strongest delegation story"
+        ],
+        [
+          "Client Credentials",
+          "Service-to-service, cron, backend workers",
+          "No user involved; machine authenticates with its own id and secret",
+          "Simple and fast, but no user context or consent — overuse creates god-service tokens"
+        ],
+        [
+          "Refresh Token rotation",
+          "Any client needing long sessions",
+          "Short access tokens limit blast radius while refresh keeps UX smooth",
+          "Stateful revocation list and rotation logic vs. permanent API keys that never expire"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Tokens and scopes: where the security lives"
+    },
+    {
+      "type": "paragraph",
+      "text": "Treat tokens as capabilities with an expiry date, not as user IDs. An **access token** is usually a signed JWT or an opaque reference — JWTs validate locally and fast but cannot be revoked without short TTLs or a denylist; opaque tokens require an introspection call but revoke instantly. That is the core latency-versus-revocation trade-off and you must name it. **Scopes** are coarse permissions requested up front and enforced at the resource server (`calendar.read`, not *full account*). **Refresh tokens** are long-lived, single-use-rotated, and stored only in secure server storage — never `localStorage`. When an access token expires, the client silently swaps the refresh token for a new pair. Short TTLs mean a leaked token dies in minutes, while revocation at the authorization server kills the refresh chain. You pay for this with more token traffic and clock-sync discipline, and you buy **blast-radius control** that static API keys can never give you."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "auth_middleware.py",
+      "code": "import time, jwt\n# Resource server: validate BEFORE business logic.\n# Trade-off: local JWT verify is fast but needs short TTL + kid rotation.\nPUBLIC_KEY = \"\"\"-----BEGIN PUBLIC KEY-----...\"\"\"\nREQUIRED_SCOPE = \"documents:read\"\n\ndef authorize_request(auth_header: str, now: int | None = None):\n    if not auth_header or not auth_header.startswith(\"Bearer \"):\n        raise PermissionError(\"missing_bearer_token\")\n    token = auth_header.removeprefix(\"Bearer \").strip()\n    # 1. Signature + issuer + audience + expiry. Never skip these.\n    claims = jwt.decode(\n        token, PUBLIC_KEY, algorithms=[\"RS256\"],\n        issuer=\"https://auth.internal\", audience=\"api-documents\",\n        options={\"require\": [\"exp\", \"iss\", \"aud\", \"scope\"]}\n    )\n    # 2. Allow small clock skew, but reject expired tokens hard.\n    if claims[\"exp\"] < (now or int(time.time())) - 30:\n        raise PermissionError(\"expired_token\")\n    # 3. Scope enforcement: token may be valid but not sufficient.\n    scopes = set(claims.get(\"scope\", \"\").split())\n    if REQUIRED_SCOPE not in scopes:\n        raise PermissionError(f\"insufficient_scope:{REQUIRED_SCOPE}\")\n    return claims  # contains sub (user), client_id, scope"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Pick OAuth with eyes open — it costs real complexity.",
+      "headers": [
+        "Approach",
+        "What you gain",
+        "What you pay",
+        "Verdict"
+      ],
+      "rows": [
+        [
+          "OAuth access tokens",
+          "Scoped, short-lived, centrally revocable delegation; no password sharing",
+          "Auth server to run, redirect UX, token validation + rotation logic",
+          "Default for third-party or user-delegated API access"
+        ],
+        [
+          "Static API keys",
+          "Trivial to issue, one header, no round trips",
+          "No scope granularity, no expiry by default, leak forever, hard to rotate",
+          "OK for internal low-risk automation; dangerous for user data"
+        ],
+        [
+          "Session cookies",
+          "Simple first-party login, easy revocation server-side",
+          "CSRF exposure, poor fit for mobile and cross-domain APIs, sticky sessions",
+          "Use for your own web app, not for delegated API access"
+        ],
+        [
+          "mTLS / service identity",
+          "Strong machine authentication, no bearer-token replay",
+          "Certificate issuance, rotation, and debugging pain at scale",
+          "Best for east-west service mesh; overkill for public integrations"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The honest math: OAuth trades **implementation and operational cost for containment**. You run or rent an authorization server, handle redirects, manage keys, and debug token failures — that is weeks of work versus an afternoon for API keys. In return you get credentials that expire in minutes, carry only the permissions the user approved, and die globally on revocation. For user data exposed to browsers, mobile apps, and partners, that containment is non-negotiable. For a single internal cron job hitting an internal endpoint, it is over-engineering. Say that out loud in the interview; it signals judgment, not recitation."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "OAuth failures are silent and confusing because the API returns `401` or `403` for a dozen different root causes. The pattern to memorize: **401 means the token is missing, malformed, expired, or signed by the wrong issuer; 403 means the token is valid but lacks scope**. Beyond that, the failure modes cluster around leaks, misconfiguration, and availability. A leaked static credential sits valid for years; a leaked OAuth access token should die in minutes if your TTLs are sane — but only if you actually kept them short and rotated refresh tokens. Most outages I have seen were not crypto breaks, they were `redirect_uri` mismatches, clock skew, or an authorization server that became a single point of failure."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Open redirect / `redirect_uri` bypass → code theft.** Symptom: sporadic account takeover reports with valid login logs. Cause: wildcard or prefix-matched redirect allowed attacker to receive codes. Fix: exact-match allowlist, plus PKCE so stolen codes do not exchange.",
+        "**Over-broad scopes and god tokens → blast-radius explosion.** Symptom: one leaked token reads billing, deletes repos, invites admins. Cause: requested `*` for convenience. Fix: minimal scopes per endpoint, enforce at resource server, audit scope grants.",
+        "**Long-lived unrotated refresh tokens → silent persistence.** Symptom: user *logs out* but old clients keep getting new access tokens. Cause: no rotation or reuse detection. Fix: rotating refresh, reuse invalidates the chain, server-side revocation list.",
+        "**Auth server outage or JWKS rotation gone wrong → global 401 storm.** Symptom: all API calls fail at once despite healthy API servers. Cause: validators caching stale keys or hard-depending on introspection. Fix: cache JWKS with fallback, allow skew, shed load with short negative cache.",
+        "**Tokens in URLs, logs, or `localStorage` → XSS and log-scrape leaks.** Symptom: tokens appear in access logs or error reports. Cause: passing tokens as query params or logging headers. Fix: header-only bearer, redact logs, store refresh only in `httpOnly` secure cookies or backend vault."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Gotcha: validate everything, then check scope",
+      "text": "Most candidates check `scope` and skip `aud`, `iss`, and signature. That accepts tokens minted for a **different API or environment**. Order matters: **signature → expiry → issuer → audience → scope**. Get this backwards and staging tokens call production."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Scope the delegation problem",
+          "text": "Ask: who is the resource owner, who is the client, first-party or third-party? User data or service data? Read, write, or admin actions? This decides Authorization Code + PKCE versus Client Credentials in 30 seconds."
+        },
+        {
+          "title": "Draw roles and token boundaries",
+          "text": "Whiteboard client, authorization server, resource server. Show redirects on the front channel and code exchange plus API calls on the back channel. Label where secrets live and where they never go."
+        },
+        {
+          "title": "Define tokens and lifetimes",
+          "text": "State: 5-15 minute JWT access tokens, rotating refresh tokens, exact scopes per endpoint. Justify short TTL as leak containment versus extra refresh traffic — name the trade-off explicitly."
+        },
+        {
+          "title": "Show enforcement at the resource server",
+          "text": "Write the middleware: verify signature with JWKS, check `exp` / `iss` / `aud`, then check `scope` per route. Explain opaque versus JWT and how you revoke. This is where medium candidates separate from junior ones."
+        },
+        {
+          "title": "Cover failure and scale",
+          "text": "Close with revocation, key rotation without downtime, rate-limiting token endpoints, and what happens when the auth server is down. Mention exact-match `redirect_uri`, `state` for CSRF, and PKCE as non-optional for public clients."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**OAuth is login.** No. OAuth grants access; OIDC proves identity. Saying *login with OAuth* without mentioning ID tokens tells the interviewer you have not built it.",
+        "**Access tokens are safe to store anywhere.** No. They are bearer credentials — whoever holds them calls the API. Keep them in memory, keep refresh tokens out of JavaScript entirely.",
+        "**Checking scope is enough.** No. Without signature, issuer, audience, and expiry checks, you accept forged or cross-audience tokens.",
+        "**Client Credentials can replace user consent.** No. It authenticates a service, not a user. Using it for user data removes consent and auditability.",
+        "**Long-lived tokens are simpler so they are fine.** Simpler, yes — and that simplicity is why a single leak becomes a multi-year breach instead of a 10-minute incident.",
+        "**PKCE is only for mobile.** No. It is required for any public client including SPAs, and recommended even for confidential clients to survive code leakage."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use OAuth for delegation; skip it when there is no delegation.",
+      "headers": [
+        "Situation",
+        "Use OAuth?",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Third-party app accessing user data via your API",
+          "Yes — Auth Code + PKCE",
+          "Requires consent, scoping, and revocation per user"
+        ],
+        [
+          "Your mobile or SPA calling your own user API",
+          "Yes — Auth Code + PKCE + OIDC",
+          "Public client cannot hold secrets; needs short-lived tokens"
+        ],
+        [
+          "Backend cron calling internal service with no user",
+          "No — Client Credentials or workload identity",
+          "No owner to consent; prefer narrow service credentials"
+        ],
+        [
+          "Single internal script, low risk, no user data",
+          "No — API key with rotation",
+          "OAuth cost exceeds risk; key in vault plus IP allowlist is enough"
+        ],
+        [
+          "Machine-to-machine in a mesh with strict replay concerns",
+          "Consider mTLS instead",
+          "Bearer tokens replay if stolen; mTLS binds identity to channel"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**OAuth lets a user grant a third-party app scoped, short-lived, revocable API access without sharing a password — enforced by validating signature, expiry, and scope on every request.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:52:35.372Z",
+    "problems": []
+  }
+}

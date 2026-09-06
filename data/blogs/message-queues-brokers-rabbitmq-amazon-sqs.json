@@ -1,0 +1,289 @@
+{
+  "slug": "message-queues-brokers-rabbitmq-amazon-sqs",
+  "title": "Message queues / brokers (RabbitMQ , Amazon SQS)",
+  "summary": "RabbitMQ vs SQS for scalable async work: routing, delivery, and ops trade-offs explained with failures and interview tactics.",
+  "kind": "HLD",
+  "problemSlug": "message-queues-brokers-rabbitmq-amazon-sqs-90-300",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "📨",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Message Queues",
+    "RabbitMQ",
+    "SQS"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Kafka vs RabbitMQ vs Amazon SQS: Picking the Right Message Broker",
+      "url": "https://singhajit.com/kafka-vs-rabbitmq-vs-sqs/",
+      "source": "singhajit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Best solution for a Queue Service, SQS, Amazon MQ or something else?",
+      "url": "https://www.reddit.com/r/aws/comments/bchij9/best_solution_for_a_queue_service_sqs_amazon_mq/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "What's the Difference Between Kafka and RabbitMQ?",
+      "url": "https://aws.amazon.com/compare/the-difference-between-rabbitmq-and-kafka/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    },
+    {
+      "title": "Choosing the right messaging model: AMQP or log-based streaming?",
+      "url": "https://www.linkedin.com/posts/antoniofalcaojr_eventdrivenarchitecture-softwarearchitecture-activity-7394742793291788289-GNNb",
+      "source": "linkedin.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A queue does not make you scalable. **Ownership semantics do.** RabbitMQ and SQS both guarantee one thing: at any moment a message is either available, owned by exactly one worker, or dead. Everything else — throughput, latency, routing, ops cost — is a trade-off you pay for how strictly you enforce that ownership."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A message broker is a durability and coordination layer between producers that cannot wait and consumers that cannot keep up. The producer writes a message and moves on. The broker holds it durably, decides who gets it, tracks whether it was processed, and redelivers or discards it on failure. Without this you get synchronous coupling: slow consumers backpressure fast producers, a deploy drops in-flight requests, and one poison request blocks everyone behind it. With it you get load leveling, retry, and independent scaling of each side. That is the whole value proposition. RabbitMQ implements this as a smart broker you run yourself: producers publish to **exchanges**, exchanges route by rules to **queues**, consumers pull from queues and acknowledge. SQS implements this as a distributed service you rent: you get a named queue with an HTTP API, almost no routing logic, and AWS handles replication, sharding, and availability. Both delete on successful consumption. Neither is a log. If you need replay of history by multiple independent readers, you wanted a commit log, not either of these."
+    },
+    {
+      "type": "paragraph",
+      "text": "RabbitMQ speaks AMQP (and plugins for MQTT, STOMP) and keeps per-message state on the broker. It knows which consumer holds which unacknowledged delivery, what the prefetch window is, which queue a message was routed to and why. That state is why it can do precise routing — `direct`, `topic`, `fanout`, `headers` exchanges plus bindings — and precise delivery: push to a ready consumer over a long-lived TCP channel with sub-10ms hop latency when tuned, publisher confirms for durability, consumer acks for completion, and per-queue dead-lettering. The trade-off is explicit: the broker is stateful, so you must cluster it, monitor Erlang processes and memory alarms, and reason about split-brain, mirrored versus quorum queues, and connection churn. Throughput per queue is bounded by that state machine — typically tens of thousands of messages per second per queue, ~100K per cluster with confirms on — not millions."
+    },
+    {
+      "type": "paragraph",
+      "text": "SQS inverts the responsibility. It is a massively sharded, multi-AZ store fronted by a poll API. There is no exchange, no binding, no server-side push. You call `SendMessage`, `ReceiveMessage` with long polling, `DeleteMessage` on success, or let the **visibility timeout** expire for redelivery. Standard queues give you nearly unbounded throughput and at-least-once delivery with best-effort ordering; FIFO queues give you exactly-once deduplication and strict ordering within a message group at ~3K messages per second per group without batching, higher with it. The broker does not track a persistent connection to you. That is why there is nothing to operate and nothing to push — you poll. The trade-off is latency and control: typical end-to-end latency is 20-100ms, you pay per request so short polling burns money, and any routing, fan-out, or topic filtering must live in your code or in SNS/EventBridge in front of SQS. You trade protocol expressiveness for zero idle cost and no cluster to babysit."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Both systems run the same lifecycle, but enforce ownership in opposite places. In RabbitMQ the broker actively assigns ownership: a message lands on an exchange, matches zero or more bindings, is appended to each matched queue, then is delivered to one consumer with a delivery tag. That consumer now owns it until it sends `basic.ack`, `basic.nack(requeue=true)`, or its channel dies. Prefetch (`basic.qos`) caps how many unacked messages a worker can hold, which is your backpressure knob. In SQS ownership is a lease: `ReceiveMessage` makes the message invisible for `VisibilityTimeout` seconds but leaves it stored. No TCP session tracks you. If you `DeleteMessage` with the receipt handle before the lease expires, it is gone. If you do not, it becomes visible again for someone else. After `maxReceiveCount` failed leases it moves to a dead-letter queue. Same guarantee — one owner at a time — implemented as broker-tracked delivery versus time-bounded invisibility. Pick the first when you need instant dispatch and fine routing; pick the second when you need elastic workers without connection state."
+    },
+    {
+      "type": "mermaid",
+      "title": "RabbitMQ routing and dispatch",
+      "caption": "Producer to exchange to bound queues to competing consumers",
+      "code": "flowchart LR\n  P[Producer] --> X[Exchange topic]\n  X -->|binding orders.*| Q1[(Queue orders)]\n  X -->|binding payments.*| Q2[(Queue payments)]\n  Q1 --> C1[Worker 1]\n  Q1 --> C2[Worker 2]\n  Q2 --> C3[Worker 3]"
+    },
+    {
+      "type": "mermaid",
+      "title": "SQS visibility lease lifecycle",
+      "caption": "Poll, lease, delete or timeout, then dead-letter",
+      "code": "stateDiagram-v2\n  [*] --> Visible: SendMessage\n  Visible --> InFlight: ReceiveMessage\n  InFlight --> Deleted: DeleteMessage\n  InFlight --> Visible: VisibilityTimeout expires\n  InFlight --> DLQ: maxReceives exceeded\n  Deleted --> [*]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The details that break you are acks and timeouts. Set RabbitMQ prefetch to unlimited and one slow worker hoards thousands of unacked messages while others idle — throughput collapses and a restart redelivers a thundering herd. Set it too low (e.g., 1 with high-latency tasks) and you serialize on network round trips. Publisher confirms are the other half: without `confirmSelect`, a broker crash after accepting a publish but before fsync loses data the producer thought was safe. You pay one RTT per confirm batch for durability — that is the latency-vs-safety trade-off. In SQS the equivalent knob is visibility timeout. Shorter than your p99 processing time causes duplicate processing: worker A still working, lease expires, worker B gets the same payment message. Longer than necessary delays retry when a worker dies. The fix is not a magic number; it is `ChangeMessageVisibility` heartbeats for long tasks plus idempotent handlers. Both systems force the same lesson: the broker can guarantee at-least-once redelivery, only your handler can make it safe via idempotency keys and transactional outbox on the write side."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "RabbitMQ vs SQS on the dimensions that decide scalability interviews",
+      "headers": [
+        "Dimension",
+        "RabbitMQ (self-managed)",
+        "SQS (managed)"
+      ],
+      "rows": [
+        [
+          "Routing",
+          "Exchanges + bindings: topic, direct, fanout, headers. Routing lives in broker.",
+          "No routing. One queue = one work pool. Fan-out needs SNS/EventBridge."
+        ],
+        [
+          "Delivery model",
+          "Push over persistent AMQP channel. 5-15ms hop latency typical.",
+          "Poll with long-poll up to 20s. 20-100ms typical. No push."
+        ],
+        [
+          "Throughput ceiling",
+          "~10-50K msg/s per queue, ~100K/cluster with confirms. Scale by sharding queues.",
+          "Standard: quasi-unlimited. FIFO: ~3K/s per group, ~30K/s with batching."
+        ],
+        [
+          "Ordering / exactly-once",
+          "Ordering per queue if single consumer, no dedup. You build idempotency.",
+          "Standard: no order. FIFO: order per group + 5-min dedup window."
+        ],
+        [
+          "Ops and cost",
+          "You run quorum queues, monitoring, upgrades. Fixed cost, idle still costs.",
+          "Zero ops, pay per million requests. Zero idle cost, polling cost scales with workers."
+        ],
+        [
+          "Failure handling",
+          "Per-queue DLX, TTL, max-length, quorum replication. Powerful but misconfigurable.",
+          "Redrive policy to DLQ after N receives, per-message delay, simple but coarse."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not pick on throughput slides. Pick on who owns complexity. Choose RabbitMQ when routing complexity belongs in infrastructure: one event type fans to five queues with different filters, latency budget under 50ms, and you have a team that will run a quorum cluster, set memory alarms, and test partitions. You accept operational load to buy protocol control. Choose SQS when scaling complexity belongs in compute: bursty traffic from zero to 50K messages per second, workers on Lambda or autoscaled EC2 that should scale on `ApproximateNumberOfMessagesVisible`, and no one wants to page for Erlang. You accept polling latency and per-API-call cost to buy elasticity. The worst answer in an interview is reciting features. The right answer names the payer: either you pay in broker ops or you pay in application code and request charges."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Queues fail in four predictable ways, and each has a distinct symptom you can alert on. First, **poison messages**: a malformed payload crashes every worker identically. Workers ack-nack loop, redelivery counter climbs, good messages behind it starve (head-of-line blocking in FIFO or single-queue designs). Symptom: `NumberOfMessagesReceived` far exceeds `NumberOfMessagesDeleted`, age of oldest message grows monotonically, DLQ stays empty because you never configured redrive. Second, **invisible backlog**: consumers scale on CPU, not queue depth, so a slow downstream (database throttling) makes processing time exceed visibility timeout. Symptom: duplicate side effects — double charges, double emails — with CloudWatch showing high `ApproximateNumberOfMessagesNotVisible` plus rising deletes. That is not a broker bug; it is a lease shorter than p99 handler time without heartbeats. Third, **RabbitMQ-specific collapse**: unbounded quorum queue growth hits memory high watermark, broker blocks publishers, confirms stall, producers time out. Symptom: publish latency p99 spikes while consumer throughput is flat, disk and file descriptors climb. Cause is almost always no `max-length` policy plus prefetch too high. Fourth, **polling cost explosion**: dozens of workers short-polling an empty Standard queue every 200ms. Symptom: no business metric moves but SQS bill 10x and `NumberOfEmptyReceives` dominates. Fix is one line: long poll 20s, yet teams miss it for months."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Poison loop: oldest-message age climbs for hours, receive-to-delete ratio >5:1, DLQ empty → missing redrive policy or handler throws before delete.",
+        "Duplicate execution: same `messageId` processed twice within visibility window → timeout < handler p99, no idempotency key, no heartbeat.",
+        "RabbitMQ publisher block: `basic.publish` stalls, confirm latency >1s, memory alarm on → queue unbounded, prefetch hoarding, no TTL or max-length.",
+        "FIFO throttling: throughput flat at ~3K/s per group despite idle workers → hot message-group ID, need sharding of group key.",
+        "Empty-receive burn: high request count, zero deletes, high cost → short polling, fix with `WaitTimeSeconds=20` and exponential backoff.",
+        "Silent loss: messages vanish with no DLQ entries → auto-ack enabled or `DeleteMessage` before side effect commits; always delete after commit."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The recovery pattern is identical across both: cap, isolate, and make retry safe. Cap queue length and set TTL so a surge sheds load instead of OOMing the broker. Isolate failures with a DLQ and alarm on DLQ depth >0 for more than 5 minutes — a DLQ you never look at is just a second place to lose data. Make retry safe by keying every side effect on `messageId` or business idempotency key stored in the same transaction as your state change. If you cannot point to a dashboard for oldest-message age, unacked count, and DLQ depth, you are not operating a queue, you are hoping. Interviewers probe exactly this: what happens when the consumer dies mid-handler, and how do you know before customers do."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "sqs_worker.py",
+      "code": "import boto3\nsqs = boto3.client('sqs')\nQUEUE = 'https://sqs.us-east-1.amazonaws.com/123/orders'\nDLQ_HINT = 'redrive-policy maxReceiveCount=5'\n\ndef handle(msg):\n    # must be idempotent on msg['MessageId']\n    process_payment(msg['Body'], key=msg['MessageId'])\n\nwhile True:\n    r = sqs.receive_message(QueueUrl=QUEUE, MaxNumberOfMessages=10,\n        WaitTimeSeconds=20, VisibilityTimeout=60, AttributeNames=['ApproximateReceiveCount'])\n    for m in r.get('Messages', []):\n        receipt = m['ReceiptHandle']\n        try:\n            handle(m)\n            sqs.delete_message(QueueUrl=QUEUE, ReceiptHandle=receipt)  # delete AFTER commit\n        except TransientError:\n            # extend lease while retrying slow work, prevents duplicate dispatch\n            sqs.change_message_visibility(QueueUrl=QUEUE, ReceiptHandle=receipt, VisibilityTimeout=120)\n        except PermanentError:\n            # let maxReceiveCount move it to DLQ; do NOT delete-and-drop\n            pass"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "rabbitmq_worker.py",
+      "code": "import pika\nconn = pika.BlockingConnection(pika.ConnectionParameters('rmq', heartbeat=30))\nch = conn.channel()\nch.exchange_declare('events', 'topic', durable=True)\nch.queue_declare('orders', durable=True, arguments={'x-max-length': 100000, 'x-dead-letter-exchange': 'dlx'})\nch.queue_bind('orders', 'events', routing_key='orders.*')\nch.basic_qos(prefetch_count=20)  # backpressure: never hoard unacked\nch.confirm_delivery()  # publisher side: wait for broker fsync\n\ndef on_msg(chan, method, props, body):\n    try:\n        process(body, key=props.message_id)  # idempotent handler\n        chan.basic_ack(delivery_tag=method.delivery_tag)\n    except TransientError:\n        chan.basic_nack(delivery_tag=method.delivery_tag, requeue=True)\n    except PermanentError:\n        chan.basic_nack(delivery_tag=method.delivery_tag, requeue=False)  # -> DLX\n\nch.basic_consume('orders', on_msg, auto_ack=False)\nch.start_consuming()"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the workload, not the product",
+          "text": "Ask: messages per second, payload size, ordering needs, max tolerable latency, and can handlers be idempotent. If they say 5K/s bursty payments needing retry, you are already leaning SQS. If they say sub-20ms routing of market ticks to five filtered queues, you are leaning RabbitMQ."
+        },
+        {
+          "title": "Draw producers, broker, and ownership",
+          "text": "Sketch producers -> exchange/queue -> workers with ack or visibility arrows. State the ownership rule aloud: one owner at a time, redelivery on crash. This earns more points than naming every exchange type."
+        },
+        {
+          "title": "Name the scaling bottleneck",
+          "text": "For SQS: poll rate, visibility timeout vs p99, FIFO group hot key. For RabbitMQ: per-queue throughput, prefetch hoarding, quorum replication overhead. Say how you shard: more queues, more message groups, or consistent-hash routing keys."
+        },
+        {
+          "title": "Design failure handling",
+          "text": "Specify DLQ redrive count, TTL, max-length, idempotency key store, and alarms on oldest-message age and DLQ depth. Explain duplicate vs loss trade-off: at-least-once plus idempotent handler, never auto-ack before commit."
+        },
+        {
+          "title": "Close with cost and ops",
+          "text": "Compare fixed cluster cost and on-call load versus per-request cost and polling latency. Say when you would switch: start SQS for zero ops, move hot low-latency routing to RabbitMQ only when measurements prove polling or FIFO limits hurt."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "What gets you hired is quantifying the lease. An average answer says visibility timeout 30 seconds. A strong answer says p50 handler is 800ms, p99 is 45 seconds due to downstream PDF rendering, so set visibility to 60 seconds with a heartbeat thread extending every 20 seconds, store processed IDs in DynamoDB with conditional write, and scale workers on oldest-message age not CPU. Same for RabbitMQ: do not say prefetch 10 because blog said so — say 20 with two workers per core because tasks are I/O bound and unacked memory is bounded by 20 times 256KB. Interviewers are listening for that link between handler distribution and broker knobs. If you cannot connect the two, you have memorized, not understood."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "SQS pushes messages like RabbitMQ. It does not. There is no persistent dispatch channel; you must long-poll. Expecting push leads to short-poll loops and surprise bills.",
+        "Standard queues are FIFO if traffic is low. They are not. Ordering is best-effort at any load and duplicates can occur even without failures — you must handle both.",
+        "RabbitMQ quorum queues are faster because they are replicated. Replication costs throughput. Quorum queues trade ~30-50% publish throughput for safety versus classic mirrors; do not use them for transient high-fanout data.",
+        "Deleting a message means it was processed. It means you called delete. Crash between side effect and delete causes redelivery; delete before commit causes loss. Order matters.",
+        "One queue for all event types scales fine. It creates head-of-line blocking and unroutable retries. Separate by failure domain and processing time, or poison in one type stalls all others.",
+        "DLQ fixes poison messages. It only parks them. Without alarms, replay tooling, and a fix for the deserializer, the DLQ is an archive of ignored bugs."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Selection guide for scalability discussions",
+      "headers": [
+        "Use it when",
+        "Avoid it when",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Decoupled work queues with bursty load (SQS Standard)",
+          "Strict per-key order at high rate",
+          "Unbounded scale wins; ordering needs FIFO sharding instead"
+        ],
+        [
+          "Ordered, deduplicated jobs per customer (SQS FIFO)",
+          "Throughput >30K/s on one key or replay needed",
+          "Group serializes you; log systems replay better"
+        ],
+        [
+          "Complex routing to many filtered queues, <50ms (RabbitMQ)",
+          "No team to run clusters",
+          "Broker routing saves app code but demands ops maturity"
+        ],
+        [
+          "Request-reply or low-latency task dispatch in-VPC",
+          "Cross-region fan-out to millions",
+          "AMQP RPC is chatty; SNS/EventBridge + SQS fan-out cheaper"
+        ],
+        [
+          "Both with DLQ + idempotent handlers",
+          "Exactly-once processing without idempotency",
+          "Neither broker gives it; only handler dedup does"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "In practice, scalable systems use both for different edges. Ingest spikes and cross-service buffering sit on SQS because autoscaling on queue depth is trivial and idle costs nothing. Low-latency domain routing — order events split by region, priority lanes, header-based canary queues — sits on RabbitMQ close to workers because exchanges express that in three lines of binding instead of thirty lines of dispatcher code. The dividing line is stability of contracts: volatile routing that changes weekly belongs in broker bindings you can update without deploys; stable high-volume streams that need replay belong elsewhere entirely. Say that in the interview and you show judgment, not brand loyalty. The trade-off never disappears, it just moves from your pager to your bill."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Use **SQS when you want elastic, zero-ops buffering and can tolerate polling latency**; use **RabbitMQ when you need broker-side routing and millisecond push** — and in both cases run **at-least-once with idempotent handlers, bounded queues, and alarmed DLQs**, because the broker only guarantees ownership, not correctness."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:19:18.923Z",
+    "problems": []
+  }
+}

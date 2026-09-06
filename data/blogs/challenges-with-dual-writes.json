@@ -1,0 +1,298 @@
+{
+  "slug": "challenges-with-dual-writes",
+  "title": "Challenges with Dual Writes",
+  "summary": "Why writing to a database and a broker can never be atomic, how that breaks high-throughput systems, and which fixes actually hold.",
+  "kind": "HLD",
+  "problemSlug": "challenges-with-dual-writes-145-311",
+  "topic": "High Throughput Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "⚠️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "High Throughput Systems",
+    "Dual Writes",
+    "Event-Driven Architecture"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Handling the Dual-Write Problem in Distributed Systems | Auth0",
+      "url": "https://auth0.com/blog/handling-the-dual-write-problem-in-distributed-systems/",
+      "source": "auth0.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is the Dual Write Problem? | Designing Event-Driven ... - YouTube",
+      "url": "https://www.youtube.com/watch?v=FpLXCBr7ucA",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "How To Solve The Dual Write Problem in Distributed Systems? - Reddit",
+      "url": "https://www.reddit.com/r/softwarearchitecture/comments/1jweckj/how_to_solve_the_dual_write_problem_in/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding the Dual-Write Problem and Its Solutions - Confluent",
+      "url": "https://www.confluent.io/blog/dual-write-problem/",
+      "source": "confluent.io",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "You cannot make two systems commit atomically without a shared transaction log. **Stop trying to make the dual write reliable — eliminate it.** Write once to a single source of truth inside one local transaction, then derive the second write from the first. Every working pattern is a variation of that move."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A dual write is any operation that must update **two independent systems of record** to be considered complete — almost always your service database plus a message broker, search index, cache, or second service via RPC. The two stores have no shared commit protocol, no common rollback, and failure modes that are invisible to each other. That means there is no ordering, no `try/catch`, and no timeout setting that makes both writes succeed-or-fail together. At high throughput this is not an edge case. With thousands of operations per second, the tiny window between write one and write two is hit constantly, and partial failure becomes your steady state, not bad luck."
+    },
+    {
+      "type": "paragraph",
+      "text": "The canonical example: an order service receives `PlaceOrder`, inserts a row into `orders`, then publishes `OrderCreated` so payments, inventory, and notifications can react. If the insert commits but the publish times out, you have a real order nobody fulfills — a ghost write. If the publish succeeds but the process crashes before the insert commits, downstream services act on an order that does not exist — a phantom event. Both sides now disagree about reality, retries cannot tell which case they are in, and manual reconciliation is the only way back. That disagreement is the whole problem."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: why the window never closes"
+    },
+    {
+      "type": "mermaid",
+      "title": "The dual-write failure window",
+      "caption": "Either ordering leaves a crash window where the two systems disagree.",
+      "code": "flowchart TD\n  C[Client command] --> H[Service handler]\n  H --> DB[(Database)]\n  DB -->|commit ok| H\n  H --> BR[(Message broker)]\n  BR -->|timeout or crash| H\n  H -->|ambiguous result| C\n  DB -->|has row| S1[DB says yes]\n  BR -->|has no event| S2[Broker says no]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk the sequence instruction by instruction. You validate, you `BEGIN`, you `INSERT`, you `COMMIT`, you get an acknowledgement. Then you call `publish()`. Between those two network round-trips your process can be killed, the container can be evicted, the broker can throttle you, or the publish can time out *after* the broker persisted the message but *before* you received the ack. Your catch block cannot distinguish  broker never got it  from  broker got it, ack was lost , so retry-or-rollback is a guess. Reverse the order and you get the mirror image: event published, crash before DB commit, downstream has consumed something you will now deny ever happened. **Why this ordering matters:** whichever system you touch second is the one that can diverge, and distributed timeouts make  did it commit?  fundamentally unanswerable from the caller side."
+    },
+    {
+      "type": "table",
+      "caption": "Naive orderings: both broken, in different ways.",
+      "headers": [
+        "Ordering",
+        "What fails",
+        "Resulting inconsistency"
+      ],
+      "rows": [
+        [
+          "DB first, then publish",
+          "Crash, timeout, or broker throttling between commit and publish",
+          "Ghost write: state exists but no event. Downstream starves. Symptom is missing side-effects despite 200 OK."
+        ],
+        [
+          "Publish first, then DB",
+          "Crash or constraint violation between publish and commit",
+          "Phantom event: downstream acts on state that never committed. Requires compensating action, which itself can fail."
+        ],
+        [
+          "Publish inside DB transaction via 2PC / XA",
+          "Coordinator failure, lock hold time, broker must support XA",
+          "Throughput collapse and long tail latency. Trade-off: correctness bought with availability and 10-100x latency cost."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "In low-traffic demos dual writes look fine because the failure window is milliseconds wide and rarely hit. At 5,000 writes per second that window is hit dozens of times per day. What you see is not a crash — both systems look healthy. What you see is **silent divergence**: dashboards disagree, counts do not reconcile, customers complain about orders that exist in one view and vanish in another. Retries make it worse because a naive retry of the publish creates duplicates, while a retry of the whole handler creates duplicate DB rows unless you added deduplication. Operators end up running nightly reconciliation jobs that scan both systems and patch the gaps, which is an admission the architecture cannot maintain its own invariant. **Trade-off to name here:** every retry without idempotency trades availability for correctness — you keep accepting traffic while actively corrupting downstream state."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Crash between writes:** process dies after DB commit, before publish. Symptom: row present, no event in topic. Consumer lag looks normal, but business metric (e.g., payments initiated per orders created) slowly drops.",
+        "**Ambiguous timeout:** publish times out after broker persisted. You retry, broker now has two copies. Symptom: duplicate charges, double emails, inventory decremented twice. Logs show one DB row, two events with same business key.",
+        "**Broker backpressure at peak:** publish latency spikes from 5ms to 2s during bursts. Handler threads block, DB connection pool exhausts, latency cascades. Symptom: p99 explodes and DB CPU looks fine — the bottleneck is waiting on the second write.",
+        "**Out-of-order consumer view:** even when both writes land, consumers can read the event before your read-replica exposes the row. Symptom: downstream fetches order by ID, gets 404, then crashes or discards the event."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "What on-call actually sees",
+      "text": "No error spike. Both health checks green. Instead: **reconciliation gap grows** — `SELECT COUNT(*) FROM orders WHERE created_at > X` diverges from event count in the topic. If you do not have that reconciliation dashboard, you discover the bug from customer tickets weeks later. Build the counter first."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Fixes that actually hold: one commit, then derive"
+    },
+    {
+      "type": "paragraph",
+      "text": "All durable fixes apply the same principle: **collapse two writes into one atomic local commit, then use a reliable tail to produce the second effect.** The standard form is the transactional outbox. In the same DB transaction that inserts the business row, you insert a row into an `outbox` table describing the event to send. One `COMMIT` makes both durable or neither. A separate relay process then reads the outbox and publishes to the broker. If the relay crashes, it resumes from its offset; if publish fails, it retries. The DB remains the source of truth and the broker becomes a derived view. **Why this is chosen over distributed transactions:** you keep single-node ACID semantics you already trust, and you trade a small publish delay (milliseconds to seconds) for never losing or inventing an event."
+    },
+    {
+      "type": "mermaid",
+      "title": "Transactional outbox flow",
+      "caption": "One local transaction, then an asynchronous relay derives the broker write.",
+      "code": "flowchart LR\n  H[Handler] -->|single txn| DB[(Database)]\n  DB -->|rows + outbox row| C[Commit]\n  C --> R[Relay poller or CDC]\n  R -->|publish + mark sent| K[(Broker)]\n  K --> DW[Downstream consumers]\n  R -->|crash retry| K"
+    },
+    {
+      "type": "paragraph",
+      "text": "The relay can be a poller (`SELECT ... WHERE sent = false LIMIT N FOR UPDATE SKIP LOCKED`) or, better at throughput, Change Data Capture that tails the database write-ahead log and streams row changes without polling the table. CDC removes query load from your primary and gives you ordered, low-latency delivery, but it is infrastructure you must run and monitor — connector lag, schema registry drift, and snapshot handling are now your problems. The alternative derivation is **listen-to-yourself**: the service publishes to the broker first via the outbox, then consumes its own event to update its read model or trigger side effects. That sounds circular, but the reason it is chosen is ordering: every state change flows through the same log, so concurrent writers cannot interleave DB and broker in different orders. **Trade-off in all variants:** you accept eventual consistency on the broker side. Downstream is always milliseconds behind the DB, and consumers must handle that gap."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "outbox.py",
+      "code": "# ONE transaction. Business row + outbox row commit together.\n# If either insert fails, neither is visible. No dual write.\ndef place_order(conn, order_id, user_id, amount):\n    with conn.begin():\n        conn.execute(\n            \"INSERT INTO orders(id, user_id, amount) VALUES (%s,%s,%s)\",\n            (order_id, user_id, amount))\n        conn.execute(\n            \"INSERT INTO outbox(id, aggregate, payload) VALUES (%s,%s,%s)\",\n            (order_id, \"Order\", json.dumps({\"orderId\": order_id, \"amount\": amount})))\n\n# Relay: read unpublished, publish, mark sent. Crash-safe.\n# Must publish with idempotency key = outbox.id so retries dedupe.\ndef relay(conn, broker):\n    rows = conn.query(\"SELECT * FROM outbox WHERE sent=false LIMIT 100 FOR UPDATE SKIP LOCKED\")\n    for r in rows:\n        broker.publish(topic=\"orders\", key=r[\"id\"], value=r[\"payload\"])\n        conn.execute(\"UPDATE outbox SET sent=true WHERE id=%s\", (r[\"id\"],))"
+    },
+    {
+      "type": "paragraph",
+      "text": "The outbox alone does not give you exactly-once delivery — nothing does across a DB and a broker. It gives you **at-least-once delivery with no loss and no invention**. That forces the second half of the design: idempotent consumers. Every event must carry a stable business key (`order_id`), and every consumer must dedupe on that key before applying side effects, typically with a `processed_events` table checked in the same transaction as the consumer-side state change. Without that, the relay retry that saves you from loss will punish you with duplicates. **Trade-off to state explicitly:** you moved complexity from the write path (where it caused loss) to the read path (where it costs a dedupe lookup per message). That is the correct trade because a dedupe lookup is cheap, bounded, and testable, while a lost write is unbounded business damage."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "IdempotentConsumer.java",
+      "code": "// Consumer-side: dedupe + state change in ONE local txn.\n// Relay may deliver twice; second delivery is a no-op.\nvoid onOrderCreated(Connection conn, String eventId, String orderId) {\n    conn.setAutoCommit(false);\n    try {\n        int inserted = insert(\"INSERT INTO processed_events(id) VALUES (?)\", eventId);\n        if (inserted == 0) { conn.rollback(); return; } // duplicate\n        applyCreditOffer(conn, orderId); // business effect\n        conn.commit();\n    } catch (Exception e) { conn.rollback(); throw e; }\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Throughput costs nobody mentions"
+    },
+    {
+      "type": "paragraph",
+      "text": "At high throughput the relay is the bottleneck, not the idea. A naive poller doing `SELECT ... WHERE sent = false` every 100ms adds constant read load to your primary, contends with live writes, and publishes in batches that spike broker load. Fix it by partitioning the outbox on the aggregate key, polling with `SKIP LOCKED` from multiple relay workers, and publishing in order per partition key so you preserve per-entity ordering without global ordering. CDC avoids polling entirely by reading the log, which is why it is chosen above ~10k writes per second despite its operational cost — it scales with log throughput, not query throughput. Event sourcing goes further and makes the event log the primary store, which removes the outbox table but forces every read to fold events and every schema change to handle versioning. **Trade-off:** higher write throughput and cleaner ordering cost you operational surface and slower read-path evolution. Do not pay it until polling measurably hurts."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of the working patterns.",
+      "headers": [
+        "Pattern",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Transactional outbox + poller",
+          "No loss, no invention; simple SQL; no extra infra",
+          "Publish delay; polling load; at-least-once forces idempotent consumers"
+        ],
+        [
+          "Outbox + CDC log tailing",
+          "Near-real-time, no poll load, ordered per partition; scales with log",
+          "Connector to run, monitor, schema-evolve; snapshot and lag failure modes"
+        ],
+        [
+          "Event sourcing",
+          "Log is truth; perfect audit; natural replay",
+          "Every read is a fold; versioning burden; unfamiliar to most teams; slow to change"
+        ],
+        [
+          "Listen-to-yourself",
+          "Single ordering point; kills read-after-write races on replicas",
+          "Extra hop latency; consumer must still be idempotent; confusing to debug"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with the failure, not the pattern",
+          "text": "Draw DB-then-publish and mark the crash window. Say: either order diverges. Interviewers fail candidates who jump to Kafka or Debezium before proving they see the window."
+        },
+        {
+          "title": "Reject the distributed transaction",
+          "text": "Name 2PC/XA and explain why you refuse it: holds DB locks across network round-trips, couples availability of two systems, collapses throughput. Shows you understand cost, not just correctness."
+        },
+        {
+          "title": "Propose the outbox in one transaction",
+          "text": "Write the two INSERTs and one COMMIT. State the invariant: broker state is always a subset of committed DB state. This is the core point of the question."
+        },
+        {
+          "title": "Close the loop with idempotency",
+          "text": "Add dedupe key and processed-events table on the consumer. Say at-least-once explicitly. Candidates who claim exactly-once end-to-end lose points immediately."
+        },
+        {
+          "title": "Scale it and monitor it",
+          "text": "Partition by aggregate key, SKIP LOCKED pollers or CDC above ~10k wps, per-key ordering, reconciliation counter (DB rows vs published events) with an alert. That turns a textbook answer into a production answer."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "What a strong answer sounds like: you never claim to have made two systems atomic. You explain which system is the source of truth, how the second is mechanically derived, what happens on every crash point, and what the consumer does on duplicate delivery. Interviewers probe with `what if the relay publishes twice?` and `what if the consumer reads the event before the replica has the row?` — both are answered by idempotency keys and by reading from the primary or waiting on the event payload itself rather than re-querying. If you can walk those two probes without hand-waving, you pass."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**`A DB transaction around both calls fixes it.`** No. The transaction covers only the DB. The broker commit is a separate network action with its own failure mode. Wrapping it in `try/catch` narrows but never closes the window.",
+        "**`Publish first, so downstream is never starved.`** You traded starvation for hallucination. Phantom events require compensating transactions, and compensations themselves dual-write. You made the problem recursive.",
+        "**`We have exactly-once with idempotent producers.`** Broker idempotence dedupes producer retries to the *broker*. It says nothing about DB-to-broker agreement. End-to-end exactly-once across two stores does not exist; design for at-least-once plus dedupe.",
+        "**`CDC means we solved ordering for free.`** CDC preserves log order per shard, not global business order. Cross-shard causality still needs a vector, timestamp, or saga. Do not promise total order you cannot deliver.",
+        "**`Duplicates are rare, skip dedupe.`** At 1M events per day, a 0.01% retry rate is 100 corruptions per day. High throughput turns rare into routine. Dedupe is not optional."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use derivation when two systems must agree; keep the dual write only when disagreement is cheap.",
+      "headers": [
+        "Use outbox / CDC when",
+        "Keep it simple when"
+      ],
+      "rows": [
+        [
+          "Downstream action is non-idempotent or monetary (charge, ship, decrement) — loss or duplication has business cost",
+          "Second write is a best-effort cache fill that can be rebuilt from DB on miss — stale cache is self-healing"
+        ],
+        [
+          "Multiple consumers need the same event in order per entity at high throughput",
+          "Single consumer, low rate (<100 wps), and manual reconciliation is genuinely cheaper than new infra"
+        ],
+        [
+          "You need audit or replay of what was published and when",
+          "Event is telemetry or metrics where sampling and loss are acceptable by design"
+        ],
+        [
+          "Service owns its DB and cannot impose 2PC on the broker team",
+          "Both stores are the same transactional engine (same Postgres, same shard) — then use one local transaction and skip the pattern entirely"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Dual writes can never be atomic, so I commit once to the database including an outbox row, relay that row to the broker with at-least-once delivery, and make every consumer idempotent — trading a small publish delay for never losing or inventing an event.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:47:17.402Z",
+    "problems": []
+  }
+}

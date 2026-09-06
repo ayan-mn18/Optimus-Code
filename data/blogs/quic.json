@@ -1,0 +1,287 @@
+{
+  "slug": "quic",
+  "title": "QUIC",
+  "summary": "QUIC rebuilds TCP+TLS+multiplexing as one encrypted userspace transport over UDP keyed by connection ID to kill handshakes and head-of-line blocking.",
+  "kind": "HLD",
+  "problemSlug": "quic-94-211",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "⚡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "QUIC",
+    "HTTP/3"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "QUIC - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/QUIC",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Media over QUIC: 2026 Architecture & Migration Guide - Fora Soft",
+      "url": "https://www.forasoft.com/blog/article/moq-application-development-architecture",
+      "source": "forasoft.com",
+      "kind": "article"
+    },
+    {
+      "title": "The Road to QUIC - Cloudflare Blog",
+      "url": "https://blog.cloudflare.com/the-road-to-quic/",
+      "source": "blog.cloudflare.com",
+      "kind": "article"
+    },
+    {
+      "title": "The Illustrated QUIC Connection: Every Byte Explained",
+      "url": "https://quic.xargs.org/",
+      "source": "quic.xargs.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**QUIC is not \"TCP over UDP.\" It is TCP + TLS + HTTP/2 multiplexing collapsed into one encrypted, userspace transport keyed by connection ID, not IP + port.** Everything else follows from that choice: 1-RTT and 0-RTT setup because the crypto handshake rides inside the transport handshake, no cross-stream head-of-line blocking because loss is tracked per stream, and connection survival across network changes because identity is explicit. The trade-off is brutal and honest: **you burn more CPU and you gamble on UDP traversability to buy tail latency and mobility.** If you cannot state that trade-off, you do not understand QUIC."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What QUIC actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "QUIC is a reliable, congestion-controlled, fully encrypted transport that uses UDP only as a substrate. UDP gives it routability without kernel permission: no new IP protocol number, no middlebox upgrade, just datagrams on a chosen port. On top of that thin shell, QUIC reimplements everything TCP used to do — reliability, ordering where needed, flow control, congestion control — plus what TLS used to do, plus what HTTP/2 multiplexing tried to do. The crucial shift is layering: in the classic stack loss recovery, congestion control, and stream multiplexing live in three different places owned by three different teams. In QUIC they live in one state machine in userspace with one view of packet numbers, RTT, and loss. That is *why* it can fix problems TCP cannot: TCP cannot know that bytes 0-1000 belong to request A and bytes 1001-2000 belong to request B, so one lost segment stalls both. QUIC knows, because streams are first-class."
+    },
+    {
+      "type": "paragraph",
+      "text": "Identity is the second break from TCP. A TCP connection *is* its four-tuple of source IP, source port, destination IP, destination port. Change your Wi-Fi to cellular and the connection is dead by definition. A QUIC connection is a opaque **connection ID** chosen by the endpoints and carried in every packet header outside the encrypted envelope just enough for routing. The 5-tuple becomes a locator, not an identifier. Load balancers, NAT rebindings, client migration — all route on the connection ID and keep the crypto and stream state intact. That is why 0-RTT resumption and seamless handoff are natural here and hacks on top of TCP. The price: every middlebox that assumed it could read sequence numbers, throttle, or inspect is now blind, and every operator that filtered UDP now controls your availability."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Streams multiplexed without cross-interference:** one QUIC connection carries many bidirectional and unidirectional streams, each with its own offset, flow-control window, and delivery order. Loss on stream N retransmits only stream N.",
+        "**Integrated TLS 1.3 handshake:** there is no separate TCP SYN then TLS exchange. The TLS ClientHello is carried in QUIC Initial packets, the ServerHello in Handshake packets, and application data can flow as early as 1-RTT, or 0-RTT on resumption.",
+        "**Independent packet number spaces:** Initial, Handshake, and Application Data each have their own packet numbers and loss detection. Dropping an Initial does not poison RTT estimation for application data. This separation is why the handshake stays robust under loss.",
+        "**Connection migration via connection IDs:** endpoints can change address without renegotiating. Path validation probes confirm the new path before full traffic shifts, which prevents address spoofing from hijacking sessions.",
+        "**Per-stream and per-connection flow control:** a stream can be back-pressured without stopping sibling streams, while a connection-level window still protects the receiver from aggregate overload. Two levels, two different reasons.",
+        "**Almost everything encrypted:** payload, stream framing, ACK ranges beyond minimal invariants. Only version, connection ID, and a few long-header fields stay visible for routing and version negotiation. Observability is deliberately sacrificed for ossification resistance."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: handshake, streams, recovery"
+    },
+    {
+      "type": "paragraph",
+      "text": "The handshake is where QUIC earns its latency win. Classic HTTPS pays roughly one round trip for TCP three-way setup plus one to two more for TLS, serially, before the first HTTP byte. QUIC sends the TLS ClientHello *as* its first Initial packet. The server answers with its own Initial plus Handshake packets containing ServerHello, certificate, and key share. The client can then send Handshake ACK plus 1-RTT application STREAM frames in its next flight. Net effect: **first useful byte after 1-RTT for a new connection, 0-RTT for a resumed one** if the server previously issued a session ticket and transport parameters. The reason this is safe to fuse is that QUIC packet protection keys are derived from the TLS secret at each epoch — Initial keys from a fixed salt and connection ID, then Handshake and 1-RTT keys from the negotiated secret. Loss of an Initial triggers retransmission at the QUIC layer, not a TLS timeout, so the two state machines stay in lockstep without layering violations."
+    },
+    {
+      "type": "mermaid",
+      "title": "Handshake cost",
+      "caption": "Why QUIC setup costs one round trip where classic HTTPS costs three to four.",
+      "code": "flowchart TD\n    C[Client] --> I1[Send Initial with TLS ClientHello]\n    I1 --> S[Server]\n    S --> I2[Return Initial plus Handshake]\n    I2 --> C\n    C --> H[Send Handshake ACK plus 1-RTT STREAM]\n    H --> S\n    S --> D[1-RTT data both directions]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Once established, data moves as STREAM frames inside 1-RTT packets. Each stream is a logical byte pipe with its own offset pointer. The sender assigns monotonically increasing offsets per stream; the receiver reassembles per stream and delivers in order *per stream only*. Packet numbers, by contrast, are per connection and never reused, even for retransmissions. If packet 41 is lost, its STREAM frames are repackaged into packet 52 with a new number. That eliminates TCP's retransmission ambiguity where you cannot tell whether an ACK is for the original or the retry, which in turn makes RTT estimation cleaner and RTO logic simpler. ACKs are selective ranges, similar in spirit to SACK but richer, and they can acknowledge out of order across streams without forcing head-of-line stalls. Flow control enforces `MAX_DATA` at connection level and `MAX_STREAM_DATA` per stream; a slow consumer blocks only its own stream, not the connection. Congestion control — typically a CUBIC or BBR equivalent — operates on bytes in flight across the whole connection, exactly as TCP would, because the network path does not care about your stream abstraction."
+    },
+    {
+      "type": "mermaid",
+      "title": "Multiplexing model",
+      "caption": "One congestion-controlled UDP flow carrying independent streams with isolated loss recovery.",
+      "code": "flowchart LR\n    CONN[QUIC Connection with Connection ID] --> S1[Stream 1 offsets and ACKs]\n    CONN --> S2[Stream 2 offsets and ACKs]\n    CONN --> S3[Stream N control and data]\n    S1 --> UDP[UDP datagrams on one flow]\n    S2 --> UDP\n    S3 --> UDP"
+    },
+    {
+      "type": "paragraph",
+      "text": "Congestion and loss handling are deliberately boring — that is the point. QUIC does not claim a magic congestion algorithm. It runs the same window, pacing, and ECN logic you would run in TCP, just in userspace where it can be updated without a kernel rollout. The win is measurement quality: richer ACKs, no retransmission ambiguity, per-packet timing, and spin-bit style latency signals give the controller better inputs. The trade-off is CPU: per-packet encryption, userspace context switches, and ACK processing cost more cycles per gigabit than kernel TCP with offload. High-throughput designs therefore pace, batch with Generic Segmentation Offload where available, and tune ACK frequency to avoid ACK implosion on fat pipes. Choose QUIC and you are choosing faster iteration and better tail behavior in exchange for higher per-byte compute."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Each QUIC property buys something by spending something else.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Userspace over UDP",
+          "Deploy without kernel upgrades; iterate congestion and loss logic in days",
+          "Higher CPU per packet; no kernel TCP offload; UDP throttling and blocking on some paths"
+        ],
+        [
+          "Integrated TLS 1.3",
+          "1-RTT new, 0-RTT resumed; no cleartext handshake to ossify on",
+          "Handshake logic more complex; 0-RTT replay risk; cert size inflates Initial flight and risks amplification"
+        ],
+        [
+          "Per-stream reliability",
+          "Loss on one request stops stalling all others; ideal for multiplexed RPC and web",
+          "More framing overhead; more reassembly state; small single-stream flows see little benefit"
+        ],
+        [
+          "Connection IDs + migration",
+          "Survive NAT rebinding and Wi-Fi to cellular handoff; stable LB routing",
+          "Stateful routing required; linkability and privacy exposure if IDs rotate poorly; migration abuse surface"
+        ],
+        [
+          "Encrypted headers",
+          "Middleboxes cannot ossify sequence semantics; protocol stays evolvable",
+          "Operators lose visibility; debugging, QoS, and lawful capture get harder; ECN and pacing signals must be explicit"
+        ],
+        [
+          "0-RTT resumption",
+          "Eliminates round trip for repeat clients — decisive on high-RTT links",
+          "Replayable by definition; server must gate non-idempotent actions and enforce request limits"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pattern across every row is the same: QUIC pushes intelligence to the endpoints and pays the network and CPU tax to do it. That is the right call when tail latency and mobility dominate your product — interactive web, RPC fan-out, live media — and the wrong call when raw single-flow throughput per core or deep packet inspection dominates. Do not present QUIC as strictly faster. It is strictly *less coupled*: setup decoupled from TCP, streams decoupled from each other, identity decoupled from address. Decoupling costs bytes and cycles."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "QUIC fails differently from TCP because its failure modes are policy and traversability, not just packet loss. In TCP the symptom of trouble is retransmits and rising RTT. In QUIC the symptom is often binary: connections that never establish, sudden fallback avalanches, or CPU saturation long before link saturation. Design reviews that treat UDP as just another socket miss this completely."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**UDP blocked or rate-limited -> establishment timeout, not slowdown.** Symptom: elevated `handshake_timeout` with healthy TCP fallback, clustered by network or region. Some enterprise egress and mis-tuned firewalls drop UDP 443 entirely. If you lack Happy Eyeballs style racing or graceful fallback to TCP, a fraction of users sees hard failure while your dashboards show low loss.",
+        "**Amplification and retry storms -> handshake flood.** Symptom: disproportionate Initial packet volume, server spending CPU on unauthenticated key shares. QUIC servers must enforce anti-amplification limits and send Retry with a token before committing. Skip that and a small spoofed request stream inflates into large responses aimed at victims.",
+        "**Oversized certificate chain -> Initial fragmentation and repeated loss.** Symptom: first-connection p99 spikes on lossy paths while resumed 0-RTT looks fine. The server certificate often exceeds the anti-amplification budget and must be split across datagrams. Tune chain size, enable compression of certificates, and cache transport parameters.",
+        "**0-RTT replay -> duplicated side effects.** Symptom: double charges, double writes, duplicate message delivery visible only under replay attack or aggressive client retry. 0-RTT data is replayable until the server rejects it. The fix is application discipline: only idempotent GET-like operations in 0-RTT, with explicit replay gates and single-use tickets.",
+        "**Userspace ACK and crypto cost -> p99 CPU cliff at high Gbps.** Symptom: throughput plateaus while `softirq` looks idle but userspace cores pin at 100%, with rising pacing delay. Mitigation is batching, larger congestion windows, reduced ACK frequency, and hardware crypto. Benchmark per-core goodput, not just link goodput.",
+        "**Connection ID routing mistakes -> migration breaks affinity.** Symptom: migration or NAT rebinding lands on a different backend that has no state, forcing full re-handshake or reset. Load balancers must route consistently on connection ID, and rotation policy must keep IDs stable long enough for LB tables while rotating often enough for privacy."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The nastiest incident shape is the fallback thundering herd. You deploy HTTP/3, a network event causes QUIC handshake failures, every client simultaneously races or falls back to TCP, and your TCP tier that was sized for 10% of traffic suddenly takes 100%. The symptom looks like a TCP capacity outage but the root cause is QUIC traversability. The defense is version negotiation handling, measured fallback with backoff, and capacity planning that assumes fallback can go to unity. Always ask: what happens when QUIC success rate drops to zero for five minutes?"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code: what the socket sees"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "quic_model.py",
+      "code": " # TCP mental model: one ordered byte pipe. Loss anywhere stalls everything.\n # QUIC mental model: one connection, N independent offset spaces.\n\n streams = {\n     \"s1\": {\"next_offset\": 0, \"buffer\": {}, \"delivered\": b\"\"},\n     \"s2\": {\"next_offset\": 0, \"buffer\": {}, \"delivered\": b\"\"},\n }\n\n def on_frame(stream_id, offset, data, is_lost=False):\n     s = streams[stream_id]\n     if is_lost:\n         # Only this stream waits. Other streams keep delivering.\n         # In TCP this stall would block s1 AND s2.\n         return f\"{stream_id} stalls at offset {offset}, siblings unaffected\"\n     s[\"buffer\"][offset] = data\n     while s[\"next_offset\"] in s[\"buffer\"]:\n         chunk = s[\"buffer\"].pop(s[\"next_offset\"])\n         s[\"delivered\"] += chunk\n         s[\"next_offset\"] += len(chunk)\n     return f\"{stream_id} delivered up to {s['next_offset']}\"\n\n # Packet numbers are connection-scoped and never reused on retransmit.\n # Lost STREAM frames are repackaged under a NEW packet number.\n sent_packet_41 = [(\"s1\", 0, b\"GET /a\")]\n retransmit_as_packet_52 = sent_packet_41  # same frames, new number\n\n print(on_frame(\"s1\", 0, b\"GET /a\"))\n print(on_frame(\"s2\", 0, b\"GET /b\"))  # proceeds even if s1 had been lost\n\n # Connection identity survives address change:\n # connection_id stays constant while (src_ip, src_port) changes.\n connection = {\"cid\": \"9f3a-c1\", \"peer\": \"wifi:1.2.3.4:5000\"}\n connection[\"peer\"] = \"cell:5.6.7.8:6000\"  # migrate, no re-handshake\n assert connection[\"cid\"] == \"9f3a-c1\""
+    },
+    {
+      "type": "paragraph",
+      "text": "This toy captures the two invariants interviewers want you to state without prompting. First, reliability scope is the stream, congestion scope is the connection. Mixing those up is how candidates design broken priorities where a bulk download starves interactive RPC on the same connection. Second, retransmission uses a new packet number, so ACKs are unambiguous and RTT samples stay clean. If you remember nothing else, remember: **streams isolate loss, connection IDs isolate identity, packet numbers isolate measurement.** Each isolation has a cost — reassembly memory, LB state, and crypto per packet — which is why QUIC is not free."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design a low-latency RPC or feed with many parallel requests",
+          "text": "Start with TCP + TLS cost: round trips before first byte, plus head-of-line blocking when HTTP/2 multiplexes. Introduce QUIC as the fix for exactly those two taxes, not as a generic speedup. Draw the handshake comparison first."
+        },
+        {
+          "title": "Why not just tune TCP?",
+          "text": "Answer with ossification and deployment velocity. TCP behavior is baked into kernels and middleboxes; changing it takes years. QUIC in userspace over UDP ships new loss detection and congestion logic with the app. Trade-off: you now own CPU and UDP fallback."
+        },
+        {
+          "title": "Walk a mobile handoff",
+          "text": "Show a client moving networks. With TCP the 5-tuple dies and every stream resets. With QUIC the connection ID persists, path validation probes the new path, streams resume. Name the abuse case: attacker spoofing migration, hence validation."
+        },
+        {
+          "title": "Bound the blast radius of 0-RTT",
+          "text": "State what you allow in 0-RTT: idempotent reads only, with replay cache and request size caps. Anything with side effects waits for 1-RTT. Interviewers probe this because it separates people who memorised 0-RTT from people who can ship it."
+        },
+        {
+          "title": "Plan failure and fallback",
+          "text": "Close with production pragmatics: UDP blocking, amplification limits, cert-size tuning, connection-ID-aware load balancing, and fallback capacity. The senior answer always includes what happens at zero percent QUIC success and how you detect it via handshake success rate, not just latency."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**QUIC is faster because UDP is faster.** No. UDP is not faster; it just does less. QUIC re-adds reliability and congestion control on top. The win is fewer round trips and isolated loss, not raw wire speed. On a clean low-RTT link with one bulk flow, tuned TCP often wins per core.",
+        "**QUIC removes congestion control.** It does not. It still paces, still backs off, still respects ECN. What changed is where the controller lives and how good its signals are, not whether restraint exists. Claiming otherwise signals you would melt a shared link.",
+        "**Encryption means no observability problems.** Encryption creates them. Operators lose sequence-based throttling and debugging. You must design explicit signals — connection-ID routing, spin-like latency hints, server-side qlog-style tracing — or operations will block your rollout.",
+        "**0-RTT is always safe to enable.** 0-RTT is replayable by construction. Enabling it for writes without idempotency and replay protection trades one round trip for correctness bugs. Say the restriction before the interviewer asks.",
+        "**Migration means free roaming.** Migration requires path validation, congestion reset on new paths, and LB affinity on connection IDs. Without those three, roaming either enables hijack or silently degrades to re-handshake."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use QUIC where setup cost and multiplexed tail latency dominate; avoid it where per-core throughput or UDP hostility dominates.",
+      "headers": [
+        "Use QUIC when",
+        "Avoid or defer when"
+      ],
+      "rows": [
+        [
+          "Many short-lived or multiplexed requests over high-RTT or lossy links",
+          "Single long-lived bulk transfer on a clean path where kernel TCP with offload already saturates the link"
+        ],
+        [
+          "Mobile clients that change networks and need session survival",
+          "Controlled data-center fabric where 5-tuple stability is guaranteed and userspace CPU is the bottleneck"
+        ],
+        [
+          "Tail latency matters more than median — feeds, RPC fan-out, interactive web",
+          "Throughput per core is the binding constraint and crypto budget is already tight"
+        ],
+        [
+          "You need fast iteration on loss recovery and congestion without kernel releases",
+          "Middleboxes, firewalls, or compliance capture require cleartext transport headers and UDP is filtered"
+        ],
+        [
+          "Resumed connections dominate and idempotent 0-RTT is applicable",
+          "Workload is non-idempotent writes where 0-RTT replay discipline adds more risk than one saved RTT is worth"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**QUIC fuses reliability, TLS 1.3, and per-stream multiplexing into one encrypted userspace transport over UDP keyed by connection ID, so we pay extra CPU and UDP fallback complexity to eliminate handshake round trips, cross-stream head-of-line blocking, and connection death on migration.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:14:18.356Z",
+    "problems": []
+  }
+}

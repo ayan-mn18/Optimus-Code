@@ -1,0 +1,283 @@
+{
+  "slug": "muli-tenant-architecture",
+  "title": "Muli-tenant Architecture",
+  "summary": "Multi-tenancy explained as an isolation and empathy decision: how tenant context, data models, and noisy-neighbor controls shape cost, UX, and survival.",
+  "kind": "HLD",
+  "problemSlug": "muli-tenant-architecture-148-323",
+  "topic": "User Empathy, User Experience, Future Proofing & Realistic Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🏢",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Multi-Tenancy",
+    "SaaS",
+    "Isolation"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Multi-Tenancy Architecture - System Design - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/multi-tenancy-architecture-system-design/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Help me understand Multi-tenancy : r/softwarearchitecture - Reddit",
+      "url": "https://www.reddit.com/r/softwarearchitecture/comments/1ga96sn/help_me_understand_multitenancy/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Multi-Tenancy? Multi-Tenant Architecture - Rafay",
+      "url": "https://rafay.co/ai-and-cloud-native-blog/what-is-multi-tenancy",
+      "source": "rafay.co",
+      "kind": "article"
+    },
+    {
+      "title": "What is multitenancy? Architecture & secure multi-tenancy | Blog",
+      "url": "https://northflank.com/blog/what-is-multitenancy",
+      "source": "northflank.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Multi-tenancy is not resource sharing. It is **guaranteed isolation on shared resources**. Anyone can put 1,000 customers on one database. The design question is: what stops customer 1,000 from reading, slowing, or breaking customer 1? If you cannot answer that at the request, query, cache, queue, and billing layers, you do not have multi-tenancy — you have a shared outage waiting to happen."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A multi-tenant system serves many independent organizations — **tenants** — from one deployed codebase and one operated footprint, while making each tenant behave as if the system were theirs alone. One binary, one rollout, one on-call rotation. But per tenant: separate data visibility, separate configuration, separate usage accounting, and separate blast radius. A tenant is usually an organization or workspace, not an individual user. Users belong to a tenant. Permissions live inside a tenant. A request is therefore never just `who is the user?` It is always `which tenant, which user, in what role, under what limits?` Miss the first part and every authorization check after it is wrong."
+    },
+    {
+      "type": "paragraph",
+      "text": "This is distinct from having multiple user roles or multiple frontends on one backend. Four roles on different subdomains sharing tables is just role-based access control unless the data, configuration, rate limits, and operational fate are partitioned by tenant. Real multi-tenancy means you can onboard tenant 5,001 without a deploy, customize tenant 42 without forking code, throttle tenant 7 without throttling tenant 8, and delete tenant 9 without touching anyone else. If onboarding requires manual infrastructure, or one tenant's spike pages everyone, you built a single-tenant system with extra logins."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: tenant context must travel everywhere"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every design that works follows the same spine: resolve the tenant once at the edge, attach it to the request context, and enforce it at every layer below. Resolution usually comes from subdomain, custom domain, API key, JWT `tenant_id` claim, or routing header. That choice is a trade-off: subdomains are visible and debuggable but complicate custom domains and certificates; tokens are flexible but force you to trust the issuer and handle rotation. Pick one authoritative resolver, do it in the gateway or middleware, and never let downstream code guess. Guessed tenancy is how leaks happen."
+    },
+    {
+      "type": "mermaid",
+      "title": "Tenant-aware request path",
+      "caption": "Tenant ID is resolved once and propagated to app, cache, queue, and storage.",
+      "code": "graph TD\n  Client[Client Request] --> Gateway[Gateway: Resolve tenant_id]\n  Gateway --> App[App Service with tenant context]\n  App --> Cache[(Cache: keys prefixed by tenant)]\n  App --> DB[(Storage: tenant filter enforced)]\n  App --> Queue[Queue: messages tagged with tenant]\n  Queue --> Worker[Worker: restores tenant context]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Once resolved, the `tenant_id` becomes part of the execution context — request-scoped logger fields, database session variables, cache key prefixes, queue message headers, metric labels. The application never issues a query like `SELECT * FROM invoices WHERE id = ?`. It issues `WHERE tenant_id = ? AND id = ?`, preferably enforced by the framework rather than developer discipline. Cache keys become `t_42:invoice_99`, not `invoice_99`. Background jobs rehydrate the tenant before touching data. This is why the diagram shows a fork: the control plane is shared, the data plane is partitioned by context on every access. The trade-off is tax on every operation — larger indexes, noisier logs, more careful key design — in exchange for not needing per-tenant deploys."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The three data isolation models"
+    },
+    {
+      "type": "table",
+      "caption": "Data isolation options ranked by isolation versus operational cost.",
+      "headers": [
+        "Model",
+        "How it works",
+        "Isolation",
+        "Cost you pay"
+      ],
+      "rows": [
+        [
+          "Pooled rows: shared tables with tenant_id",
+          "All tenants share tables and databases; every row carries tenant_id",
+          "Logical only; one bug exposes everyone",
+          "Cheapest to run, hardest to get right; indexes bloat, noisy neighbor is default"
+        ],
+        [
+          "Bridged: shared database, separate schemas",
+          "One database cluster, one schema per tenant",
+          "Stronger; misquery hits empty schema, not neighbor data",
+          "Migration hell at 1,000+ schemas; connection limits and DDL locks hurt"
+        ],
+        [
+          "Silo: database per tenant",
+          "Each tenant gets its own database or cluster",
+          "Strongest; backup, restore, and delete are trivial",
+          "Expensive and operationally heavy; pooling, monitoring, and upgrades multiply"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Most teams should start pooled and earn their way toward silo. Pooled rows give you one migration path, one connection pool, and trivial onboarding — which is exactly what early product velocity needs. The trade-off is that isolation becomes a software invariant rather than a physical fact, so you must invest in automated tests that attempt cross-tenant access on every endpoint, plus database policies that reject queries missing a tenant filter. Reserve schema-per-tenant or database-per-tenant for tenants with regulatory, residency, or noisy-neighbor requirements that justify the operational cost. A pragmatic hybrid is common: 95% of tenants pooled, the loud or regulated 5% siloed, with a router that knows which is which."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What sharing buys you and what it bills you later.",
+      "headers": [
+        "What you gain",
+        "What you lose",
+        "Why it matters for users"
+      ],
+      "rows": [
+        [
+          "One deploy for all tenants; patches ship in minutes",
+          "One bad deploy hits all tenants at once",
+          "Fast fixes help everyone, but you need staged rollouts and per-tenant kill switches"
+        ],
+        [
+          "High utilization; idle tenants subsidize busy ones",
+          "Noisy neighbor: one tenant's load degrades others",
+          "Without per-tenant quotas and bulkheads, your largest customer defines everyone else's latency"
+        ],
+        [
+          "Centralized observability and cost efficiency",
+          "Blast radius and compliance complexity concentrate",
+          "Cheaper per tenant, but a single misconfigured query or cache key becomes a privacy incident"
+        ],
+        [
+          "Per-tenant config without code forks",
+          "Configuration sprawl and migration coupling",
+          "Users get branding, roles, and limits they love, while you inherit a matrix of behaviors to test"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "User empathy lives in that second column. From the tenant admin's view, multi-tenancy is invisible until it fails — and then it feels personal. Their dashboard slows because someone else ran a bulk export. Their search autocompletes someone else's data because a cache key forgot the tenant prefix. Their onboarding stalls because signup shares a queue with a backfill. Realistic design therefore means designing limits as a feature: per-tenant rate limits, concurrency caps, storage quotas, and fair scheduling in workers. The trade-off is deliberate friction — you reject or degrade the heavy tenant early — to protect the perceived performance of the quiet majority. Systems that skip this feel fast in a demo and cruel in production."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is cross-tenant leakage through a forgotten filter. A new endpoint, an analytics query, a search index, or an export job queries by `user_id` but not `tenant_id`. The symptom is subtle: support tickets saying *I see another company's invoice* or *my list count changed after refresh*. Logs look clean because authentication succeeded — authorization was scoped to the wrong boundary. This is why discipline is insufficient. You need defense in depth: ORM plugins that inject tenant predicates, database row policies that fail closed, cache namespaces that include the tenant by construction, and contract tests that create two tenants and assert mutual invisibility on every read path."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure is the noisy neighbor, and it shows up as correlated latency with no error spike. P99 climbs for all tenants between 14:00 and 15:00, CPU and I/O look healthy in aggregate, but one tenant's bulk import saturates shared connections or evicts the shared cache. You will see it in per-tenant latency histograms before you see it in global dashboards — which is exactly why global dashboards mislead here. The fix is never just *scale the database*. The fix is bulkheads: per-tenant connection budgets, separate queues for interactive versus batch work, cache isolation so one tenant cannot evict another, and backpressure that sheds the offender's excess instead of queueing everyone behind it. Trade-off: you add scheduling complexity to buy predictable tail latency."
+    },
+    {
+      "type": "paragraph",
+      "text": "The third failure is customization and lifecycle debt. Tenant A wants a custom field, tenant B wants data residency in another region, tenant C wants to leave and demands a full export and hard delete. If custom fields become nullable columns for everyone, your shared schema rots. If residency was never modeled, you cannot move one tenant without moving all. If delete is soft-delete plus hope, you cannot prove erasure. Symptoms: migrations that take hours, feature flags that interact unpredictably, offboarding that requires manual database surgery. Future-proofing means modeling tenant metadata early — region, plan, storage class, retention policy — and keeping per-tenant overrides in a versioned config or extension table, not in branches or ad-hoc columns."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "tenant_middleware.py",
+      "code": "from contextvars import ContextVar\n\ntenant_ctx: ContextVar[str | None] = ContextVar(\"tenant_id\", default=None)\n\ndef resolve_tenant(request) -> str:\n    # Single authoritative boundary. Everything downstream reads tenant_ctx.\n    tid = request.headers.get(\"X-Tenant-ID\") or request.jwt.get(\"tenant_id\")\n    if not tid:\n        raise PermissionError(\"missing tenant\")\n    return tid\n\ndef tenant_where(table: str) -> str:\n    tid = tenant_ctx.get()\n    if tid is None:\n        raise PermissionError(\"tenant context not set - fail closed\")\n    # Enforced by helper, not by remembering. Trade-off: slight friction for safety.\n    return f\"{table}.tenant_id = '{tid}'\"\n\n# Usage: db.query(f\"SELECT * FROM invoices WHERE {tenant_where('invoices')} AND id = %s\", [inv_id])\n# Cache: key = f\"t:{tenant_ctx.get()}:invoice:{inv_id}\""
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet exists to make one point: tenant enforcement belongs in infrastructure code, not in each handler. Resolving once into a request-scoped variable and forcing all queries and cache keys through helpers that fail closed removes the *oops, forgot the filter* class of bugs. The trade-off is explicit plumbing — background jobs must restore the context from the message header, and ad-hoc SQL becomes harder — but that friction is the isolation guarantee. Pair it with a database policy that rejects any access without the expected tenant setting, so even a bypassed helper still cannot read across boundaries."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Scope the tenant boundary first",
+          "text": "Ask who a tenant is, how they are identified, and what must never leak. State your resolver — subdomain, custom domain, API key, JWT claim — and why. Interviewers reward this before any talk of databases."
+        },
+        {
+          "title": "Choose the data model and defend it",
+          "text": "Propose pooled rows for the majority with a path to silo for large or regulated tenants. Name the trade-off: operational simplicity versus physical isolation, and how you migrate a tenant from pool to silo without downtime."
+        },
+        {
+          "title": "Design for the noisy neighbor",
+          "text": "Add per-tenant rate limits, quotas, fair queues, and cache isolation. Explain what you throttle and what you degrade. Saying scale it up without bulkheads is a fail."
+        },
+        {
+          "title": "Cover lifecycle and empathy",
+          "text": "Walk through onboarding, custom configuration, billing by usage, backup/restore per tenant, and offboarding with provable delete. This is where future-proofing and realistic UX separate seniors from juniors."
+        },
+        {
+          "title": "Prove isolation",
+          "text": "Close with testing and observability: cross-tenant contract tests, row policies that fail closed, per-tenant dashboards and alerts. If you cannot detect a leak or a loud tenant, you cannot operate the system."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Roles equal tenants.** They do not. Roles control what a user can do inside a tenant; tenancy controls which tenant's data they can touch at all. Conflating them produces checks that pass authentication and fail isolation.",
+        "**Separate frontends mean multi-tenancy.** Multiple subdomains on one backend with shared tables and no tenant context is just routing. Without partitioned data, limits, and config, it is a single-tenant app wearing a costume.",
+        "**A `tenant_id` column is enough.** It is necessary, not sufficient. Cache keys, search indexes, object storage prefixes, logs, metrics, and queue messages all need the tenant too, or the leak moves somewhere you test less.",
+        "**One big pool scales forever.** It scales until one tenant's shape breaks your assumptions — data volume, query pattern, residency. Plan the escape hatch to a silo before you need it, or migration becomes a rewrite.",
+        "**Fairness is optional.** In shared systems fairness *is* performance. Without per-tenant quotas and scheduling, your p99 is owned by your heaviest tenant, and every UX promise you made is fiction."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Realistic fit check before committing to shared tenancy.",
+      "headers": [
+        "Use shared multi-tenancy when",
+        "Isolate or go single-tenant when",
+        "Rule of thumb"
+      ],
+      "rows": [
+        [
+          "Many small-to-medium tenants with similar needs; self-serve SaaS, team tools",
+          "Few huge tenants with hostile query patterns or strict residency",
+          "Pool the long tail, silo the outliers — decide per tenant, not per system"
+        ],
+        [
+          "Cost per tenant must stay low; onboarding must be instant",
+          "Contract demands dedicated hardware, backup, or noisy-proof latency",
+          "If sales promises dedicated, price dedicated; do not fake it with labels"
+        ],
+        [
+          "You can invest in guardrails: quotas, bulkheads, cross-tenant tests",
+          "You cannot staff the operational discipline isolation demands",
+          "Sharing without guardrails is cheaper to build and far more expensive to explain"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Future-proofing is boring on purpose: keep a tenant router that maps each tenant to its placement — pooled shard, region, or dedicated store — plus metadata for plan, limits, and retention. New requirements then become routing and policy changes, not re-architecture. Realistic design also means honest onboarding UX: instant signup on the shared pool, explicit upgrade path to isolated placement when usage or compliance demands it, and usage meters the tenant can see. Users forgive limits they can see and understand. They do not forgive surprise slowness or surprise visibility into someone else's data."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Serve all tenants from one codebase and one operation, isolate them by tenant context enforced on every read, write, cache, and job, and protect the quiet tenants from the loud ones with quotas and bulkheads — pool by default, silo by exception.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:22:02.914Z",
+    "problems": []
+  }
+}

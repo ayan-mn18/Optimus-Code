@@ -1,0 +1,327 @@
+{
+  "slug": "tinder-ola-uber-swiggy-zomato-facebook-nearby-friends-zoom-car-etc",
+  "title": "Tinder, Ola, Uber, Swiggy, Zomato, Facebook nearby friends, Zoom car etc.",
+  "summary": "One reusable geo core powers Tinder, Uber, Swiggy and Nearby Friends: partition space into cells, serve reads from memory, throttle writes, then filter exactly.",
+  "kind": "HLD",
+  "problemSlug": "tinder-ola-uber-swiggy-zomato-facebook-nearby-friends-zoom-car-etc-149-327",
+  "topic": "Resources Efficient & Extensible System Design",
+  "difficulty": "Medium",
+  "coverEmoji": "📍",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Geo-Spatial",
+    "Scalability"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "How Tinder, Uber, and Swiggy find nearby users, drivers ... - LinkedIn",
+      "url": "https://www.linkedin.com/posts/kartik-dhingra-1599ab315_systemdesign-databases-locationbasedservices-activity-7485698766352642048-2F2Y",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "What do you think will happen next? comment below - Instagram",
+      "url": "https://www.instagram.com/reel/DY61R3mIhke/?hl=en",
+      "source": "instagram.com",
+      "kind": "article"
+    },
+    {
+      "title": "Niharika on X: \"idk how to explain this but there are two types of people",
+      "url": "https://x.com/niharigoat/status/1781696310011400689",
+      "source": "x.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Nearby is not a distance calculation problem. It is a data pruning problem.** If you compute distance to every driver, restaurant, or profile, you lose at 10 million moving points. Winners first throw away 99.9% of the world with a spatial cell lookup, then compute exact distance on the 500 candidates left. Everything else — `Redis GEO`, geohash, `S2`, quadtrees — is just a different way to do that prune step cheaply."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What \"nearby\" actually means"
+    },
+    {
+      "type": "paragraph",
+      "text": "Precisely: given a query point `(lat, lon)`, a radius `r` (e.g. 5 km), and a set of moving entities with freshness constraints, return the top-K entities by real distance that also pass business filters — available, online, in-service-area, not blocked, open now — within ~100-200ms at p99. The contract always has three hidden parts interviewers care about: **spatial correctness** (no missed neighbours across cell boundaries), **freshness** (a driver position 2 minutes old is a lie in Uber, but a restaurant position 2 years old is fine in Swiggy), and **cost** (you cannot do a database row write for every GPS ping from 2 million drivers every 4 seconds). Miss any one and the design is wrong even if the radius query works."
+    },
+    {
+      "type": "paragraph",
+      "text": "That is why this is a resource-efficiency topic, not a maps topic. Tinder matching, Ola driver dispatch, Swiggy restaurant listing, Facebook Nearby Friends, and Zoomcar vehicle search look like different products but reduce to the same load shape: **very high write rate of tiny location pings, very high read rate of small-radius queries, highly skewed geography.** 80% of queries hit 5% of the land area — downtown, dinner time, Friday night. Any design that spreads load uniformly or treats every entity identically will burn CPU and money on empty farmland while choking on the hotspot. Design for skew from minute zero."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: divide space, then filter precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "The mechanism never changed in 15 years because the physics did not change. You **project 2D Earth into 1D keys** that preserve locality, index those keys in memory, and do a two-phase query. Phase 1 is cheap and approximate: find which cells intersect your radius and fetch everything inside them. Phase 2 is expensive and exact: compute `haversine()` distance, apply business filters, sort, and cut to top-K. Why two phases? Because exact distance is CPU-heavy and unindexable, while cell membership is a range scan. Trade-off named: **you accept reading extra candidates from neighbouring cells to avoid scanning the whole table.** A 5 km query that touches 9 cells and filters 800 candidates to 47 results is healthy. A query that touches 1 cell and misses people 50 meters across the boundary is broken."
+    },
+    {
+      "type": "mermaid",
+      "title": "Nearby core: separated write and read planes",
+      "caption": "Location writes go through a stream and land in memory. Reads never touch the primary DB.",
+      "code": "flowchart TD\n  A[Client Query lat lon radius] --> B[API Gateway]\n  B --> C[Nearby Service]\n  C --> D[Cell Resolver]\n  D --> E[Redis GEO Memory Index]\n  E --> C\n  C --> F[Filter Rank Service]\n  F --> A\n  G[Driver App GPS] --> H[Kafka Location Stream]\n  H --> E\n  H --> I[Primary DB Async]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Geohash and `S2` both exploit the same prefix property, and you must be able to explain it whiteboard-cold. A geohash interleaves latitude and longitude bits into a base-32 string: longer shared prefix means closer together. `tdr1v` and `tdr1u` share `tdr1`, so they are adjacent. That lets you turn a 2D box query into a handful of prefix range scans: `query cells = centre cell + 8 neighbours`. `S2` does the same thing on a cube-projected sphere with 64-bit cell IDs and better behaviour at poles and the 180th meridian. Why `S2` wins for Uber-scale and geohash wins for interviews? `S2` has uniform cell areas and no pole distortion, but it is harder to implement by hand. Geohash is five lines of code and good enough to show you understand the trade-off. **Choose geohash to explain, S2 to ship at planet scale.**"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Cell resolver:** maps `lat, lon, radius` to a set of cell IDs. Radius decides precision — 5 km needs ~4.9km x 4.9km cells (geohash length 5), 500m needs length 7. Wrong precision is the most common failure.",
+        "**Memory index (`Redis GEO`, in-memory quadtree):** holds only `entity_id -> lat, lon, timestamp`. No menus, no profiles, no trip state. Keeps the hot path small enough to fit in RAM.",
+        "**Filter-rank layer:** joins candidate IDs against business state (availability, restaurant open, Tinder preferences) and computes exact distance. This is where extensibility lives.",
+        "**Cold store (`Postgres`, `Mongo`, `Cassandra`):** source of truth for profiles and history. Never on the query hot path. Updated asynchronously."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Read path: cell lookup + exact distance filter"
+    },
+    {
+      "type": "paragraph",
+      "text": "A read is: resolve covering cells, `MGET` candidates from memory in parallel, filter, sort, return. For a 5 km Swiggy query at geohash-5 you fetch the centre + 8 neighbours — 9 prefix scans — because a user standing near a cell edge has most of their circle in the next cell. Then you run `haversine()` only on those candidates and discard everything beyond `r`. Then you apply product filters: `is_open`, `serves_cuisine`, `driver_available = true`, `last_update < 30s`. Why this order? Spatial prune first because it cuts 10 million to 800; business filter second because it needs a DB or cache lookup per candidate. Reverse the order and you do 10 million availability checks per query. Trade-off named: **you pay 2-4x over-fetch from neighbour cells to guarantee zero boundary misses and keep p99 flat.** Over-fetch is cheap RAM bandwidth; a missed driver is lost revenue."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Write path: throttle updates or die"
+    },
+    {
+      "type": "paragraph",
+      "text": "The write path kills naive designs faster than reads do. A phone sends GPS every 3-5 seconds. Two million online drivers means ~500k writes per second if you persist everything. No relational database survives that, and you do not need it to. The fix is three rules applied at ingestion: **throttle by movement, not by time; write to memory first; persist asynchronously.** If a Zoomcar has not moved more than 30-50 meters or the cell ID has not changed, drop the update after refreshing a timestamp. If it moved, do a single `GEOADD` to Redis and append to a Kafka stream. A downstream consumer batches the cold-store update every 30-60 seconds. Why? Because queries only care about cell membership and last-known position within ~15 seconds. Trade-off named: **you sacrifice per-ping durability to buy 20x write throughput.** Losing one GPS ping is irrelevant; losing query latency is fatal. GPS is a Linden-log stream, not a transaction."
+    },
+    {
+      "type": "mermaid",
+      "title": "Write throttling: movement-gated updates",
+      "caption": "Most pings never become writes. Only cell changes hit the index.",
+      "code": "flowchart LR\n  P[GPS Ping] --> T[Throttle Check]\n  T --> U[Update Redis GEO]\n  T --> S[Skip Write Refresh TTL]\n  U --> K[Kafka Stream]\n  K --> D[Cold DB Batch]"
+    },
+    {
+      "type": "table",
+      "caption": "Spatial index choices — pick by write rate and query shape.",
+      "headers": [
+        "Option",
+        "How it works",
+        "Wins",
+        "Loses"
+      ],
+      "rows": [
+        [
+          "Geohash on Redis GEO",
+          "1D prefix string, ZSET by score, GEORADIUS",
+          "Dead simple, in-memory, 10ms queries, native expiry",
+          "Boundary edge cases, uneven cell sizes, hotspot ZSETs get huge"
+        ],
+        [
+          "S2 / H3 cells",
+          "64-bit cell IDs on projected sphere",
+          "Uniform areas, clean covering logic, great for dispatch + pricing",
+          "Client + server library, harder to debug, still needs memory store"
+        ],
+        [
+          "Quadtree in app memory",
+          "Recursive split of dense cells",
+          "Adaptive to density — splits downtown, stays coarse in desert",
+          "You own rebalancing, replication, and persistence. Real operational cost"
+        ],
+        [
+          "PostGIS / Mongo 2dsphere",
+          "R-tree / GiST index on disk",
+          "Correct, persistent, great for static data like restaurants",
+          "Dies on 100k+ writes/sec. Disk seeks + index churn kill p99"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "This system does not fail with a clean crash. It fails with silent wrong answers and lopsided load, which is worse. The three classic outages are all predictable. First, **hot cells**: Connaught Place at 7pm has 40,000 drivers and profiles in one geohash-5 cell. Every query scans the same Redis shard, that shard hits 100% CPU, p99 jumps from 40ms to 2 seconds, and autoscaling does nothing because the key range does not spread. Second, **staleness**: you throttled too aggressively or Kafka lagged, so Uber shows drivers who went offline 3 minutes ago and riders get cancelled assignments. Third, **boundary misses**: you queried only the centre cell to save latency, so Tinder shows no one even though 200 profiles sit 100 meters away across a cell edge. All three look like product bugs, not infra alerts, which is why interviewers probe them."
+    },
+    {
+      "type": "table",
+      "caption": "Failure, symptom you would see, and the fix that actually works.",
+      "headers": [
+        "Failure",
+        "User-visible symptom",
+        "Fix"
+      ],
+      "rows": [
+        [
+          "Hot cell / shard skew",
+          "Timeouts only in downtown, empty suburbs fast; one Redis node at 95% CPU",
+          "Split precision up one level in dense zones, shard by cell hash + replica reads, cap candidates per cell"
+        ],
+        [
+          "Stale positions",
+          "Driver assigned then cancels, ghost cars on map, restaurant ETA jumps",
+          "TTL on location keys (30-45s), heartbeat versioning, filter `now - updated_at > threshold` before ranking"
+        ],
+        [
+          "Boundary miss",
+          "Zero results at cell edges despite density; flaky pagination",
+          "Always query centre + neighbours, then exact-filter; never trust single-cell containment"
+        ],
+        [
+          "Thundering herd on expiry",
+          "Latency spike every TTL window as apps re-ping together",
+          "Jitter TTLs, cache covering cells for 1-2s, serve slightly stale + background refresh"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "nearby_core.py",
+      "code": "import redis\n# Trade-off: memory-first, Postgres later. Redis holds ONLY live positions.\nr = redis.Redis(decode_responses=True)\n\ndef on_gps_ping(driver_id: str, lat: float, lon: float, cell: str, last_cell: str):\n    # Movement-gated write: most pings are dropped here. That IS the scaling.\n    if cell == last_cell:\n        r.expire(f\"driver:{driver_id}\", 45)  # heartbeat, no GEOADD\n        return False\n    r.execute_command(\"GEOADD\", \"drivers:live\", lon, lat, driver_id)\n    r.expire(f\"driver:{driver_id}\", 45)  # stale drivers vanish automatically\n    return True\n\ndef nearby(lat: float, lon: float, radius_m: int, cells: list[str]):\n    # Phase 1: over-fetch from covering cells (centre + neighbours)\n    candidates = set()\n    for c in cells:\n        # In prod this is S2 covering or GEOSEARCH; per-cell fetch keeps it bounded\n        candidates.update(r.execute_command(\n            \"GEOSEARCH\", \"drivers:live\", \"FROMLONLAT\", lon, lat,\n            \"BYRADIUS\", radius_m, \"m\"))\n    # Phase 2: exact filter happens in service (haversine + availability + recency)\n    # Never return raw candidates — always exact-filter, sort, top-K.\n    return candidates"
+    },
+    {
+      "type": "paragraph",
+      "text": "The code above is deliberately small because the insight is small: `GEOADD` is conditional, expiry enforces freshness, and `GEOSEARCH` is only phase one. Real systems add a per-cell candidate cap (e.g. stop after 1000 per cell) to bound tail latency during hotspots. Why cap? Because returning 40,000 drivers to sort for one rider is pure waste — dispatch only needs the closest 50. Trade-off named: **you trade theoretical completeness for bounded p99.** The rider never notices the 39,950 drivers you ignored, but they notice a 2-second spinner."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Making it extensible: one geo core, many products"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not build five nearby systems. Build one geo core and plug product logic on top — this is what resource-efficient and extensible means in this interview. The core exposes exactly two operations: `updatePosition(entity_id, lat, lon, timestamp)` and `getCandidates(cells, radius)`. Everything product-specific lives in the filter-rank stage and reuses the same cells. Tinder adds `age, gender-prefs, Elo-score, blocked-ids` filters and ranks by desirability + distance. Uber adds `vehicle-type, availability, direction-heading` and ranks by ETA, not raw distance. Swiggy and Zomato cheat: restaurants are static, so they precompute cell membership once and cache covering sets for hours, with only delivery partners on the live path. Facebook Nearby Friends adds a privacy check before anything else — `share_location_with(viewer)` — and downsamples aggressively. Zoomcar adds `fuel-level, booking-window`. Same cells, same Redis layout, different predicates. Why? Because spatial pruning is generic and ranking is product. Mixing them forces you to rebuild the index for every feature launch. The interview signal is saying this split explicitly."
+    },
+    {
+      "type": "table",
+      "caption": "Same core, different freshness and ranking — tune per product.",
+      "headers": [
+        "Product",
+        "What moves",
+        "Freshness bar",
+        "Rank by"
+      ],
+      "rows": [
+        [
+          "Uber / Ola dispatch",
+          "Drivers every 4s",
+          "15-30s or drop",
+          "ETA + heading, not distance"
+        ],
+        [
+          "Swiggy / Zomato listing",
+          "Couriers live; restaurants static",
+          "Couriers 30s; venues cached hours",
+          "Delivery time + open-now + cuisine"
+        ],
+        [
+          "Tinder / Bumble",
+          "Users on app-open + periodic",
+          "Minutes OK; hide stale",
+          "Preference score blended with distance"
+        ],
+        [
+          "Facebook Nearby Friends",
+          "Friends only if opted-in",
+          "Minutes; privacy first",
+          "Social graph + recency"
+        ],
+        [
+          "Zoomcar",
+          "Cars parked mostly",
+          "Minutes to hours",
+          "Availability window + walk distance"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**\"Just add a lat/lon index in Postgres.\"** — Works for 100k restaurants. Collapses at 500k location writes/sec. Disk-based R-trees cannot absorb GPS firehoses; memory must sit in front.",
+        "**\"Haversine in SQL is fine.\"** — It is correct and catastrophically slow. `ORDER BY earth_distance` is a full-table sort. Always prune to cells first, then compute trig on hundreds, not millions.",
+        "**\"Geohash neighbours are always close.\"** — False at edges and poles. Adjacent places can share a short prefix (`...z` vs `...b`). If you do not query neighbours + exact-filter, you ship boundary bugs.",
+        "**\"More precision is more accurate.\"** — More precision means smaller cells, more cells per query, more round trips. Length 7 for a 5 km radius touches hundreds of cells. Match precision to radius, not ego.",
+        "**\"One system for live and history.\"** — Live index wants TTL + RAM; trip history wants durability + columnar analytics. Combine them and you get the worst of both: expensive writes and slow scans."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Scope to radius + freshness in 2 minutes",
+          "text": "State: query radius, expected QPS, update rate, freshness SLA. Say: Swiggy venues are cacheable, Uber drivers are not. Interviewers promote you for splitting static vs. dynamic upfront."
+        },
+        {
+          "title": "Kill the full scan on the whiteboard",
+          "text": "Write the naive `SELECT ... WHERE distance < r` then show the math: 10M rows x 500 QPS = impossible. Introduce cells + neighbour fetch. Draw the 9-cell diagram."
+        },
+        {
+          "title": "Design the write gate",
+          "text": "Explain movement-based throttling, `GEOADD` + TTL, Kafka buffering, async DB batch. This is where Medium becomes Senior — most candidates only design reads."
+        },
+        {
+          "title": "Handle hotspot and boundary explicitly",
+          "text": "Name hot-cell sharding, per-cell candidate caps, centre+neighbours covering. Say the trade-off aloud: over-fetch and caps for bounded p99."
+        },
+        {
+          "title": "Extend to a second product live",
+          "text": "Interviewer will say now add Tinder filters or surge pricing. Do not redraw. Keep the core, swap the filter-rank predicate and freshness bar. That demonstrates extensibility."
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "When this design fits, and when it is overkill.",
+      "headers": [
+        "Use it when",
+        "Do NOT use it when"
+      ],
+      "rows": [
+        [
+          "Radius queries over millions of moving points with <200ms p99",
+          "Fewer than 100k static points — a single PostGIS table is simpler and cheaper"
+        ],
+        [
+          "Write rate exceeds 10k/sec or geography is skewed to hotspots",
+          "You need complex polygon joins or routing — use a GIS engine, not a point index"
+        ],
+        [
+          "Same geo primitive must serve multiple products (rides + food + friends)",
+          "Strong consistency per location matters more than freshness — this design is eventually consistent by choice"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Partition space into cells, serve candidate lookup from memory with centre-plus-neighbours covering, throttle writes by movement with TTL freshness, then exact-filter and rank per product — one geo core, many predicates.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:25:36.527Z",
+    "problems": []
+  }
+}

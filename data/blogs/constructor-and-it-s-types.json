@@ -1,0 +1,286 @@
+{
+  "slug": "constructor-and-it-s-types",
+  "title": "Constructor and It's types",
+  "summary": "Constructor as invariant gate: what it is, birth order, every type and its price, production failures, and interview moves.",
+  "kind": "LLD",
+  "problemSlug": "constructor-and-its-types-29-65",
+  "topic": "Object oriented Programming (OOPS)",
+  "difficulty": "Easy",
+  "coverEmoji": "🏗️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "OOPS",
+    "constructors",
+    "design-basics"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Java Constructors - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/java/constructors-in-java/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Constructors in C++ - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/cpp/constructors-c/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "C++ Constructors - W3Schools",
+      "url": "https://www.w3schools.com/cpp/cpp_constructors.asp",
+      "source": "w3schools.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is a constructor? What are the different types of ... - Quora",
+      "url": "https://www.quora.com/What-is-a-constructor-What-are-the-different-types-of-constructors-with-suitable-examples",
+      "source": "quora.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A constructor is not a convenience for setting fields. It is the **only gate that decides what objects are allowed to exist**. If `new` can return an object that violates its own rules, your constructor is wrong — no setter, validator, or code review fixes that later. Every type of constructor is just a different answer to: **what must be true at birth, and what are you willing to pay for it?**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a constructor is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A constructor is a special block that runs **exactly once, at object birth**, to turn raw allocated memory into a usable, rule-abiding object. It carries the class name, declares **no return type — not even `void`** — and cannot be called like a normal method. In Java and C++ it actually constructs; in Python `__init__` only initialises after `__new__` has already allocated, which is why Python cannot truly prevent a half-built object the way Java `final` fields plus a checked constructor can. The reason for the weird no-return-type rule is deliberate: if it had a return type it would be a method you could forget to call. The trade-off is rigidity for safety — you lose the ability to re-run initialisation, and you gain the guarantee that **no caller can hold a reference before the rules have been checked**."
+    },
+    {
+      "type": "paragraph",
+      "text": "That is why a separate `init()` or a pile of setters is almost always weaker. Two-step creation — `new User()` then `user.setEmail(...)` then `user.init()` — creates a window where the object exists but is invalid, and every caller must remember the ritual. Constructors close that window by fusing allocation and validation. The price is flexibility: once required state goes into the constructor, every creation site must supply it, and frameworks that need a no-argument hook for reflection or serialisation will fight you. Choose the constructor when the field is **required for the object to make sense**; choose a setter or builder only when the field is genuinely optional or mutable after birth."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: birth order is fixed, not stylistic"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every mainstream runtime does birth in the same order: allocate and zero memory, run the parent constructor chain top-down, run field initialisers in declaration order, then run the chosen constructor body. In Java that means `super(...)` or `this(...)` must be the first statement — you cannot touch `this` before the parent invariant holds. In C++ the member initialiser list runs before the body, which is why a `const` or reference member **must** be initialised there and cannot be assigned later. The reason parent runs first is dependency: the child invariant usually assumes the parent invariant already holds. Break the order and you get a child method observing a parent that is still zeroes and nulls. The trade-off is predictability versus control — you cannot reorder for performance, but you never have to guess what state you inherit."
+    },
+    {
+      "type": "mermaid",
+      "title": "Object birth order",
+      "caption": "From new to usable reference — validation is the gate.",
+      "code": "flowchart TD\n  A[\"new User(...)\"] --> B[\"Allocate memory, zero fields\"]\n  B --> C[\"Run super constructor chain\"]\n  C --> D[\"Run field initialisers\"]\n  D --> E[\"Run chosen constructor body\"]\n  E --> F{\"Invariants hold?\"}\n  F -->|Yes| G[\"Return usable reference\"]\n  F -->|No| H[\"Throw, object never escapes\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two corollaries follow from that order and interviewers probe both. First, if any step throws, the object **must never escape** — no reference is returned, and in C++ already-constructed members are unwound. That is why validation belongs inside the constructor body or initialiser, not after return. Second, the dynamic type is not yet yours inside the base constructor: a virtual or overridable call from a constructor resolves to the base version or observes uninitialised child fields, depending on language. So the mechanism forces a discipline — construct bottom-up, validate at the end, never publish `this` early — and every shortcut around it becomes a production bug."
+    },
+    {
+      "type": "table",
+      "caption": "Constructor shapes and what each costs you. Pick by invariant, not habit.",
+      "headers": [
+        "Shape",
+        "What it guarantees",
+        "Price you pay"
+      ],
+      "rows": [
+        [
+          "Compiler default / implicit no-arg",
+          "Class can be instantiated by frameworks and arrays without arguments",
+          "Guarantees nothing; leaves references as null and numbers as zero, so any real invariant is unchecked"
+        ],
+        [
+          "Explicit no-arg",
+          "A sane empty state exists, e.g. empty list, anonymous guest",
+          "Lies easily — most domains have no valid empty object, so you invent one and callers depend on it"
+        ],
+        [
+          "Parameterized",
+          "Required state is present at birth; `final` / `const` fields become possible",
+          "Every new required field breaks all call sites; too many parameters collapse into telescoping overloads"
+        ],
+        [
+          "Delegating / chained `this(...)`",
+          "One canonical path validates; overloads only supply defaults",
+          "Indirection — reader must follow the chain to find the real check; wrong ordering duplicates validation"
+        ],
+        [
+          "Copy constructor (C++ / explicit copy in Java)",
+          "New object starts as an independent snapshot of an existing one",
+          "Shallow copy shares mutable guts by default; correct deep copy costs code, time, and a decision about what sharing means"
+        ],
+        [
+          "Private constructor + static factory",
+          "Creation can be named, cached, validated, or refused without exposing `new`",
+          "Not subclassable in that path; discoverability drops because `new` no longer tells the story"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Constructor bugs do not look like constructor bugs. They look like `NullPointerException` three layers away, corrupted shared state, or a test that passes alone and fails in a suite. The root cause is almost always one of four: an object was allowed to exist without its required collaborators, `this` escaped before validation finished, a copy shared mutable internals, or an overload silently picked the wrong signature and filled fields with defaults nobody wanted. Because the failure surfaces far from `new`, teams waste hours adding null checks at use sites instead of closing the gate at birth. The fix is always the same direction: move the check earlier, make the illegal state unrepresentable, and let construction throw loudly."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Nulls deep in the call graph:** symptom is a crash in billing or rendering, not at creation. Cause is a default or no-arg constructor that let a `User` exist with a null `email` or `id`. You see defensive null checks spreading because birth did not enforce presence.",
+        "**Shared-mutable aliasing:** symptom is two supposedly independent orders or documents mutating together. Cause is a shallow copy constructor or a constructor that stored the caller list directly instead of copying it. Fix costs a defensive copy at birth — extra allocation in exchange for isolation.",
+        "**Leaked `this`:** symptom is a listener, thread, or cache observing a half-built object, often flaky. Cause is registering, publishing, or starting a thread inside the constructor. The object had not finished validating when the outside world grabbed it.",
+        "**Virtual call in constructor:** symptom is missing subclass behaviour only during startup, or subclass fields read as zero. Cause is calling an overridable method from the base constructor before the child portion exists. The trade-off ignored here is extensibility versus birth safety — constructors must only call `private` or `final` helpers.",
+        "**Telescoping overload explosion:** symptom is `new Connection(null, 0, null, true, false, ...)` and nobody knows which argument is which. Cause is adding a new optional flag as yet another parameterized overload instead of switching to a builder. Each overload was cheap alone; together they make illegal combinations compilable."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Never do this in a constructor",
+      "text": "Do not call an overridable method, do not pass `this` to another object, do not start a thread, and do not register a listener. The object is not yet valid, and in C++ the vtable is not yet the derived one. If you need post-construction wiring, force it through a **static factory that finishes `new` first, then wires** — construction stays pure, wiring stays explicit."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that shows the decisions"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "User.java",
+      "code": "public final class User {\n    private final String email;\n    private final String name;\n    private final List<String> roles;\n\n    // Canonical constructor: the ONLY place that validates.\n    public User(String email, String name, List<String> roles) {\n        if (email == null || !email.contains(\"@\")) {\n            throw new IllegalArgumentException(\"email required\");\n        }\n        this.email = email;\n        this.name = (name == null) ? email : name;\n        // Defensive copy: trade allocation for isolation.\n        this.roles = List.copyOf(roles == null ? List.of() : roles);\n    }\n\n    // Delegating overload: supplies defaults, adds no new checks.\n    public User(String email) {\n        this(email, null, List.of());\n    }\n\n    // Private gate for named creation paths.\n    private User(String email, String name) {\n        this(email, name, List.of());\n    }\n\n    public static User guest() {\n        return new User(\"guest@local\", \"guest\");\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This Java shape embodies three opinions. First, `final` fields force assignment inside the constructor, so the compiler itself rejects a path that forgets a required field — rigidity that pays off the moment someone adds a field. Second, `this(...)` delegation means there is exactly one validating body; overloads only translate conveniences into canonical arguments, so behaviour cannot drift between overloads. Third, the defensive `List.copyOf` trades one allocation for freedom from aliasing: the caller can mutate its list afterwards without corrupting the `User`. If you skip that copy for performance, say so explicitly and document that the caller must not mutate — shared mutability should always be a conscious, documented choice."
+    },
+    {
+      "type": "code",
+      "language": "cpp",
+      "filename": "Document.cpp",
+      "code": "#include <string>\n#include <cstring>\n\nclass Document {\npublic:\n    // Parameterized: member init list, not assignment in body.\n    explicit Document(int size) : size_(size), buf_(new char[size]) {}\n\n    // Copy constructor: deep copy, or two objects own one buffer.\n    Document(const Document& other)\n        : size_(other.size_), buf_(new char[other.size_]) {\n        std::memcpy(buf_, other.buf_, size_);\n    }\n\n    Document& operator=(const Document& other) {\n        if (this != &other) {\n            char* next = new char[other.size_];\n            std::memcpy(next, other.buf_, other.size_);\n            delete[] buf_;\n            buf_ = next;\n            size_ = other.size_;\n        }\n        return *this;\n    }\n\n    ~Document() { delete[] buf_; }\n\nprivate:\n    int size_;\n    char* buf_;\n};"
+    },
+    {
+      "type": "paragraph",
+      "text": "The C++ example exists to make the shallow-copy price visceral. The compiler-generated copy would copy the pointer, not the bytes — then both destructors would `delete[]` the same buffer and the program would corrupt the heap. Writing the copy constructor, copy assignment, and destructor together is the classic rule of three: own a resource, own all three. The `explicit` on the single-argument constructor is the second lesson — without it, an `int` silently converts to a `Document` in overload resolution and the wrong function gets called. Explicitness trades a little verbosity at `new` for protection against accidental conversions that compile but make no sense."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design an immutable value object",
+          "text": "Expect `Money`, `DateRange`, or `Email`. Put every required field in one parameterized constructor, mark fields `final`, validate and throw on bad input, and defensively copy any mutable collection. Say why: immutability is only real if birth is complete and no alias leaks in or out."
+        },
+        {
+          "title": "Evolve the constructor without breaking callers",
+          "text": "The follow-up adds an optional field like `middleName` or `timeout`. Do not add a six-argument overload. Show telescoping pain, then pivot to a builder or static factories with names like `withTimeout`. The trade-off you name is compile-time safety for required fields versus readability for optional ones."
+        },
+        {
+          "title": "Handle inheritance and chaining",
+          "text": "You will be asked what runs first when `new SavingsAccount()` executes, or why `super(...)` must be first. Answer: parent fields, then parent body, then child. Never call an overridable `calculateInterest()` from the base constructor — demonstrate with a `final` helper instead."
+        },
+        {
+          "title": "Copy and defensive copying",
+          "text": "Prompt is often innocent: store this list passed by the caller. The graded move is to copy it in the constructor and to return an unmodifiable view from the getter. Name the cost honestly: one extra allocation per construction in exchange for the class owning its invariant."
+        },
+        {
+          "title": "Singleton, DI, and framework constraints",
+          "text": "Private constructor plus `getInstance()` or a factory tests whether you know construction can be refused, cached, or named. If they mention a framework needing a no-arg constructor, keep a private or protected one for the framework and a public validating one for humans — do not weaken the public gate just to satisfy reflection."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the evaluator is scoring",
+      "text": "They are not checking that you memorised four type names. They are checking whether you **force valid birth, delegate to one validator, copy what you must own, and refuse illegal combinations at compile time or throw at construction**. Say the trade-off aloud every time you choose: this `final` costs flexibility, this copy costs an allocation, this factory costs discoverability — and buys an invariant."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that cost marks"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Default constructor and no-arg constructor are the same thing:** wrong. The default is compiler-generated only when you declare none, and it does zero validation. An explicit no-arg is your code and your responsibility — conflating them makes you claim guarantees the compiler never gave.",
+        "**Constructors are inherited:** they are not. A child gets no parent overloads automatically and must explicitly chain with `super(...)` or its own initialiser list. Assuming inheritance leaves required parent state uninitialised.",
+        "**A constructor returns the object:** it has no return type and does not return anything; `new` returns the reference after construction succeeds. Thinking it returns tempts you to call it like a method or to expect a return-value failure signal instead of an exception.",
+        "**More overloads mean more convenience:** beyond three overloads they mean ambiguity. Same-arity overloads with interchangeable types get misresolved, and callers pass nulls positionally. Convenience at that point belongs in named factories or a builder.",
+        "**Copy is assignment:** copy construction births a new object; assignment overwrites a live one that already holds resources. In C++ they need different bodies — copy allocates fresh, assignment must free old state safely and guard self-assignment.",
+        "**Private constructor means useless class:** opposite — it means controlled birth. Singletons, utility holders, cached flyweights, and named factories all depend on refusing raw `new` so every instance passes through a named, checkable path."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Birth-gate decisions: constructor, factory, or builder.",
+      "headers": [
+        "Scenario",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "1-3 mandatory fields with rules",
+          "Single parameterized constructor",
+          "Call sites stay readable and the compiler enforces presence; validation lives in one place"
+        ],
+        [
+          "Many optional or combinatorial fields",
+          "Builder or telescoping factories, lean constructor private",
+          "A 7-argument constructor makes illegal mixes compilable; named steps make valid mixes obvious"
+        ],
+        [
+          "Must reuse, cache, or possibly refuse creation",
+          "Private constructor + static factory",
+          "A public constructor must always succeed in returning a fresh object; a factory can return cached, pooled, or throw with a name"
+        ],
+        [
+          "Need an independent duplicate",
+          "Copy constructor / copy factory with deep copy",
+          "Field-by-field copy is shallow by default; owning the copy logic documents what independence means"
+        ],
+        [
+          "Framework demands no-arg instantiation",
+          "Protected no-arg for framework + public validating constructor for domain code",
+          "Weakening the only public gate for reflection punishes every human caller to serve one tool"
+        ],
+        [
+          "Object needs wiring after birth (listeners, DI graph)",
+          "Constructor for state, separate `start()` or factory for wiring",
+          "Wiring inside the constructor leaks an invalid `this`; splitting keeps birth pure and wiring explicit"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "A constructor runs once at birth to make an object valid before anyone can hold it — so put every required field and every check in one canonical constructor, delegate every overload to it, copy what you must own, and refuse the rest through factories or builders."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:49:28.114Z",
+    "problems": []
+  }
+}

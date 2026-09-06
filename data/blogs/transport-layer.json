@@ -1,0 +1,293 @@
+{
+  "slug": "transport-layer",
+  "title": "Transport Layer",
+  "summary": "Transport Layer explained for HLD: ports, TCP vs UDP vs QUIC, reliability machinery, and what breaks in production.",
+  "kind": "HLD",
+  "problemSlug": "transport-layer-94-186",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": " f50c",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "Transport Layer",
+    "TCP",
+    "UDP"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "ELI5: I still do not fully understand the Transport layer in networking and ...",
+      "url": "https://www.reddit.com/r/explainlikeimfive/comments/tez3y3/eli5_i_still_do_not_fully_understand_the/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Transport Layer in OSI Model - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/computer-networks/transport-layer-in-osi-model/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Transport layer - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Transport_layer",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Transport Layer | NetworkAcademy.IO",
+      "url": "https://www.networkacademy.io/ccna/network-fundamentals/transport-layer",
+      "source": "networkacademy.io",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "IP gets a packet to the **right host**. The transport layer gets it to the **right process** on that host, with an explicit choice about **what guarantees you pay for**. TCP buys reliability and order with latency and state. UDP buys speed and statelessness with loss, duplication, and reordering left for you to handle. Every HLD networking decision is that trade-off."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "The transport layer is **Layer 4** end-to-end logic that runs only on the two communicating hosts, not on routers in the middle. It takes a byte stream or message from one application process, labels it with **source and destination port numbers**, chops it into segments or datagrams, and hands it to IP for host-to-host delivery. On receive, it uses the destination port to **demultiplex** to the correct socket. That is the whole job: **process-to-process delivery plus an optional reliability contract**. Anything about routing, addressing, or framing belongs to the layers below. Anything about request semantics, auth, or serialization belongs above."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this layer has to exist: IP is deliberately dumb. It is best-effort, connectionless, and host-addressed. Packets can be dropped, duplicated, reordered, or delivered to a machine running fifty processes with no clue which one wants the data. Without Layer 4 you cannot run a browser, a database, and a game server on one IP at the same time, and you cannot promise an application anything stronger than *maybe it arrives*. TCP exists because most applications cannot tolerate *maybe*. UDP exists because for some workloads the cost of the TCP promise — handshakes, acknowledgments, retransmissions, in-order head-of-line blocking — is worse than occasional loss."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: ports, sockets, segments"
+    },
+    {
+      "type": "paragraph",
+      "text": "The unit of addressing is the **socket**: `IP + port + protocol`. Ports are 16-bit numbers. `0-1023` are well-known services like `443`, `1024-49151` are registered, `49152-65535` are ephemeral client ports assigned per connection. A TCP connection is identified by the **4-tuple** `(src IP, src port, dst IP, dst port)`. That is why one server port `443` can serve a million concurrent clients — each connection is a distinct 4-tuple with its own sequence state, buffers, and timers. UDP demultiplexing is coarser: typically just the destination port, no connection state, which is why one UDP socket can serve many senders with far less memory."
+    },
+    {
+      "type": "mermaid",
+      "title": "Where Layer 4 sits",
+      "caption": "Transport adds process addressing on top of host addressing, then demultiplexes on receipt.",
+      "code": "graph LR\n    AppA[\"App A - ephemeral port\"] --> Mux[\"Transport - add ports plus seq\"]\n    Mux --> IP1[\"IP - route host to host\"]\n    IP1 --> Wire[\"Wire\"]\n    Wire --> IP2[\"IP - deliver to host\"]\n    IP2 --> Demux[\"Transport - demux by port\"]\n    Demux --> AppB[\"App B - listening port\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Encapsulation tells you what each protocol can do. A **TCP header** is normally 20 bytes, up to 60 with options, and carries what reliability needs: sequence number, acknowledgment number, flags like `SYN`, `ACK`, `FIN`, `RST`, receive window, checksum, and options such as maximum segment size and selective acknowledgment. A **UDP header** is a fixed 8 bytes: source port, destination port, length, checksum. That size gap is not trivia. It is the physical evidence of the trade-off: TCP carries per-byte accounting so it can retransmit exactly what was lost and deliver bytes in order to the application. UDP carries almost nothing, so it cannot detect loss, cannot reorder, cannot deduplicate — it just labels and sends. If you want any of those properties on UDP, you rebuild them yourself or use a richer protocol on top like QUIC."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "TCP's reliability machine"
+    },
+    {
+      "type": "paragraph",
+      "text": "TCP presents a **reliable, ordered byte stream** over an unreliable packet network. It does this with four cooperating mechanisms, and you should be able to name all four cold. First, **connection setup**: the three-way handshake `SYN -> SYN-ACK -> ACK` agrees on initial sequence numbers and confirms both directions are reachable before any application byte flows. Cost: one round trip of latency before useful work, plus state on both sides. Second, **sequencing and acknowledgment**: every byte is numbered, the receiver cumulative-acks the highest contiguous byte it has, and the sender retransmits after a timeout or after duplicate ACKs. Selective acknowledgments let the receiver say *I have these non-contiguous blocks, resend only the hole*, which matters enormously on lossy paths. Third, **flow control**: the receiver advertises a window — *you may send this many bytes before I need to drain my buffer* — so a fast sender never overruns a slow receiver. Fourth, **congestion control**: slow start, congestion avoidance, fast retransmit and recovery probe how much the *network itself* can absorb, cutting the sending rate on loss or explicit congestion signals and growing it back when clean. Flow control protects the receiver. Congestion control protects the network. Confusing them is a reliable way to fail the follow-up."
+    },
+    {
+      "type": "mermaid",
+      "title": "TCP connection lifecycle",
+      "caption": "State exists to know what to retransmit and when it is safe to release buffers.",
+      "code": "stateDiagram-v2\n    [*] --> CLOSED\n    CLOSED --> SYN_SENT: SYN\n    SYN_SENT --> ESTABLISHED: SYN-ACK plus ACK\n    ESTABLISHED --> ESTABLISHED: data plus ACK plus retransmit\n    ESTABLISHED --> FIN_WAIT: FIN close\n    FIN_WAIT --> CLOSED: ACK plus FIN"
+    },
+    {
+      "type": "paragraph",
+      "text": "The reason TCP is slow on some networks is not bureaucracy, it is correctness. In-order delivery means **head-of-line blocking**: if segment 3 is lost, segments 4 and 5 sit in the receive buffer and are *not* delivered to the application until 3 is retransmitted, even though they already arrived. On a low-loss datacenter link you never notice. On a lossy mobile or intercontinental path with a large bandwidth-delay product, one dropped packet stalls the whole stream while the retransmission crosses the ocean. Throughput then collapses not because bandwidth vanished but because the congestion window collapsed and the sender is waiting for ACKs. That behavior is the price of *ordered and reliable*. When an interviewer asks why video calls stutter on TCP, this is the answer: you paid for ordering you did not need, with latency spikes you cannot afford."
+    },
+    {
+      "type": "paragraph",
+      "text": "UDP makes the opposite bet: **no handshake, no sequence, no window, no retransmission**. A datagram is fired and forgotten. This is why DNS, gaming movement updates, live audio/video, and service discovery default to UDP — a slightly stale position update is useless once retransmitted 300ms later, and a late video frame is worse than a dropped one. QUIC is the interesting middle ground and you must mention it in any modern HLD answer. It runs over UDP to escape middlebox ossification and kernel upgrade cycles, then reimplements reliability *per stream* in userspace with TLS 1.3 baked in, 0-RTT resumption, connection migration by connection ID instead of 4-tuple, and independent streams so loss on one stream does not block the others. Trade-off: you move complexity and CPU cost into userspace and you still need UDP to pass through firewalls and load balancers that understand it poorly."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs, not a feature list.",
+      "headers": [
+        "Dimension",
+        "TCP",
+        "UDP"
+      ],
+      "rows": [
+        [
+          "Connection model",
+          "Connection-oriented with handshake and per-connection state and buffers",
+          "Connectionless, no setup, minimal per-peer state"
+        ],
+        [
+          "Delivery guarantee",
+          "Reliable and ordered byte stream, automatic retransmit and dedup",
+          "Best-effort datagrams, loss and reorder visible to app"
+        ],
+        [
+          "Latency profile",
+          "Higher tail latency from handshake, ACKs, retransmits, head-of-line blocking",
+          "Minimal baseline latency, loss does not stall other messages"
+        ],
+        [
+          "Flow and congestion control",
+          "Built in, adapts to receiver and network, protects shared links",
+          "None built in, app must pace and handle overload or harm the network"
+        ],
+        [
+          "Multiplexing",
+          "One ordered stream per connection, many connections per port via 4-tuple",
+          "Message boundaries preserved, many peers per socket, app frames messages"
+        ],
+        [
+          "Operational cost",
+          "More memory for sockets and buffers, harder to scale to millions of idle conns",
+          "Cheap per packet, scales for fan-in telemetry and discovery, harder app logic"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Transport failures rarely look like transport failures. They look like *slow pages*, *frozen video that recovers in a burst*, or *servers with low CPU but climbing latency*. Learn to map symptom to mechanism. Port exhaustion is the classic: a NAT gateway or busy proxy reuses a small ephemeral range and runs out of 4-tuples to a single backend IP and port, so new `connect()` calls hang or get `EADDRNOTAVAIL` while the backend looks healthy. Fix is more source IPs, connection reuse, or fewer distinct egress paths, not more backend CPU. Half-open connection pileup is the second: clients vanish without `FIN`, servers hold `ESTABLISHED` sockets and buffers until keepalive or timeout fires, and memory and file descriptors leak under load. You see it as steadily rising socket count with flat request rate."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**SYN flood / backlog overflow:** `SYN` queue fills, legitimate handshakes time out, symptom is connection timeouts under load with `SYNs to LISTEN drops` counters climbing. Mitigation is `SYN cookies`, larger backlog, and shedding at the edge — trade-off is losing TCP option fidelity under attack.",
+        "**Retransmit storm / incast:** many senders reply to one receiver at once, switch buffers overflow, loss triggers synchronized retransmits that make it worse. Symptom is collapsed goodput with high retransmit rate and duplicate ACKs. Fix is pacing, smaller bursts, request hedging, or application-level fan-in control.",
+        "**Zero-window stall:** receiver application stops reading, advertised window goes to `0`, sender probes periodically but makes no progress. Symptom is an `ESTABLISHED` connection with no bytes moving and low network utilization. Root cause is downstream backpressure, not the network.",
+        "**Head-of-line blocking on lossy paths:** one lost segment stalls the whole TCP stream. Symptom is p99 spikes and bursty delivery while average bandwidth looks fine. Moving bulk transfer to multiple streams or QUIC isolates the blast radius.",
+        "**UDP amplification and flood:** stateless UDP has no handshake to absorb attack traffic, so reflection and random-source floods hit the app directly. Symptom is packet-per-second saturation with small requests causing large responses. Fix is rate limiting, response-size caps, and anycast scrubbing — at the cost of dropping some legitimate datagrams.",
+        "**NAT binding timeout for UDP/QUIC:** idle UDP mappings expire in tens of seconds, TCP mappings live far longer. Symptom is QUIC connection migration storms or dead peer detection firing on mobile networks. Fix is aggressive keepalives or connection IDs that survive rebind — paid for with extra chatter and battery."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "My opinionated rule: if you cannot explain a latency graph with **window, retransmit rate, and RTT** you do not understand your transport. Throughput on a long fat pipe is bounded by `window / RTT`, not by link speed. A 100 Mbps link with 200 ms RTT and a 64 KB window moves at ~2.5 Mbps no matter what the NIC says. That is why window scaling, larger initial windows, and congestion controllers like CUBIC versus BBR change real outcomes so much. BBR models bottleneck bandwidth and RTT instead of treating every loss as congestion, which helps on bufferbloated or slightly lossy paths — trade-off is fairness quirks against loss-based flows and harder debuggability. Name that explicitly instead of saying one algorithm is *better*."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "transport_contract.py",
+      "code": "import socket\n\n# TCP: stream, no message boundaries. Must frame yourself.\n# connect() pays 1 RTT handshake before first byte.\ns = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\ns.connect((\"example.internal\", 443))\ns.sendall(b\"\\x00\\x00\\x00\\x05hello\")  # length-prefix framing\n# recv may return partial data -> loop until frame complete\nchunk = s.recv(4096)\n\n# UDP: datagram, boundaries preserved, no reliability.\n# sendto() has no setup cost, but may lose, duplicate, reorder.\nu = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\nu.sendto(b\"heartbeat seq=42\", (\"telemetry.internal\", 8125))\nu.settimeout(0.2)\ntry:\n    data, addr = u.recvfrom(1400)  # single datagram or timeout\n    # app must dedup by seq, reorder, and tolerate loss\n    pass\nexcept socket.timeout:\n    pass  # loss is normal, not exceptional"
+    },
+    {
+      "type": "code",
+      "language": "bash",
+      "filename": "tune_and_observe.sh",
+      "code": "# What to look at before you tune anything\nss -s                    # socket stats: TCP vs UDP, retrans, backlog\nss -ti                   # per-socket rtt, cwnd, retrans, rto\nnetstat -s | grep -i retrans\n# Common production knobs - each is a trade-off\n# Larger backlog absorbs SYN bursts, costs memory\n# sysctl net.ipv4.tcp_max_syn_backlog=8192\n# Reuse TIME_WAIT sockets for outbound, risks old duplicates\n# sysctl net.ipv4.tcp_tw_reuse=1\n# Keepalive to reap half-open conns, costs chatter\n# sysctl net.ipv4.tcp_keepalive_time=300"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an HLD interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Pick the transport for the workload, out loud",
+          "text": "Say: chat history sync over TCP or QUIC because order matters, live voice over UDP with forward error correction because staleness beats retransmit, IoT heartbeats over UDP with app-level seq and retry because fan-in scale beats per-device state. State the latency versus reliability trade in one sentence per flow."
+        },
+        {
+          "title": "Size the connection and port problem",
+          "text": "Walk through 4-tuple scale, NAT ephemeral exhaustion, load balancer affinity, and long-lived versus short-lived connections. Propose keepalive, multiplexing, and connection pooling with numbers: connections per host, requests per connection, idle timeout. That is where medium questions separate memorisers from designers."
+        },
+        {
+          "title": "Draw flow control and backpressure end to end",
+          "text": "Show TCP receive window plus your application queue plus downstream dependency. Explain what happens when the consumer stalls: window shrinks to zero, senders block, queues grow. Decide where to shed — edge, broker, or client — instead of letting every buffer fill."
+        },
+        {
+          "title": "Handle lossy and long-haul paths explicitly",
+          "text": "For cross-region or mobile, discuss RTT, bandwidth-delay product, head-of-line blocking, and why you would choose QUIC streams, parallel TCP connections, or application sharding. Mention 0-RTT resumption benefit and replay risk in the same breath."
+        },
+        {
+          "title": "Name what you will monitor",
+          "text": "Retransmit rate, duplicate ACKs, RTT p50/p99, zero-window time, handshake latency, connection churn, ephemeral port utilisation. If you cannot observe the transport, you will misattribute its failures to your service code."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you downleveled"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**TCP guarantees the peer got the data to the application.** It does not. It guarantees bytes reached the peer kernel and were acked. If the peer process crashes before reading its socket buffer, data is lost from the application view. End-to-end acks belong in your protocol if you need them.",
+        "**UDP is always faster.** First datagram, yes. At scale with loss, a naive UDP retry loop with no congestion control is slower and more dangerous than TCP. Speed without pacing collapses shared links.",
+        "**More TCP connections means more throughput.** Up to a point, then you pay in socket memory, context switches, slow-start per connection, and unfairness. Multiplexing one well-tuned connection often beats a connection per request.",
+        "**Ports identify users or services globally.** They identify a socket on a host for a given protocol. NAT rewrites them, ephemeral ports are transient, and the same port number over TCP and UDP are different namespaces.",
+        "**TLS fixes transport reliability.** TLS over TCP adds confidentiality and integrity but inherits TCP ordering and head-of-line blocking. QUIC integrates TLS 1.3 per stream precisely to avoid that coupling.",
+        "**Ordered delivery is free.** It costs buffer memory, tail latency on loss, and stalls that propagate to unrelated requests sharing the same connection. If requests are independent, you should want independent streams."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use what"
+    },
+    {
+      "type": "table",
+      "caption": "Choose by loss tolerance and ordering needs, not by habit.",
+      "headers": [
+        "Workload",
+        "Use",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Payments, file transfer, DB replication, API calls",
+          "TCP or QUIC streams",
+          "Loss is unacceptable and order simplifies correctness, pay the latency"
+        ],
+        [
+          "Live voice, video conferencing, gaming positions",
+          "UDP with app-level seq + FEC / jitter buffer",
+          "Fresh data beats retransmitted data, tolerate loss to hold p99"
+        ],
+        [
+          "DNS, heartbeats, metrics, discovery",
+          "UDP with timeout + retry + dedup",
+          "Tiny messages, huge fan-in, handshake cost would dominate"
+        ],
+        [
+          "Mobile apps, lossy / roaming networks",
+          "QUIC over UDP",
+          "Connection migration and per-stream loss isolation beat single TCP stream"
+        ],
+        [
+          "Bulk high-throughput datacenter transfer",
+          "Multiple TCP streams or tuned single stream with large windows",
+          "Overcome per-connection window and loss-recovery limits, at cost of fairness and memory"
+        ],
+        [
+          "Broadcast-style fan-out that must not flood",
+          "TCP or paced UDP with congestion control, never raw UDP blast",
+          "Unpaced UDP exports congestion to everyone else on the path"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**The transport layer multiplexes processes by port and lets me choose my pain: TCP for ordered reliability at the cost of handshake latency and head-of-line blocking, UDP for minimal latency at the cost of handling loss and order myself, QUIC when I need stream-level reliability without TCP's shared stall.**"
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:06:07.665Z",
+    "problems": []
+  }
+}

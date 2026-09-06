@@ -1,0 +1,336 @@
+{
+  "slug": "blob-storage",
+  "title": "Blob Storage",
+  "summary": "Blob storage is a flat, immutable object store that trades hierarchy and in-place writes for almost unlimited throughput, durability, and cheap capacity.",
+  "kind": "HLD",
+  "problemSlug": "blob-storage-90-182",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🗄️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Blob Storage",
+    "Object Store"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Introduction to Azure Blob Storage - Microsoft Learn",
+      "url": "https://learn.microsoft.com/en-us/azure/storage/blobs/storage-blobs-introduction",
+      "source": "learn.microsoft.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is blob storage? - Cloudflare",
+      "url": "https://www.cloudflare.com/learning/cloud/what-is-blob-storage/",
+      "source": "cloudflare.com",
+      "kind": "article"
+    },
+    {
+      "title": "Azure Storage Explained: Blob, File, and Disk - YouTube",
+      "url": "https://www.youtube.com/watch?v=q3dG9jDTtwA",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Blob storage scales because it **refuses to be a filesystem**. No directories, no in-place edits, no cross-object transactions — just an immutable `key -> bytes + metadata` map partitioned by hash. That one refusal is what lets it grow to exabytes without the locking and rename storms that kill distributed filesystems. The trade-off: **you get limitless throughput and durability, you lose hierarchy and cheap mutation.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What blob storage actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A blob store exposes three levels and nothing else: an account that owns the namespace and throttling limits, a container that acts as an access and lifecycle boundary, and a blob that is an opaque byte sequence plus system metadata like `ETag`, length, and content hash and user metadata like content-type. There is no directory inode. Slashes in names such as `video/2026/final.mp4` are just characters in the key; the control plane *pretends* there is a hierarchy only when you list by prefix and delimiter. Reads and writes happen over HTTP with range support, so any client can fetch bytes `1048576-2097151` without touching the rest of the object. Writes are effectively immutable: you create a new version or replace the whole key, you never patch byte 47 in place. This is deliberate. By forbidding partial overwrites and directory renames, the system avoids distributed locking, avoids read-modify-write races, and can spread keys independently across thousands of servers. You pay for that simplicity on every update pattern that assumes a file can be edited."
+    },
+    {
+      "type": "paragraph",
+      "text": "Most systems split blobs into three write shapes because no single commit path serves video upload, log append, and virtual disk I/O well. Block blobs are the default: the client splits a large object into blocks of several megabytes, uploads them in parallel with independent IDs, then commits an ordered block list. That is why a 50 GB upload survives a dropped connection — you retry one block, not the file. Append blobs only allow tail appends with optimistic concurrency, which is why they fit logs and telemetry where many writers add but nobody rewrites history. Page blobs expose 512-byte aligned random writes for things that pretend to be disks. The trade-off is explicit: block blobs buy **parallel throughput and resumability** at the cost of no in-place mutation; append blobs buy **cheap concurrent tail writes** at the cost of no random edits; page blobs buy **random access** at the cost of far higher price and stricter alignment. Pick by write pattern, not by size."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it scales: the mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Scale comes from three decoupled layers, each scaling for a different reason. A stateless frontend terminates auth, throttling, and HTTP parsing and holds no data, so it scales horizontally behind a load balancer. A partition layer owns the keyspace: it hashes the account plus container plus blob name to assign each key range to a partition server that keeps an in-memory index of committed blobs and their extent locations. A stream layer owns the disks: it appends replica extents, erasure-coded stripes, and never does in-place updates. Control operations such as create-container or set-tier go through the partition layer; data bytes stream directly to and from stream servers once the frontend has the location. This separation is the whole trick. Frontend CPU, index memory, and disk bandwidth saturate at different times, so you scale them independently. The trade-off: an extra hop on every request and a harder consistency story between index and extents."
+    },
+    {
+      "type": "mermaid",
+      "title": "Blob request path",
+      "caption": "Frontend is stateless, partition layer routes by key hash, stream layer stores bytes.",
+      "code": "flowchart TD\n  Client[Client app] --> LB[Global endpoint and LB]\n  LB --> FE[Stateless frontend]\n  FE --> AUTH[Auth and throttle check]\n  AUTH --> PL[Partition layer: hash key to partition]\n  PL --> IDX[Index: blob metadata and extent map]\n  PL --> SL[Stream layer: extents on disks]\n  FE --> CDN[CDN edge cache]\n  CDN --> Client"
+    },
+    {
+      "type": "paragraph",
+      "text": "A `PUT` of a large block blob never sends 50 GB in one shot. The client uploads blocks `block-0001` through `block-2000` in parallel to the frontend, which streams each block to the stream layer and records only a temp pointer. Nothing is visible to readers yet. A final `CommitBlockList` call hands the ordered list to the partition server, which validates the ETag precondition, writes one index entry pointing at those extents, and only then publishes the version. Readers doing `GET` hit the CDN or frontend, resolve the key in the partition index in one hash lookup, then fetch byte ranges directly from the extent replicas in parallel. Listing `prefix=video/2026/` is the expensive outlier: it is a range scan over the partition index, not a directory read, which is why it paginates, lags behind writes, and collapses under too-frequent polling. The trade-off on every operation: **single-key reads and writes are O(1) hash lookups, prefix scans are O(N) over the index.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "What blob storage buys you and what it charges you.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Flat namespace, no real directories",
+          "No rename locks, no hierarchical hotspots, trivial hash partitioning to exabytes",
+          "Listing, move, and rename become scans; simulating a filesystem is slow and inconsistent"
+        ],
+        [
+          "Immutable objects + versioning",
+          "No torn overwrites, trivial replication, easy point-in-time restore",
+          "Every small edit rewrites or versions a whole object; churn explodes storage and list cost"
+        ],
+        [
+          "HTTP range access + CDN offload",
+          "Any byte range from anywhere, massive read fan-out without touching origin",
+          "First-byte latency 20-100ms; not a low-latency store, invalidation is painful"
+        ],
+        [
+          "Erasure coding + geo replication",
+          "Eleven-nines style durability at near-disk cost",
+          "Cross-region write amplification, higher PUT latency, restore from cool or archive takes hours"
+        ],
+        [
+          "Multipart block commit",
+          "Parallel resumable uploads at gigabit rates",
+          "Client must manage blocks, retries, and commit; uncommitted blocks leak money if not cleaned"
+        ],
+        [
+          "Tiering: hot, cool, archive",
+          "10x cost cut for cold data without changing API shape",
+          "Early-delete penalties, rehydration latency, and monitoring burden to avoid hot data in cold tier"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The consistency choice explains half the interview confusion. New systems expose strong read-after-write for a single key once the commit index entry lands, which is why `PUT` then `GET` on the same key is safe to assume visible. Listing by prefix, geo-secondary reads, and tier transitions do not share that guarantee — they are eventually consistent and can lag by seconds to minutes. That split exists for throughput: making every listing strongly consistent would force global coordination on every write. So design for it: gate business logic on direct `HEAD` or `GET` with version ID, never on `LIST` freshness, and never poll listing to detect completion. The parallel trade-off is latency versus throughput. Time-to-first-byte will never beat a local SSD or a block device because you pay for load balancing, auth, index lookup, and extent fetch. What you get instead is aggregate throughput that grows with key spread: ten thousand clients fetching distinct keys go faster together than any single client goes alone."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Blob outages are rarely lost bytes — replication makes that genuinely rare. They are throttling, latency cliffs, and cost blowups caused by access pattern, and they look like application bugs until you check storage metrics. The classic is a hot partition: sequential keys such as `log-{timestamp}` or `sensor-{incrementing-id}` hash into the same partition range, saturate one partition server, and return `503 SlowDown` or `429` while 90% of capacity sits idle. The fix is key randomisation with a hash prefix, but that trades human-sortable listing for throughput. The second classic is the small-object tax: millions of 4 KB blobs each carry index, replication, and per-request overhead, so effective cost per GB is 50x higher than one large blob and listing never finishes. The third is CDN-origin confusion: a stale image served for hours is not a replication lag, it is an edge TTL and missing versioned URL. Treat symptoms as routing and pattern failures first, durability failures last."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`429 / 503 SlowDown` on PUT with low total account throughput — one partition is hot. Symptom clusters on lexicographically adjacent keys. Fix with `hash-prefix` in the key.",
+        "`GET` p99 spikes while median is flat — range fan-out hitting different extents, or throttled partition fallback. Check per-partition latency, not account average.",
+        "List calls timing out or returning truncated pages forever — container holds tens of millions of keys under one prefix. Split prefix depth or maintain an external index in a database.",
+        "Storage bill jumps after enabling versioning — overwrites plus lifecycle gaps keep every version in hot tier. Add lifecycle rules to tier or expire noncurrent versions.",
+        "Archive restore SLA missed — application requested a blob in archive tier synchronously. Rehydration takes hours by design; keep a cool-tier copy or use copy-on-read.",
+        "Uncommitted blocks growing silently — crashed multipart uploads never committed or aborted. Scan for orphan blocks and set an abort-incomplete-upload rule."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Throttle is a design signal, not bad luck",
+      "text": "If you see sustained throttling below documented account limits, **your key distribution is wrong**, not the limit. Sequential timestamps, single hot container for live traffic, and one prefix for all writes all funnel to one partition server. Prepend an 8-character hash, spread live writes across multiple prefixes, and keep per-key request rates flat. The trade-off: randomised keys fragment listing, so keep a queryable manifest elsewhere if humans need order."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Core operations and semantics"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "blob_client.py",
+      "code": "import hashlib, os\nCHUNK = 8 * 1024 * 1024  # 8 MiB blocks: parallelism vs request count\n\ndef upload_block_blob(client, container, name, path):\n    # Random prefix spreads load; suffix preserves listability.\n    spread = hashlib.sha1(name.encode()).hexdigest()[:8]\n    key = f\"{spread}/{name}\"\n    block_ids = []\n    with open(path, \"rb\") as f:\n        idx = 0\n        while True:\n            data = f.read(CHUNK)\n            if not data:\n                break\n            bid = f\"{idx:06d}\"\n            client.stage_block(container, key, bid, data)  # idempotent retry per block\n            block_ids.append(bid)\n            idx += 1\n    # Single atomic publish: readers never see partial object.\n    client.commit_block_list(container, key, block_ids,\n                             if_none_match=\"*\",  # fail if key exists\n                             metadata={\"content-sha256\": \"...\"})\n    return key\n\ndef fetch_range(client, container, key, offset, length, version=None):\n    # Range GET avoids pulling full object for previews or resume.\n    return client.get_blob(container, key, offset=offset, length=length,\n                           version_id=version, if_match=\"*\")"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet encodes three decisions interviewers want to hear justified. First, chunk size is a cost-throughput trade-off: 8 MB keeps request count low while giving enough parallel streams to saturate a NIC; 256 KB chunks would multiply per-request fees and index work for no gain. Second, per-block retry with a final commit gives atomic publish — readers either see the old version or the fully committed new version, never a half-written file — which is why blob stores beat NFS for distributed writers. Third, conditional headers like `if-none-match` and version IDs turn a last-writer-wins store into a safe coordination point without a separate lock service. Use `ETag` preconditions on commit and always read by version ID after listing, because listing may be stale. The hidden cost to name: uncommitted blocks are billed until aborted, so every uploader needs a cleanup rule."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Durability and cost controls"
+    },
+    {
+      "type": "table",
+      "caption": "Replication and tiering: durability gain versus latency and price.",
+      "headers": [
+        "Option",
+        "Mechanism",
+        "Use when"
+      ],
+      "rows": [
+        [
+          "Local redundancy (3 copies, one zone)",
+          "Synchronous triplicate on separate racks",
+          "Default for replaceable data; cheapest write, dies with the region"
+        ],
+        [
+          "Zone redundancy (across zones)",
+          "Synchronous spread over availability zones",
+          "Serving reads that must survive a datacenter loss; ~10-20% premium"
+        ],
+        [
+          "Geo redundancy (second region)",
+          "Async copy to paired region, optional read access",
+          "Backups and compliance; accept minutes of RPO lag and higher PUT cost"
+        ],
+        [
+          "Hot tier",
+          "Replicas on fast disks, no retrieval fee",
+          "Objects read many times per month; optimise for access, not storage"
+        ],
+        [
+          "Cool tier",
+          "Lower storage price, per-GB retrieval fee, higher first-byte latency",
+          "Backups and media older than 30 days read rarely"
+        ],
+        [
+          "Archive tier",
+          "Offline, rehydration in hours",
+          "Regulatory retention almost never read; cheapest at rest, most expensive to wake"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Durability math is not magic, it is striping plus geography. Within a region the stream layer writes three synchronous copies or an erasure-coded stripe across fault domains, so a disk or rack loss is invisible without client retry. Across regions replication is asynchronous by necessity — synchronous global writes would tie PUT latency to intercontinental round trips and halve availability. That is the core durability trade-off: **synchronous local replication buys zero data loss in-zone at the cost of write amplification, asynchronous geo-replication buys survival of a region at the cost of a lag window.** Lifecycle rules are how you stop paying hot prices for cold bytes: transition to cool after 30 days of no access, to archive after 180, and auto-expire noncurrent versions. Without them versioning turns every deploy artifact overwrite into permanent hot storage."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "LIST is the most dangerous call",
+      "text": "Newcomers treat listing like `ls` — fast, consistent, free. In a blob store a deep listing is a **distributed scan billed per thousand keys** that can return stale results and throttle your data path. Never put `LIST` in a hot loop, never use it for leader election or job completion, and never expose unbounded listing to end users. Keep a manifest row in a database or queue event notifications on commit; use listing only for backfill and audit."
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Size the workload before drawing boxes",
+          "text": "State objects per day, average and p99 size, read-to-write ratio, and retention. 10M 2 MB images with 100:1 reads is a CDN-plus-hot-tier problem; 1B 10 KB logs with 1:10 reads is a small-object and lifecycle problem. Interviewers fail candidates who skip this and jump to architecture."
+        },
+        {
+          "title": "Fix the API and naming scheme",
+          "text": "Propose `PUT /container/key`, `GET` with `Range` and `versionId`, multipart `stage + commit`, and conditional `ETag` writes. Show the hash-prefixed key like `{hash}/date/device-id` and explain why pure timestamps hotspot one partition."
+        },
+        {
+          "title": "Walk the write and read paths",
+          "text": "Trace upload: client -> frontend auth -> stream extents -> partition commit. Trace read: CDN -> frontend -> partition index -> parallel extent fetch. Call out atomic commit and strong read-after-write on direct GET versus eventually consistent LIST."
+        },
+        {
+          "title": "Prove durability and availability",
+          "text": "Pick replication explicitly: zone-redundant for serving, geo-redundant for backup, with RPO lag stated. Add checksums, versioning, object lock for compliance, and cross-region failover behaviour. Say what is lost if the primary region dies mid-upload."
+        },
+        {
+          "title": "Close with cost, lifecycle, and security",
+          "text": "Add hot to cool to archive transitions, abort-incomplete-uploads, and noncurrent-version expiry. Front with private endpoints, signed URLs with short expiry, and encryption with customer-managed keys. End with metrics: throttling rate, first-byte latency, and uncommitted-byte age."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "What the interviewer is grading"
+    },
+    {
+      "type": "paragraph",
+      "text": "They are not testing whether you can recite the account-container-blob hierarchy. They are testing whether you avoid the three traps that break real designs: hot partitions from naive key order, treating listing as consistent coordination, and ignoring retrieval cost of cold tiers. Say the trade-off aloud each time you choose: randomised prefix for throughput against sortable listing, CDN caching for read scale against invalidation pain, geo-replication for survival against lag and write cost. A medium-difficulty pass means correct key design, correct multipart reasoning, and a lifecycle story that keeps the bill flat as data grows. A strong pass adds preconditions for safe concurrent writers and a failure analysis that distinguishes throttling from data loss."
+    },
+    {
+      "type": "list",
+      "items": [
+        "*Misconception:* Blob storage is a filesystem with folders — it is a flat key map; folders are an illusion over prefix scans, so rename of a folder rewrites every key.",
+        "*Misconception:* Overwriting a blob patches it in place — overwrites replace the version pointer; small frequent edits waste capacity unless you use append blobs or deltas.",
+        "*Misconception:* Listing is consistent and cheap — listings lag commits, paginate, and cost per thousand keys; never use them as a completion signal.",
+        "*Misconception:* More replication always means faster reads — extra copies add write latency and cost; read speed comes from CDN and key spread, not replica count.",
+        "*Misconception:* Archive tier is just cheaper storage — it is offline storage with hour-scale rehydration and early-delete penalties; synchronous reads will fail."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Fit check: blob storage versus the alternatives you should name.",
+      "headers": [
+        "Scenario",
+        "Use blob storage?",
+        "Use instead"
+      ],
+      "rows": [
+        [
+          "Images, video, backups, static web assets, data-lake files",
+          "Yes — immutable large objects, high read fan-out, tiered retention",
+          "—"
+        ],
+        [
+          "Append-only logs and telemetry ingestion",
+          "Yes with append blobs + lifecycle to cool",
+          "Streaming bus for sub-second processing"
+        ],
+        [
+          "Low-latency transactional records needing queries",
+          "No — no indexing, no transactions, 20ms+ first byte",
+          "Relational or NoSQL database"
+        ],
+        [
+          "Frequently mutated small files or shared POSIX writes",
+          "No — rewrite amplification and no file locking",
+          "Network file system or block device"
+        ],
+        [
+          "Virtual-machine boot disks needing random 4K I/O",
+          "No, except page-blob backed disks by design",
+          "Provisioned block storage"
+        ],
+        [
+          "Ephemeral coordination or counters",
+          "No — eventually consistent listing, per-request cost",
+          "Cache or strongly consistent metadata store"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Use blob storage when you need **durable, massively parallel storage for immutable objects with tiered cost** — a hash-partitioned key-to-bytes map with multipart commit and CDN reads — and avoid it whenever you need directories, transactions, or in-place mutation."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:10:46.045Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,304 @@
+{
+  "slug": "ip",
+  "title": "IP",
+  "summary": "IP is a topological locator, not an identity — that one choice explains subnetting, routing, NAT, and every VPC mistake in HLD interviews.",
+  "kind": "HLD",
+  "problemSlug": "ip-94-212",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "🌐",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "IP",
+    "VPC"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What Is An IP Address? How Does It Work? - Fortinet",
+      "url": "https://www.fortinet.com/resources/cyberglossary/what-is-ip-address",
+      "source": "fortinet.com",
+      "kind": "article"
+    },
+    {
+      "title": "TCP/IP addressing and subnetting - Windows Client | Microsoft Learn",
+      "url": "https://learn.microsoft.com/en-us/troubleshoot/windows-client/networking/tcpip-addressing-and-subnetting",
+      "source": "learn.microsoft.com",
+      "kind": "article"
+    },
+    {
+      "title": "IP Addresses Explained: Networking Basics - YouTube",
+      "url": "https://www.youtube.com/watch?v=zZ02fvBXNAI",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "IP address - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/IP_address",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "An **IP address is a locator, not an identity**. It says *where* an interface sits in the topology so routers can forward toward it, not *who* the machine is. Every painful design — **NAT, renumbering on VPC peering conflicts, broken allowlists, IPv6 dual-stack** — exists because we abused a location as if it were a stable name. If you remember only one thing: **route on location, authenticate on identity**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What IP is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "IP is the narrow waist of the internet: a best-effort, connectionless, unreliable datagram service at L3. It promises only this — take a packet with a source and destination address, make a hop-by-hop forwarding decision, decrement TTL, and either deliver it, drop it, or fragment it. No retransmission. No ordering. No delivery guarantee. TCP, QUIC, and your application retries exist to hide that honesty. An address itself has two fields fused into one number: a **network prefix** that routers care about, and a **host part** that only the last hop cares about. The split point is not fixed. It is defined per-network by a prefix length, written as CIDR: `10.0.1.0/24` means the first 24 bits are the network, the remaining 8 bits address ~254 usable hosts. IPv4 encodes this in 32 bits, usually written as four decimals (`192.168.123.132`). IPv6 encodes it in 128 bits, written as eight hex groups (`2001:db8::1`). The version change did not change the forwarding model. It changed the size of the number and killed the excuse for address-sharing hacks."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why the prefix split exists is the whole design. Routers cannot hold 4 billion host entries and they certainly cannot hold every IPv6 endpoint. They aggregate. A router holds **prefixes**, not hosts: `10.0.0.0/16 via eth0`, `0.0.0.0/0 via gateway`. Aggregation is why the internet scales — a Tier-1 router holds ~1M prefixes, not billions of hosts — and it is also why addressing must be hierarchical and contiguous. Give two teams random scattered `/28s` and you get route-table bloat and brittle firewall rules. Give them clean summarizable blocks per AZ or per service and one route covers hundreds of hosts. The trade-off: **hierarchical allocation buys small routing tables but forces you to plan capacity up front**. Random allocation buys local autonomy but taxes every router and human downstream."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How forwarding actually works"
+    },
+    {
+      "type": "paragraph",
+      "text": "Forget the mailing-address analogy after the first sentence. Real forwarding is this loop: on each hop, find the **longest matching prefix** for the destination, then either deliver directly on a connected network or forward to the listed next hop, which repeats the process. Longest-match is deliberate. It lets you state a coarse default (`0.0.0.0/0` to the internet) and punch precise exceptions (`10.0.5.0/24` stays local, `203.0.113.7/32` blackholed). More specific always wins, which is why a stray `/32` injected by automation can silently hijack traffic from a `/16` — power and foot-gun in one rule. The sender does almost no routing. A host asks one question: is the destination in *my* subnet (bitwise-AND my address with my mask and compare)? If yes, resolve L2 directly with ARP or Neighbor Discovery and send. If no, send to the configured default gateway and let the network do the work. That is why a wrong subnet mask is catastrophic: the host either ARPs for addresses it can never reach, or needlessly hairpins local traffic through a router. Both look like mysterious packet loss, both are just a bad prefix length."
+    },
+    {
+      "type": "mermaid",
+      "title": "Per-hop IP forwarding decision",
+      "caption": "Every router repeats this; specificity beats order.",
+      "code": "flowchart TD\n  P[\"Packet to 203.0.113.7\"] --> L[\"Route table lookup\"]\n  L --> M[\"Longest matching prefix wins\"]\n  M --> D[\"Connected route? ARP and send direct\"]\n  M --> G[\"Gateway route? Forward to next hop\"]\n  M --> X[\"Only 0.0.0.0/0 matches? Default gateway\"]\n  G --> N[\"Next router repeats lookup\"]\n  X --> N"
+    },
+    {
+      "type": "paragraph",
+      "text": "Private addresses and NAT are not part of IP's elegance — they are a survival patch for IPv4 exhaustion. Ranges like `10.0.0.0/8`, `172.16.0.0/12`, and `192.168.0.0/16` are explicitly non-routable on the public internet. Inside your VPC they work exactly like any prefix. At the boundary, a NAT gateway rewrites the source `privateIP:port` to `publicIP:newPort` and keeps a state table so return traffic can be unmapped. Outbound-only subnets (so-called private subnets) are just a route-table trick: their default route points at the NAT, with no inbound route from the internet gateway. The trade-off is brutal and worth naming: **NAT conserved IPv4 and gave you a crude outbound firewall by default, but it destroyed end-to-end addressability, made peer-to-peer and active protocols stateful and fragile, and turned the NAT box into a port-exhaustion and availability bottleneck**. That is why every cloud charges you for NAT processing and why IPv6 designs drop it entirely — globally unique addresses remove the need to rewrite anything."
+    },
+    {
+      "type": "mermaid",
+      "title": "Private subnets behind NAT",
+      "caption": "Outbound works by rewrite; inbound has no route back.",
+      "code": "graph LR\n  A[\"10.0.1.15 private\"] --> R[\"Private route table\"]\n  B[\"10.0.2.20 private\"] --> R\n  R --> N[\"NAT Gateway with public IP\"]\n  N --> I[\"Internet\"]\n  I --> N\n  N --> R"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "IPv4 vs IPv6: the trade-off, honestly"
+    },
+    {
+      "type": "paragraph",
+      "text": "IPv6 is not just longer addresses. It removes the hacks IPv4 forced on you: no broadcast (replaced by scoped multicast), no in-path fragmentation (source-only, discovered by MTU probing), no NAT as architecture, no ARP (replaced by Neighbor Discovery), and autoconfiguration via SLAAC alongside DHCPv6. The header is simpler for hardware to process at line rate. The cost is operational, not theoretical: **every firewall rule, log parser, rate limiter, allowlist, and regex that assumed dotted-decimal breaks**, DNS doubles (A + AAAA), and dual-stack means you operate two control planes for years. Teams delay IPv6 because IPv4 + NAT *works* behind a cloud load balancer. They adopt it when NAT port limits, CGNAT logging pain, or mobile carriers force their hand. Say that in an interview instead of reciting address counts — it shows you have operated something."
+    },
+    {
+      "type": "table",
+      "caption": "IPv4 vs IPv6 where it actually hurts.",
+      "headers": [
+        "Aspect",
+        "IPv4",
+        "IPv6"
+      ],
+      "rows": [
+        [
+          "Address space",
+          "32-bit, ~4.3B. Exhausted. Forces sharing via NAT and CGNAT.",
+          "128-bit, effectively inexhaustible. Every pod or phone can be globally unique."
+        ],
+        [
+          "Header and forwarding",
+          "Variable header, in-path fragmentation, broadcast. Cheap to understand, harder on fast paths.",
+          "Fixed 40-byte header, no router fragmentation, no broadcast. Simpler in silicon."
+        ],
+        [
+          "Operations reality",
+          "Everyone knows it. Tools, regexes, and mental math all assume it.",
+          "Dual-stack, tunneling, and broken middleboxes. Debugging needs new habits and filters."
+        ],
+        [
+          "Private / public split",
+          "Required. RFC1918 + NAT is the default enterprise shape.",
+          "Not required. Unique-local exists, but NAT is an anti-pattern; use firewall policy instead."
+        ],
+        [
+          "Assignment",
+          "DHCP dominates. Static for infra. ARP for resolution.",
+          "SLAAC + DHCPv6 + ND. Privacy extensions rotate addresses; allowlisting by IP gets weaker."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "IP failures rarely say *IP* in the alert. They say timeout, partial availability, or one AZ is dark while the others are fine. The discipline is to map symptom to layer: if `ping` by IP works but DNS names fail, it is not routing. If IP fails inside one subnet but cross-subnet works, suspect mask, gateway, or local ACL — not the backbone. If only new connections fail at peak, suspect NAT port or conntrack exhaustion, not bandwidth. Train yourself to check prefix math before restarting services. Nine times out of ten in cloud postmortems the root cause is humans, not packets: someone picked overlapping CIDRs, sized a subnet for 14 hosts and scheduled 200 pods, or attached a route table to the wrong subnet."
+    },
+    {
+      "type": "table",
+      "caption": "IP failure modes and what the dashboard looks like.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Why it happens"
+      ],
+      "rows": [
+        [
+          "Overlapping CIDRs on peering",
+          "Peering is Active but traffic to peered VPC drops or goes to wrong host. Longest-match picks local over remote.",
+          "Both VPCs used 10.0.0.0/16. Routes are ambiguous. No flag; packets just follow the more specific or local entry."
+        ],
+        [
+          "Subnet exhaustion",
+          "New pods, ENIs, or VMs stuck Pending. Existing hosts fine. Autoscaling fails to place.",
+          "A /28 has 11 usable cloud IPs. Scheduler needs 50. IPAM has nothing left to assign."
+        ],
+        [
+          "IP conflict / stale DHCP",
+          "Flapping SSH, intermittent TLS errors, ARP thrashing. Two hosts claim one IP.",
+          "Static IP inside DHCP pool, or stale lease after restore from snapshot."
+        ],
+        [
+          "NAT port exhaustion",
+          "Outbound SYN timeouts at peak, inbound fine. Small packets to new destinations fail first.",
+          "Thousands of hosts share one NAT public IP. 64k ports per destination tuple runs out. Needs more NAT IPs or per-AZ gateways."
+        ],
+        [
+          "Broken IPv6 / Happy Eyeballs delay",
+          "Page loads stall 2-20s then succeed, mostly on some ISPs. IPv4-only clients fine.",
+          "AAAA published but v6 path filtered or MTU-blackholed. Client tries v6, times out, falls back to v4."
+        ],
+        [
+          "Wrong mask or gateway",
+          "Local peers unreachable but internet works, or vice versa. Pattern follows one subnet.",
+          "Host thinks remote is local and ARPs forever, or thinks local is remote and hairpins through a gateway that drops it."
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Unfixable without pain",
+      "text": "You cannot rename a VPC CIDR in place on most clouds. **If you peer two networks with overlapping ranges, the fix is renumber, migrate, or NAT both sides — all weekend work.** In design reviews, reject overlapping RFC1918 blocks on sight, even if peering is phase two. Future you will not get a vote."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Make the math concrete"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "ip_cidr.py",
+      "code": "def ip_to_int(s: str) -> int:\n    parts = [int(p) for p in s.split('.')]\n    assert len(parts) == 4 and all(0 <= p < 256 for p in parts)\n    n = 0\n    for p in parts:\n        n = (n << 8) | p\n    return n\n\ndef cidr_contains(cidr: str, ip: str) -> bool:\n    # '10.0.1.0/24' contains '10.0.1.15' but not '10.0.2.1'\n    net, prefix = cidr.split('/')\n    prefix = int(prefix)\n    mask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF\n    return (ip_to_int(net) & mask) == (ip_to_int(ip) & mask)\n\ndef usable_hosts(prefix: int) -> int:\n    # Subtract network + broadcast; cloud subnets also reserve ~5.\n    if prefix >= 31:\n        return 2 if prefix == 31 else 1\n    return (1 << (32 - prefix)) - 2\n\nprint(cidr_contains('10.0.1.0/24', '10.0.1.15'))  # True\nprint(cidr_contains('10.0.1.0/24', '10.0.2.1'))   # False\nprint(usable_hosts(28))  # 14"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that helper as the interview answer to *how does a host know where to send?* It ANDs both addresses with the mask and compares. Same result means same subnet, so resolve L2 directly; different means send to the gateway. The `usable_hosts` function is the capacity trap: a `/28` is not 16 hosts, it is 14 usable minus cloud reservations, so about 11 in practice. Interviewers who ask you to size subnets are testing exactly this — can you leave room for rolling upgrades, per-AZ NAT, load-balancer ENIs, and pod IPs without renumbering? The strong answer always over-provisions prefix space hierarchically: a `/16` per VPC, `/20` per AZ, `/24` per tier, and never smaller than `/26` for anything that autoscales. Wasting private space is free. Renumbering is not."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in HLD interviews"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design a VPC for 3 AZs with public and private tiers",
+          "text": "Start with a /16 (e.g., 10.10.0.0/16). Carve /20s per AZ, then /24s for public, private-app, and data inside each. Explain why: one summary route per AZ, blast-radius isolation, room to double. State the trade-off: larger blocks waste nothing (RFC1918 is free) but demand upfront planning."
+        },
+        {
+          "title": "Where does the NAT live, and why per AZ?",
+          "text": "Put a NAT gateway in each AZ's public subnet; private subnets route 0.0.0.0/0 to the local NAT. Justify it: cross-AZ NAT adds latency, data-transfer cost, and a cross-zone failure dependency. Cost of three gateways vs. one outage is the trade-off to name."
+        },
+        {
+          "title": "Static IPs, Elastic IPs, and DNS",
+          "text": "Never hardcode ephemeral public IPs — they churn on restart. Use stable egress IPs only where a partner allowlists you, and put DNS names everywhere else. Explain that allowlisting by IP couples security to topology, which breaks under autoscaling and NAT."
+        },
+        {
+          "title": "IPv6 or dual-stack?",
+          "text": "Propose dual-stack for user-facing load balancers when mobile or scale demands it, IPv4-private inside for databases. Name the cost: two firewall models, two log formats, and AAAA records that must actually be reachable, or Happy Eyeballs punishes you."
+        },
+        {
+          "title": "Overlaps, peering, and transit",
+          "text": "Ask what this VPC will peer with before picking numbers. Non-overlapping CIDRs, centralized egress, and a transit hub are not phase-two details. If the interviewer says two acquired companies both used 10.0.0.0/8, walk through renumber vs. double-NAT and pick renumber with a migration window."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**IP equals identity.** No. DHCP, NAT, pod restarts, and privacy extensions rotate addresses constantly. Authenticate with mTLS or tokens; use IPs for routing and coarse policy only.",
+        "**Private IPs are secure by themselves.** No. RFC1918 is unroutable, not encrypted or authenticated. A misattached internet gateway or bad security-group rule exposes them. Isolation comes from route tables plus firewall policy.",
+        "**More specific routes are tried first because of order.** No. Longest-prefix-match wins regardless of table order. Order only matters as a tiebreaker in some implementations.",
+        "**A /24 always means 254 hosts.** Only on a flat network with no reservations. Cloud subnets reserve several addresses, Kubernetes pods consume one IP each, and load balancers pre-consume ENIs. Size for 2x peak.",
+        "**NAT is a firewall.** It is a side effect that looks like one. Outbound state allows return traffic, but it does not inspect, log like a firewall, or protect between hosts in the same VPC.",
+        "**IPv6 removes the need for firewalls or subnets.** It removes NAT, not policy. You still segment with prefixes and still default-deny inbound; you just stop rewriting addresses to do it."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use what"
+    },
+    {
+      "type": "table",
+      "caption": "Pick by routability and stability needs, not habit.",
+      "headers": [
+        "Choice",
+        "Use when",
+        "Avoid when"
+      ],
+      "rows": [
+        [
+          "Private RFC1918 + NAT egress",
+          "Internal services, workers, databases that only initiate outbound (patches, APIs). You want cheap isolation and conserved public IPs.",
+          "High-churn outbound fleets behind one NAT IP, latency-sensitive or peer-to-peer workloads. You will hit port limits."
+        ],
+        [
+          "Public IP directly on host",
+          "Bastions, NAT gateways, or singletons that must receive inbound from the internet. Even then prefer a load balancer in front.",
+          "Autoscaled app servers. Ephemeral IPs churn and invite direct attack; put them private behind a LB."
+        ],
+        [
+          "Stable egress IP (Elastic / NAT static)",
+          "Partner allowlists, email reputation, or audit requirements that pin a source IP.",
+          "As a service-discovery mechanism. DNS plus security groups scale; frozen IPs do not."
+        ],
+        [
+          "Dual-stack IPv6",
+          "Mobile-heavy traffic, massive pod or IoT counts, or when CGNAT logging makes attribution impossible.",
+          "Internal datastores and legacy middleboxes that cannot parse or filter v6. Dual-stack doubles test surface."
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**IP is a hierarchical locator split by prefix length so routers forward on longest-match; design clean non-overlapping CIDRs, keep workloads private behind per-AZ NAT, and treat addresses as ephemeral locations — never as identity.**"
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:15:20.625Z",
+    "problems": []
+  }
+}

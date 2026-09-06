@@ -1,0 +1,420 @@
+{
+  "slug": "design-tic-tac-toe-game",
+  "title": "Design Tic Tac Toe Game",
+  "summary": "Design Tic-Tac-Toe as LLD plus O(1) win detection: counters beat board scans, and a Game/Board/Strategy split survives undo, k-in-a-row, and AI follow-ups.",
+  "kind": "LLD",
+  "problemSlug": "design-tic-tac-toe-game-42-82",
+  "topic": "LLD Interview Problems",
+  "difficulty": "Medium",
+  "coverEmoji": "⭕",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "OOP",
+    "Game Design",
+    "LeetCode-348"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "LeetCode 348 — Design Tic-Tac-Toe",
+      "url": "https://leetcode.com/problems/design-tic-tac-toe/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "Medium. Resolved through the LeetCode API, not guessed from the slug."
+    },
+    {
+      "title": "Design Tic Tac Toe Game | System Design | Piyush Kumar - LinkedIn",
+      "url": "https://www.linkedin.com/posts/piyush-kumar-35b854157_design-tic-tac-toe-game-tic-tac-toe-lld-activity-7285194279071764480-WQQW",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "Top 20 LLD and HLD questions for SDE roles - LinkedIn",
+      "url": "https://www.linkedin.com/posts/kesari007_interviewtips-sde-jobs-activity-7320302844656373760-BGU9",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "System Design Questions and Resources for SDE I/II - Medium",
+      "url": "https://medium.com/shoutloudz/system-design-questions-and-resources-for-sde-i-ii-16e892a0c06b",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Photos by Pradeep kumar (@pradeep_kumar_iiitd) - Instagram",
+      "url": "https://www.instagram.com/p/DbXDjwDDW1U/",
+      "source": "instagram.com",
+      "kind": "article"
+    },
+    {
+      "title": "Top System Design Interview Questions (2025) - InterviewBit",
+      "url": "https://www.interviewbit.com/system-design-interview-questions/",
+      "source": "interviewbit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Learn Low Level Design (LLD) and prepare for interviews ... - GitHub",
+      "url": "https://github.com/ashishps1/awesome-low-level-design",
+      "source": "github.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What you are actually being asked",
+      "text": "LeetCode 348 is a *warm-up*. The interview question hiding behind it is: **can you model mutable game state with strict turn and validity invariants, and detect a win without re-scanning the board every time?** Anyone can write a 3x3 `if` forest. The hire signal is choosing counters over scans, separating `Game` orchestration from `Board` storage from win logic, and naming exactly what breaks when the board becomes `n x n`, when undo appears, or when two threads call `move` at once."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design an `n x n` Tic-Tac-Toe game for two players. Player 1 uses `X`, player 2 uses `O`. Players move alternately, placing their mark on an empty cell exactly once. After every move you must report whether that move ended the game. The full-row / full-column / full-diagonal rule is the default: player `p` wins if and only if they occupy all `n` cells of some row, some column, the main diagonal `r == c`, or the anti-diagonal `r + c == n - 1`. If the board fills with no winner, the game is a draw. The reason this problem is asked as LLD rather than pure algorithms is that the win check is trivial at `3x3` but the *structure* has to carry persistence, validation, undo, variable `k`-in-a-row, and computer opponents without being rewritten."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`TicTacToe(int n)` — initialise an empty `n x n` board. `n >= 1`; in practice `n == 3`, but your win logic must not hard-code `3`.",
+        "`int move(int row, int col, int player)` — place `player` (`1` or `2`) at `(row, col)`. Return `0` for no win, `1` if player 1 wins, `2` if player 2 wins. The LLD version changes the signature to `move(row, col)` using the internally tracked current player and throws on illegal input instead of returning a sentinel.",
+        "Guarantees in the LeetCode twin: every `move` is in bounds, targets an empty cell, and there is at most one winning line. In the interview version *none* of those hold — you must enforce them."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Read the contract twice",
+      "text": "Three details eliminate most candidates: **the winner is decided only by the last move**, so you never need to scan history; **diagonals apply only when the move lies on them**, checking them unconditionally is a correctness smell on non-square thinking and a waste; **draw is not a return value in LeetCode 348** — the spec says return `0` for ongoing *and* draw, so a real design needs an explicit `GameState: IN_PROGRESS | WON | DRAW` or callers cannot distinguish them."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not start with counters. Start with five questions. They take ninety seconds and they decide whether you build a 30-line LeetCode function or an extensible game engine. The interviewer is grading whether you surface ambiguity before committing to a shape."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "What are n and the win length?",
+          "text": "Is n fixed at 3, arbitrary n with n-in-a-row, or arbitrary n with k-in-a-row? This single answer kills the counter design if you get it wrong: full-line counters are O(1) and perfect for n-in-a-row, but useless for k-in-a-row where you need directional runs."
+        },
+        {
+          "title": "Who supplies the player id?",
+          "text": "Does the caller pass player 1/2 explicitly, or does the Game track turns internally? Passing it in invites cheating — same player twice in a row. A real Game owns currentPlayer and flips it after every legal move."
+        },
+        {
+          "title": "What is illegal-move behaviour?",
+          "text": "Out of bounds, occupied cell, wrong player, move after game over: exception, error code, or ignored? Agree on fail-fast exceptions for LLD versus sentinel returns for LeetCode, and state it out loud."
+        },
+        {
+          "title": "Do I need undo, replay, or persistence?",
+          "text": "If undo or audit is ever coming, you must store the move history and make win state reversible. Counters alone are then insufficient unless you can decrement them correctly."
+        },
+        {
+          "title": "Human vs human, or computer opponent?",
+          "text": "If an AI player is in scope, you need a Player abstraction with HumanPlayer and BotPlayer polymorphs and a hook for move selection, not a switch on an int."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Scope agreed with the interviewer before writing any code.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Create n x n board, place marks alternately on empty cells",
+          "Turn ownership is the core invariant; everything else is bookkeeping"
+        ],
+        [
+          "Functional",
+          "Detect full row / column / diagonal win in O(1) after a move",
+          "The algorithmic bar — no re-scan"
+        ],
+        [
+          "Functional",
+          "Detect draw when board is full with no winner",
+          "LeetCode hides this; a real game cannot"
+        ],
+        [
+          "Functional (follow-up)",
+          "Undo last move, support k-in-a-row, support bot player",
+          "These decide whether your class split was right"
+        ],
+        [
+          "Non-functional",
+          "O(1) time per move, O(n) extra space",
+          "Trade-off you are explicitly choosing over O(n) scan / O(1) space"
+        ],
+        [
+          "Non-functional",
+          "Fail-fast validation with clear errors",
+          "Illegal state must never corrupt counters"
+        ],
+        [
+          "Non-functional",
+          "Deterministic, testable core with UI decoupled",
+          "Game logic must not print, read stdin, or own rendering"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — brute-force scan"
+    },
+    {
+      "type": "paragraph",
+      "text": "The obvious answer: keep a 2D `int[][] board` and after each `move(r, c, p)` scan the entire row `r`, the entire column `c`, and if applicable the two diagonals for `p`. It is correct, it is trivially readable, and for `3x3` it is even defensible — 8 checks per move is nothing. That is exactly why you must present it and then reject it on the record. The trade-off is brutal at scale: every move costs `O(n)` time because you re-derive facts you already knew from prior moves. On a `10^4 x 10^4` board that is `10^4` cell reads per move for no reason. Worse, the scan version teaches nothing about state design — there is no place to hang undo, no separation between storage and rules, and the win logic is smeared across four loops inside `move`. Interviewers let you write it to see if you notice the repeated work and volunteer the incremental alternative without being prompted."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NaiveTicTacToe.java",
+      "code": "class NaiveTicTacToe {\n    private final int[][] board;\n    private final int n;\n    public NaiveTicTacToe(int n) { this.n = n; this.board = new int[n][n]; }\n    public int move(int r, int c, int player) {\n        board[r][c] = player;\n        // row\n        boolean win = true;\n        for (int j = 0; j < n; j++) if (board[r][j] != player) { win = false; break; }\n        if (win) return player;\n        // col\n        win = true;\n        for (int i = 0; i < n; i++) if (board[i][c] != player) { win = false; break; }\n        if (win) return player;\n        // diag\n        if (r == c) {\n            win = true;\n            for (int i = 0; i < n; i++) if (board[i][i] != player) { win = false; break; }\n            if (win) return player;\n        }\n        if (r + c == n - 1) {\n            win = true;\n            for (int i = 0; i < n; i++) if (board[i][n - 1 - i] != player) { win = false; break; }\n            if (win) return player;\n        }\n        return 0;\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why it fails the interview even when it passes the judge: time is `O(n)` per move instead of `O(1)`, validation is absent so a duplicate move silently corrupts the board, turn order is unenforced so the caller can play player 1 five times in a row, game-over is not latched so moves keep mutating a finished game, and draw is invisible. Any one of those is a follow-up the interviewer *will* ask, and the naive shape has no answer except bolting on flags. Use it as your thirty-second strawman, then replace it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design — counters, not scans"
+    },
+    {
+      "type": "paragraph",
+      "text": "The insight: only the line containing the new mark can newly become a win, and its fill level can be maintained incrementally. Keep `rows[i]`, `cols[j]`, one `diag` and one `antiDiag` accumulator. On `move(r, c, p)` add `+1` for player 1 and `-1` for player 2 — or keep two arrays per player if signed arithmetic offends you. Then the move wins if and only if `abs(rows[r]) == n` or `abs(cols[c]) == n` or the relevant diagonal hits `n`. That is `O(1)` time, `O(n)` space, zero re-scans. The trade-off you must state: you spend `O(n)` extra integers to buy back `O(n)` time per move, and you now carry *derived* state that must stay in sync with the board — every mutation path (including undo) must update both, or they diverge silently. That is why the LLD version keeps the raw `board` anyway: counters answer *did someone win*, the board answers *is this cell legal* and powers debugging, rendering, and future `k`-in-a-row checks where counters no longer suffice."
+    },
+    {
+      "type": "mermaid",
+      "title": "Move pipeline",
+      "caption": "Every move follows the same pipeline: validate, place, increment, test.",
+      "code": "flowchart TD\n  A[\"move r c p\"] --> B{\"in bounds, empty, game live, correct turn?\"}\n  B -- No --> E[\"reject: throw IllegalArgument\"]\n  B -- Yes --> C[\"board r c = p, moves++\"]\n  C --> D[\"rows r += delta, cols c += delta, diag if on it\"]\n  D --> F{\"abs counter == n?\"}\n  F -- Yes --> G[\"state = WON, return p\"]\n  F -- No --> H{\"moves == n*n?\"}\n  H -- Yes --> I[\"state = DRAW, return 0\"]\n  H -- No --> J[\"state = IN_PROGRESS, return 0\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two implementation choices matter. Signed single arrays (`+1` / `-1`) halve memory and make the win test one `Math.abs` call, but they conflate players into one integer — a subtle bug magnet if you ever support three players or blank out cells. Dual arrays (`rows1[]`, `rows2[]`) are dumber and safer: each player's count is independent, undo is just decrement, and extension to more players is mechanical. Choose signed for LeetCode brevity, dual for interview robustness, and say why. Second, gate diagonal updates on membership (`r == c`, `r + c == n - 1`); updating them unconditionally corrupts the invariant on every off-diagonal move. The centre cell of an odd board updates both — that is correct, not double-counting, because the two diagonals are distinct lines that happen to intersect."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Class model that survives follow-ups"
+    },
+    {
+      "type": "mermaid",
+      "title": "LLD class structure",
+      "caption": "Game orchestrates, Board stores, strategies decide wins.",
+      "code": "classDiagram\n  class Game {\n    -Board board\n    -Player current\n    -GameState state\n    +move(row col) int\n    +undo() void\n    +getState() GameState\n  }\n  class Board {\n    -int size\n    -int cellGrid\n    -int moves\n    +place(row col mark) bool\n    +clear(row col) void\n    +isFull() bool\n  }\n  class Player {\n    -String name\n    -Mark mark\n    +nextMove(board) int\n  }\n  class HumanPlayer {\n    +nextMove(board) int\n  }\n  class BotPlayer {\n    +nextMove(board) int\n  }\n  class WinStrategy {\n    +record(row col mark) bool\n    +revert(row col mark) void\n  }\n  class GameState {\n    <<enumeration>>\n    IN_PROGRESS\n    WON\n    DRAW\n  }\n  Game *-- Board\n  Game *-- Player\n  Game *-- GameState\n  Game *-- WinStrategy\n  Player <|-- HumanPlayer\n  Player <|-- BotPlayer"
+    },
+    {
+      "type": "paragraph",
+      "text": "This split exists so each follow-up lands in exactly one place. `Board` owns cells, bounds, occupancy, and fullness — nothing about winning. `WinStrategy` owns counters and the `record / revert` pair — nothing about turns or I/O. `Game` owns turn alternation, state latching (`IN_PROGRESS` → `WON`/`DRAW`, never back except via `undo`), and validation order. `Player` is a polymorphic hook so a minimax bot slots in without touching `Game`. The trade-off is ceremony: for pure LeetCode 348 this is over-engineering and you should say so — four classes to replace two arrays looks wasteful. The payoff is that undo becomes `board.clear + strategy.revert + flip turn`, `k`-in-a-row becomes a new `WinStrategy` implementation doing directional scans from the last move, and rendering becomes an observer on `Game` rather than `System.out` calls inside `move`. Interviewers promote candidates who can hold both truths: minimal for the spec given, open for the spec coming."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "TicTacToe.java",
+      "code": "enum Mark { EMPTY, X, O }\nenum GameState { IN_PROGRESS, WON, DRAW }\n\nclass Board {\n    final int n;\n    private final Mark[][] grid;\n    private int moves;\n    Board(int n) { this.n = n; grid = new Mark[n][n];\n        for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) grid[i][j] = Mark.EMPTY; }\n    boolean isEmpty(int r, int c) { return grid[r][c] == Mark.EMPTY; }\n    void place(int r, int c, Mark m) { grid[r][c] = m; moves++; }\n    void clear(int r, int c) { grid[r][c] = Mark.EMPTY; moves--; }\n    boolean isFull() { return moves == n * n; }\n    boolean inBounds(int r, int c) { return r >= 0 && r < n && c >= 0 && c < n; }\n}\n\n/** O(1) n-in-a-row detector. Dual counters: clearer undo than +1/-1 trick. */\nclass CounterWinStrategy {\n    private final int n;\n    private final int[] rowsX, rowsO, colsX, colsO;\n    private int diagX, diagO, antiX, antiO;\n    CounterWinStrategy(int n) { this.n = n;\n        rowsX = new int[n]; rowsO = new int[n]; colsX = new int[n]; colsO = new int[n]; }\n    boolean record(int r, int c, Mark m) {\n        if (m == Mark.X) {\n            if (++rowsX[r] == n || ++colsX[c] == n) return true;\n            if (r == c && ++diagX == n) return true;\n            if (r + c == n - 1 && ++antiX == n) return true;\n        } else {\n            if (++rowsO[r] == n || ++colsO[c] == n) return true;\n            if (r == c && ++diagO == n) return true;\n            if (r + c == n - 1 && ++antiO == n) return true;\n        }\n        return false;\n    }\n    void revert(int r, int c, Mark m) {\n        if (m == Mark.X) { rowsX[r]--; colsX[c]--; if (r == c) diagX--; if (r + c == n - 1) antiX--; }\n        else { rowsO[r]--; colsO[c]--; if (r == c) diagO--; if (r + c == n - 1) antiO--; }\n    }\n}\n\npublic class TicTacToe {\n    private final Board board;\n    private final CounterWinStrategy win;\n    private Mark current = Mark.X;\n    private GameState state = GameState.IN_PROGRESS;\n    private final java.util.ArrayDeque<int[]> history = new java.util.ArrayDeque<>();\n    public TicTacToe(int n) { if (n <= 0) throw new IllegalArgumentException(\"n>0\");\n        board = new Board(n); win = new CounterWinStrategy(n); }\n    /** LLD-style: turn owned internally. Returns 1/2 on win, 0 otherwise. */\n    public synchronized int move(int r, int c) {\n        if (state != GameState.IN_PROGRESS) throw new IllegalStateException(\"game over: \" + state);\n        if (!board.inBounds(r, c)) throw new IllegalArgumentException(\"out of bounds\");\n        if (!board.isEmpty(r, c)) throw new IllegalArgumentException(\"cell occupied\");\n        board.place(r, c, current);\n        history.push(new int[]{r, c});\n        boolean won = win.record(r, c, current);\n        Mark played = current;\n        if (won) state = GameState.WON;\n        else if (board.isFull()) state = GameState.DRAW;\n        else current = (current == Mark.X ? Mark.O : Mark.X);\n        return won ? (played == Mark.X ? 1 : 2) : 0;\n    }\n    public synchronized void undo() {\n        if (history.isEmpty()) throw new IllegalStateException(\"nothing to undo\");\n        int[] last = history.pop();\n        // If game was won by the last move, current still points at winner; else it points at next player.\n        Mark lastMark = (state == GameState.WON) ? current : (current == Mark.X ? Mark.O : Mark.X);\n        board.clear(last[0], last[1]);\n        win.revert(last[0], last[1], lastMark);\n        current = lastMark;\n        state = GameState.IN_PROGRESS;\n    }\n    public GameState getState() { return state; }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "tictactoe.py",
+      "code": "class TicTacToe:\n    \"\"\"LeetCode 348 shape: caller passes player, O(1) signed counters.\"\"\"\n    def __init__(self, n: int):\n        self.n = n\n        self.rows = [0] * n\n        self.cols = [0] * n\n        self.diag = 0\n        self.anti = 0\n    def move(self, row: int, col: int, player: int) -> int:\n        d = 1 if player == 1 else -1\n        self.rows[row] += d\n        self.cols[col] += d\n        if row == col:\n            self.diag += d\n        if row + col == self.n - 1:\n            self.anti += d\n        n = self.n\n        if (abs(self.rows[row]) == n or abs(self.cols[col]) == n\n                or abs(self.diag) == n or abs(self.anti) == n):\n            return player\n        return 0"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Counter design versus scan design — state the trade-off explicitly.",
+      "headers": [
+        "Design",
+        "Time / move",
+        "Extra space",
+        "Supports undo cleanly",
+        "Supports k-in-a-row"
+      ],
+      "rows": [
+        [
+          "Naive scan (row+col+diags)",
+          "O(n)",
+          "O(n^2) board only",
+          "Yes — no derived state to fix",
+          "Yes — scan outward from last move"
+        ],
+        [
+          "Counters (signed single arrays)",
+          "O(1)",
+          "O(n)",
+          "Painful — must subtract signed delta correctly",
+          "No — counts full lines only"
+        ],
+        [
+          "Counters (dual per-player)",
+          "O(1)",
+          "O(n), ~2x signed",
+          "Yes — decrement owner's counter",
+          "No — same limitation, clearer code"
+        ],
+        [
+          "Recommended hybrid: board + dual counters + history",
+          "O(1) win check",
+          "O(n) counters + O(n^2) board + O(moves) history",
+          "Yes — revert() + clear() + flip turn",
+          "Add strategy polymorph when asked"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The hardest follow-up — generalising and concurrency"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three follow-ups separate memorised answers from engineered ones. First, `k`-in-a-row on an `n x n` board with `k < n` (Connect-4 style): counters are dead, because a row can contain a winning run without being full. The correct move is a strategy swap, not a hack — from the last-placed cell walk four axes (horizontal, vertical, two diagonals) counting consecutive friendly marks in both directions; the walk is bounded by `k`, so time is `O(k)`, space stays `O(n^2)`. Say that plainly: you are trading the `O(1)` guarantee for generality, and the `WinStrategy` interface is what makes the swap a five-minute change instead of a rewrite. Second, `undo`: signed-counter designs rot here because reverting the wrong sign silently poisons every future win check. Dual counters plus an explicit move stack make `undo` a mechanical inverse — pop, clear cell, decrement, restore turn, unlatch state — and you should write `revert` at the same time as `record`, not when asked. Third, concurrency: two simultaneous `move` calls can both pass the empty-cell check then overwrite each other and double-increment a counter. The minimal correct answer is mutual exclusion around the whole validate-place-record sequence — `synchronized` on `move`/`undo` as shown — because the critical section is nanoseconds and lock contention is irrelevant for a turn-based game. The trade-off: a coarse lock serialises everything but keeps counters and board atomically consistent; fine-grained per-row locks add complexity with zero measurable gain and invite deadlock during diagonal updates. If the interviewer pushes distributed play, do not reach for locks — reach for a single-threaded move sequencer or optimistic versioning with compare-and-swap on a move number, and name the shift from shared memory to message ordering."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Where counters silently lie",
+      "text": "Counters assume each cell is written exactly once and reverted exactly once. Violate that — double `record` without `place`, `undo` without `revert`, or a bot that simulates moves directly on the board — and wins become phantom. **Rule: every mutation of `Board` must go through `Game.move / undo` so the strategy stays in lockstep.** Simulation for AI must clone the strategy or use record/revert pairs, never touch the board alone."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Add undo / redo in O(1)?",
+          "text": "Show the history stack plus revert(). Redo is a second stack: undo pushes to redo, any fresh move clears redo. State the memory trade-off: O(number of moves) retained for audit and replay."
+        },
+        {
+          "title": "Support k-in-a-row instead of n-in-a-row?",
+          "text": "Swap CounterWinStrategy for RunScanStrategy that checks four directions from the last move, O(k) time. Counters cannot express partial runs — do not try to patch them, replace the strategy."
+        },
+        {
+          "title": "Add a bot opponent?",
+          "text": "Introduce Player.nextMove(board). Random bot is trivial; minimax over 3x3 is at most 9! states with symmetry pruning. Keep search outside Game so human-vs-human timing is unaffected."
+        },
+        {
+          "title": "Make move thread-safe?",
+          "text": "Synchronise validate-place-record as one atomic unit. Validation outside the lock is the classic race — check-then-act must be inside. For multi-server play, sequence moves through one owner per game."
+        },
+        {
+          "title": "Persist and replay games?",
+          "text": "Log immutable Move(row, col, mark, seqNo) events, not board snapshots. Replay is re-application; snapshots are O(n^2) per move for no benefit. Event log also gives audit and cheat detection free."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`n == 1`: first move wins immediately — counters handle it (`1 == n`), scans with loop bounds often miss it.",
+        "Centre cell on odd `n` lies on *both* diagonals — must update both counters; testing only one loses wins.",
+        "Move after `WON` or `DRAW` must be rejected — latch `GameState`, do not rely on callers to stop calling.",
+        "Duplicate move on occupied cell must throw *before* touching counters — increment-then-validate corrupts state permanently.",
+        "Out-of-bounds `(r, c)` including negatives — validate bounds before array access, not after.",
+        "Draw versus ongoing both return `0` in LeetCode shape — expose `getState()` / `isFull()` so callers can tell them apart.",
+        "Undo on empty history, undo after game over, double undo — define each; undo of the winning move must unlatch `WON` back to `IN_PROGRESS`.",
+        "Integer board-full check: `moves == n * n` can overflow `int` for absurd `n` — use `long` for move count or cap `n` up front and state the bound."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak versus strong signals for this round.",
+      "headers": [
+        "Axis",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Win detection",
+          "Scans row/col/diags every move, O(n), cannot explain cost",
+          "Incremental counters, O(1), states space-for-time trade-off and sync risk"
+        ],
+        [
+          "Invariants",
+          "Trusts caller for turns and legality; allows replay on occupied cell",
+          "Owns turn internally, validates bounds/occupancy/liveness, fail-fast errors"
+        ],
+        [
+          "Modelling",
+          "One class with statics, UI mixed into logic",
+          "Game / Board / WinStrategy / Player split with one reason per class to change"
+        ],
+        [
+          "State sync",
+          "Counters diverge after undo or simulated moves, no revert path",
+          "record/revert pair designed together; all mutations funnelled through Game"
+        ],
+        [
+          "Extension",
+          "Hard-codes 3, full-line logic smeared across move()",
+          "Names k-in-a-row, undo, bot as strategy/player swaps; does not overbuild them"
+        ],
+        [
+          "Communication",
+          "Codes immediately, discovers draw and diagonals mid-test",
+          "Asks n/k, turn ownership, illegal-move policy up front; narrates trade-offs"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "A 45-minute plan",
+      "text": "**0–5:** ask the five clarifiers, agree n-in-a-row, internal turns, throw-on-illegal, undo maybe. **5–10:** write the LeetCode-shape O(1) counter core — interviewer sees the algorithm immediately. **10–25:** refactor to `Game + Board + CounterWinStrategy`, add `GameState`, turn flipping, validation. **25–35:** implement `undo` via history + `revert`, prove counters stay synced. **35–45:** drive follow-ups yourself — sketch `k`-in-a-row directional scan, `Player` polymorph for bots, `synchronized` move and why coarse locking wins here. Close by restating the trade-off: O(n) space for O(1) wins, plus a seam (strategy interface) where the O(1) guarantee is knowingly surrendered for generality."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:33:26.393Z",
+    "problems": []
+  }
+}

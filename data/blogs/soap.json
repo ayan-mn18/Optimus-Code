@@ -1,0 +1,283 @@
+{
+  "slug": "soap",
+  "title": "SOAP",
+  "summary": "SOAP is contract-first XML RPC: strict WSDL envelope with header, body, and fault, traded for verbosity and rigidity to get tooling, security, and transactions.",
+  "kind": "HLD",
+  "problemSlug": "soap-93-206",
+  "topic": "Application Programming Interface (API)",
+  "difficulty": "Medium",
+  "coverEmoji": " 27",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "API",
+    "SOAP",
+    "System Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What Is a SOAP API and How Does It Work? - Postman Blog",
+      "url": "https://blog.postman.com/soap-api-definition/",
+      "source": "blog.postman.com",
+      "kind": "article"
+    },
+    {
+      "title": "SOAP - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/SOAP",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Basics of SOAP - Simple Object Access Protocol - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/computer-networks/basics-of-soap-simple-object-access-protocol/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "SOAP is **contract-first RPC over XML envelopes**, not resource-oriented HTTP. You pay for verbosity and rigidity to buy **machine-enforceable contracts, transport independence, and enterprise-grade security and transactions**. If you do not need all three, you should not be using it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What SOAP actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "SOAP is a W3C messaging protocol for invoking *operations* on a remote system using XML documents with a fixed shape. Every message is an `Envelope` containing an optional `Header` for cross-cutting concerns and a mandatory `Body` for the business payload, plus a defined `Fault` model for errors. The service is described separately in WSDL — an XML interface definition that lists operations, message schemas, bindings, and endpoints — so clients can generate stubs instead of hand-writing HTTP calls. That is the fundamental split from REST: REST makes the URL plus verb plus status code the contract and leaves the payload loosely defined; SOAP makes a validated XML document plus a WSDL operation the contract and treats HTTP as dumb transport. The trade-off is explicit: you get compile-time certainty about shape and behavior at the cost of coupling every consumer to a centrally versioned schema."
+    },
+    {
+      "type": "paragraph",
+      "text": "Transport independence is not a footnote, it is the design center. A SOAP message is self-describing — sender, intent, security tokens, transaction context, routing instructions all live *inside* the envelope — so the same bytes can ride over HTTP, HTTPS, SMTP, TCP, or a message queue without changing semantics. That is why banks, payment processors, telecom provisioning systems, and ERP integrations still run it: they needed exactly-once delivery, end-to-end encryption and signing independent of TLS, and atomic coordination across vendors who did not share infrastructure. HTTP-centric styles push those concerns down to the transport or up to the application; SOAP pulls them into the message layer with WS-Security, WS-ReliableMessaging, and WS-AtomicTransaction. You accept 5-10x payload bloat and expensive XML parsing because the alternative is re-implementing those guarantees badly in every service."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The four pieces you must name"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Envelope** — the mandatory root element. It declares namespaces and protocol version and frames everything else. If it does not validate, nothing else is processed. This is where version mismatch kills you silently.",
+        "**Header** — optional, extensible, and the whole reason SOAP survived. Authentication tokens, signatures, timestamps, message IDs, routing, transaction coordinators live here. Headers can carry `mustUnderstand=\"1\"`, meaning the receiver *must* reject the message if it does not implement that header. That one attribute is a source of endless production outages.",
+        "**Body** — the actual operation call or return value, e.g. `GetBalance` in, `GetBalanceResponse` out. Its structure is governed by an XML Schema referenced from WSDL, so both sides can validate before executing business logic.",
+        "**Fault** — the typed error channel. A `Fault` carries `faultcode`, `faultstring`, `faultactor`, and `detail`, distinguishing sender errors (bad request) from receiver errors (server failure) and version mismatches. It replaces HTTP status codes as the primary error signal, which is why SOAP-over-HTTP almost always returns `500` on the wire even for client bugs."
+      ]
+    },
+    {
+      "type": "code",
+      "language": "xml",
+      "filename": "balance-request.xml",
+      "code": "<soap:Envelope xmlns:soap=\"http://www.w3.org/2003/05/soap-envelope\"\n               xmlns:pay=\"http://example/payments\"\n               xmlns:wsse=\"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd\">\n  <soap:Header>\n    <wsse:Security soap:mustUnderstand=\"1\">\n      <wsse:UsernameToken>\n        <wsse:Username>svc-billing</wsse:Username>\n        <wsse:Password>***</wsse:Password>\n        <wsu:Timestamp>2026-09-06T08:00:00Z</wsu:Timestamp>\n      </wsse:UsernameToken>\n    </wsse:Security>\n    <pay:MessageId>uuid-9f3a-44c1</pay:MessageId>\n  </soap:Header>\n  <soap:Body>\n    <pay:GetBalance>\n      <pay:AccountId>1001</pay:AccountId>\n    </pay:GetBalance>\n  </soap:Body>\n</soap:Envelope>"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from WSDL to wire"
+    },
+    {
+      "type": "paragraph",
+      "text": "SOAP is built for generated code, not hand-rolled fetch calls. The provider publishes WSDL; the consumer feeds it to `wsimport`, `svcutil`, `wsdl2code`, or equivalent and gets a typed client stub plus data classes. At runtime the stub serializes a method call into an envelope, injects headers for security and correlation, POSTs it — usually to a single endpoint URL regardless of operation — and deserializes the response envelope or fault into objects or exceptions. On the server side a dispatcher routes on the qualified name of the first child of `Body` or on the `SOAPAction` header, validates the XML against schema, enforces `mustUnderstand` headers, authenticates the WS-Security token, executes the handler, then serializes the return or fault. The trade-off: development velocity is high when the contract is stable because the compiler catches drift, but every contract change forces regeneration and redeployment on both sides. There is no tolerant-reader path by default."
+    },
+    {
+      "type": "mermaid",
+      "title": "SOAP request lifecycle",
+      "caption": "Contract-first flow: WSDL generates stubs, every call is a validated envelope POST.",
+      "code": "flowchart TD\n  W[WSDL + XSD Contract] --> CG[Generate Client Stub]\n  W --> SG[Generate Server Skeleton]\n  CG --> B[Build Envelope: Header + Body]\n  B --> SEC[Add WS-Security and MessageId]\n  SEC --> POST[POST to Single Endpoint]\n  POST --> VAL[Validate Schema + mustUnderstand]\n  VAL --> AUTH[Verify Signature and Token]\n  AUTH --> OP[Dispatch by Body Operation Name]\n  OP --> BL[Business Logic]\n  BL --> RESP[Build Response Envelope or Fault]\n  RESP --> CG"
+    },
+    {
+      "type": "paragraph",
+      "text": "WSDL plus the WS-* stack is where the power and the pain both live. WSDL splits into abstract (`types`, `message`, `portType` / `interface`) and concrete (`binding`, `service`) sections, so the same operation can be bound to SOAP-over-HTTP, SOAP-over-JMS, or SOAP-over-SMTP without changing logic. WS-Security adds token profiles, XML Signature, and XML Encryption for message-level protection that survives intermediaries and persists in queues — something TLS alone cannot do. WS-ReliableMessaging adds sequence numbers and acknowledgments for at-least-once delivery over unreliable transports. WS-AtomicTransaction coordinates two-phase commit across services. Each layer is composable and standardized, which is exactly what regulated integrations demand. The trade-off is operational complexity: clock skew breaks timestamps, canonicalization breaks signatures on a single whitespace change, and policy mismatches (`WS-Policy` in WSDL) produce opaque negotiation failures that never appear in REST."
+    },
+    {
+      "type": "table",
+      "caption": "SOAP trade-offs — no free guarantees.",
+      "headers": [
+        "Property",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Strict contract via WSDL + XSD",
+          "Compile-time validation, codegen, breaking-change detection before deploy",
+          "Tight coupling; any field rename forces coordinated client regeneration"
+        ],
+        [
+          "Message-level security",
+          "End-to-end signing and encryption through proxies and queues, per-element control",
+          "Canonicalization fragility, key management burden, large CPU cost for XML crypto"
+        ],
+        [
+          "Transport independence",
+          "Same message over HTTP, MQ, SMTP; survives intermediaries TLS cannot cross",
+          "You re-implement routing, retries, and correlation that HTTP ecosystems give for free"
+        ],
+        [
+          "Reliable messaging + transactions",
+          "Standard retries, sequencing, distributed atomicity across vendors",
+          "Coordinator becomes a bottleneck and failure domain; debugging 2PC across orgs is brutal"
+        ],
+        [
+          "Tooling maturity",
+          "Stubs in Java, .NET, SAP, Oracle with almost no hand-written parsing",
+          "Generated code is bloated, hard to upgrade, and hides wire behavior until it breaks"
+        ],
+        [
+          "Verbosity and parsing",
+          "Self-describing, auditable, schema-validated payloads regulators love",
+          "5-10x size vs JSON, high CPU and memory for DOM parsing, p99 latency penalty"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "SOAP failures rarely look like clean 4xx errors. They look like `500 Internal Server Error` with a generic fault, or worse, a client-side deserialization exception with no server log at all. The most expensive failure mode is silent contract drift: someone adds a required element to the XSD, regenerates the server, and forgets one downstream consumer. That consumer keeps sending the old envelope, schema validation rejects it, and you see a flood of `Sender` faults that monitoring misclassifies as client bugs. The second classic is `mustUnderstand` rejection — a gateway injects a new header with `mustUnderstand=\"1\"` for tracing or security, an older node does not recognize it, and per spec it *must* fault the entire message. The third is time: WS-Security timestamps default to a five-minute freshness window, so a few minutes of NTP drift between data centers turns valid signatures into expired-token faults. All three share a symptom: everything looks healthy at the TCP and HTTP layer while the business operation success rate collapses."
+    },
+    {
+      "type": "table",
+      "caption": "Failure signatures to recognize on call.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Fix that actually works"
+      ],
+      "rows": [
+        [
+          "Required schema element added",
+          "Spike in `soap:Sender` faults; old clients get validation errors, new clients fine",
+          "Never add required elements; only add optional elements, version the `portType` for breaking changes"
+        ],
+        [
+          "Namespace or prefix change",
+          "Server logs show valid XML but dispatcher finds no operation; client sees empty response or fault",
+          "Pin namespace URIs in contract tests; treat namespace change as a new service version"
+        ],
+        [
+          "mustUnderstand header from intermediary",
+          "`MustUnderstand` fault even though Body is correct; only some routes fail",
+          "Gateways must not set mustUnderstand unless receivers are upgraded; make custom headers optional by default"
+        ],
+        [
+          "Clock skew with WS-Security",
+          "Intermittent `FailedAuthentication` or expired Timestamp, correlated with one AZ or DC",
+          "NTP monitoring with alerts, widen freshness window deliberately, use nonce cache not just timestamps"
+        ],
+        [
+          "Oversized or hostile XML",
+          "CPU saturation, GC pauses, parser expansion errors; p99 explodes on a few large messages",
+          "Enable parser limits, stream with StAX not DOM, enforce max envelope size at edge, reject DTDs entirely"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "language": "xml",
+      "filename": "soap-fault.xml",
+      "code": "<soap:Envelope xmlns:soap=\"http://www.w3.org/2003/05/soap-envelope\">\n  <soap:Body>\n    <soap:Fault>\n      <soap:Code>\n        <soap:Value>soap:Sender</soap:Value>\n        <soap:Subcode>\n          <soap:Value>pay:InvalidAccount</soap:Value>\n        </soap:Subcode>\n      </soap:Code>\n      <soap:Reason>\n        <soap:Text xml:lang=\"en\">AccountId 1001 is closed</soap:Text>\n      </soap:Reason>\n      <soap:Detail>\n        <pay:ErrorId>ACC-CLOSED-771</pay:ErrorId>\n      </soap:Detail>\n    </soap:Fault>\n  </soap:Body>\n</soap:Envelope>"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "SOAP vs REST vs gRPC for a payment integration",
+          "text": "State the decision rule: choose SOAP when the counterparty mandates WSDL, message-level signing, or distributed transactions across organizations. Otherwise prefer REST or gRPC for lower latency and easier evolution. Justify the cost explicitly — do not say SOAP is more secure without naming WS-Security vs TLS."
+        },
+        {
+          "title": "Design the contract and its evolution",
+          "text": "Sketch `portType` with `GetBalance`, `TransferFunds`, define XSD types, then answer: how do you add a field without breaking 50 consumers? Answer: optional elements only, new operation version, parallel endpoints during migration. Mention namespace versioning."
+        },
+        {
+          "title": "Debug a fault in production",
+          "text": "You are given a `MustUnderstand` fault and a `Sender` fault. Explain which side is at fault, what header or schema element caused it, and where you would look first — gateway-injected headers, clock skew, or XSD drift. Distinguish transport HTTP 500 from SOAP fault code."
+        },
+        {
+          "title": "Scale and harden the endpoint",
+          "text": "Address XML-specific scaling: streaming parsers, schema validation caching, signature verification offload, envelope size limits, idempotency keys in Header for retries over WS-ReliableMessaging. Name the trade-off: validation at edge rejects bad traffic early but couples the gateway to the schema."
+        },
+        {
+          "title": "Interoperate with modern services",
+          "text": "Propose an anti-corruption layer: keep SOAP at the vendor boundary, translate to internal REST or events behind a gateway. Explain why you do not leak WSDL-generated types deep into your domain — version coupling would freeze internal deploys."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**SOAP is just REST with XML** — wrong. REST routes on URL plus verb and uses status codes; SOAP routes on Body operation name, POSTs to one URL, and carries its own fault model. Treating them as interchangeable guarantees a broken design.",
+        "**SOAP requires HTTP** — wrong. HTTP is the common transport, but the envelope is transport-agnostic by design. That independence is why it works over queues and mail where REST semantics collapse.",
+        "**WSDL is optional documentation** — wrong. WSDL *is* the API. Without it there is no codegen, no validation, no policy negotiation. A SOAP service without versioned WSDL is an unmaintainable RPC hack.",
+        "**SOAP is automatically secure because it is enterprise** — wrong. Security comes only from correctly configured WS-Security: tokens, signatures, encryption, freshness checks, and key rotation. Misconfigured WS-Security is worse than plain TLS because it gives false confidence with higher complexity.",
+        "**SOAP is dead, never propose it** — wrong and naive. Greenfield public APIs should avoid it, but regulated money movement, telecom, airline, and government integrations still mandate it. Saying never signals you have not integrated with a real bank."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use SOAP at the boundary you do not control; avoid it where you do.",
+      "headers": [
+        "Use SOAP when",
+        "Avoid SOAP when"
+      ],
+      "rows": [
+        [
+          "Counterparty mandates WSDL and WS-* — bank settlement, card processing, tax filing",
+          "You own both client and server and can choose gRPC or REST with JSON"
+        ],
+        [
+          "You need message-level signing or encryption through intermediaries and queues",
+          "TLS hop-to-hop is sufficient and intermediaries are trusted"
+        ],
+        [
+          "You need standardized reliable delivery or atomic transactions across vendors",
+          "You can model with idempotency keys, sagas, and at-least-once events internally"
+        ],
+        [
+          "Regulated audit demands schema-validated, self-describing messages with formal versions",
+          "Schema evolves weekly, mobile clients need small payloads and tolerant reading"
+        ],
+        [
+          "Legacy ERP, CRM, or telecom stack only exposes SOAP and migration is out of scope",
+          "Browser or mobile public API where payload size, latency, and debuggability dominate"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "Use SOAP when **an external contract forces WSDL plus message-level security or transactions**; accept the verbosity and versioning cost there, and **isolate it behind a gateway** so it never infects your internal design."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:48:51.587Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,263 @@
+{
+  "slug": "concurrency-handle-large-number-of-concurrent-requests",
+  "title": "Concurrency (Handle large number of Concurrent requests)",
+  "summary": "Concurrency is overlapping in-flight work, not simultaneous arrival. This concept page explains where time goes, which levers actually help, and what breaks first.",
+  "kind": "HLD",
+  "problemSlug": "concurrency-handle-large-number-of-concurrent-requests-90-301",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "⚡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Concurrency"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "High Concurrency Explained for Modern Scalable Systems - Aerospike",
+      "url": "https://aerospike.com/blog/high-concurrency-explained/",
+      "source": "aerospike.com",
+      "kind": "article"
+    },
+    {
+      "title": "What does concurrent requests really mean? - Stack Overflow",
+      "url": "https://stackoverflow.com/questions/5017392/what-does-concurrent-requests-really-mean",
+      "source": "stackoverflow.com",
+      "kind": "article"
+    },
+    {
+      "title": "Concurrency Deep Dive: Code Strategies for High Traffic Applications",
+      "url": "https://nathanpeck.com/concurrency-deep-dive-strategies-for-high-traffic-applications/",
+      "source": "nathanpeck.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Concurrency is **overlapping lifetimes**, not simultaneous arrival. If 500 requests are each open for 200ms, you have 500-way concurrency even if packets arrived serially. Design for **how long work stays in flight**, not how fast it arrives — because holding time, not arrival rate, is what exhausts threads, connections, and memory."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A system handles **N concurrent requests** when N requests have started but not yet finished at the same instant. That is it. It says nothing about the network wire, about Time Division Multiplexing, about whether two packets physically overlapped, or about how many CPU cores you own. One single-threaded event loop can carry 10,000 concurrent connections if each one spends most of its life waiting. One 64-core box can collapse at 200 concurrent requests if each one holds a thread, a DB connection, and a lock while doing synchronous I/O. Interviewers use the word to probe whether you distinguish **in-flight work** from **parallel execution**. Parallelism is doing two instructions at the same physical instant on different cores. Concurrency is juggling many unfinished operations by interleaving them whenever one stalls. High concurrency without parallelism is normal and desirable for I/O-bound services. High parallelism without concurrency control is how you melt a downstream database."
+    },
+    {
+      "type": "paragraph",
+      "text": "Quantify it with **Little's Law**: `concurrent_in_flight = arrival_rate * average_hold_time`. At 1,000 requests per second with 50ms of server-side hold time, you need to host ~50 overlapping requests. Keep latency at 50ms and a modest pool survives. Let a downstream slow down and push hold time to 2 seconds, and the same arrival rate now demands 2,000 overlapping slots — 40x more memory, sockets, threads, and DB connections. This is why latency and concurrency are the same problem. Every millisecond you add to the critical path multiplies the concurrency burden on every resource held across that path. The trade-off is brutal and unavoidable: you can either **shorten hold time** with caching, faster dependencies, and non-blocking I/O, or you can **pay for more slots** with horizontal scaling, bigger pools, and queues. If you propose scaling without naming which hold time you are buying headroom for, you have not answered the question."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: where the time actually goes"
+    },
+    {
+      "type": "paragraph",
+      "text": "Take a typical 120ms checkout request: 5ms validating JSON, 60ms waiting on a database insert, 5ms running business logic, 45ms waiting on an inventory service, 5ms serialising the response. Only ~15ms burns CPU. The other ~105ms the request is just parked, holding a thread and a socket while doing zero useful work. A classic thread-per-request server parks one OS thread per parked request. At 5,000 such requests you have 5,000 stacks at ~1MB each, 5,000 context switches competing for a few dozen cores, and scheduler overhead that dwarfs real work. The fix is not a faster CPU. The fix is to **stop holding a thread while waiting**. An event loop or async runtime registers interest in the I/O completion, parks only a small state object, and reuses the same thread to run another request's 5ms of real work. When the database replies, the callback resumes. You trade thread simplicity for state-machine complexity, but you convert 105ms of dead hold time from a thread cost into a cheap queue entry. That is the entire economic argument for non-blocking I/O, and why I/O-bound services scale concurrency far beyond core count."
+    },
+    {
+      "type": "mermaid",
+      "title": "Thread-per-request vs event-loop",
+      "caption": "Parked requests should cost a queue entry, not a thread.",
+      "code": "flowchart TD\n  LB[Load Balancer] --> T1[Thread Server: one thread per request]\n  LB --> E1[Event Loop Server: one thread many requests]\n  T1 --> T2[Request A blocks on DB: thread sleeps]\n  T1 --> T3[Request B blocks on DB: thread sleeps]\n  T3 --> T4[5000 blocked threads: OOM and context switches]\n  E1 --> E2[Request A hits DB: register callback, park state]\n  E2 --> E3[Same thread runs Request B, C, D CPU slices]\n  E3 --> E4[DB reply arrives: resume A, send response]"
+    },
+    {
+      "type": "paragraph",
+      "text": "This diagram is the decision you defend in an interview. Thread-per-request is simple to reason about — stack traces are linear, locks are obvious — but every stall consumes the scarcest resource: a schedulable thread. Event-driven handling keeps throughput high under I/O stall, but pushes complexity into backpressure, timeouts, and debugging across callbacks. Neither is free. Choose blocking threads when CPU dominates and concurrency is low, typically under a few hundred in-flight with fast dependencies. Choose async plus bounded queues when I/O dominates and concurrency is in the thousands. The common failure is mixing them blindly: calling a blocking database driver from an event loop. One 500ms blocking call stalls every request sharing that loop, and your p99 explodes even though CPU is idle. That is why the driver choice matters more than the framework choice."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Strategies that actually move the needle"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are only five levers worth naming, and each buys concurrency by sacrificing something else. Do not recite them as a shopping list. Pick the bottleneck first — CPU, memory, sockets, downstream throughput, or shared mutable state — then pick the lever that relieves that bottleneck. Horizontal scaling adds slots. Async and queues reshape hold time and absorb bursts. Caching deletes work entirely. Rate limiting and shedding protect the core at the expense of the edge. Pooling and backpressure stop a fast front-end from crushing a slow back-end. Every one of them fails if applied to the wrong bottleneck, which is exactly what interviewers are testing."
+    },
+    {
+      "type": "table",
+      "caption": "Concurrency levers: what each buys and what it costs.",
+      "headers": [
+        "Lever",
+        "What it buys you",
+        "What you pay / risk"
+      ],
+      "rows": [
+        [
+          "Horizontal scaling + load balancing",
+          "More independent slots for in-flight work; isolates faults by instance",
+          "State must be externalised; downstream load multiplies; cost scales linearly and hides inefficiency"
+        ],
+        [
+          "Async I/O + bounded queues",
+          "High in-flight count on few threads; bursts become queue depth instead of errors",
+          "Harder debugging and timeout reasoning; unbounded queues become memory bombs and latency lies"
+        ],
+        [
+          "Caching at edge / app / DB",
+          "Removes hold time entirely for hot reads; highest concurrency-per-dollar",
+          "Staleness, invalidation storms, and thundering herd on expiry; useless for contended writes"
+        ],
+        [
+          "Rate limiting + load shedding + degradation",
+          "Bounds worst-case concurrency; keeps p99 stable when demand exceeds capacity",
+          "You explicitly reject or degrade some users; needs careful priorities and client cooperation"
+        ],
+        [
+          "Connection pooling + backpressure + bulkheads",
+          "Caps downstream concurrency; one slow dependency cannot exhaust the whole server",
+          "Queueing delay under load; tuning pool size and timeouts is workload-specific and unforgiving"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Resource contention is the limiter hiding behind all five. At low concurrency, adding threads or replicas adds throughput almost linearly. Past the knee, shared resources serialize you: CPU scheduler thrash, lock wait on a hot row, connection pool exhaustion, network buffer bloat, garbage-collector pauses from allocation spikes. Throughput flattens, then falls, while latency climbs vertically. This is why blind horizontal scaling of a stateless tier often just moves the pile-up to the database, where 10x more app instances mean 10x more concurrent queries fighting for the same locks and I/O bandwidth. The opinionated answer: **scale the tier that holds the bottleneck, and throttle every tier above it**. If the database sustains 2,000 concurrent transactions, your app tier must never open 20,000. Pools, semaphores, and queue bounds are not optimisations; they are the mechanism that enforces that invariant. Trade-off stated plainly: you accept queueing delay in the app to avoid collapse in the store."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "High-concurrency failures rarely look like clean error codes. They look like a latency cliff followed by a cascade. A downstream slows by 100ms, hold time doubles, in-flight count doubles per Little's Law, pools fill, threads block, health checks time out, the load balancer marks healthy hosts as dead and concentrates load on survivors, retries multiply the offered load, and a partial slowdown becomes a full outage. Memory grows not from a leak but from buffered requests that will never drain. The database shows lock waits and connection storms while app CPU sits oddly low — because everyone is waiting, not computing. If you only monitor average latency and CPU, you will miss it until users do. You must watch queue depth, pool wait time, in-flight count, and p95/p99 together. The trade-off in observability is cost versus lead time: fine-grained concurrency metrics are expensive, but they are the only signal that fires before the cliff."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**p99 explodes while p50 looks fine:** classic queueing behind a saturated pool or lock. Symptom of hold-time inflation, not CPU saturation. Check downstream latency and pool wait time first.",
+        "**Thread exhaustion / `no available connection`:** in-flight count exceeded fixed slots. Threads stuck in blocking I/O. Fix is timeouts plus smaller, bounded pools with backpressure — not larger pools.",
+        "**Retry storm amplifies outage:** clients retry on timeout, doubling arrival rate exactly when hold time is worst. Symptom is traffic rising as success falls. Fix with idempotency, jittered exponential backoff, and circuit breakers.",
+        "**Thundering herd on cache expiry:** one hot key expires, thousands of concurrent misses hit the DB at once. Symptom is periodic spikes aligned to TTL. Fix with request coalescing, jittered TTL, and stale-while-revalidate.",
+        "**GC pauses / OOM under burst:** unbounded queues buffer every arrival as an object. Symptom is memory climbing with queue depth, then long pauses. Fix with bounded queues and early shedding — fail fast instead of queueing forever."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete shape: async with a bound"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "server.py",
+      "code": "import asyncio\n\nMAX_INFLIGHT = 500          # bulkhead: never hold more than this\nDB_POOL_SIZE = 50           # downstream can only take this much\nREQUEST_TIMEOUT = 0.8       # fail fast; don't hold slots forever\n\nsem = asyncio.Semaphore(MAX_INFLIGHT)\n# db_pool is an async pool with max_size=DB_POOL_SIZE\n\nasync def handle(request):\n    async with sem:  # backpressure: excess waits here, visibly\n        try:\n            async with asyncio.timeout(REQUEST_TIMEOUT):\n                cached = await cache_get(request.key)\n                if cached is not None:\n                    return cached  # deleted work: zero downstream hold\n                row = await db_pool.fetch(request.key)  # non-blocking park\n                await cache_set(request.key, row)\n                return row\n        except TimeoutError:\n            # shedding: release slot, surface 503 so caller can back off\n            raise ServiceOverloaded()\n\nasync def server(queue: asyncio.Queue):\n    while True:\n        req = await queue.get()\n        # bounded queue upstream enforces MAX_QUEUE; beyond that, reject at LB\n        asyncio.create_task(handle(req))"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet exists to make three decisions visible, and each is a trade-off. First, the semaphore bounds in-flight work so a burst becomes **measurable queue delay** instead of invisible thread pile-up — you pay a little latency for survival. Second, the async database call parks state instead of a thread, so 500 in-flight requests cost kilobytes of callbacks, not gigabytes of stacks — you pay debugging complexity for density. Third, the timeout plus explicit overload error implements **load shedding**: it is better to reject 10% fast with `503` and `Retry-After` than to hold 100% for 10 seconds and fail everyone. Without the bound, the queue is a memory bomb. Without the timeout, one slow dependency holds every slot forever. Without the small downstream pool, scaling the app tier just DDoSes your own database. In an interview, point at each constant and say how you would size it from measurements: `MAX_INFLIGHT` from memory per request, `DB_POOL_SIZE` from downstream benchmarks, timeout from your p99 budget."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Quantify before architecting",
+          "text": "Ask for reads vs writes, arrival rate, average and p99 hold time, payload size, and burst ratio. Compute in-flight with Little's Law on the whiteboard. Interviewers pass candidates who turn 'large number' into '8k rps * 250ms = 2,000 overlapping'."
+        },
+        {
+          "title": "Name the bottleneck resource",
+          "text": "Say what saturates first: app threads, DB connections, hot-row locks, bandwidth, or memory for buffers. Justify with the I/O vs CPU split. Do not propose caching for a write-contention problem."
+        },
+        {
+          "title": "Draw the path and the bounds",
+          "text": "Sketch client to load balancer to app to cache to DB to queue. Mark every pool size, queue bound, and timeout. Unbounded boxes are a red flag — every arrow needs a limit."
+        },
+        {
+          "title": "Choose two levers and state the trade",
+          "text": "Example: 'Async plus bounded queue for burst absorption, at the cost of operational complexity; cache-aside for hot reads, at the cost of staleness and invalidation.' One lever with its cost beats four levers with no costs."
+        },
+        {
+          "title": "Describe the overload story",
+          "text": "Explain what happens at 3x traffic: what sheds, what degrades, what the user sees, and which metric fires first. End with retries, idempotency, and circuit breaking. This is where medium candidates become hires."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that kill you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Concurrent means simultaneous on the wire:** false. It means overlapping open lifetimes. Serial arrivals with long hold times still create massive concurrency.",
+        "**More threads equals more concurrency:** only until contention. Beyond the knee, threads add context-switch overhead and hold more downstream connections open, reducing throughput.",
+        "**Async makes work faster:** it does not. It lets one thread juggle more waiting work. CPU-bound work still needs more cores or less work — usually caching or batching.",
+        "**The load balancer solves concurrency:** it distributes slots, it does not create downstream capacity. Ten app replicas against one primary database just create ten times the lock contention.",
+        "**Averages describe load:** averages hide the burst that kills you. Size pools and queues for p99 hold time and peak burst, not the mean. If you provision for the average, the first flash sale is your outage."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Each concurrency pattern earns its complexity only in the right workload.",
+      "headers": [
+        "Pattern",
+        "Use when",
+        "Avoid when"
+      ],
+      "rows": [
+        [
+          "Event loop / async + bounded queue",
+          "I/O-bound, thousands of mostly-idle connections, bursty arrivals",
+          "CPU-bound or tiny concurrency; debugging cost exceeds density gain"
+        ],
+        [
+          "Thread pool + sync code",
+          "CPU-bound or low concurrency (<500), complex business logic",
+          "Long downstream stalls; threads become expensive parking spots"
+        ],
+        [
+          "Horizontal stateless scale-out",
+          "Share-nothing requests; bottleneck is app CPU or sockets",
+          "Bottleneck is shared mutable state or single-writer DB; you will amplify contention"
+        ],
+        [
+          "Cache-aside / CDN",
+          "Skewed read-heavy workload with tolerance for staleness",
+          "Write-heavy or strong-consistency reads; invalidation cost exceeds hit benefit"
+        ],
+        [
+          "Rate limit + shed + degrade",
+          "Demand can exceed supply; partial answers beat total collapse",
+          "Every request is critical and cannot be deferred or degraded; you need provisioning, not protection"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The judgment call is this: concurrency machinery is overhead you pay on every request to survive the worst minute of the month. For an internal tool at 20 requests per second with a fast local database, a simple synchronous server with a modest thread pool wins — less code, clearer failures, no async tax. For a public checkout, feed, or game lobby with bursty arrivals and slow dependencies, the async, cached, bounded, shedding design is not premature optimisation; it is the minimum that keeps hold time from multiplying into collapse. Say which world you are in, size your bounds from measured hold time rather than lore, and always name what you sacrificed. That explicit trade-off is what separates a scalable design from a diagram with more boxes."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **\"Concurrency is in-flight work equal to arrival rate times hold time, so I shorten hold time with async and caching and cap slots with bounded pools and shedding — trading a little queueing and complexity to avoid collapse.\"**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:21:36.186Z",
+    "problems": []
+  }
+}

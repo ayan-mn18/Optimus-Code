@@ -1,0 +1,273 @@
+{
+  "slug": "command-design-pattern",
+  "title": "Command Design Pattern",
+  "summary": "Command turns a method call into an object so invocation can be stored, queued, undone, and retried without coupling the caller to the receiver.",
+  "kind": "LLD",
+  "problemSlug": "command-design-pattern-36-76",
+  "topic": "Behavioral Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "🎛️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Behavioral Patterns",
+    "Command"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Command - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/command",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Command · Design Patterns Revisited - Game Programming Patterns",
+      "url": "https://gameprogrammingpatterns.com/command.html",
+      "source": "gameprogrammingpatterns.com",
+      "kind": "article"
+    },
+    {
+      "title": "Command pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Command_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Help me understand Command Pattern : r/csharp - Reddit",
+      "url": "https://www.reddit.com/r/csharp/comments/vgrzv1/help_me_understand_command_pattern/",
+      "source": "reddit.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Command turns invocation into data.** Instead of calling `receiver.action(args)` now, you build an object that *holds* the receiver, the method, and the args, and you hand that object to someone else to run later. The entire pattern exists for one reason: **separate the decision to do something from the moment and place it actually happens.** If you do not need time-shift, queueing, logging, retry, or undo, you do not need Command. Use a direct call."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Command actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Command is a contract — usually `execute()` plus an optional `undo()` — implemented by small objects that each capture one intent: *which* receiver, *which* operation, *with what* arguments, and *enough prior state* to reverse it. The **client** builds the command. The **invoker** holds it and decides when to run it: now, later, in a thread pool, from a button, from deserialized bytes. The **receiver** does the real work and knows nothing about buttons, queues, or history. The invoker knows nothing about receivers. That double blindness is the point. You pay for it with an extra class per operation, and you buy the ability to treat requests like values: store them, sort them, log them, batch them, drop them, replay them."
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not confuse this with just wrapping a method for style. A direct call binds caller to callee at compile time and executes immediately. A lambda or function pointer also defers execution, and in many languages it replaces trivial commands — use it when the request is one line with no undo. Choose an explicit Command class when the request needs **state, identity, and lifecycle**: parameters that must survive serialization, a `canExecute()` guard, retry counting, auditing, composition into macros, or reversal. The trade-off is ceremony versus control. Lambdas are cheaper to write and impossible to inspect, persist, or undo reliably. Command objects are verbose and fully inspectable. If an interviewer asks why not just use callbacks, that distinction is the answer."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Four roles, one rule: nobody knows more than they must. The **Client** owns policy — it picks the receiver, freezes the arguments, instantiates the concrete command, and injects it into the invoker. It runs once at wiring time. The **Command interface** declares `execute()` and optionally `undo()` and `isValid()`. The **ConcreteCommand** stores a reference to the receiver plus a snapshot of arguments and, critically, whatever it needs to reverse itself — old value, deleted row, file offset. It contains no UI, no threading, no queue logic. The **Invoker** — button, toolbar, scheduler, worker — holds only the interface and calls `execute()` when its own trigger fires. The **Receiver** — `TextBuffer`, `Light`, `OrderService` — exposes domain operations and stays ignorant of commands entirely. Creation and execution happen on different timelines, often on different threads, and that split is what enables everything else."
+    },
+    {
+      "type": "mermaid",
+      "title": "Command structure",
+      "caption": "Client wires receiver into command; invoker runs only the interface.",
+      "code": "classDiagram\n  class Client\n  class Invoker {\n    +setCommand(Command)\n    +run()\n  }\n  class Command {\n    <<interface>>\n    +execute()\n    +undo()\n  }\n  class ConcreteCommand {\n    -receiver : Receiver\n    -args\n    +execute()\n    +undo()\n  }\n  class Receiver {\n    +action()\n  }\n  Client --> ConcreteCommand : creates\n  Client --> Invoker : configures\n  Invoker --> Command : holds\n  Command <|.. ConcreteCommand\n  ConcreteCommand --> Receiver : calls"
+    },
+    {
+      "type": "paragraph",
+      "text": "Control flow is deliberately boring, which is why it scales. At setup, the client constructs `new CopyCommand(buffer, selection)` and calls `toolbar.setCommand(copySlot, cmd)`. Nothing runs. Later, the invoker fires — click, keypress, cron tick, message arrival — and calls `cmd.execute()`. The command forwards to `receiver.copy(selection)`. If undo is supported, the invoker pushes the executed command onto a history stack *after* success, not before. Undo pops in reverse order and calls `undo()`. Queuing adds one step: serialize or enqueue the command object instead of running it, then a consumer dequeues and executes. Logging adds another: persist the command before execution so a crash can replay it. Every extension lives in the invoker or in command composition, never in the receiver. When you see business logic leaking into buttons or retry logic leaking into domain services, the separation has been violated."
+    },
+    {
+      "type": "table",
+      "caption": "Honest costs of turning calls into objects.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "The trade-off"
+      ],
+      "rows": [
+        [
+          "Decoupling invoker from receiver",
+          "One class per operation",
+          "Worth it when one trigger must serve many operations or one operation has many triggers; wasteful for 1:1 calls"
+        ],
+        [
+          "Deferral, queueing, scheduling",
+          "Lifetime and ownership complexity",
+          "You can run later or elsewhere, but you must now manage serialization, ordering, and exactly-once semantics"
+        ],
+        [
+          "Undo and redo",
+          "State snapshot per command",
+          "Reversal becomes possible, but each command must capture inverse state — memory and correctness burden shifts to you"
+        ],
+        [
+          "Audit, log, and replay",
+          "Persisted command schema to version",
+          "You get determinism and recovery, but command format becomes a compatibility contract"
+        ],
+        [
+          "Macro and transaction composition",
+          "Partial-failure handling",
+          "Batching is trivial via Composite, yet a failure at step 3 of 5 forces you to define compensation, not just rollback"
+        ],
+        [
+          "Testability of user actions",
+          "Indirection in stack traces",
+          "You can unit-test each intent in isolation, but debugging jumps through invoker to command to receiver instead of one frame"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are actually buying: time, reversibility, and inspectability"
+    },
+    {
+      "type": "paragraph",
+      "text": "Say it concretely. **Time-shift:** an editor toolbar button, a keyboard shortcut, and a context-menu item can share one `PasteCommand` instance because none of them executes paste — they only trigger it. Remapping input becomes rewiring, not rewriting, which is why game input and UI toolkits converge on this shape. **Reversibility:** `TypeTextCommand` stores the inserted range and prior content; `DeleteCommand` stores the removed bytes; undo is just reverse iteration with inverse application. This only works if `execute()` is deterministic and `undo()` is a true inverse — a requirement most teams underestimate. **Inspectability:** because the request is an object, a scheduler can prioritize it, a queue can persist it, a server can authorize it (`canExecute(user)`), and a test can assert on it without clicking anything. You are not buying elegance. You are buying a place to put cross-cutting policy — ordering, persistence, authorization, retry — that has no home in either the button or the business object. The cost is that every new operation is now a new type to name, version, and maintain."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Command fails when the captured request goes stale or the inverse is a lie. The classic failure is a stateful command that holds a live reference to a mutable receiver and assumes the world has not moved between enqueue and execution: a transfer command captures an account balance at creation, sits in a queue for 800ms, then executes against a changed balance and double-applies. The second failure is non-idempotent retry. If `execute()` sends an email or charges a card and the worker crashes after the side effect but before the acknowledgement, replay executes it twice unless the command carries an idempotency key and the receiver enforces it. The third is unbounded history. An undo stack that stores full document snapshots per keystroke grows without limit and pauses the UI on large pastes; production fixes cap depth, store deltas, or coalesce keystrokes. The fourth is command bloat: validation, auth, metrics, and threading all get stuffed into `execute()`, turning each command into a god object that cannot be serialized or tested. Keep commands narrow — data plus forward plus inverse — and push policy into the invoker or middleware."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Undo corrupts state or throws on redo — symptom of missing or partial inverse state; the command stored the new value but not the old one, or stored an index that shifted.",
+        "Queue consumers process stale requests — symptom of capturing derived values instead of identifiers plus a re-read at execution time; fix by storing IDs and resolving fresh.",
+        "Duplicate side effects after restart — symptom of log-then-execute without idempotency keys; you see double charges or double inserts on replay.",
+        "Memory climbs with session length — symptom of unbounded undo history or commands holding large receiver graphs alive; profile for retained snapshots.",
+        "Adding one button requires touching five files and still breaks — symptom of invoker knowing concrete command types instead of the interface; the decoupling has collapsed."
+      ]
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "CommandCore.java",
+      "code": "interface Command {\n    void execute();\n    default void undo() { throw new UnsupportedOperationException(\"not undoable\"); }\n    default boolean isUndoable() { return false; }\n}\n\n// Receiver: knows nothing about buttons, queues, or history.\nclass Light {\n    void on()  { System.out.println(\"light on\"); }\n    void off() { System.out.println(\"light off\"); }\n}\n\nfinal class LightOnCommand implements Command {\n    private final Light light;\n    LightOnCommand(Light light) { this.light = light; }\n    @Override public void execute() { light.on(); }\n    @Override public void undo() { light.off(); }\n    @Override public boolean isUndoable() { return true; }\n}\n\n// Invoker: knows nothing about Light. It only holds the interface.\nclass RemoteButton {\n    private Command slot;\n    void setCommand(Command cmd) { this.slot = cmd; }\n    void pressed() { if (slot != null) slot.execute(); }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that code as the grading rubric. The receiver `Light` has zero imports from the command package conceptually — it could be tested alone. The command holds the receiver and translates a generic `execute()` into a specific `light.on()`. The invoker `RemoteButton` never mentions `Light`; you can rebind the same button to `GarageOpenCommand` or a macro without editing it. That is the whole interview signal in six lines. Where candidates lose points is stuffing `if (type == LIGHT)` branches into the button or putting button logic into `Light`. Either direction reintroduces the coupling the pattern was hired to remove. The trade-off is visible too: for a single hardwired button this is over-engineering. It pays off the moment the second trigger appears — voice control, schedule, or test harness — because none of them need a new `Light` method."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "UndoAndMacro.java",
+      "code": "import java.util.*;\n\nfinal class MacroCommand implements Command {\n    private final List<Command> steps;\n    MacroCommand(List<Command> steps) { this.steps = List.copyOf(steps); }\n    @Override public void execute() {\n        for (Command c : steps) c.execute();\n    }\n    @Override public void undo() {\n        ListIterator<Command> it = steps.listIterator(steps.size());\n        while (it.hasPrevious()) {\n            Command c = it.previous();\n            if (c.isUndoable()) c.undo();\n        }\n    }\n    @Override public boolean isUndoable() { return true; }\n}\n\nclass History {\n    private final Deque<Command> stack = new ArrayDeque<>();\n    private final int limit;\n    History(int limit) { this.limit = limit; }\n\n    void run(Command cmd) {\n        cmd.execute(); // push only AFTER success\n        if (cmd.isUndoable()) {\n            if (stack.size() == limit) stack.removeFirst();\n            stack.addLast(cmd);\n        }\n    }\n    void undoLast() {\n        if (!stack.isEmpty()) stack.removeLast().undo();\n    }\n}"
+    },
+    {
+      "type": "mermaid",
+      "title": "Execute and undo flow",
+      "caption": "Push after success, pop in reverse; cap history to bound memory.",
+      "code": "flowchart TD\n  A[Invoker receives Command] --> B[Call execute]\n  B --> C{Success}\n  C -->|No| D[Discard and report]\n  C -->|Yes| E{Undoable}\n  E -->|No| F[Done]\n  E -->|Yes| G[Push onto history stack]\n  G --> H{Undo requested}\n  H -->|Yes| I[Pop and call undo in reverse order]\n  H -->|No| F"
+    },
+    {
+      "type": "paragraph",
+      "text": "Macros and transactions fall out of the same shape, and this is where you show seniority. `MacroCommand` is a Composite of commands: `execute()` runs the list forward, `undo()` runs the undoable subset backward. That gives you multi-step scenes — dim lights, lock door, arm alarm — from one button with no new invoker code. But do not call it a transaction unless you define failure semantics. If step two throws, do you stop, continue, or compensate steps already applied? Real systems pick one explicitly: stop-and-compensate (undo completed steps in reverse), best-effort (log and continue), or two-phase (validate all with `canExecute()` before running any). Name your choice and its cost. Compensation is the only honest undo for non-reversible steps like sending a message — you cannot unsend, you can only send an apology. Interviewers promote candidates who volunteer that limitation instead of pretending every operation is invertible."
+    },
+    {
+      "type": "table",
+      "caption": "Use Command when the request needs a lifecycle; skip it when it does not.",
+      "headers": [
+        "Use it when",
+        "Do not use it when",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Multiple triggers share one action (toolbar, shortcut, menu, API)",
+          "Single caller, single callee, execute-now",
+          "Sharing justifies the extra type; 1:1 calls pay ceremony for nothing"
+        ],
+        [
+          "You need undo, redo, macros, or transactional batches",
+          "Operation has no meaningful inverse",
+          "Undo demands stored inverse state — without it the pattern is hollow"
+        ],
+        [
+          "Requests must be queued, scheduled, retried, or sent over the wire",
+          "Hot path where allocation per call hurts",
+          "Queueing needs reified requests; per-frame or per-packet paths cannot afford object churn"
+        ],
+        [
+          "You need audit log, replay, or authorization per request",
+          "A plain function or strategy already expresses the variation",
+          "Logging needs identity and parameters; if you only vary an algorithm, Strategy is simpler"
+        ],
+        [
+          "Input remapping or plugin-provided actions",
+          "Receiver API is still churning weekly",
+          "Stable command schema decouples plugins; unstable receivers force constant command rewrites anyway"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design a remote control or toolbar",
+          "text": "Start with the interface, one concrete command, one receiver, one invoker. Show rebinding without editing the invoker. State the trade-off: N classes for N operations in exchange for open-closed extension."
+        },
+        {
+          "title": "Add undo and redo",
+          "text": "Introduce a history stack, push-after-success, reverse-order undo. Explain what each command must snapshot and why redo needs the forward args retained. Cap the stack and say what you drop."
+        },
+        {
+          "title": "Add macros and scheduling",
+          "text": "Compose with MacroCommand, then show a queue or scheduler holding commands. Discuss ordering, persistence format, and what happens when the process restarts mid-queue."
+        },
+        {
+          "title": "Handle failure and retry",
+          "text": "Define exactly-once versus at-least-once. Add idempotency keys, distinguish retryable from non-retryable errors, and define compensation for partial macro failure. This is the senior follow-up."
+        },
+        {
+          "title": "Defend against overuse",
+          "text": "Name when you would delete the pattern and use a function or direct call instead. Interviewers trust candidates who can shrink the design, not only expand it."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that lose points"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Command is just a callback with extra steps — wrong when the request needs identity, persistence, or reversal; right when it does not, in which case use the callback and say so.",
+        "The invoker should switch on command type — this destroys the pattern; the invoker calls only the interface, and new commands require zero invoker edits.",
+        "Undo is free once you have execute — false; undo requires designing and storing an inverse per command, and some operations are compensable but not invertible.",
+        "Every operation deserves a command class — leads to hundreds of trivial types; group cohesive operations behind parameterized commands like `SetValueCommand(receiver, key, oldVal, newVal)`.",
+        "Commands should contain business rules — they should not; validation and policy belong in the receiver or in an explicit guard layer so commands stay serializable and testable.",
+        "Command and Strategy are interchangeable — Strategy varies *how* an algorithm runs inside one context; Command captures *what* request to run, *on whom*, *when*, with history and lifecycle."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Command packages a request — receiver, operation, and arguments plus enough state to reverse it — into an object so the invoker can trigger, queue, log, or undo it without knowing what it does.** Then prove it: sketch the interface, show push-after-success undo, and name the cost — one class per operation and explicit failure semantics for macros."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:58:14.293Z",
+    "problems": []
+  }
+}

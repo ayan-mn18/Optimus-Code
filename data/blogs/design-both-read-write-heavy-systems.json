@@ -1,0 +1,387 @@
+{
+  "slug": "design-both-read-write-heavy-systems",
+  "title": "Design both Read & Write Heavy Systems",
+  "summary": "Read-heavy and write-heavy are opposite bottlenecks. This guide shows how to split read and write paths, pick caching vs ingestion, and defend every trade-off.",
+  "kind": "HLD",
+  "problemSlug": "design-both-read--write-heavy-systems-149-327",
+  "topic": "Resources Efficient & Extensible System Design",
+  "difficulty": "Medium",
+  "coverEmoji": "📚",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "system-design",
+    "read-heavy",
+    "write-heavy",
+    "caching",
+    "HLD"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "System Design Interview Prep & Questions (2026 Guide) - Exponent",
+      "url": "https://www.tryexponent.com/blog/system-design-interview-guide",
+      "source": "tryexponent.com",
+      "kind": "article"
+    },
+    {
+      "title": "How do you approach sys design interviews (as the interviewee)?",
+      "url": "https://www.reddit.com/r/ExperiencedDevs/comments/163q1n1/how_do_you_approach_sys_design_interviews_as_the/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Interview Questions: System design solutions to improve database ...",
+      "url": "https://medium.com/geekculture/interview-questions-system-design-solutions-to-improve-database-performance-2d2ce1be8536",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "System Design Interview Questions - Read Heavy vs Write ... - YouTube",
+      "url": "https://www.youtube.com/watch?v=V7F7kkSesps",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Chandra Shekhar Joshi's Post - LinkedIn",
+      "url": "https://www.linkedin.com/posts/mrcjoriginals_one-of-the-hardest-conversation-in-a-system-activity-7343137055633285120-9Bp2",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "Read-Heavy vs Write-Heavy Systems: The Framework FAANG ...",
+      "url": "https://designgurus.substack.com/p/read-heavy-vs-write-heavy-systems",
+      "source": "designgurus.substack.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the interviewer is really testing",
+      "text": "Not whether you know **cache** and **queue** as buzzwords. The test is: can you **measure which side will break first**, then move work off that bottleneck without breaking correctness? If you apply caching to a write flood or buffering to a read flood, you fail. State the ratio, name the bottleneck, then pick the mechanism that relieves it — and name what you sacrifice."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a system that stays fast and cheap when one direction dominates: either **reads outnumber writes 100:1 or more**, or **writes outnumber reads 100:1 or more**, and be able to handle a workload that shifts between the two without a rewrite. A read-heavy system is one where the same small set of data is fetched repeatedly — product pages, profiles, feeds, video metadata. Throughput is dominated by `GET`, data changes slowly, and latency matters more than ingest speed. A write-heavy system is the inverse: massive continuous ingestion where each record is written once and rarely read — clickstreams, telemetry, chat messages, orders during a spike. Here throughput is dominated by `PUT` or append, and the risk is write amplification, hot partitions, and a database that falls over under lock contention. The medium-difficulty twist: do not design two separate systems. Design one skeleton where the read path and write path scale independently, so you can dial caching up when reads dominate and dial buffering and partitioning up when writes dominate."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Read-heavy example:** 50k reads/sec, 50 writes/sec. Same 1% of keys get 90% of traffic. Goal is `p99 < 50ms` without scaling the database 100x. Weapon is replication of data closer to the reader.",
+        "**Write-heavy example:** 100k writes/sec, 500 reads/sec. Keys are mostly unique and time-ordered. Goal is durable ingest without loss and without `p99` write stalls. Weapon is batching, partitioning, and removing synchronous work from the write path.",
+        "**Mixed / shifting example:** social post goes viral, or flash sale flips from browse to buy. Read and write peaks do not coincide. Goal is independent scaling. Weapon is decoupling: reads never hit the write master, writes never wait for indexes and caches.",
+        "**What you are NOT asked to build:** a specific database internals project. You pick existing stores, caches, and queues and show how requests flow through them, where consistency breaks, and what it costs to run."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not start drawing boxes until you have numbers. Read vs write is a ratio, not a vibe. Two minutes of questions here saves you from designing the wrong system for twenty minutes. Force the interviewer to give you orders of magnitude, then lock them in out loud."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Lock the ratio and absolute numbers",
+          "text": "Ask: reads per second vs writes per second today and at 10x? Average and peak? Read-heavy is not 2:1, it is 100:1 or 1000:1. Write-heavy is the mirror. Absolute numbers decide if one database is enough or you need sharding from day one."
+        },
+        {
+          "title": "Lock read latency vs write durability",
+          "text": "Ask: what p99 for reads? Can a write be acknowledged before it is durable, or must it survive a crash first? If writes can be async you can buffer. If not, your write path gets slower and more expensive — say so explicitly."
+        },
+        {
+          "title": "Lock consistency tolerance",
+          "text": "Ask: can a read return stale data for 1-5 seconds? Can two readers see different orders? Read-heavy designs live on eventual consistency via replicas and caches. If the answer is linearizable reads, caching is almost dead and you need a different design."
+        },
+        {
+          "title": "Lock access pattern and size",
+          "text": "Ask: read by key, by timeline, by search? Value size — 1KB JSON or 5MB image? Total dataset — 100GB or 100TB? Hot keys or uniform? This decides CDN vs in-memory cache vs replica, and hash vs range partitioning on writes."
+        },
+        {
+          "title": "Lock extensibility target",
+          "text": "Ask: will we add new read models or new ingest sources in 6 months? If yes, you must keep a durable log as the source of truth and derive views from it, not bake one schema into one database."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Agreed scope for a dual-mode design.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Serve key / feed reads at low p99 even under 10x read spike",
+          "Defines the read SLA you design for"
+        ],
+        [
+          "Functional",
+          "Accept sustained write bursts without loss or unbounded latency",
+          "Defines the ingest SLA you design for"
+        ],
+        [
+          "Functional",
+          "Support independent scaling of read and write capacity",
+          "This is the extensibility requirement — no coupled scaling"
+        ],
+        [
+          "Non-functional",
+          "Resource efficient: cost per 1k req/sec must drop as load grows",
+          "Prevents brute-force overprovisioning of the primary store"
+        ],
+        [
+          "Non-functional",
+          "Explicit consistency contract: bounded staleness, e.g. <5s",
+          "Lets you use replicas and caches honestly instead of hand-waving"
+        ],
+        [
+          "Non-functional",
+          "Operable: backpressure, autoscaling, and replay from durable log",
+          "Write-heavy systems die without backpressure and replay"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the naive single database"
+    },
+    {
+      "type": "paragraph",
+      "text": "The default junior answer: stateless app servers behind a load balancer talking to one relational database, maybe with one in-process cache added later. For a toy workload it works because everything fits on one node and consistency is free — there is one copy, so reads and writes agree. It collapses in opposite ways on the two extremes. Under read pressure the database CPU saturates on identical queries, connection pools exhaust, and every read pays disk and lock cost even though the answer has not changed. Adding app servers makes it worse because they add more connections to the same bottleneck. Under write pressure the same node chokes on write-ahead log fsyncs, B-tree splits, index maintenance, and row locks. Reads and writes contend on the same buffer pool and lock manager, so p99 for both explodes. Trade-off named: you bought strong consistency and simplicity, and you paid with zero headroom — no spare read bandwidth, no ingest buffer."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Why the single box lies to you",
+      "text": "Candidates say *we will add a cache later* or *we will shard later* as if it is a config flag. It is not. Cache invalidation changes your consistency contract. Sharding changes your query contract. If your read path goes straight to the write master, you cannot bolt on replicas without deciding what stale means. Call that out now."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design: split the paths, share nothing that bottlenecks"
+    },
+    {
+      "type": "paragraph",
+      "text": "The correct shape is one durable ingest spine with two independently scalable serving paths. Writes flow through admission control into an append-only durable log and then into a partitioned store; reads flow through layered caches and replicas and never touch the write master on the hot path. The reason this wins is mechanical, not ideological: reads benefit from **copying data closer to the reader**, writes benefit from **doing less work per write and doing it in batches**. Those are opposite optimisations, so they must live on different hardware with different data structures. You pay in complexity and staleness — there are now at least three copies of the truth and a lag between them — but you gain linear scaling on each axis: add cache or replica nodes to absorb reads, add partitions and consumers to absorb writes, without touching the other side. Resource efficiency comes from not paying for both at once: cache memory is cheaper than database CPU for repeated reads, and sequential batched writes are cheaper than random transactional writes."
+    },
+    {
+      "type": "mermaid",
+      "title": "Split read and write paths",
+      "caption": "Reads fan out to caches and replicas. Writes funnel through queue to partitioned store.",
+      "code": "flowchart TD\n  Client --> CDN\n  CDN --> LB\n  LB --> App\n  App --> RCache\n  RCache --> Replica\n  Replica --> Primary\n  App --> WQueue\n  WQueue --> Primary\n  Primary --> WLog\n  WLog --> Index"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read path, in order: client cache to CDN to application cache to read replica, and only then to primary. Each layer exists because it is an order of magnitude cheaper than the one behind it. Client and CDN absorb static and hot immutable content with zero origin cost — trade-off: you accept TTL staleness and purge complexity. Application cache such as in-memory store absorbs hot keys with sub-millisecond latency — trade-off: you accept thundering-herd risk on miss and must add request coalescing and jittered TTLs. Read replicas absorb the remaining relational or document reads and let you scale read throughput horizontally — trade-off: replication lag, so you must route read-after-write for the writer's own keys back to primary for a short window or version-check against the cache. Denormalised read models or search indexes serve feed, timeline, and filter queries that would otherwise be expensive joins — trade-off: dual writes and lag, so you build them from the log, never synchronously on the request path."
+    },
+    {
+      "type": "paragraph",
+      "text": "Write path, in order: validation to admission control to durable queue to batched partitioned store. The queue is not optional decoration — it is the shock absorber that turns a 10x burst into a longer steady drain, which is why write-heavy systems survive. Admission control sheds or downgrades load with `429` plus backoff instead of queueing forever — trade-off: you reject work visibly to protect durability of accepted work. The queue persists every accepted write to replicated storage before acknowledgement if durability matters, or buffers in memory if a few seconds of loss are tolerable — trade-off named every time you choose. Consumers drain in batches, partition by hash of key or by time bucket, and write sequentially with minimal secondary indexes on the hot path. Heavy indexing, search fan-out, cache invalidation, and analytics are done asynchronously from the log via change capture — trade-off: readers lag writers by seconds, but writers never stall on reader work. For pure append workloads pick a log-structured store that loves sequential writes; for update-heavy relational writes keep the primary narrow and move secondary indexes to derived stores."
+    },
+    {
+      "type": "mermaid",
+      "title": "Logical components",
+      "caption": "ReadPath and WritePath share a Store but scale and fail independently.",
+      "code": "classDiagram\n  class ReadPath {\n    +get(key) Object\n    +fillOnMiss(key) Object\n  }\n  class WritePath {\n    +put(key, value) void\n    +flushBatch() void\n  }\n  class Cache {\n    +get(key) Object\n    +set(key, value) void\n  }\n  class Store {\n    +read(key) Object\n    +append(batch) void\n  }\n  class DurableQueue {\n    +enqueue(event) void\n    +drain(batchSize) List\n  }\n  ReadPath --> Cache\n  ReadPath --> Store\n  WritePath --> DurableQueue\n  DurableQueue --> Store\n  WritePath --> Cache"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code: the contracts that enforce the split"
+    },
+    {
+      "type": "paragraph",
+      "text": "In the interview you will not write a database. You will write the two contracts that prove you understand the split: cache-aside with single-flight on the read side, and buffered idempotent append on the write side. If you cannot state invalidation and idempotency, the diagram is fiction."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ReadWritePaths.java",
+      "code": "class ReadPath {\n  private final Cache cache; private final Store replicas; private final Store primary;\n  // single-flight map omitted for brevity: coalesce concurrent misses per key\n  Object get(String key, String writerCookie) {\n    Object v = cache.get(key);\n    if (v != null) return v;\n    // read-after-write: route recent writer to primary, others to replica\n    Store s = (writerCookie != null && cache.isFreshWriter(writerCookie)) ? primary : replicas;\n    Object db = s.read(key); // replica lag tolerated here\n    if (db != null) cache.set(key, db, 30); // jitter TTL in real code\n    return db;\n  }\n  void invalidate(String key, long version) {\n    // version-gated delete: never resurrect stale data over newer write\n    cache.deleteIfVersionLte(key, version);\n  }\n}\nclass WritePath {\n  private final DurableQueue queue;\n  String put(String key, byte[] val, String idemKey) {\n    if (!RateLimiter.tryAcquire()) throw new BackpressureException(\"retry with backoff\");\n    // idempotency key makes retries safe; queue persists before ack\n    return queue.enqueue(new Event(key, val, idemKey, System.nanoTime()));\n  }\n}\n// Consumer: batch drain -> sort by key -> single partitioned append\n// void drain() { var b = queue.drain(500); store.append(b); cache.invalidateBatch(b); }"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "paths.py",
+      "code": "def read_through(key, cache, replica, primary, must_be_fresh=False):\n    v = cache.get(key)\n    if v is not None:\n        return v\n    store = primary if must_be_fresh else replica  # trade-off: freshness vs load\n    db = store.read(key)\n    if db is not None:\n        cache.set(key, db, ttl=30 + random.randint(0, 10))  # jitter defeats stampede\n    return db\n\ndef buffered_write(key, val, idem_key, queue):\n    if not try_acquire():\n        raise Backpressure(\"429 + backoff\")  # shed instead of OOM\n    queue.enqueue({\"key\": key, \"val\": val, \"idem\": idem_key})  # durable before ack\n\n# consumer: batch = queue.drain(500); store.append(batch); cache.delete_many(batch)"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity and resource math"
+    },
+    {
+      "type": "table",
+      "caption": "What each mechanism costs and what it buys.",
+      "headers": [
+        "Mechanism",
+        "Cost / complexity",
+        "Buys you"
+      ],
+      "rows": [
+        [
+          "CDN + client cache",
+          "O(1) per hit, memory at edge; purge complexity",
+          "10-100x origin offload for hot immutable reads"
+        ],
+        [
+          "App cache + replica",
+          "O(1) lookup; invalidation + lag <5s",
+          "Linear read scale without scaling primary CPU"
+        ],
+        [
+          "Queue + batch consumer",
+          "O(batch) amortised write; queue storage + lag",
+          "Sustained ingest; turns random writes into sequential"
+        ],
+        [
+          "Hash / time partitioning",
+          "O(1) routing; cross-partition queries expensive",
+          "Linear write scale; isolates hot keys in time buckets"
+        ],
+        [
+          "Async index via log",
+          "Extra storage + compute; eventual visibility",
+          "Write path stays fast; reads get rich queries seconds later"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The hardest follow-up: consistency under split paths"
+    },
+    {
+      "type": "paragraph",
+      "text": "The interviewer will attack the lag you introduced: *user updates profile, refreshes, sees old data — broken?* Answer with a concrete rule, not *eventual consistency* as a spell. Route read-after-write by identity: for N seconds after a write, that writer's reads go to primary or carry a version token the cache must satisfy, everyone else can be stale. Use monotonic versions per key and version-gated invalidation so a delayed consumer cannot overwrite a newer cache entry — that is the classic cache resurrection bug and you should name it before they do. For ordering, admit what you do not provide: per-key FIFO via partition key is cheap, global ordering is expensive and usually unnecessary — trade-off named. For concurrency, make writes idempotent with client-supplied keys and make consumers deduplicate on that key, because at-least-once delivery from the queue means duplicates are certain. If they push to strong consistency, say the price out loud: quorum reads, no CDN, no replica reads, throughput collapses — and ask which workload actually needs it, because most do not."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Do not hand-wave the cache",
+      "text": "Every strong candidate volunteers the three cache failures: **stampede** on hot-key expiry, **penetration** by missing keys hammering the database, and **resurrection** by stale invalidation. Fix is specific: single-flight plus jittered TTL, negative caching with short TTL, versioned deletes. If you cannot say those three, your read-heavy design is not credible."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Hot key melts one partition?",
+          "text": "Split by adding a suffix shard for the hot key and aggregate on read, or replicate the hot key to all app hosts. Trade-off: read-side merge cost buys write-side survival. Have a number: detect top 0.1% keys via counters."
+        },
+        {
+          "title": "Cache stampede on viral key?",
+          "text": "Single-flight the fill so one request loads the database, others wait; add probabilistic early refresh before TTL. Trade-off: slightly more memory refreshes buys no database collapse."
+        },
+        {
+          "title": "Write burst 10x for 10 minutes?",
+          "text": "Queue depth grows, consumer autoscaling on queue lag, shed low-priority writes first. Show backpressure headers and client retry with jitter. Trade-off: latency for durability."
+        },
+        {
+          "title": "Need search or feed on write-heavy data?",
+          "text": "Never index synchronously. Emit log events, build search and feed indexes offline, serve reads from derived store. Trade-off: seconds of invisibility buys 10x ingest headroom."
+        },
+        {
+          "title": "Shift from read-heavy to write-heavy overnight?",
+          "text": "Because paths are decoupled, you scale consumers and partitions without touching CDN and replicas. Point at the queue lag and replica lag dashboards as the two dials. Trade-off: you pay for two scalable tiers instead of one."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Writer reads own write within 2 seconds — must hit primary or version-gated cache, not replica.",
+        "Duplicate queue delivery — consumer must deduplicate on idempotency key, not insert twice.",
+        "Poison message blocks batch consumer — dead-letter after N retries, do not stall the partition.",
+        "CDN serves stale private data — never cache personalised responses at edge without keyed variants.",
+        "Clock skew breaks TTL ordering — use versions, not wall-clock, for invalidation decisions.",
+        "Cold start with empty cache — warm top-K keys from replica snapshot, enable negative cache immediately."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak vs strong signals for this topic.",
+      "headers": [
+        "Axis",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Bottleneck call",
+          "Says read and write heavy need same fix",
+          "Quantifies ratio, names which resource saturates first"
+        ],
+        [
+          "Read scaling",
+          "\"Add cache\" with no invalidation story",
+          "Layered caches + replica routing + stampede and resurrection fixes"
+        ],
+        [
+          "Write scaling",
+          "\"Use NoSQL\" with no reason",
+          "Queue + batching + partitioning choice tied to key shape; async indexes"
+        ],
+        [
+          "Trade-offs",
+          "Claims scale with no cost",
+          "Every mechanism paired with what is sacrificed: staleness, cost, complexity"
+        ],
+        [
+          "Extensibility",
+          "One database, one schema forever",
+          "Log as truth, derived views; scale each path independently"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "45-minute plan",
+      "text": "0-5: lock ratio, p99, staleness tolerance, size. 5-12: naive single database, kill it with numbers. 12-28: split paths diagram — read layers top, queue and partitions bottom, log feeding indexes. 28-38: deep dive on one side the interviewer picks — invalidation or batching with code contract. 38-45: hot keys, bursts, and shifting workload. Never leave without stating both trade-offs: **reads pay staleness for speed, writes pay latency for durability**."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:41:42.187Z",
+    "problems": []
+  }
+}

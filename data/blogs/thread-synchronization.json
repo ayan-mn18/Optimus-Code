@@ -1,0 +1,285 @@
+{
+  "slug": "thread-synchronization",
+  "title": "Thread Synchronization",
+  "summary": "Thread synchronization in Java: mutual exclusion plus visibility via intrinsic locks, where to narrow the critical section, and when to abandon synchronized for Lock, volatile, or atomics.",
+  "kind": "LLD",
+  "problemSlug": "thread-synchronization-43-83",
+  "topic": "Concurrency in Java",
+  "difficulty": "Medium",
+  "coverEmoji": "🔒",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Java"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Synchronization in Java - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/java/synchronization-in-java/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "How Java's Thread Synchronization Works - Medium",
+      "url": "https://medium.com/@AlexanderObregon/how-javas-thread-synchronization-works-99c5ba3cda85",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is thread synchronization and how does it differ form atomicity?",
+      "url": "https://stackoverflow.com/questions/70668734/what-is-thread-synchronization-and-how-does-it-differ-form-atomicity",
+      "source": "stackoverflow.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Synchronization buys correctness by serializing access *and* by forcing memory visibility — and you pay for both in throughput.** If you talk only about mutual exclusion and forget visibility, you will pass toy tests and fail production. Every choice here is granularity vs. safety vs. liveness."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Thread synchronization is the discipline of making a multi-threaded execution behave as if conflicting operations on shared mutable state happened in some sequential order, with every thread observing prior writes it is supposed to observe. In Java that means two distinct guarantees fused together. First, **mutual exclusion**: at most one thread at a time executes a critical section guarded by the same monitor. Second, **memory visibility**: writes made before releasing a lock become visible to the next thread that acquires that same lock. Without the second half you can hold the lock correctly and still read garbage. Java implements this through intrinsic locks — every object has a monitor — plus the Java Memory Model rule called *happens-before* that ties monitor release to the next monitor acquire on the same lock."
+    },
+    {
+      "type": "paragraph",
+      "text": "Be exact about vocabulary or you will confuse yourself in design. **Atomicity** means an operation appears indivisible: either fully visible or not at all. **Synchronization** is broader: atomicity for a region *plus* an ordering promise about memory. A hardware `compare-and-swap` gives you atomicity on one word with no blocking. A `synchronized` block gives you atomicity over an arbitrary region by blocking, and it additionally flushes memory effects across threads. That is why replacing `c++` with an atomic increment fixes torn updates but does not automatically make a check-then-act sequence like `if (!map.contains(k)) map.put(k,v)` correct. The region is bigger than one word, so you need a lock around the whole compound action, not just an atomic primitive inside it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: monitors, entry, exit"
+    },
+    {
+      "type": "mermaid",
+      "title": "Monitor acquire-execute-release",
+      "caption": "Every synchronized region is acquire, mutate, publish.",
+      "code": "flowchart TD\n  T[Thread reaches synchronized block] --> A{Try monitorenter on lock object}\n  A -- \"monitor free\" --> H[Hold monitor: enter critical section]\n  A -- \"monitor held\" --> W[Park in ENTRY set: BLOCKED]\n  W --> A\n  H --> M[Read/write shared state]\n  M --> R[monitorexit: flush writes, release monitor]\n  R --> N[Wake one parked thread]\n  N --> A"
+    },
+    {
+      "type": "paragraph",
+      "text": "When the JVM executes `synchronized (lock)`, it performs a `monitorenter` on `lock`. If no thread owns that monitor, the current thread takes it and proceeds; the acquisition is reentrant, so the same thread can re-enter and the JVM counts the nesting depth. If another thread owns it, the current thread parks — it stops consuming CPU and sits in the entry set in `BLOCKED` state until unparked. On normal or exceptional exit the JVM performs `monitorexit`, which does two things most engineers undervalue. It releases ownership so exactly one waiter can proceed, and it establishes a happens-before edge: everything the exiting thread wrote before release is visible to whatever thread next acquires the *same* monitor. That is why you must guard both writers *and* readers with the same lock. Locking only the increment and leaving the getter unlocked gives you exclusion on writes but no visibility promise to readers, which is a real bug on multi-core hardware, not a theoretical one."
+    },
+    {
+      "type": "paragraph",
+      "text": "A `synchronized` instance method is syntactic sugar for wrapping the whole body in `synchronized (this)`. A `static synchronized` method locks the `Class` object, which is a different monitor from any instance — a common source of false confidence. A `synchronized` block lets you choose the lock object and shrink the region. The trade-off is explicit: the method form is harder to get wrong because the lock is obvious, but it holds the lock across everything including logging, validation, and I/O you never needed to serialize. The block form holds the lock for fewer instructions and therefore contends less, but now *you* own the discipline of using the same private lock object everywhere. Prefer a `private final Object lock = new Object()` over `synchronized (this)` because it denies external code the ability to acquire your monitor and silently serialize — or deadlock — your class."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "LostUpdate.java",
+      "code": "class UnsafeCounter {\n  private int c = 0;\n  void inc() { c++; } // read-modify-write: 3 steps, not 1\n  int get() { return c; }\n}\n// Two threads x 100_000 inc() each routinely return ~130_000-190_000,\n// not 200_000. Interleaving: T1 reads 41, T2 reads 41, both write 42.\n// One increment is lost. No exception, no crash — just a wrong number.\n\nclass SafeCounter {\n  private int c = 0;\n  synchronized void inc() { c++; }\n  synchronized int get() { return c; }\n  // Same monitor (this) on both sides = exclusion + visibility.\n  // Remove synchronized from get() and a reader can spin on a stale cached copy.\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "LockChoice.java",
+      "code": "class CounterBlock {\n  private int c = 0;\n  private final Object lock = new Object();\n  void inc() {\n    // validate outside, mutate inside: shrink the critical section\n    synchronized (lock) { c++; }\n  }\n  int get() {\n    synchronized (lock) { return c; }\n  }\n}\n\nclass CounterStatic {\n  private static int c = 0;\n  static synchronized void inc() { c++; }\n  // locks CounterStatic.class — does NOT exclude instance locks.\n  // Mixing static and instance synchronization on shared state is a bug.\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Five synchronization tools and what each one costs you.",
+      "headers": [
+        "Tool",
+        "What it gives",
+        "What it costs",
+        "Use when"
+      ],
+      "rows": [
+        [
+          "`synchronized` method",
+          "Simple, JVM-managed, auto-released on exception, reentrant",
+          "Locks whole method on `this`; coarse, invites contention and client-side locking",
+          "Tiny class, single invariant, contention is negligible"
+        ],
+        [
+          "`synchronized` block on private lock",
+          "Fine-grained critical section, hidden lock object, still auto-released",
+          "Still non-interruptible, no timeout, no fairness; you must be consistent about which lock",
+          "Default choice for compound actions: check-then-act, read-modify-write"
+        ],
+        [
+          "`ReentrantLock` / `ReadWriteLock`",
+          "Interruptible acquire, timed `tryLock`, fairness option, separate read/write lanes, Conditions",
+          "Verbose: manual `unlock` in `finally`; easy to leak if you forget; harder to review",
+          "Need timeout, interrupt, high read ratio, or multiple wait conditions"
+        ],
+        [
+          "`volatile`",
+          "Cheapest visibility: every read hits main memory semantics, no parking",
+          "No atomicity for `++` or check-then-act; only single-word read/write safe",
+          "Stop flag, publication of immutable reference, double-checked-locking field"
+        ],
+        [
+          "`AtomicInteger` / `ConcurrentHashMap`",
+          "Lock-free single-key atomicity, highly tuned, no deadlock on that op",
+          "Does not compose: two atomics together are still racy; logic gets subtle fast",
+          "Counters, sequences, per-key updates where no multi-key invariant exists"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The central tension is **scope of exclusion versus liveness**. Widen the critical section and reasoning gets easy — one lock protects everything — but throughput collapses because independent work queues behind the same monitor, and the risk of holding the lock while calling alien code that re-enters your lock graph spikes. Narrow it and throughput recovers, but now you must prove every invariant is still covered and every access uses the *same* lock. That is why experienced reviewers hate `synchronized` methods that do I/O or callbacks inside the lock: you turned a nanosecond counter update into a millisecond serial bottleneck and invited lock-ordering deadlock. The fix is mechanical — snapshot or validate outside, mutate inside, never call out to unknown code while holding the monitor — but it requires the block form, which is exactly why the block form exists. When you need features the monitor lacks — give up after 50ms, respond to interrupt, let 20 readers proceed concurrently — stop stretching `synchronized` and pay the verbosity cost of `ReentrantLock` or `ReadWriteLock`. Using the wrong tool here is not style; it is a throughput or liveness defect."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The most common failure is the **lost update**, and its signature is maddening: no stack trace, no deadlock, just a count that is always slightly low. Inventory decrements twice for one unit, two threads both pass an `if (balance >= amount)` check and both withdraw, duplicate IDs from a `max+1` generator. Reproducing it locally with two threads and a small loop often passes because the race window is nanoseconds; under load on 16 cores the window opens constantly. If your metric is monotonically short — processed events fewer than published events with no error logs — suspect a read-modify-write sequence that is atomic in your head but three bytecodes in reality. The fix is not sprinkling `volatile` on the field; `volatile` makes the stale read fresh but leaves the compound action racy. You need the whole sequence under one monitor or rebuilt as a single atomic operation."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second family is **visibility and publication failure**. Symptom: a worker thread never sees a shutdown flag, or sees a constructed object with `null` fields despite the constructor having run. Cause: the writer and reader never synchronized on the same monitor, so the Java Memory Model was free to keep the value in a register or reorder construction writes past the reference publish. Marking the flag `volatile` or guarding both sides with the same lock resolves it — pick one discipline and apply it uniformly. The third family is **liveness**: deadlock, where two threads each hold one lock and wait for the other, visible in a thread dump as a `BLOCKED` cycle, and **contention collapse**, where latency p99 explodes while CPU sits idle because every request funnels through one monitor. Contention looks like a slow downstream in dashboards but thread dumps show hundreds of threads parked on the same `monitorenter`. The cure is smaller critical sections, lock splitting by key, or a concurrent structure — never a bigger machine."
+    },
+    {
+      "type": "mermaid",
+      "title": "Deadlock from inconsistent lock order",
+      "caption": "Same two locks, opposite order: a guaranteed deadlock under load.",
+      "code": "graph TD\n  T1[\"Thread A: holds OrdersLock\"] --> W1[\"waits for AuditLock\"]\n  T2[\"Thread B: holds AuditLock\"] --> W2[\"waits for OrdersLock\"]\n  W1 --> T2\n  W2 --> T1"
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Never hold a lock while calling out",
+      "text": "The production deadlock recipe is always the same: **hold lock L, then call listener / callback / plugin that acquires lock M in the opposite order elsewhere**. Fix it by rule, not by luck: private lock objects, one global lock order, no callbacks inside `synchronized`, and `tryLock` with timeout when crossing subsystem boundaries."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "GuardedQueue.java",
+      "code": "class GuardedQueue<T> {\n  private final Queue<T> q = new ArrayDeque<>();\n  private final Object lock = new Object();\n\n  void put(T x) {\n    synchronized (lock) {\n      q.add(x);\n      lock.notifyAll(); // signal AFTER state change, same monitor\n    }\n  }\n  T take() throws InterruptedException {\n    synchronized (lock) {\n      while (q.isEmpty()) lock.wait(); // loop: spurious wakeups are real\n      return q.remove();\n    }\n  }\n}\n// Modern alternative when you need timeouts or multiple conditions:\n// ReentrantLock + Condition lets one condition mean \"not-full\" and\n// another mean \"not-empty\" instead of waking everyone with notifyAll().\n// Trade-off: you must unlock in finally or you wedge the queue forever."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Wait, notify, and the concurrent toolkit"
+    },
+    {
+      "type": "paragraph",
+      "text": "Built-in coordination — `wait`, `notify`, `notifyAll` — only works inside a `synchronized` region on the same object, and that constraint is the point: you check the condition and sleep atomically so a signal cannot slip between the check and the park. Always wait in a `while` loop re-testing the predicate, because spurious wakeups and stolen signals are legal. Prefer `notifyAll` unless you can prove exactly one waiter can make progress; a single `notify` that wakes the wrong waiter wedges the system silently. Beyond monitors, reach for the structures that already encode these patterns correctly: `BlockingQueue` instead of a hand-rolled wait loop, `CountDownLatch` for one-shot fan-in, `Semaphore` for bounded permits, `ConcurrentHashMap.compute` for per-key atomic updates. Hand-rolling any of those with raw `synchronized` in an interview is acceptable to show understanding; shipping the hand-rolled version is a defect waiting for load."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Write the racy counter, then fix it three ways",
+          "text": "Expect: start from `c++` losing updates, add `synchronized`, then shrink to a block on a private lock, then replace with `AtomicInteger`. Say aloud why each step changes the trade-off: correctness first, then contention, then lock-freedom for single-word ops."
+        },
+        {
+          "title": "Defend the lock object choice",
+          "text": "Expect: why not `synchronized (this)` or a `String` literal. Answer: client code can synchronize on your `this` and hijack liveness; interned `String` literals alias across classloaders. Private final lock object isolates the protocol. Interviewers score this heavily."
+        },
+        {
+          "title": "Static versus instance, reader versus writer",
+          "text": "Expect: does `static synchronized` exclude an instance `synchronized` method. Answer: no, different monitors. Then extend to `ReadWriteLock`: many concurrent readers, exclusive writer, and why it backfires under write-heavy load due to writer starvation and upgrade hazards."
+        },
+        {
+          "title": "Produce and dissect a deadlock",
+          "text": "Expect: write transfer-from-A-to-B that locks accounts in argument order, show the opposite-order interleaving, then fix by ordering locks on an ID. Read a thread dump snippet if offered: a BLOCKED cycle is the giveaway, and tryLock with timeout is the pragmatic escape hatch."
+        },
+        {
+          "title": "Design a bounded buffer or rate limiter",
+          "text": "Expect: build producer-consumer with `wait` in a `while` loop plus `notifyAll`, then discuss why `BlockingQueue` or `Semaphore` replaces it in real code. Close with visibility: where happens-before comes from, why the getter must also synchronize, and when `volatile` suffices for a stop flag but never for `++`."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`volatile` makes `++` safe — it does not. It guarantees you read the latest value, not that read-increment-write happens without interleaving. Use an atomic or a lock.",
+        "Synchronizing only the writer is enough — it is not. Visibility requires both sides to synchronize on the same monitor, otherwise readers can loop forever on a cached copy.",
+        "`synchronized` is slow, so avoid it — stale advice. Uncontended intrinsic locks are cheap with biased locking and lock elision; the real cost is *contention*, which you fix by shrinking the critical section, not by dropping correctness.",
+        "One `notify()` always wakes the right thread — false. With multiple waiters on different predicates, `notify` can wake a thread that cannot proceed while the thread that could stays parked. Default to `notifyAll` or separate `Condition` objects.",
+        "`static synchronized` and instance `synchronized` exclude each other — they do not. One locks the `Class` object, the other locks the instance. Shared static state needs one consistent discipline.",
+        "Atomics compose — they do not. Two individually atomic operations (`contains` then `put`, `get` then `set`) form a racy compound action unless wrapped in a lock or expressed as one `compute` call."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Selection guide: match the primitive to the shape of the shared action.",
+      "headers": [
+        "Situation",
+        "Do this",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Compound action on shared mutable state (check-then-act, read-modify-write)",
+          "Guard the *whole* region with one private monitor or a `Lock`",
+          "Only a single exclusion boundary makes the sequence indivisible"
+        ],
+        [
+          "Simple stop flag or safe publication of an immutable object",
+          "Use `volatile`",
+          "Visibility without parking; anything bigger needs atomicity too"
+        ],
+        [
+          "Single counter, ID generator, per-key map update",
+          "Use `AtomicLong` / `LongAdder` / `ConcurrentHashMap.compute`",
+          "Lock-free, deadlock-proof for that key; do not build multi-key invariants from them"
+        ],
+        [
+          "High read, rare write with derived state",
+          "Use `ReadWriteLock` or copy-on-write snapshot",
+          "Readers proceed in parallel; writer pays the copy or exclusion cost"
+        ],
+        [
+          "Blocking coordination (bounded queue, permit pool, startup gate)",
+          "Use `BlockingQueue`, `Semaphore`, `CountDownLatch`",
+          "Pre-tested wait/signal logic beats a hand-rolled loop you will get subtly wrong"
+        ],
+        [
+          "Callback, I/O, or foreign code while holding state",
+          "Never hold the monitor across it; copy, release, then call",
+          "Calling out while locked inverts your lock order and manufactures deadlock and tail latency"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Synchronization serializes conflicting accesses on the same monitor to make compound actions atomic and prior writes visible — so guard the whole invariant with one private lock, keep the region minimal and callback-free, and switch to `volatile`, atomics, or explicit locks when the action is a flag, a single word, or needs timeouts and read concurrency.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:04:58.056Z",
+    "problems": []
+  }
+}

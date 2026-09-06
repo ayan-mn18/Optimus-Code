@@ -1,0 +1,312 @@
+{
+  "slug": "acl-access-control-list-for-blob-storage",
+  "title": "ACL (Access Control List) for Blob storage",
+  "summary": "ACLs for blob storage give per-file and per-directory control where RBAC stops at the container. How access vs default ACLs, masks, and RBAC interaction work — and why they fail.",
+  "kind": "HLD",
+  "problemSlug": "acl-access-control-list-for-blob-storage-93-207",
+  "topic": "Application Programming Interface (API)",
+  "difficulty": "Medium",
+  "coverEmoji": "🔐",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "API",
+    "Security",
+    "Blob Storage"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "How to Set Up ACLs and POSIX Permissions in Azure Data Lake ...",
+      "url": "https://oneuptime.com/blog/post/2026-02-16-how-to-set-up-acls-and-posix-permissions-in-azure-data-lake-storage-gen2/view",
+      "source": "oneuptime.com",
+      "kind": "article"
+    },
+    {
+      "title": "Access control lists (ACLs) in Azure Data Lake Storage - Microsoft Learn",
+      "url": "https://learn.microsoft.com/en-us/azure/storage/blobs/data-lake-storage-access-control",
+      "source": "learn.microsoft.com",
+      "kind": "article"
+    },
+    {
+      "title": "Access control model for Azure Data Lake Storage",
+      "url": "https://docs.azure.cn/en-us/storage/blobs/data-lake-storage-access-control-model",
+      "source": "docs.azure.cn",
+      "kind": "article"
+    },
+    {
+      "title": "21 - Azure data lake security - Access Control Lists (ACL) - YouTube",
+      "url": "https://www.youtube.com/watch?v=uEhxuwi0JS8",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "RBAC decides **whether you can touch the storage account at all**. ACLs decide **which files and directories you can touch once inside**. If your requirement is per-directory or per-file isolation inside one container, there is no RBAC trick that saves you — you need ACLs, and you pay for that granularity with per-object checks, inheritance rules, and operational pain."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "An Access Control List is a **per-object permission list attached to every file and directory** in a hierarchical blob namespace. Each entry binds one security principal — owning user, owning group, named user, named group, or other — to a permission triple of `rwx`. Every authorization for an identity-based request evaluates that list on the target object, plus traversal rights on every ancestor directory. No identity, no ACL check: requests authenticated with account keys or service SAS carry no principal, so ACLs are skipped entirely. That is not a bug. It is the model: **ACLs only mean something when the caller has an identity**."
+    },
+    {
+      "type": "paragraph",
+      "text": "There are four entry classes you must be able to recite cold. The **owning user** is the creator by default and gets one `rwx` slot. The **owning group** gets one slot. **Named users and named groups** each get their own entry keyed by object ID — this is where fine-grained sharing actually happens. **Other** is the fallback for any authenticated identity not matched above. Then there is the **mask**: it caps the effective permissions of the owning group and all named entries, but not the owning user or other. The trade-off is classic: the mask lets an owner tighten a whole subtree with one write, but it silently downgrades named entries and creates the most confusing debugging sessions in this entire topic."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Access ACLs vs default ACLs"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every object has an **access ACL** — what applies to that object right now. Only directories can also carry a **default ACL** — a template stamped onto children at creation time. When you create a file under a directory, it inherits a copy of the parent default ACL as its own access ACL. When you create a subdirectory, it inherits it as *both* its access ACL and its new default ACL. This is a copy-on-create mechanism, not a live link. Changing a parent default ACL later does nothing to existing children unless you run an explicit recursive propagation job. Choose copy-on-create because live inheritance would force a parent lookup on every read — fast reads in exchange for painful permission updates."
+    },
+    {
+      "type": "table",
+      "caption": "ACL entry types and what they actually control.",
+      "headers": [
+        "Entry",
+        "Applies to",
+        "Why it exists"
+      ],
+      "rows": [
+        [
+          "Owning user (`user::`) ",
+          "One principal, the owner",
+          "Gives the creator independent control that the mask cannot clamp"
+        ],
+        [
+          "Owning group (`group::`)",
+          "One group, the owning group",
+          "POSIX compatibility; covers the primary team without naming every member"
+        ],
+        [
+          "Named user / group (`user:oid:`, `group:oid:`)",
+          "Specific object IDs",
+          "The only scalable way to share one directory with another team"
+        ],
+        [
+          "Mask (`mask::`)",
+          "Owning group + all named entries",
+          "One-knob ceiling; the source of most-effective vs stated-permission bugs"
+        ],
+        [
+          "Other (`other::`)",
+          "Everyone else with identity",
+          "Explicit deny-by-default floor; keep it `---` unless you mean public inside the tenant"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: how a request is authorized"
+    },
+    {
+      "type": "paragraph",
+      "text": "Authorization is a **two-gate pipeline, and order matters**. Gate one is coarse: does the caller hold a data-plane role such as Blob Data Reader, Contributor, or Owner? Gate two is fine: does the ACL on the target plus execute rights on the full ancestor chain allow this operation? A superuser-style role short-circuits the ACL check. A lesser role still needs the ACL to agree. Shared Key and non-delegated SAS never reach gate two because there is no object ID to evaluate. User-delegated SAS is the exception — it carries identity, so the ACL check runs. The design reason is separation of concerns: RBAC is cheap to evaluate centrally, ACLs are expensive to evaluate per object, so you filter coarsely first and pay the per-object cost only for callers who passed the first gate."
+    },
+    {
+      "type": "mermaid",
+      "title": "Authorization decision for a hierarchical blob request",
+      "caption": "RBAC is evaluated before ACLs. Identity-less auth skips ACLs entirely.",
+      "code": "flowchart TD\n  Req[Request arrives with auth type] --> HasId{Has Entra identity?}\n  HasId -->|No: Shared Key or service SAS| KeyPath[Authorize by key or SAS only]\n  HasId -->|Yes: Entra or user-delegated SAS| RBAC{Data role grants access?}\n  RBAC -->|No role| Deny[Deny]\n  RBAC -->|Owner-level role| Allow[Allow: superuser bypasses ACL]\n  RBAC -->|Reader or Contributor| ACL{ACL allows on target plus X on all parents?}\n  ACL -->|Yes| Allow2[Allow]\n  ACL -->|No| Deny2[Deny]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The detail that fails interviews is **`x` on directories means traverse, not execute**. To read `/raw/year=2026/file.parquet` you need `r` on the file itself and `--x` on `/raw` and `/raw/year=2026`. To list a directory you need `r+x` on that directory. To create a child you need `w+x` on the parent. Engineers map file semantics onto directories and grant `r` without `x`, then wonder why reads return 403 while listing works. The rule to memorize: **no `x` on any ancestor means no access to anything below it, regardless of how generous the file ACL is**. That is why parent ACL changes are blast-radius events."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What ACLs buy you and what they charge you.",
+      "headers": [
+        "Dimension",
+        "Benefit",
+        "Cost"
+      ],
+      "rows": [
+        [
+          "Granularity",
+          "Per-file and per-directory isolation inside one container",
+          "Every object carries state; audit and reasoning cost grows with object count"
+        ],
+        [
+          "Performance",
+          "Checks are local to object plus ancestors; no central policy lookup on hot reads",
+          "Recursive permission changes are bulk jobs with continuation tokens, retries, and partial failure"
+        ],
+        [
+          "Security model",
+          "Least privilege is actually achievable for multi-team lakes",
+          "Two systems to misconfigure instead of one; RBAC plus ACL interaction is the main outage vector"
+        ],
+        [
+          "Compatibility",
+          "Familiar POSIX shape; existing scripts and mental models transfer",
+          "POSIX-like, not POSIX; mask, sticky bit, and NFS gaps surprise Unix veterans"
+        ],
+        [
+          "Operations",
+          "Default ACLs make new data correct by default",
+          "Old data never picks up new defaults; you must propagate or live with drift"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Use ACLs when isolation boundaries fall *inside* a container. Do not use them to paper over a bad container layout. If whole departments never share data, separate containers with RBAC are cheaper to reason about, cheaper to audit, and an order of magnitude cheaper to change. The trade-off to state out loud: **ACLs trade cheap administration for precise isolation**. Say that sentence in the interview before the interviewer asks."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure one is **missing traverse on a parent**. Symptom: a user can list the top directory but gets `403 AuthorizationPermissionMismatch` opening a file they explicitly own three levels down. Dashboards show a cliff — one team healthy, one team zero reads — after someone tightened the parent to `rwx------`. Fix is not on the file. It is `--x` for the right group on every ancestor. Prevention is a rule: never set a parent directory to a narrower group than the union of groups that need anything underneath it."
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure two is **default ACL confusion plus mask clamping**. Symptom one: you set a generous default ACL on `/curated`, new files are correct, old files still deny — because defaults are copy-on-create, not retroactive. Symptom two: you add `user:analyst-oid:rwx`, reads still fail, because the mask is `r--` and the effective permission is `r--` regardless of what you typed. The API returns what you asked for as stated permissions and a different set as effective permissions. If you only log the former, you will chase ghosts. Always read back effective permissions after a mask change."
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure three is **scale and bypass**. Recursive ACL propagation over millions of objects is not atomic — it pages, throttles, and resumes with a continuation token, so a job killed halfway leaves half the subtree on the old policy. Symptom: non-deterministic denials where retrying the same file sometimes works because you hit an updated versus stale branch. Separately, any path that still accepts account keys or service SAS bypasses ACLs by design, so a locked-down ACL tree with a leaked key is theater. Symptom of that one is worse: no 403 at all, just exfiltration your ACL audit never sees. The fix is policy, not code — disable Shared Key on accounts that rely on ACLs."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The 403 that lies",
+      "text": "When the service returns 403 on a file the user should own, **do not stare at the file ACL first**. Walk up: check `x` on each parent, then check the mask on the file, then check whether the caller used Shared Key or SAS versus identity. In that order. Nine times out of ten the file entry is correct and one of the other three is the denial."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What the API looks like"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "acl_example.py",
+      "code": "from azure.storage.filedatalake import DataLakeServiceClient\n\nsvc = DataLakeServiceClient(account_url, credential=entra_credential)\ndir_client = svc.get_file_system_client(\"lake\").get_directory_client(\"raw/year=2026\")\n\n# Access ACL on this directory + default ACL stamped onto new children.\n# Format is POSIX-like: user::rwx,user:OID:r-x,group::r-x,mask::r-x,other::---\nacl_string = \"user::rwx,group::r-x,other::---\"\ndefault_string = \"user::rwx,group::r-x,other::---\"\n\ndir_client.set_access_control(acl=acl_string, default_acl=default_string)\n\n# Propagate to existing children: paged, resumable, NOT atomic.\n# Save continuation token; a dead job means a half-migrated subtree.\noperation = dir_client.update_access_control_recursive(\n    acl=acl_string,\n    continuation=None,  # resume here on retry\n)"
+    },
+    {
+      "type": "paragraph",
+      "text": "Note what the API forces you to confront. Setting permissions is a **path-level update**, not a container operation, so your control plane needs the full path, the principal object ID — not the app registration ID — and a clear split between access and default entries. Recursive update is a **long-running bulk operation** with progress and continuation, which tells you the storage layer stores ACLs per object rather than evaluating a single inherited rule at read time. That storage choice is why reads stay fast and permission migrations need runbooks. If you design your own API, copy that shape: single-path set for precision, recursive job with resume token for change, and always return effective permissions alongside stated ones."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Draw the auth path first",
+          "text": "Start with identity versus key auth, then RBAC gate, then ACL plus ancestor traverse. Interviewers promote candidates who place the ACL check last and explain why coarse filtering comes first for cost."
+        },
+        {
+          "title": "Design multi-team isolation in one container",
+          "text": "Propose one directory per team with owning-group `rwx`, named entries for cross-team readers, `other::---`, and a default ACL that stamps new partitions. State the container-per-team alternative and why you rejected it."
+        },
+        {
+          "title": "Handle permission change at scale",
+          "text": "Describe recursive propagation as a resumable background job with continuation token, idempotent retries, and a verification scan. Say explicitly it is not atomic — that sentence earns points."
+        },
+        {
+          "title": "Debug the 403 scenario",
+          "text": "Walk parents top-down checking `x`, then mask, then auth type. Narrate the exact CLI or SDK calls you would run. Do not guess at the file first."
+        },
+        {
+          "title": "Close with least-privilege operations",
+          "text": "Disable Shared Key where ACLs matter, require user-delegated SAS if SAS is needed, and scope the Owner-equivalent role to break-glass. Security without an ops story is half an answer."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**ACLs replace RBAC.** They compose with it. You still need a data role to reach the ACL check at all, except for superuser bypass.",
+        "**Default ACLs update existing files.** They do not. They stamp only newly created children. Old data needs explicit propagation.",
+        "**The mask is informational.** It is enforcement. It caps group and named entries even when the entry itself says `rwx`.",
+        "**`r` on a file is enough to read it.** Without `x` on every parent directory, the read is denied regardless of file permissions.",
+        "**SAS and keys respect ACLs.** Service SAS and Shared Key carry no identity and skip ACLs. Only user-delegated SAS participates.",
+        "**Deny entries exist like in Windows.** There is no explicit deny entry in this model — absence plus `other::---` is the deny. Plan auditing accordingly."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Decision guide for ACLs on hierarchical blob storage.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Many teams share one container with per-directory secrecy",
+          "Use ACLs",
+          "Only per-object entries give least privilege without container sprawl"
+        ],
+        [
+          "New partitions must inherit team permissions automatically",
+          "Use default ACLs",
+          "Copy-on-create is the cheapest correct default for append-only lakes"
+        ],
+        [
+          "Isolation boundary aligns with container boundary",
+          "Prefer RBAC on containers",
+          "One role assignment beats thousands of ACL entries for audit and change cost"
+        ],
+        [
+          "NFSv3 or Shared Key-only clients",
+          "Do not rely on ACLs",
+          "Those paths cannot evaluate identity-based ACLs; you will get silent bypass"
+        ],
+        [
+          "Millions of objects with frequently changing teams",
+          "Avoid deep ACL trees",
+          "Recursive propagation becomes a permanent batch job; repartition into containers instead"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**ACLs are per-file and per-directory permission entries evaluated after RBAC for identity-based callers, with default ACLs stamping new children and ancestor execute required for any access — precise isolation at the cost of per-object management.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:53:02.881Z",
+    "problems": []
+  }
+}

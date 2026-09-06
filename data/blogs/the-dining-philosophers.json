@@ -1,0 +1,440 @@
+{
+  "slug": "the-dining-philosophers",
+  "title": "The Dining Philosophers",
+  "summary": "Dining Philosophers is a deadlock-design interview, not a coding puzzle: break the circular wait with lock ordering and prove liveness.",
+  "kind": "LLD",
+  "problemSlug": "the-dining-philosophers-44-84",
+  "topic": "Concurrency Interview Problems",
+  "difficulty": "Hard",
+  "coverEmoji": "🍜",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Multithreading",
+    "Deadlock",
+    "Hard"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.youtube.com/watch?v=cb6-GZiSaMY",
+      "title": "The Dining Philosophers - Apple Coding Interview Question - YouTube",
+      "source": "youtube.com",
+      "kind": "roundup",
+      "companies": [
+        {
+          "name": "Apple",
+          "quote": "Apple Coding Interview Question | Leetcode 1226 | The Dining Philosophers"
+        },
+        {
+          "name": "Google",
+          "quote": "In this video, we introduce how to solve the \"The Dining Philosophers\" question which is used by big tech companies like Google, Facebook, Amazon in coding interviews."
+        },
+        {
+          "name": "Facebook",
+          "quote": "In this video, we introduce how to solve the \"The Dining Philosophers\" question which is used by big tech companies like Google, Facebook, Amazon in coding interviews."
+        },
+        {
+          "name": "Amazon",
+          "quote": "In this video, we introduce how to solve the \"The Dining Philosophers\" question which is used by big tech companies like Google, Facebook, Amazon in coding interviews."
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "LeetCode 1226 — The Dining Philosophers",
+      "url": "https://leetcode.com/problems/the-dining-philosophers/",
+      "source": "LeetCode",
+      "kind": "problem",
+      "note": "Medium. Resolved through the LeetCode API, not guessed from the slug."
+    },
+    {
+      "title": "The Dining Philosophers | codeWithAryan - Code With Aryan",
+      "url": "https://codewitharyan.com/tech-blogs/the-dining-philosophers",
+      "source": "codewitharyan.com",
+      "kind": "article"
+    },
+    {
+      "title": "How does machine coding round works. Please help for interview.",
+      "url": "https://www.reddit.com/r/developersIndia/comments/1u67nlu/how_does_machine_coding_round_works_please_help/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Do you know what's a “Machine Coding Round” | Navyaa Sharma",
+      "url": "https://www.linkedin.com/posts/navyaa-sharma-here_jobinterviews-softwareengineering-coding-activity-7407034570363162625-RNWT",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "1226. The Dining Philosophers - In-Depth Explanation - AlgoMonster",
+      "url": "https://algo.monster/liteproblems/1226",
+      "source": "algo.monster",
+      "kind": "article"
+    },
+    {
+      "title": "Dining Philosophers Problem - InterviewBit",
+      "url": "https://www.interviewbit.com/blog/dining-philosophers-problem/",
+      "source": "interviewbit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Dining Philosophers Problem - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/operating-systems/dining-philosophers-problem/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the interviewer is really testing",
+      "text": "Anyone can write `synchronized(left); synchronized(right);`. The interview question is: **can you name the four Coffman conditions, break exactly one of them, and prove no philosopher starves?** Your `wantsToEat` implementation is just evidence. They want to hear *circular wait*, *ordering*, *hold-and-wait*, and the trade-off between deadlock-freedom and fairness. If you jump to code without drawing the wait cycle, you have already lost points."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Five philosophers numbered `0..4` sit in a ring. Between each pair sits one fork, so there are exactly five forks. Each philosopher loops between thinking and eating. To eat, a philosopher must hold **both** adjacent forks exclusively. After eating, both forks are released. You implement a shared controller used concurrently by five threads. The controller does not create threads or schedule eating; it only enforces a fork-acquisition discipline so the system never deadlocks and no philosopher starves forever, even though call timing and interleaving are adversarial."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`void wantsToEat(int philosopher, Runnable pickLeftFork, Runnable pickRightFork, Runnable eat, Runnable putLeftFork, Runnable putRightFork)` — called whenever philosopher `philosopher` wants one meal.",
+        "`pickLeftFork / pickRightFork` — invoke exactly once each to model taking that fork. The test harness checks call order and fork identity.",
+        "`eat` — invoke exactly once after both picks and before either put. This is the critical section.",
+        "`putLeftFork / putRightFork` — invoke exactly once each to release. Forks must always be released, even if `eat` throws.",
+        "Left fork of `i` is fork `i`. Right fork of `i` is fork `(i+1) % 5`. Fork `i` is shared by philosophers `i` and `(i-1+5) % 5`.",
+        "The same `philosopher` id may re-enter `wantsToEat` concurrently. Your solution must be safe for `n` repeated calls per philosopher, not just one meal each."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "paragraph",
+      "text": "This problem is under-specified on purpose. The five questions below decide which solution is correct. Ask them before touching a lock."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "What is fixed at 5, and what must generalize?",
+          "text": "LeetCode hard-codes 5 philosophers. Ask: should this work for `N`? A good design parameterizes `N` with zero extra complexity. Say you will build for `N` and test at 5. That one sentence signals senior thinking."
+        },
+        {
+          "title": "Who owns the fork state?",
+          "text": "Are `pickLeftFork` callbacks just loggers, or do they block? In the LeetCode twin they are dumb callbacks — **you** must provide mutual exclusion with your own `Lock[5]`. In a real LLD round, you own the `Fork` objects. Agree explicitly: controller holds locks, callbacks are side effects."
+        },
+        {
+          "title": "Is deadlock-freedom enough, or do you need starvation-freedom?",
+          "text": "Deadlock means *nobody* progresses. Starvation means *somebody* never progresses. Most candidates solve the first and ignore the second. Ask which guarantee is required. The statement says no starvation, so a pure try-lock-and-backoff answer is insufficient without fairness."
+        },
+        {
+          "title": "Can a philosopher be interrupted or fail mid-meal?",
+          "text": "If `eat` throws, do forks leak? Decide: `try-finally` release is mandatory. Also ask about interrupts — should `wantsToEat` be interruptible or uninterruptible? Your choice changes `lock()` vs `lockInterruptibly()`."
+        },
+        {
+          "title": "What throughput matters?",
+          "text": "Maximum parallelism is `floor(N/2)` eating at once. Any correct solution must allow adjacent pairs to eat in parallel. A single global mutex is correct but gets you rejected. State the concurrency target up front: at least two philosophers eating simultaneously for N=5."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Agreed scope before design. Read the middle column in the interview.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Mutual exclusion per fork: one holder at a time",
+          "Without this nothing else is meaningful"
+        ],
+        [
+          "Functional",
+          "Hold both forks before eat, release both after",
+          "Defines the critical section boundaries"
+        ],
+        [
+          "Functional",
+          "Support N philosophers, N forks in a ring",
+          "Hard-codes 5 and you fail the generalization follow-up"
+        ],
+        [
+          "Safety",
+          "No deadlock under any interleaving",
+          "The core graded property"
+        ],
+        [
+          "Liveness",
+          "No starvation with a fair scheduler assumption",
+          "Separates junior from senior answers"
+        ],
+        [
+          "Performance",
+          "Allow non-adjacent philosophers to eat in parallel",
+          "Rules out the global-lock cop-out"
+        ],
+        [
+          "Robustness",
+          "Forks released even on exception; re-entrant calls safe",
+          "Tests try-finally discipline"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the naive global order that deadlocks"
+    },
+    {
+      "type": "paragraph",
+      "text": "The obvious answer is: lock left, then lock right, eat, unlock both. It looks right because each fork is individually protected. It is symmetric, simple, and easy to explain — which is why so many candidates write it under pressure. The trade-off you are making is **simplicity for liveness**: you keep the code trivial but you preserve all four Coffman conditions simultaneously, especially hold-and-wait plus circular wait. That combination is fatal. When all five threads interleave so each grabs its left fork before anyone grabs a right fork, every thread holds one lock and blocks forever on the second. No timeout, no backoff, no interrupt will save a design that has no cycle-breaking rule."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "DeadlockingPhilosophers.java",
+      "code": "class DeadlockingPhilosophers {\n    private final ReentrantLock[] forks = new ReentrantLock[5];\n    public DeadlockingPhilosophers() {\n        for (int i = 0; i < 5; i++) forks[i] = new ReentrantLock();\n    }\n    // DO NOT SHIP THIS: identical lock order for every philosopher.\n    public void wantsToEat(int p, Runnable pickLeft, Runnable pickRight,\n                           Runnable eat, Runnable putLeft, Runnable putRight) {\n        int left = p;\n        int right = (p + 1) % 5;\n        forks[left].lock();\n        forks[right].lock();\n        try {\n            pickLeft.run(); pickRight.run();\n            eat.run();\n            putLeft.run(); putRight.run();\n        } finally {\n            forks[right].unlock();\n            forks[left].unlock();\n        }\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Run this with five threads and a barrier before the second `lock()` and you deadlock deterministically. Each philosopher holds `forks[p]` and waits on `forks[(p+1)%5]`. That is a textbook wait-for cycle of length 5. The deeper lesson: **mutual exclusion plus hold-and-wait plus circular acquisition order equals deadlock**. You must break at least one. You cannot drop mutual exclusion — forks are exclusive by definition. You can break hold-and-wait by atomically grabbing both, or break circular wait by ordering. Ordering is cheaper, needs no extra arbiter thread, and keeps maximum parallelism. That is WHY every production answer uses asymmetric acquisition, not because it is clever but because it is the lowest-cost Coffman condition to sacrifice."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design — resource hierarchy (asymmetric ordering)"
+    },
+    {
+      "type": "paragraph",
+      "text": "Assign every fork a global rank — its index `0..N-1`. Rule: **always acquire the lower-ranked fork first**. For philosophers `0..3`, that means left-then-right. For philosopher `4`, left is `4` and right is `0`, so it goes right-then-left. One philosopher is reversed. That single asymmetry destroys the cycle. Proof sketch the interviewer wants: locks are now acquired in strictly increasing rank order, so a wait-for edge can only point from a lower rank to a higher rank. A directed cycle would require a rank strictly greater than itself — impossible. Hence no deadlock, by construction, with no timing assumptions. The trade-off: you accept **slightly uneven code paths** (one branch for the last philosopher) in exchange for **zero extra contention** — no global mutex, no waiter, no semaphore. Throughput stays at `floor(N/2)` parallel eaters, which is optimal for a ring. The alternative — a butler / semaphore limiting concurrent hungry philosophers to `N-1` — also works but adds a central bottleneck and an extra wake-up hop on every meal. Prefer ordering unless fairness is explicitly demanded."
+    },
+    {
+      "type": "mermaid",
+      "title": "Wait-for cycle and how ordering breaks it",
+      "caption": "Identical order creates a ring. Reversing one philosopher makes rank order acyclic.",
+      "code": "graph TD\n  A[\"Symmetric: every P holds left waits right\"] --> B[\"P0 holds F0 waits F1\"]\n  B --> C[\"P1 holds F1 waits F2\"]\n  C --> D[\"P2 holds F2 waits F3\"]\n  D --> E[\"P3 holds F3 waits F4\"]\n  E --> F[\"P4 holds F4 waits F0 CYCLE\"]\n  F --> G[\"DEADLOCK nobody progresses\"]\n  G --> H[\"Fix: P4 takes F0 then F4\"]\n  H --> I[\"Wait edges go low rank to high rank only\"]\n  I --> J[\"No cycle possible: deadlock-free\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two honest alternatives and when to pick them. **Butler with `Semaphore(N-1)`: ** a hungry philosopher first acquires a permit, then takes forks in any order. This breaks circular wait by guaranteeing at least one philosopher can get both forks — at most `N-1` compete, so one fork is always free. Trade-off: one extra acquire-release per meal and a global contention point; simpler to reason about for juniors, worse under profiling. **Try-lock with backoff: ** take left, `tryLock` right, release left and jitter-retry on failure. Trade-off: no lock ordering needed and generalizes to arbitrary resource graphs, but livelock is possible and you must add randomized backoff plus bounded retries to get probabilistic liveness. In a 45-minute interview, name both, then commit to ordering. It is deterministic, two lines of branching, and easiest to prove correct on a whiteboard."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Deadlock-free is not starvation-free",
+      "text": "Resource hierarchy guarantees **someone** always eats, not that **everyone** eats. If philosopher 0 eats in a tight loop, philosopher 1 can wait indefinitely on a non-fair `ReentrantLock`. `ReentrantLock` defaults to non-fair for throughput. If the interviewer says no starvation, you must either use fair locks, a FIFO waiter queue, or bound the meals-per-win. Say this distinction unprompted — it is the most common senior signal."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Structure — who owns what"
+    },
+    {
+      "type": "mermaid",
+      "title": "Controller owns forks, threads own appetites",
+      "caption": "Philosopher threads are dumb; all exclusion lives in the controller.",
+      "code": "classDiagram\n  class DiningPhilosophers {\n    -forks\n    +DiningPhilosophers(num)\n    +wantsToEat(philosopher)\n    -lockBoth(first, second)\n    -unlockBoth(first, second)\n  }\n  class Fork {\n    +id\n    +rank\n    +lock\n  }\n  class PhilosopherTask {\n    +id\n    +run()\n  }\n  DiningPhilosophers *-- Fork\n  PhilosopherTask --> DiningPhilosophers : calls wantsToEat"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code — ordering plus try-finally"
+    },
+    {
+      "type": "paragraph",
+      "text": "This is the answer to memorize. Note three decisions: locks are final and preallocated so there is no lock-creation race; acquisition order depends only on fork rank so the proof holds for any `N`; callbacks run **inside** the held locks but release happens in `finally` so an exception in `eat` never leaks a fork. The trade-off of running callbacks under lock is intentional — the harness requires pick-eat-put ordering to be observable while holding exclusion. In production you would separate state mutation from user callbacks to avoid holding a lock during arbitrary code, but here the spec forces it."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "DiningPhilosophers.java",
+      "code": "import java.util.concurrent.locks.ReentrantLock;\n\nclass DiningPhilosophers {\n    private final ReentrantLock[] forks;\n\n    public DiningPhilosophers() { this(5); }\n\n    public DiningPhilosophers(int n) {\n        forks = new ReentrantLock[n];\n        // Non-fair by default: higher throughput. Pass true for fairness\n        // if starvation-freedom is graded strictly. See follow-ups.\n        for (int i = 0; i < n; i++) forks[i] = new ReentrantLock();\n    }\n\n    public void wantsToEat(int philosopher,\n                           Runnable pickLeftFork, Runnable pickRightFork,\n                           Runnable eat,\n                           Runnable putLeftFork, Runnable putRightFork) {\n        int n = forks.length;\n        int left = philosopher % n;\n        int right = (philosopher + 1) % n;\n\n        // Resource hierarchy: always lock lower rank first.\n        int first = Math.min(left, right);\n        int second = Math.max(left, right);\n        Runnable pickFirst = (first == left) ? pickLeftFork : pickRightFork;\n        Runnable pickSecond = (first == left) ? pickRightFork : pickLeftFork;\n        Runnable putFirst = (first == left) ? putLeftFork : putRightFork;\n        Runnable putSecond = (first == left) ? putRightFork : putLeftFork;\n\n        forks[first].lock();\n        forks[second].lock();\n        try {\n            pickFirst.run();\n            pickSecond.run();\n            eat.run();\n            // Puts are observable; keep them inside the critical section\n            // so the checker sees pick-pick-eat-put-put atomically.\n            putSecond.run();\n            putFirst.run();\n        } finally {\n            // Reverse-order unlock is hygiene, not correctness, but do it.\n            forks[second].unlock();\n            forks[first].unlock();\n        }\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "dining_philosophers.py",
+      "code": "import threading\n\nclass DiningPhilosophers:\n    def __init__(self, n: int = 5):\n        self.forks = [threading.Lock() for _ in range(n)]\n\n    def wants_to_eat(self, philosopher, pick_left, pick_right, eat, put_left, put_right):\n        n = len(self.forks)\n        left, right = philosopher % n, (philosopher + 1) % n\n        first, second = (left, right) if left < right else (right, left)\n        pick_first, pick_second = (pick_left, pick_right) if first == left else (pick_right, pick_left)\n        # Trade-off: Python Locks are non-fair and non-reentrant.\n        # Same ordering proof applies; use RLock per fork if re-entry needed.\n        self.forks[first].acquire()\n        self.forks[second].acquire()\n        try:\n            pick_first()\n            pick_second()\n            eat()\n            put_left()\n            put_right()\n        finally:\n            self.forks[second].release()\n            self.forks[first].release()"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Cost of the ordering solution. There is no asymptotically cheaper correct design.",
+      "headers": [
+        "Dimension",
+        "Cost",
+        "Note"
+      ],
+      "rows": [
+        [
+          "Time per meal",
+          "O(1) lock ops + O(1) callbacks",
+          "Two locks, no loops, no retries in the common case"
+        ],
+        [
+          "Blocking time",
+          "O(wait for two neighbors max)",
+          "Only adjacent philosophers ever contend; no global queue"
+        ],
+        [
+          "Space",
+          "O(N) locks",
+          "One lock per fork; no per-meal allocation"
+        ],
+        [
+          "Parallelism",
+          "floor(N/2) concurrent eaters",
+          "Optimal for a ring; global mutex gives 1"
+        ],
+        [
+          "Deadlock-freedom",
+          "Guaranteed by rank order",
+          "Proven, not tested — no schedule can cycle"
+        ],
+        [
+          "Starvation-freedom",
+          "Needs fair locks or FIFO waiter",
+          "Ordering alone gives only deadlock-freedom"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The hardest follow-up — liveness and fairness"
+    },
+    {
+      "type": "paragraph",
+      "text": "Once deadlock is solved, a strong interviewer pivots to: prove philosopher 1 eventually eats if philosopher 0 is greedy. With non-fair locks, you cannot. `ReentrantLock` in default mode lets a releasing thread re-acquire before a parked waiter wakes — barging. That maximizes throughput but permits indefinite postponement. The fix is a trade-off you must state: enable fairness with `new ReentrantLock(true)` and pay measurably lower throughput under contention because every handoff parks and unparks a thread, or keep non-fair locks and add an explicit FIFO waiter — a queue of hungry philosophers plus a `Condition` per fork — so arrival order decides grant order. A third option used in operating systems is bounding: cap consecutive meals or force a think delay, turning starvation into a scheduling policy rather than a lock property. Also handle re-entrancy: the spec allows the same id to call concurrently, so never key lock ownership by philosopher id and never use a single boolean `eating[i]` flag without a lock — that reintroduces a data race. Own the exclusion with lock objects, not with philosopher state."
+    },
+    {
+      "type": "mermaid",
+      "title": "Philosopher lifecycle",
+      "caption": "Hungry is the only blocking state. Fairness controls who leaves it next.",
+      "code": "stateDiagram-v2\n  [*] --> Thinking\n  Thinking --> Hungry : wantsToEat entered\n  Hungry --> Eating : acquired both forks in rank order\n  Eating --> Thinking : released both forks\n  Hungry --> Hungry : blocked on first or second lock\n  Eating --> [*] : thread ends"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Generalize to N philosophers?",
+          "text": "Already done — constructor takes N, rank is fork index. No code change. State the proof again: increasing rank order is acyclic for any N. This is why you parameterized from the start."
+        },
+        {
+          "title": "Replace ordering with a butler?",
+          "text": "Add Semaphore permits = N-1. Acquire permit, then take left then right, release permit in finally. Trade-off: one global contention point but uniform code for all philosophers. Good answer if they forbid asymmetric logic for readability reasons."
+        },
+        {
+          "title": "Allow re-entrant wantsToEat for the same id?",
+          "text": "Our solution is safe because locks are per-fork, not per-philosopher, and Lock is held per call frame. Two concurrent meals for P0 serialize on fork F0. Warn: non-reentrant Lock per fork would self-deadlock only if one call tried to take the same fork twice — it never does."
+        },
+        {
+          "title": "Add ls-style introspection: who holds what?",
+          "text": "Keep a volatile holder array updated under lock, or expose Lock.getOwner for debugging. Trade-off: observability vs extra writes on the hot path. Never expose the raw Lock array — wrap with methods to preserve invariants."
+        },
+        {
+          "title": "Prove no deadlock in one sentence?",
+          "text": "Have it rehearsed: ranks are totally ordered and every thread acquires in increasing rank, so any wait edge goes uphill and a wait cycle would need a rank greater than itself. That sentence passes more interviews than extra code."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`philosopher` out of range or negative — normalize with `floorMod` or reject; never index blindly.",
+        "`eat` throws — both forks still released via `finally`; puts for already-picked forks must still be attempted or explicitly skipped by contract.",
+        "Spurious concurrent call for same id — must serialize on forks, not corrupt holder state.",
+        "`N == 1` degenerate ring — left and right are the same fork; special-case single lock or you self-deadlock acquiring the same non-reentrant lock twice.",
+        "Interrupted thread while blocked in `lock()` — decide `lock()` vs `lockInterruptibly()` and document; swallowing interrupts breaks cancellation.",
+        "Callback re-entrancy — `pickLeftFork` must not call back into `wantsToEat`; document non-reentrancy or guard with thread-ownership checks.",
+        "Fork release order — unlock in reverse acquisition order to play well with lock hierarchies elsewhere in a larger codebase."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How you are graded"
+    },
+    {
+      "type": "table",
+      "caption": "What separates a pass from a strong hire on this problem.",
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Deadlock reasoning",
+          "Writes left-then-right and hopes the test passes",
+          "Draws the 5-cycle, names circular wait, breaks it by rank"
+        ],
+        [
+          "Code correctness",
+          "Forgets finally, leaks forks on exception",
+          "try-finally, reverse unlock, N-parameterized"
+        ],
+        [
+          "Concurrency depth",
+          "Thinks synchronized fixes everything",
+          "Discusses barging, fair vs non-fair, throughput trade-off"
+        ],
+        [
+          "Generality",
+          "Hard-codes 5 with magic numbers",
+          "Constructor takes N, handles N=1, rank logic is index-based"
+        ],
+        [
+          "Liveness",
+          "Claims deadlock-free means starvation-free",
+          "States ordering gives safety only; proposes fairness mechanism"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Your 45-minute plan",
+      "text": "Minutes 0-5: restate the ring, define left `i` and right `(i+1)%N`, agree you own `Lock[N]`. Minutes 5-12: write the naive two-lock version, draw the 5-cycle, explain Coffman. Minutes 12-25: implement rank ordering with `min/max`, map picks accordingly, wrap in `try-finally`. Minutes 25-35: prove acyclicity in one sentence, discuss fair locks vs butler for starvation. Minutes 35-45: handle `N=1`, exception safety, re-entrant calls, and throughput `floor(N/2)`. Close by saying the trade-off out loud: one reversed branch buys deterministic deadlock-freedom with zero global contention."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:36:32.421Z",
+    "problems": []
+  }
+}

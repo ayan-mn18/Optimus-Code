@@ -1,0 +1,291 @@
+{
+  "slug": "graphql",
+  "title": "GraphQL",
+  "summary": "GraphQL trades endpoint versioning for schema governance: one typed endpoint, client-chosen fields, server-paid resolver cost.",
+  "kind": "HLD",
+  "problemSlug": "graphql-93-206",
+  "topic": "Application Programming Interface (API)",
+  "difficulty": "Medium",
+  "coverEmoji": "🔍",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "API",
+    "GraphQL"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "GraphQL vs REST in 2026: The Honest Trade-offs After Shipping Both",
+      "url": "https://levelup.gitconnected.com/graphql-vs-rest-in-2026-the-honest-trade-offs-after-shipping-both-5746bd403a95",
+      "source": "levelup.gitconnected.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is GraphQL and How Does It Work? - Postman Blog",
+      "url": "https://blog.postman.com/what-is-a-graphql-api-how-does-it-work/",
+      "source": "blog.postman.com",
+      "kind": "article"
+    },
+    {
+      "title": "Complete Introduction to GraphQL - Medium",
+      "url": "https://medium.com/@fitzgeraldnsong/complete-introduction-to-graphql-d38a24210756",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Learn GraphQL in 7 Minutes For Beginners - YouTube",
+      "url": "https://www.youtube.com/watch?v=Zg4XIpnLWQg",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "GraphQL does not make data fetching faster. It moves the cost of API change: **clients stop paying in versioned endpoints and over-fetching, servers start paying in schema governance and per-field execution cost.** If you cannot budget for that second bill — query costing, batching, depth limits — do not adopt it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "GraphQL is a typed query layer over your existing services, exposed as a single endpoint. Clients send a document describing exactly which fields they want on which types. The server validates that document against a schema, executes one resolver function per field, and returns a JSON tree with exactly that shape. There are three operation kinds: queries for reads, mutations for writes with explicit side effects, and subscriptions for streams. That is the whole model. No routing table of resources, no versioned URLs, no implicit response shape. The schema is the contract, the query is the projection, and the resolver graph is the implementation. Choose it when your clients diverge faster than your domain does — web, iOS, Android, and third parties all needing different slices of the same entities."
+    },
+    {
+      "type": "paragraph",
+      "text": "The schema is not documentation. It is executable law. Every type, field, argument, and nullability rule is declared up front in a schema definition language, and every incoming query is checked against it before anything runs. This is why GraphQL feels rigid and flexible at the same time: rigid because you cannot return a field you did not declare, flexible because any client can combine declared fields in a way you never anticipated without a backend deploy. That property is the reason teams adopt it and the reason they regret it. You get additive evolution without versioning — add a field, deprecate an old one — but only if you treat breaking changes to the schema like breaking changes to a database: banned by default, reviewed, and gated in CI."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Queries, mutations, subscriptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Query:** a read-only selection tree. The client names `user(id: 7) { name posts(first: 10) { title } }` and gets back that tree. No side effects allowed by convention, repeatable, cacheable only if you do extra work.",
+        "**Mutation:** a write with a defined payload. `updateEmail(userId, email)` runs top-level fields serially, returns the mutated object plus errors. The serial execution is deliberate — writes have ordering, reads do not.",
+        "**Subscription:** a long-lived selection kept open over WebSocket or SSE. The initial result looks like a query, then the server pushes deltas. Do not design your whole API around this unless you have an explicit fan-out story."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: from query string to JSON"
+    },
+    {
+      "type": "mermaid",
+      "title": "GraphQL request execution",
+      "caption": "Every field is a function call. Cost scales with shape, not endpoint.",
+      "code": "graph TD\n  C[Client query document] --> E[Single endpoint POST]\n  E --> P[Parse and validate vs schema]\n  P --> X[Execute field resolvers]\n  X --> B[Batch and cache with DataLoader]\n  B --> S[Downstream services and DBs]\n  S --> J[Assemble typed JSON tree]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Execution is field-at-a-time, not handler-at-a-time. After parsing and validation, the executor walks the query tree and calls the resolver for each field with its parent value, arguments, and context such as auth and loaders. `Query.user` returns a user stub, `User.posts` fans out to a post service, `Post.author` fans back. Nullability is enforced during assembly: a non-null violation bubbles to the nearest nullable parent, which is why one bad leaf can null an entire subtree. Directives like `skip` and `include` are evaluated here, and fragments are flattened before execution. The trade-off is explicit: you replaced N round trips from the client with N resolver calls on the server. Latency moved, it did not vanish."
+    },
+    {
+      "type": "code",
+      "language": "graphql",
+      "filename": "schema.graphql",
+      "code": "type User {\n  id: ID!\n  name: String!\n  email: String! @requiresAuth\n  posts(first: Int = 10): [Post!]!\n}\n\ntype Post {\n  id: ID!\n  title: String!\n  author: User!\n}\n\ntype Query {\n  user(id: ID!): User\n}\n\ntype Mutation {\n  updateEmail(userId: ID!, email: String!): User!\n}"
+    },
+    {
+      "type": "code",
+      "language": "graphql",
+      "filename": "query.graphql",
+      "code": "# Client asks for exactly this shape. Nothing more is sent.\nquery GetUser {\n  user(id: \"7\") {\n    name\n    posts(first: 5) {\n      title\n    }\n  }\n}\n# Response mirrors the selection tree, field for field."
+    },
+    {
+      "type": "paragraph",
+      "text": "Resolvers look trivial and that is the trap. A naive `User.posts` resolver issues one database query per user, so a list of 100 users becomes 101 queries. The fix is batching, not caching: collect all `userIds` requested in this tick, issue one `SELECT ... WHERE user_id IN (...)`, then split results back per parent. That is what a per-request DataLoader does, and it must be per-request so one user cannot read another request's batch. The trade-off you are buying: resolver code stays simple and independently ownable by each team, but every nested list is a potential fan-out you must measure. If you cannot explain your p99 as a function of query depth times batch size, you do not have a GraphQL performance model yet."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Each GraphQL win has a priced counterpart.",
+      "headers": [
+        "Property",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Payload shape",
+          "No over-fetch or under-fetch; mobile saves bytes and round trips",
+          "Server executes arbitrary shapes; cost is unpredictable per request"
+        ],
+        [
+          "Evolution",
+          "Additive fields, no URL versioning",
+          "Schema becomes a shared monolith; breaking change affects all clients at once"
+        ],
+        [
+          "Tooling",
+          "Strong typing, introspection, generated clients",
+          "You must run codegen and schema checks in CI or types drift"
+        ],
+        [
+          "Caching",
+          "Precise client-driven selection",
+          "HTTP caching breaks; one URL means no per-resource ETags by default"
+        ],
+        [
+          "Ownership",
+          "Frontend teams compose without backend deploys",
+          "Backend teams own N+1, auth per field, and rate-limit math"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Compare this to REST directly. REST prices change in endpoints: each new client need is a new route or a new version, and caching falls out of HTTP for free. GraphQL prices change in governance: each new client need is a new field combination that costs you nothing to ship but something to execute. That is a good trade when you have many heterogeneous clients reading overlapping entity graphs and shipping at different cadences. It is a bad trade when your traffic is cache-dominated, your payloads are uniform, or your operations are simple CRUD where a `GET /orders/:id` already returns exactly what everyone needs. Never adopt GraphQL to reduce backend work. It increases backend work to reduce coordination work."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is N+1 dressed as normal traffic. One mobile release starts requesting `friends { posts { comments { author } } }` inside a list, your resolver fans out per node, database connections saturate, and p99 climbs from 120ms to 4 seconds while average latency looks fine. The symptom you see is not an error — it is a shape change. Query depth histograms shift, downstream QPS multiplies by 20x for the same gateway QPS, and connection pools exhaust. The second failure is depth abuse. Without a cost model, a single deeply nested or aliased query can request 10,000 leaf fields in one POST. You see CPU saturation on the gateway, resolver timeouts, and one tenant starving others. This is a denial-of-service vector you built into the contract."
+    },
+    {
+      "type": "paragraph",
+      "text": "The slower failure is cache collapse. Because everything is `POST /graphql` with a different body, your CDN hit rate drops to near zero after migration and origin QPS doubles overnight. Teams then bolt on full-query caching and discover invalidation is now per-entity, not per-URL: you need automatic cache tagging from the executed selection, or manual `Cache-Control` per field, plus a purge path when a mutation touches an entity. Auth fails field-by-field too. Object-level checks at the edge are insufficient when `User.email` and `User.name` have different visibility. You learn this when a query passes gateway auth but leaks a restricted field that no endpoint ever exposed before. The fix is authorization inside resolvers or in a schema policy layer, tested per field, not per route."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Symptom: p99 spikes while RPS is flat** — likely a new nested selection causing resolver fan-out. Check max list length × depth and downstream batch size.",
+        "**Symptom: CDN hit rate falls off a cliff after launch** — expected. You lost URL-addressable resources. Move to persisted queries plus per-entity cache tags.",
+        "**Symptom: one client exhausts DB connections** — missing DataLoader batching or per-request loader leaking across requests.",
+        "**Symptom: partial `data: null` with `errors` array populated** — non-null bubble-up. Trace which leaf violated its contract; do not retry blindly.",
+        "**Symptom: gateway CPU high, downstream idle** — query too large or too deep. You need depth limits, complexity scoring, and persisted-query allowlisting."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Persisted queries are not optional at scale",
+      "text": "Allowlisting document hashes turns an open-ended query language back into a finite set of operations you can rate-limit, cache, and review. Without it you are exposing a public compute API priced by the attacker."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What production GraphQL actually needs"
+    },
+    {
+      "type": "code",
+      "language": "javascript",
+      "filename": "gateway.js",
+      "code": "const server = new ApolloServer({\n  schema,\n  validationRules: [\n    depthLimit(6), // reject deeply nested selections\n    costLimit({ maxCost: 1000, // price list args: first:10 = 10 points\n      scalarsCost: 1, objectCost: 5 })\n  ],\n  plugins: [\n    persistedQueries({ allowlist: true }), // only shipped hashes execute\n    responseCache({ scopePerField: true }), // cache User:7, not the query string\n  ],\n});\n// Resolvers must batch: one IN-query per tick, auth per field.\nconst loaders = () => ({\n  postsByUser: new DataLoader((ids) => batchPosts(ids))\n});"
+    },
+    {
+      "type": "paragraph",
+      "text": "That configuration is the minimum serious answer. Depth limits stop pathological nesting, complexity scoring prices `first: 1000` differently from `first: 10`, persisted queries give you back operability, and per-request loaders give you back sane database access. Add timeouts per resolver, not just per request, because one slow leaf should not hold gateway workers. Add field-level metrics — execution count and latency per `Type.field` — otherwise you cannot attribute cost to the team that owns the resolver. The trade-off here is velocity: every guardrail you add makes ad-hoc exploration slightly harder, which is exactly the point. Unbounded flexibility is a development feature and a production liability."
+    },
+    {
+      "type": "table",
+      "caption": "Use GraphQL as a product decision, not a default.",
+      "headers": [
+        "Signal",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Many clients need different slices of the same graph",
+          "Use GraphQL",
+          "One schema serves all projections without version explosion"
+        ],
+        [
+          "Heavy read fan-in across microservices",
+          "Use GraphQL as aggregation gateway",
+          "Resolvers compose services behind one typed boundary"
+        ],
+        [
+          "CDN-cacheable public reads, uniform payloads",
+          "Do not use",
+          "You give up HTTP caching for no projection benefit"
+        ],
+        [
+          "Simple CRUD with stable contracts",
+          "Do not use",
+          "Extra execution machinery with no evolution win"
+        ],
+        [
+          "Untrusted third-party developers, no allowlist",
+          "Do not use yet",
+          "Open query cost is unbounded abuse surface"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in interviews"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from client diversity, not hype",
+          "text": "Say: three consumers need different projections of Order and User. REST forces either over-fetch or endpoint sprawl. That is the only justification you need to propose GraphQL."
+        },
+        {
+          "title": "Draw the gateway, not just the schema",
+          "text": "Place a GraphQL aggregation layer in front of user, order, and inventory services. Show resolvers calling gRPC or REST downstream, with DataLoader batching at the boundary. Interviewers grade the boundary."
+        },
+        {
+          "title": "Name the N+1 and fix it on the board",
+          "text": "Write the naive resolver, count the queries for a list of N, then add batching. State the trade-off: per-request memory and an extra tick of latency for O(1) downstream calls."
+        },
+        {
+          "title": "State your guards before being asked",
+          "text": "Depth limit, complexity budget, persisted queries, per-field timeouts and auth. This is what separates a Medium-level answer from a junior recitation of queries versus mutations."
+        },
+        {
+          "title": "Explain caching and versioning explicitly",
+          "text": "No URL versions; deprecate fields and track usage per operation hash. No HTTP cache by default; cache normalized entities with tags and purge on mutations. Say what you lose."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**GraphQL replaces the database.** It does not. It is a projection layer with no storage semantics — pagination, filtering, and consistency still live downstream.",
+        "**One endpoint means one round trip to storage.** It means one client round trip and potentially dozens of server-side fetches. Count resolver calls, not HTTP calls.",
+        "**The schema guarantees performance.** It guarantees shape, not cost. A valid query can still be ruinously expensive without limits.",
+        "**Subscriptions solve realtime cheaply.** Each open selection holds state and fan-out. Without a broker and backpressure story, they are a connection leak.",
+        "**REST versus GraphQL is either-or.** Mature systems expose both: GraphQL for product clients that need flexible composition, REST or RPC for cacheable, webhook, and service-to-service paths."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "Use GraphQL when diverse clients need different projections of a shared entity graph and you can afford schema governance plus per-field costing, batching, and allowlisting — otherwise stay with cacheable endpoints."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:49:56.992Z",
+    "problems": []
+  }
+}

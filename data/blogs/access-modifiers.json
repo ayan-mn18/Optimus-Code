@@ -1,0 +1,347 @@
+{
+  "slug": "access-modifiers",
+  "title": "Access Modifiers",
+  "summary": "Access modifiers are compile-time visibility boundaries that define who can depend on what — and therefore what you can change safely.",
+  "kind": "LLD",
+  "problemSlug": "access-modifiers-29-65",
+  "topic": "Object oriented Programming (OOPS)",
+  "difficulty": "Easy",
+  "coverEmoji": "🔒",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "OOPS",
+    "Encapsulation"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Access Modifiers in Java - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/java/access-modifiers-java/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Access Modifiers (C# Programming Guide) - Microsoft Learn",
+      "url": "https://learn.microsoft.com/en-us/dotnet/csharp/programming-guide/classes-and-structs/access-modifiers",
+      "source": "learn.microsoft.com",
+      "kind": "article"
+    },
+    {
+      "title": "Java access modifiers: (public, protected, private) - YouTube",
+      "url": "https://www.youtube.com/watch?v=T632kAJ_9VA",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Java Modifiers - W3Schools",
+      "url": "https://www.w3schools.com/java/java_modifiers.asp",
+      "source": "w3schools.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "An access modifier is not about **hiding secrets**. It is about **limiting dependencies**. Every member you expose becomes a contract you cannot break without breaking callers. Choose the narrowest visibility that still lets the design work, because widening is easy and narrowing is a breaking change."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "An access modifier attaches a visibility rule to a class, field, method, or constructor. The compiler rejects any reference that violates the rule, before the program ever runs. In Java the vocabulary is four levels: `private`, package-private (no keyword, often called default), `protected`, and `public`. Each level answers one question: which other code is allowed to name this declaration? That is all it does. It does not encrypt, it does not sandbox, and it does not stop reflection, bytecode manipulation, or a determined caller in the same process."
+    },
+    {
+      "type": "paragraph",
+      "text": "Think of it as a blast-radius control. `private` means only this class can depend on the member, so you can rename it, delete it, or change its invariants freely. `public` means anyone in any package can depend on it, so every change is a migration. Package-private and `protected` sit between those extremes, drawing the line along module boundaries and inheritance boundaries respectively. The trade-off is always the same: **narrow visibility buys freedom to refactor; wide visibility buys reusability at the cost of future flexibility.** Good object-oriented design is mostly deciding where that line sits."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: two axes, not one ladder"
+    },
+    {
+      "type": "paragraph",
+      "text": "Beginners memorise the four keywords as a ladder from most closed to most open. That mental model breaks on `protected`. Java visibility is controlled by two independent axes: **package proximity** and **inheritance**. Package-private cares only about the first axis. `protected` cares about both, and the combination surprises people. A `protected` member is visible inside its own package like package-private, *plus* visible to subclasses outside the package — but only through inheritance, not through arbitrary references. If you do not separate those two axes, you will mis-predict what compiles."
+    },
+    {
+      "type": "mermaid",
+      "title": "Access check the compiler performs",
+      "caption": "Follow the decision order: class, then package, then inheritance, then public.",
+      "code": "flowchart TD\n  Ref[\"reference to member M from code C\"] --> Q1{\"C inside same class as M?\"}\n  Q1 -->|yes| Allow[\"allow: private + all wider\"]\n  Q1 -->|no| Q2{\"C in same package as M?\"}\n  Q2 -->|yes| Allow2[\"allow if package-private or protected or public\"]\n  Q2 -->|no| Q3{\"C in subclass of M's class?\"}\n  Q3 -->|yes| Allow3[\"allow only if protected or public, via inheritance rules\"]\n  Q3 -->|no| Q4{\"M is public?\"}\n  Q4 -->|yes| Allow4[\"allow\"]\n  Q4 -->|no| Deny[\"compile error\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the diagram top to bottom because the compiler effectively does the same. Same-class references always succeed, which is why `private` still allows inner cooperation, constructor chaining, and static factories inside one file. Same-package references succeed for everything except `private`, which is why package-private is the workhorse of cohesive module internals. Cross-package references succeed only for `public`, with one narrow exception: a subclass elsewhere can see `protected` members of its ancestor. Everything else is rejected. The trade-off embedded here: **the compiler gives you cheap, early failure instead of production coupling you discover too late.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The four levels, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "Each level exists for a distinct design intent. Do not pick by habit. Pick by answering who is allowed to form a compile-time dependency on this name, and for how long you are willing to support that dependency. The matrix below is the contract you should be able to reproduce from memory, including the two rows that most candidates get wrong."
+    },
+    {
+      "type": "table",
+      "caption": "Java visibility matrix. Rows are caller locations, columns are member modifiers.",
+      "headers": [
+        "Caller location",
+        "private",
+        "package-private",
+        "protected",
+        "public"
+      ],
+      "rows": [
+        [
+          "Same class",
+          "yes",
+          "yes",
+          "yes",
+          "yes"
+        ],
+        [
+          "Same package, subclass or not",
+          "no",
+          "yes",
+          "yes",
+          "yes"
+        ],
+        [
+          "Different package, subclass",
+          "no",
+          "no",
+          "yes with inheritance limits",
+          "yes"
+        ],
+        [
+          "Different package, unrelated class",
+          "no",
+          "no",
+          "no",
+          "yes"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Package-private — declared by writing no modifier — means *this package is one module*. Any class in the same package can touch the member, no class outside it can. That is ideal for helpers, package-local factories, and implementation types that several collaborating classes need but outsiders must never see. The trap: packages are open by naming convention, not sealed by default. Anyone can create a class in your package name in a different jar unless you seal the jar or use modules. Trade-off: **package-private gives you low-friction internal sharing, but it is a gentlemen's boundary, not a hard module wall.** If you need a hard wall, you need explicit modules or a separate deployable."
+    },
+    {
+      "type": "paragraph",
+      "text": "`protected` is the most misused level because it looks like a middle ground and behaves like two rules glued together. Inside the same package it behaves exactly like package-private. Outside the package it is visible only to subclasses, and even then a subclass in another package cannot reach through an arbitrary parent reference to touch the member — it can only touch it through itself or its own subclasses. That restriction exists to prevent one subclass from corrupting the state of a sibling subclass. Trade-off: **`protected` buys extensibility for framework-style inheritance at the cost of a second public surface you must version and document.** Prefer composition or explicit hooks over `protected` fields."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly stated"
+    },
+    {
+      "type": "table",
+      "caption": "Each level optimises for one property and sacrifices another.",
+      "headers": [
+        "Modifier",
+        "What you gain",
+        "What you pay",
+        "When the bill arrives"
+      ],
+      "rows": [
+        [
+          "private",
+          "Unrestricted refactoring inside the class; invariants enforceable in one place",
+          "Must add explicit accessors or collaborators cannot use it; can push logic into the wrong class",
+          "Immediately, as boilerplate — cheap and worth it"
+        ],
+        [
+          "package-private",
+          "Cohesive package internals without public commitment; easy testing of internals",
+          "Package boundary is implicit and leaky; accidental exposure when classes grow",
+          "When the package splits or a class moves packages and compilation breaks"
+        ],
+        [
+          "protected",
+          "Subclass customisation without full public exposure; useful for template-method hooks",
+          "Inheritance coupling; subclasses depend on implementation details; fragile base-class problem",
+          "When you change the base class and distant subclasses break in ways the compiler cannot catch semantically"
+        ],
+        [
+          "public",
+          "Universal reuse; stable API surface for clients",
+          "Every signature and behaviour becomes a compatibility promise; hardest to change or remove",
+          "At version two, when removal or rename requires deprecation, migration, and long support windows"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The default posture of a senior engineer is **private first, then widen deliberately**. Start every field `private`. Start every helper method `private`. Expose only what a stated client needs, through a method whose name describes intent rather than storage. Widen to package-private when two or three classes in one package genuinely collaborate. Widen to `protected` only when you have designed an inheritance contract with documented extension points. Widen to `public` only when you accept versioning responsibility. The trade-off you are managing: **each widening step converts a local implementation detail into a remote dependency.** That conversion should be a conscious review decision, not a way to silence a compiler error."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and what you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Access modifiers fail not by throwing exotic exceptions but by locking in the wrong dependencies. The failure shows up weeks or months later as rigidity: you cannot fix a bug or improve performance because the field or method you need to change is referenced from places you never intended. The compiler will not warn you that your design is coupled. It only enforces the lines you drew. If you drew them too wide, the symptom is that every internal change becomes an external migration."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`public` mutable fields: symptom is corrupted invariants you cannot trace. `account.balance = -100` compiles everywhere, so no single constructor or method owns the rule that balance must stay non-negative. You see impossible states in logs and no stack trace pointing at the writer.",
+        "`public` collections returned directly: symptom is `ConcurrentModificationException` or silent mutation from far away. The getter handed out the live list, callers added to it, and the owning class never saw the write.",
+        "`protected` mutable state in a base class: symptom is subclass-induced breakage after a base-class change. You rename or tighten a `protected` field and unrelated services that subclassed you fail at runtime with wrong behaviour, not compile errors, because they depended on timing or ordering you never specified.",
+        "Package-private relied on as security: symptom is `IllegalAccessError` confusion after repackaging, or worse, no error at all because someone added a class with your package name and now reads internals you assumed were hidden. Visibility is not authentication.",
+        "Over-private design with reflection escape hatches: symptom is frameworks failing after upgrades. You marked everything `private` but allowed a JSON mapper, ORM, or test harness to poke it via reflection with `setAccessible`. An upgrade tightens module encapsulation and the same code now throws reflective access errors at startup."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The subtlest production failure is binary and module drift. Changing a `public` constant, adding a `public` overload, or narrowing a `public` method to `protected` can compile cleanly in your module yet break already-compiled clients at linkage time. The symptom is `NoSuchMethodError` or `IllegalAccessError` in deployment while all unit tests pass. Trade-off to remember: **source compatibility is not binary compatibility, and neither is guaranteed by tests alone.** That is why public surface changes demand deprecation cycles, not silent edits, even when the IDE says the current codebase still builds."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes it concrete"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "BankAccount.java",
+      "code": "package banking;\n\nimport java.util.ArrayList;\nimport java.util.Collections;\nimport java.util.List;\n\npublic class BankAccount {\n    private long balanceCents; // only this class can establish the invariant\n    private final List<String> auditLog = new ArrayList<>();\n\n    public BankAccount(long openingBalanceCents) {\n        if (openingBalanceCents < 0) throw new IllegalArgumentException(\"negative opening\");\n        this.balanceCents = openingBalanceCents;\n    }\n\n    public synchronized void deposit(long cents) {\n        if (cents <= 0) throw new IllegalArgumentException(\"cents must be positive\");\n        balanceCents += cents;\n        auditLog.add(\"deposit:\" + cents);\n    }\n\n    public synchronized long balanceCents() {\n        return balanceCents;\n    }\n\n    // Deliberately NOT public List<String> getAuditLog().\n    // Returning the live list would widen write access to everyone.\n    public synchronized List<String> auditSnapshot() {\n        return Collections.unmodifiableList(new ArrayList<>(auditLog));\n    }\n\n    // Package-private: ledger reconciliation lives in the same package\n    // and needs batch access, but external clients must not call it.\n    void applyLedgerAdjustment(long delta) {\n        balanceCents += delta;\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This class demonstrates the default posture. State is `private` so the non-negative and audit-consistency rules have exactly one owner. The public methods are narrow verbs — `deposit`, `balanceCents`, `auditSnapshot` — not raw access to storage. Returning a defensive copy wrapped as unmodifiable is part of access control: the field is private, but a careless getter would silently re-export write permission. The package-private `applyLedgerAdjustment` is the deliberate exception. It says reconciliation is a package-level responsibility, not a world-level one. Trade-off accepted here: **slightly wider internal access in exchange for keeping the public API honest.** If reconciliation ever needs to move packages, this method must be redesigned, and that friction is intentional."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "InheritanceBoundary.java",
+      "code": "package banking;\n\npublic class AccountBase {\n    protected long balanceCents; // visible to subclasses, even cross-package\n    protected void record(String event) { /* append to log */ }\n}\n\n// ---- different package ----\npackage lending;\n\nimport banking.AccountBase;\n\npublic class LoanAccount extends AccountBase {\n    public void accrueInterest(long interest) {\n        balanceCents += interest; // OK: access via inheritance (this.balanceCents)\n        record(\"interest:\" + interest); // OK: protected method via inheritance\n    }\n\n    public void auditOther(AccountBase other) {\n        // other.balanceCents = 0; // COMPILE ERROR if uncommented:\n        // cross-package protected access cannot go through an arbitrary base reference\n        this.balanceCents = 0; // OK: through own inheritance chain\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "The second example is the rule most candidates cannot explain under pressure. `LoanAccount` sees `balanceCents` because it inherits it, not because `protected` means package-plus-everyone. The commented-out line is the test: touching the same field through a plain `AccountBase` reference from another package is rejected. That is the compiler preventing sibling interference. The design lesson is opinionated: `protected` fields like this are usually a mistake. Expose a `protected` method hook such as `record` or `adjustBalance` if subclasses need customisation, and keep the field `private`. Trade-off: **a method hook costs one indirection but preserves your right to change storage, validation, and locking without auditing every subclass.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Define all four levels cold",
+          "text": "Expect: what can see `private`, package-private, `protected`, `public`? Answer with the two-axis model and the cross-package subclass caveat. Interviewers promote you when you volunteer the `other.balanceCents` restriction without being prompted."
+        },
+        {
+          "title": "Fix an encapsulation leak",
+          "text": "You are given a class with `public` fields or a getter returning a mutable list or array. The expected move: make the field `private`, return a copy or unmodifiable view, and explain the trade-off between safety and allocation cost on every call."
+        },
+        {
+          "title": "Choose protected versus private plus hook",
+          "text": "Prompt looks like: design a base `Notifier` or `Account` that subclasses extend. Weak answer: make everything `protected`. Strong answer: keep state `private`, expose one `protected abstract` or template method, and state why protected state creates fragile-base-class coupling."
+        },
+        {
+          "title": "Reason about packages and testing",
+          "text": "Follow-up: tests need to see internals. Options are package-private plus same-package tests, or scoped public API for testability. Name the trade-off: same-package tests couple tests to layout; public-for-tests pollutes the real API. Prefer package-private for white-box checks."
+        },
+        {
+          "title": "Discuss API evolution",
+          "text": "Senior signal: what happens when you narrow `public` to `protected`, or rename a `public` method? Answer: source break plus binary break for already-compiled clients, need for deprecation. Mention sealing, modules, or explicit API packages as the enforcement beyond keywords."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`private` means only one object can see it — wrong. `private` is per-class, not per-object. One `BankAccount` can read the `private` fields of another `BankAccount` instance. That is why copy constructors and `equals` can touch `other.balanceCents` directly.",
+        "`protected` means all subclasses everywhere can do anything — wrong. Cross-package subclass access is limited to the inheritance path. You cannot use it as a backdoor to manipulate arbitrary parent instances.",
+        "Package-private is the same as `public` within a small project — wrong in consequence. It compiles the same today, but it records intent. When the codebase splits into modules, the compiler tells you exactly which references were never meant to escape.",
+        "`public` is the safe default to avoid compiler friction — backwards. It is the most expensive default because every `public` name is a promise. Friction from `private` is the compiler doing design review for free.",
+        "Access modifiers provide runtime security — false. They are compile-time checks plus light runtime linkage checks. Reflection, native code, and same-process bytecode can bypass them. Real isolation needs class loaders, modules with strong encapsulation, or process boundaries.",
+        "Getters and setters automatically mean encapsulation — false. A `private` field with a trivial public getter and setter is a `public` field with extra steps. Encapsulation means the class retains control over invariants, not that the field keyword says `private`."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The common thread in every misconception is confusing **syntax with design**. Writing `private` does not encapsulate anything by itself; placing behaviour with the data it guards does. If your class exposes every field through accessors, mutates them from service layers, and validates nowhere, the modifiers are decoration. Interviewers probe this by asking why a class with all-private fields can still be badly encapsulated. The answer they want: because the accessors re-exported the representation and moved the invariant logic to callers. Trade-off restated one last time: **narrow syntax without cohesive behaviour buys no freedom; narrow syntax with behaviour colocated buys all of it.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Prescriptive defaults for low-level design. Deviate only with a stated reason.",
+      "headers": [
+        "Situation",
+        "Use this",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Fields holding invariants (balance, size, state flags)",
+          "private, always",
+          "Only the owning class can guarantee the rule; any wider access duplicates validation"
+        ],
+        [
+          "Internal helpers used by one class",
+          "private",
+          "Keeps refactoring local; no other file can depend on the helper name"
+        ],
+        [
+          "Collaboration across a cohesive package (parsers, ledger, AST nodes)",
+          "package-private",
+          "Shares without committing to a public contract; tests in the same package can verify"
+        ],
+        [
+          "Framework extension points (template methods, lifecycle hooks)",
+          "protected method, never protected mutable field",
+          "Allows customisation while retaining control of state and locking"
+        ],
+        [
+          "Stable client-facing operations",
+          "public method with minimal signature",
+          "Explicit compatibility promise; version it like an API"
+        ],
+        [
+          "DTOs, constants, and pure value carriers",
+          "public final fields or records where appropriate",
+          "No invariants to protect; wider access costs nothing and removes noise"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Two situations deserve explicit refusal. Do not use `public` mutable static state as a configuration shortcut; the trade-off is global coupling for local convenience, and the symptom is order-dependent tests and unreproducible production behaviour. Do not use `protected` fields to let subclasses skip your validation; the trade-off is short-term subclass velocity for long-term base-class paralysis, where the parent can never change representation because ten distant children read the field directly. In both cases the cheaper alternative is a narrow method: a package-private accessor for configuration owned by one component, a `protected` hook method for subclass participation. Methods can be validated, logged, synchronised, and deprecated. Fields cannot."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Access modifiers draw compile-time dependency boundaries — `private` for class-only, package-private for module-only, `protected` for package plus inheritance-path, `public` for everyone — so start private and widen only when you accept the versioning cost.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:51:39.798Z",
+    "problems": []
+  }
+}

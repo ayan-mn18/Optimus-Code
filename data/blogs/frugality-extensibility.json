@@ -1,0 +1,287 @@
+{
+  "slug": "frugality-extensibility",
+  "title": "Frugality & Extensibility",
+  "summary": "Frugality is cost per unit of useful work at SLO; extensibility is cost of the next change. Design budgets for the first and seams for the second.",
+  "kind": "HLD",
+  "problemSlug": "frugality--extensibility-149-317",
+  "topic": "Resources Efficient & Extensible System Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🧩",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Cost-Efficiency",
+    "Extensibility"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Frugality isn't just about saving money—it's about making ... - Facebook",
+      "url": "https://www.facebook.com/thebudgetmom/videos/frugality-isnt-just-about-saving-moneyits-about-making-thoughtful-intentional-ch/964320422116776/",
+      "source": "facebook.com",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding Frugality: What It Means to Live Simply",
+      "url": "https://www.nationaldebtrelief.com/blog/financial-wellness/saving-and-investing/understanding-frugality-what-it-means-to-live-simply-and-save-smartly/",
+      "source": "nationaldebtrelief.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A frugal system knows its **cost per 1k useful requests at target SLO** and defends it. An extensible system knows where the **next three changes will land** and isolates them. Cheap cuts spend; frugal cuts waste. Generic everywhere is not extensible — it is just slow and expensive to run."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What frugality actually means"
+    },
+    {
+      "type": "paragraph",
+      "text": "Frugality in HLD is not minimal spend. It is **maximum useful work per dollar, watt, byte transferred, and operator hour, without breaking correctness or SLOs**. Measure it as `cost / successful request` broken down by compute, memory, storage retained, network egress, and third-party calls. If you cannot quote that number and say which component dominates it, you do not have a frugal design — you have hope. The trade-off is explicit: every byte you avoid reading, every hop you avoid taking, every replica you avoid running saves money but removes margin, redundancy, or debuggability. Frugal accepts that trade and prices it."
+    },
+    {
+      "type": "paragraph",
+      "text": "Extensibility is not plugin frameworks and abstractions everywhere. It is **the cost and blast radius of the next change**. A system is extensible if you can add a new request type, pricing rule, notification channel, or region without editing the hot path, migrating all stored data, or redeploying every service. That requires stable boundaries: a core domain that rarely changes, versioned contracts around it, and explicit extension points where variation is expected. The trade-off is also explicit: each seam you add costs per-request overhead, cognitive load, and test matrix growth. Extensibility pays that tax only where change is probable."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why they belong together"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers pair them because naive extensibility destroys frugality, and naive frugality destroys extensibility. Make everything generic and configurable and your `p99` climbs, your cache hit rate collapses, and your per-request CPU doubles — you bought future flexibility with present waste on every call. Inline everything for speed and the next product requirement forces a rewrite of storage format, API contract, and deployment — you bought present efficiency with future engineering quarters. The correct posture is **frugal on the hot path, extensible at the edges**: tight, boring, measurable execution for the 95% of traffic that never changes, plus narrow, versioned seams where product, scale, or regulation will force change."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: budgets on the hot path, seams off it"
+    },
+    {
+      "type": "paragraph",
+      "text": "You implement frugality with **budgets and accounting**, not intentions. Every request gets a resource budget: time, downstream calls, bytes scanned, egress. You enforce it with quotas, deadlines, pagination, compression, caching, and shedding. You implement extensibility with **stable interfaces and isolation**: versioned APIs, event schemas with backward-compatible evolution, policy or strategy interfaces for volatile rules, and async side-effects so new consumers do not block core flow. The trade-off that governs both: enforcement and indirection cost CPU and latency now to avoid cost explosions and rewrites later. Put the enforcement where waste actually happens and the indirection where change actually happens — anywhere else is overhead without return."
+    },
+    {
+      "type": "mermaid",
+      "title": "Frugal request path",
+      "caption": "Every request passes quota, deadline, and cost accounting; expensive work is cached, bounded, or shed.",
+      "code": "flowchart TD\n  R[Client request] --> G[Gateway auth quota deadline]\n  G --> C[App logic with budget]\n  C --> K[Cache lookup]\n  K --> D[Bounded read]\n  D --> S[Storage]\n  C --> M[Cost meter]\n  M --> Q[Quota shed or degrade]"
+    },
+    {
+      "type": "paragraph",
+      "text": "This path is deliberately stingy. The gateway rejects unauthenticated, over-quota, or oversized work before it burns downstream resources — why pay for work you will discard? App logic carries a deadline and a fan-out limit, so one slow dependency cannot multiply cost across retries. Cache sits before storage because network and disk reads dominate most bills. The cost meter is not observability decoration; it attributes CPU, bytes scanned, and egress per endpoint and tenant so you know what to optimize next. Trade-off: quotas and deadlines create user-visible rejections and partial results. That is the price of protecting shared resources. Without them, one tenant or feature pays for itself with everyone else's budget."
+    },
+    {
+      "type": "mermaid",
+      "title": "Extensible seams",
+      "caption": "Core stays stable; variation lives behind versioned interfaces and async events.",
+      "code": "graph LR\n  Core[Core domain] --> API[Versioned interface]\n  API --> P1[Rule plugin A]\n  API --> P2[Rule plugin B]\n  API --> E[Domain events]\n  E --> N1[New consumer 1]\n  E --> N2[New consumer 2]"
+    },
+    {
+      "type": "paragraph",
+      "text": "This seam layout is deliberately narrow. The core owns invariants — money movement, ordering, access control — and changes slowly. Volatile logic such as pricing, fraud checks, or routing lives behind a `Policy` interface with explicit versioning, so adding a rule does not fork the hot path. State changes emit versioned events, so new readers like analytics, notifications, or a second region subscribe without modifying writers. Trade-off: versioned contracts and events add serialization cost, storage for multiple schema versions, and eventual consistency for consumers. You pay latency and complexity at the boundary to avoid coupling and big-bang migrations in the core."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Each efficiency or flexibility wins somewhere and loses somewhere else.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Aggressive caching and denormalization",
+          "Far fewer reads, lower p99 and storage-read bill",
+          "Invalidation bugs, stale reads, extra write fan-out and storage"
+        ],
+        [
+          "Synchronous inline logic",
+          "Lowest latency and CPU per request, simple trace",
+          "Any new variant edits core; deploys and rollbacks couple all features"
+        ],
+        [
+          "Generic plugin framework everywhere",
+          "New types added without core change",
+          "Per-call dispatch, harder profiling, combinatorial test matrix"
+        ],
+        [
+          "Async events for side effects",
+          "Writers stay frugal; new consumers attach freely",
+          "Eventual consistency, duplicate delivery, schema-version debt"
+        ],
+        [
+          "Multi-tenant shared pools",
+          "High utilization, low idle cost",
+          "Noisy neighbors, quota and isolation machinery, correlated failure"
+        ],
+        [
+          "Single-tenant or heavily provisioned isolation",
+          "Predictable performance, simple reasoning",
+          "Low utilization; you pay for idle capacity on every tenant"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pattern is that frugality pushes you toward **sharing, batching, and cutting hops**, which increases blast radius and staleness risk. Extensibility pushes you toward **isolation, versioning, and async boundaries**, which increases per-request cost and operational surface. Name that tension in the interview. Say: *I will share the hot read pool across tenants for utilization, and I will accept quota and bulkheading work to contain it. I will isolate volatile rules behind an interface, and I will accept 1-2ms dispatch plus contract tests to carry it.* If you cannot state the price, you did not make a decision."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Frugality fails as **slow cost bleed, then sudden cliff**. Symptoms: cost per 1k requests drifts up 2% per deploy while latency looks fine, cache hit rate decays after a new query pattern, retry storms multiply downstream calls 3-5x during partial outages, or retained storage grows unbounded because no TTL or compaction was priced. You see it in the bill before the dashboard: egress or scan volume spikes, idle replicas at 8% CPU at 3am, or one endpoint consuming 70% of database read units. The cause is almost always unbounded work — no pagination limit, no deadline, no fan-out cap, no backpressure. Fix is budgets: cap page size, enforce timeouts with hedging only where measured, add quota per tenant and per key, and make the cost meter alert on unit cost, not just total spend."
+    },
+    {
+      "type": "paragraph",
+      "text": "Extensibility fails as **abstraction collapse or version paralysis**. Symptoms: adding a field requires a coordinated deploy of four services, plugin ordering becomes load-bearing and undocumented, v1/v2/v3 handlers all run in production because no one can deprecate, or event consumers silently diverge because schema evolution was additive in name only. You see it in lead time: a one-line rule change takes two weeks, or a rollback rolls back unrelated features because they share a deployable. The cause is seams in the wrong place — generic where behavior is stable, hardcoded where it varies — plus missing ownership of contracts. Fix is fewer, better seams: one versioned interface per axis of change, contract tests owned by the producer, sunset policy with dates, and synchronous validation at the edge with async propagation inside."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Bill climbs while traffic is flat — unit cost regression, not growth.",
+        "`p99` fine but `p99.9` explodes — unbounded fan-out orScan under deadline.",
+        "Cache hit rate drops after launch — new access pattern bypasses key design.",
+        "Retry + timeout amplification — caller retries faster than callee recovers.",
+        "Schema v1-v4 all live — no deprecation owner, test matrix explodes."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What good looks like in config and code"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "budgets_and_seams.py",
+      "code": "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass RequestBudget:\n    max_downstream_calls: int = 3\n    deadline_ms: int = 250\n    max_bytes_scanned: int = 256 * 1024\n    max_page: int = 100\n\nclass Policy:  # seam: volatile rules live here, not in hot path\n    name: str\n    version: int\n    def decide(self, ctx: dict) -> dict:\n        raise NotImplementedError\n\nclass Registry:\n    def __init__(self):\n        self._policies: dict[tuple[str, int], Policy] = {}\n    def register(self, p: Policy):\n        self._policies[(p.name, p.version)] = p\n    def get(self, name: str, version: int) -> Policy:\n        return self._policies[(name, version)]\n\ndef handle(req: dict, budget: RequestBudget, registry: Registry):\n    if len(req.get(\"items\", [])) > budget.max_page:\n        return {\"status\": 400, \"error\": \"page too large\"}  # shed before cost\n    policy = registry.get(req[\"policy\"], req[\"v\"])\n    # caller enforces deadline_ms and counts bytes_scanned against budget\n    return {\"status\": 200, \"decision\": policy.decide(req)}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet carries both ideas in twelve lines. The `RequestBudget` makes frugality enforceable: page caps, call caps, byte caps, and a deadline are parameters, not comments. Rejecting oversized work early is cheaper than executing it and discarding the result — trade-off is a stricter API that some clients will dislike. The `Policy` plus `Registry` makes extensibility bounded: new behavior means registering `(name, version)`, not branching core code. Version pinning lets old and new coexist during rollout — trade-off is you must own deprecation or versions accumulate forever. In review, point at the meter you omitted here: every `decide()` should emit `calls, bytes_scanned, cpu_ms` by `(policy, version)` so unit cost per extension is visible."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Force the unit economics first",
+          "text": "Ask what dominates cost: ingress, compute, storage retained, or egress? Then state target unit: cost per 1k writes, per active tenant, per GB retained per month. Without that, every optimization is theater."
+        },
+        {
+          "title": "Draw the hot path and bound it",
+          "text": "Walk one read and one write end to end. Put numbers: cache hit target, page limit, fan-out limit, deadline, retry budget. Say what you shed when the budget is exceeded."
+        },
+        {
+          "title": "Name the axes of change",
+          "text": "Ask what will vary in 12 months: new request types, new rules, new regions, new consumers? Place exactly one seam per axis. Refuse generic extensibility anywhere else."
+        },
+        {
+          "title": "Version the contracts",
+          "text": "Show API and event evolution: additive fields, default handling, dual-read or dual-write during migration, sunset date. Extensible without a deprecation story is just debt with a nicer name."
+        },
+        {
+          "title": "Close with what you would measure",
+          "text": "Unit cost per endpoint and tenant, cache hit rate, bytes scanned per request, version adoption, and time to add a rule without touching core. If those move the right way, the design works."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Frugal means cheapest infra or fewest services — it means lowest cost per useful result at SLO; underprovisioning that violates SLO is waste, not savings.",
+        "Extensible means configurable everything — unbounded flags and plugins raise per-request cost and make behavior untestable.",
+        "Caching fixes cost — it trades read cost for invalidation, staleness, and write amplification; measure hit rate by key class.",
+        "Async fixes coupling — it trades deploy coupling for consistency and duplicate-delivery handling; idempotency is mandatory.",
+        "Serverless or autoscaling automatically saves money — they trade idle cost for per-invocation cost and cold starts; spiky, short work wins, steady hot paths often lose.",
+        "One more abstraction future-proofs the design — each seam needs an owner, contract tests, and a sunset plan or it becomes permanent overhead."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to pay for it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Frugality is always measured; extensibility is paid for only where change is likely.",
+      "headers": [
+        "Situation",
+        "Do this",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Hot read path >70% of cost",
+          "Cache, bound scans, denormalize selectively",
+          "Pays back on every request; invalidation cost is contained"
+        ],
+        [
+          "Volatile business rules",
+          "Policy interface + versioned rollout",
+          "Change is certain; isolation beats repeated core edits"
+        ],
+        [
+          "Stable core invariants",
+          "Keep inline, no plugin framework",
+          "Generic machinery here is pure overhead"
+        ],
+        [
+          "New consumers unknown but likely",
+          "Versioned domain events, async",
+          "Lets readers attach without taxing writers"
+        ],
+        [
+          "Low-traffic admin or backoffice",
+          "Boring CRUD, no optimization",
+          "Unit-cost work here never repays engineering time"
+        ],
+        [
+          "Uncertain scale, early product",
+          "Quotas and pagination now, sharding later",
+          "Budgets are cheap insurance; premature distribution is expensive irreversibility"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The judgment call is sequencing. Budgets, pagination, idempotency, and versioned contracts are cheap on day one and ruinous to retrofit — build them in. Cross-region active-active, fine-grained multi-tenancy, and elaborate rule engines are expensive on day one and straightforward to add behind a seam later — defer them but leave the seam. Trade-off stated plainly: early frugality buys survival, early over-extensibility buys drag. Instrument unit cost from the start so the moment a shortcut stops paying, the data tells you before the bill does."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **I will bound every hot path with explicit budgets to hold unit cost at SLO, and isolate likely change behind one versioned seam per axis — frugal by default, extensible where change pays.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:22:41.684Z",
+    "problems": []
+  }
+}

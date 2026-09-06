@@ -1,0 +1,311 @@
+{
+  "slug": "root-cause-analysis",
+  "title": "Root cause Analysis",
+  "summary": "RCA for scalability is proving the causal chain behind degradation under load, not guessing the slowest component.",
+  "kind": "HLD",
+  "problemSlug": "root-cause-analysis-90-299",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔍",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Root Cause Analysis"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Root Cause Analysis Explained: Definition, Examples, and Methods",
+      "url": "https://www.tableau.com/analytics/what-is-root-cause-analysis",
+      "source": "tableau.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Root Cause Analysis (RCA)? - ASQ",
+      "url": "https://asq.org/quality-resources/root-cause-analysis?srsltid=AfmBOor_Cqurh_slNQI9Ys1UOqBqxIUgEtZDaUwH9EdBtNbgUrDuXDxs",
+      "source": "asq.org",
+      "kind": "article"
+    },
+    {
+      "title": "Root Cause Analysis: What It Is & How to Perform One",
+      "url": "https://online.hbs.edu/blog/post/root-cause-analysis",
+      "source": "online.hbs.edu",
+      "kind": "article"
+    },
+    {
+      "title": "What Is a Root Cause Analysis? - IBM",
+      "url": "https://www.ibm.com/think/topics/root-cause-analysis",
+      "source": "ibm.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Scalability incidents never have one cause. **RCA is proving which load + bottleneck + feedback loop combined to break an SLO, and which minimal fix stops it recurring at 2x load.** If you cannot replay the load and show the failure disappears when you remove your claimed cause, you did not find the root cause. You found a suspect."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What RCA actually is when systems scale"
+    },
+    {
+      "type": "paragraph",
+      "text": "Root cause analysis in a distributed system is a disciplined search from an observable SLO violation — p99 latency breach, error budget burn, throughput plateau, unbounded queue growth — to the smallest set of conditions that together explain it. It is not debugging a stack trace. It is reconstructing a causal chain across services, queues, stores, autoscalers, and deploy events, then verifying each link with correlated evidence: traces, metrics, logs, saturation signals, and config diffs tied to the same time window and the same load shape. A complete RCA ends with two artifacts: a mitigation that stopped the bleeding, and a prevention that removes or contains the cause under higher load. Anything that ends with *we restarted and it recovered* is an incident report, not an RCA."
+    },
+    {
+      "type": "paragraph",
+      "text": "This is harder than single-box debugging because symptoms propagate and mutate. A saturated connection pool in service B shows up as timeouts in service A, retries from the edge, CPU collapse at the gateway, and angry clients blaming the load balancer. There is no single clock, no single log, and partial failure is normal. That is why you cannot reason from one dashboard. You need a timeline that aligns load change, deploy or config change, saturation onset, error onset, and mitigation, all on the same axis. Without that alignment you will confidently blame the component that screamed loudest, which is almost never the component that failed first. The trade-off: breadth of evidence slows you down, but narrow evidence guarantees a wrong answer."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: symptom to proof"
+    },
+    {
+      "type": "paragraph",
+      "text": "A usable RCA follows the same spine every time because skipping a step is how you fool yourself. You define the problem in SLO terms with scope and start time, you freeze the blast radius with a mitigation, you build a timeline of load versus capacity versus change, you generate competing hypotheses, you kill them one by one with data, and you fix the surviving cause in a way you can verify under load. The order matters. Mitigation before deep analysis is not laziness. Analysis on a still-degrading system produces contaminated data and forces rushed conclusions. The trade-off is explicit: fast mitigation buys clean signal at the cost of temporarily masking the cause."
+    },
+    {
+      "type": "mermaid",
+      "title": "RCA spine for scalability incidents",
+      "caption": "Linear spine with a hypothesis kill-loop. No exit without verification under load.",
+      "code": "flowchart TD\n  S[Symptom in SLO terms] --> M[Mitigate and freeze blast radius]\n  M --> T[Build load vs change timeline]\n  T --> H[Generate competing hypotheses]\n  H --> E[Test against traces and saturation]\n  E -->|hypothesis fails| H\n  E -->|surviving cause| F[Fix cause]\n  F --> V[Verify under replayed load]\n  V --> P[Prevent with guardrail]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Each stage exists to eliminate a specific error. SLO framing stops vague *system is slow* talk and forces scope: which endpoint, which region, which cohort, starting when. Mitigation — shed load, cap retries, drain a queue, roll back — stabilizes the system so later measurements mean something. The timeline is the core artifact: requests per second, queue depth, CPU and memory saturation, GC pauses, connection wait time, downstream latency, plus deploy markers and autoscale events. Hypotheses must be competing, not single-threaded, or you get confirmation bias. Evidence kills hypotheses: if you claim the database is slow, you must show saturation on the database *before* upstream timeouts, not after. Verification is load replay or shadow traffic, not *it looks healthy now*. The trade-off at every gate is rigor versus speed, and you manage it with a timebox, not by skipping gates."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The three buckets every cause falls into"
+    },
+    {
+      "type": "table",
+      "caption": "Map every hypothesis into one bucket so you stop hunting only in code.",
+      "headers": [
+        "Bucket",
+        "What it means at scale",
+        "Typical scalability example"
+      ],
+      "rows": [
+        [
+          "Physical",
+          "A resource or dependency hits a hard limit under load",
+          "Connection pool exhausted, disk throttled, downstream quota hit, network buffer overflow, hot partition in store"
+        ],
+        [
+          "Human",
+          "An operator or developer action narrowed headroom or amplified load",
+          "Retry without backoff, N+1 fan-out added, missing index deployed, cache TTL shortened, load test run against prod"
+        ],
+        [
+          "Organizational",
+          "A missing guardrail let the above ship and spread",
+          "No load gate in deploy pipeline, no retry budget enforced, no bulkhead between tenants, no autoscale policy for bursty queue"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs: what RCA costs you"
+    },
+    {
+      "type": "table",
+      "caption": "Every RCA choice buys accuracy with time. Say the price out loud.",
+      "headers": [
+        "Choice",
+        "Upside",
+        "Downside"
+      ],
+      "rows": [
+        [
+          "Deep causal chain vs quick restart",
+          "Prevents recurrence at higher load; builds real headroom model",
+          "Takes hours; needs trace and load replay infra"
+        ],
+        [
+          "Blameless HOW and WHY vs naming WHO",
+          "Surfaces systemic fixes; people tell the truth next time",
+          "Feels slow; does not satisfy demand for a culprit"
+        ],
+        [
+          "Fix cause vs soothe symptom",
+          "Removes feedback loop; lowers operating cost under peak",
+          "Riskier change; requires verification under load"
+        ],
+        [
+          "Always-on observability vs minimal logging",
+          "Timeline takes minutes; hypotheses testable in one query",
+          "Pays constant cost in storage, cardinality, and sampling design"
+        ],
+        [
+          "Stop the line vs keep serving degraded",
+          "Prevents cascading saturation and data corruption",
+          "Sacrifices availability now to protect correctness and recovery time"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The central trade-off is depth versus time-to-mitigation, and you resolve it by splitting the work in two. Mitigate in minutes with coarse controls: cap retries, shed non-critical traffic, add capacity if the bottleneck is stateless, roll back the suspect deploy. Then investigate for hours with the system stable. Teams that merge the two either rush a schema change during an outage or spend two hours building graphs while queues grow unbounded. State the split explicitly in the interview: I would first stop amplification, then prove causation. That sentence signals senior judgment because it shows you understand that analytical correctness and operational safety pull in opposite directions."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Mitigate first, analyze second",
+      "text": "Never run deep RCA on a burning system. **Cap retries, shed load, isolate the hot tenant, then investigate.** Analysis on moving failure data produces false causes and pushes you to ship the fix while saturated, which is how a second outage starts."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Scalability RCAs fail in the same five ways because load hides the true order of events. Clocks skew, sampling drops the critical trace, autoscalers add noise, and retries turn a small slowdown into a system-wide collapse. If your timeline does not separate trigger from cause from amplifier, you will fix the trigger and keep the bomb. Load is almost never the root cause. Load is the condition that exposed a capacity assumption, a missing bound, or a feedback loop. Treat load as the interrogation lamp, not the criminal."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Stopping at the loudest symptom: you blame the gateway for CPU collapse when traces show downstream latency rose first. Symptom you see: gateway autoscale helps for 10 minutes, then collapse returns worse because added replicas add more retry pressure on the true bottleneck.",
+        "Confusing correlation with causation: a deploy and a latency spike coincide, so you roll back. Symptom you see: latency drops briefly then climbs again because the real driver was a traffic shape change — larger payloads, hotter keys — that the deploy merely unmasked.",
+        "Missing the feedback loop: you diagnose slow database, add read replicas, ignore that upstream retries with no backoff multiplied load 4x. Symptom you see: p99 recovers at low QPS but explodes past a threshold; queue depth and retry count rise together in lockstep.",
+        "Ignoring saturation order: you claim CPU caused queuing, but queue wait rose before CPU saturated. Symptom you see: profiling shows idle threads blocked on pool checkout and downstream wait, not hot CPU. Scaling CPU does nothing.",
+        "No reproduction: you ship a larger pool or longer timeout with no load replay. Symptom you see: incident closes, then reopens on next peak with identical signature. The fix increased headroom without removing the amplifier."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic misdiagnosis is the retry storm blamed on a slow store. Real sequence: a bad deploy adds a 200ms fan-out to one endpoint, p99 crosses the client timeout, clients retry immediately with no jitter or budget, effective load triples, connection wait on the store spikes, which pushes latency higher, which triggers more retries. If you only look at store dashboards you see a store problem and add capacity. That helps until the next slow dependency, because the amplifier — unbounded retry — is untouched. Correct RCA shows retry count diverging before store saturation, proposes capped retries with exponential backoff plus a circuit breaker, and verifies by replaying 1.5x peak with injected dependency delay. Trade-off named: adding capacity is low-risk and fast but preserves the loop; bounding retries is higher-risk client behavior change but removes the class of failure."
+    },
+    {
+      "type": "mermaid",
+      "title": "Retry amplifier misread as slow dependency",
+      "caption": "Timeout plus unbounded retry turns a small delay into multiplicative load.",
+      "code": "graph TD\n  C[Clients] --> G[Gateway]\n  G --> S[Service]\n  S --> D[Store]\n  D -->|slow response| S\n  S -->|timeout| G\n  G -->|immediate retry| S\n  S -->|amplified load| D"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What good evidence looks like"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "rca_timeline.py",
+      "code": "def build_timeline(metrics, traces, events, slo_window):\n    # Align everything to the same window; no aligned timeline, no RCA.\n    timeline = {}\n    timeline['load'] = metrics.qps(slo_window, by='endpoint')\n    timeline['saturation'] = {\n        'queue_depth': metrics.p99('queue_wait_ms', slo_window),\n        'pool_wait': metrics.p99('pool_checkout_ms', slo_window),\n        'cpu': metrics.avg('cpu_util', slo_window),\n        'retry_rate': metrics.rate('client_retries_total', slo_window),\n    }\n    timeline['dependency'] = traces.p99('downstream_latency', slo_window)\n    timeline['changes'] = events.filter(kinds=['deploy', 'config', 'autoscale'], window=slo_window)\n    # Order matters: what moved FIRST wins.\n    return order_by_onset(timeline)\n\ndef kill_hypothesis(name, prediction, timeline):\n    # Each hypothesis must predict an order. Check it.\n    # e.g. db_slow predicts pool_wait rises AFTER db_latency.\n    actual = timeline.onset_order()\n    holds = prediction == actual\n    return {'hypothesis': name, 'holds': holds, 'actual': actual}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This shape is deliberate. It forces three habits that separate senior answers from junior ones. First, correlation IDs and shared time windows across metrics, traces, and change events, so you can argue about order instead of vibes. Second, saturation signals distinct from utilization: queue wait, pool checkout time, and retry rate tell you where work piles up, while CPU alone lies under blocking I/O. Third, hypotheses stated as falsifiable orderings: if the store is the cause, store latency must rise before upstream queueing. That is why the helper is called `kill_hypothesis`, not `confirm`. The trade-off: this instrumentation costs cardinality, sampling design, and retention. Pay it on critical paths and SLO-burning endpoints; do not blanket-instrument everything or query cost will eat the benefit."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Narrow the vague incident to an SLO",
+          "text": "Interviewer says checkout is slow at peak. You respond: which endpoint, which percentile, what baseline, what load delta, which region, since when. You draw the timeline axes before proposing any cause. This buys scope and shows you do not chase averages."
+        },
+        {
+          "title": "Propose mitigation before analysis",
+          "text": "Say what you would cap, shed, or roll back in the first 10 minutes to freeze the blast radius. Name the trade-off: shedding non-critical traffic protects checkout availability at the cost of degraded recommendations. Interviewers grade this higher than instant root-cause guesses."
+        },
+        {
+          "title": "Generate three competing hypotheses",
+          "text": "Offer one per bucket: saturated resource, recent human change, missing guardrail plus amplifier. Example: hot partition vs bad deploy vs unbounded retry. Explain what order each predicts on the timeline. This defeats confirmation bias on purpose."
+        },
+        {
+          "title": "Demand the data that would kill each one",
+          "text": "Ask for retry rate versus QPS, pool wait versus downstream latency onset, deploy markers, top-K hot keys, queue depth by tenant. Say which chart would eliminate which hypothesis. You are being tested on evidence design, not tool names."
+        },
+        {
+          "title": "Close with fix plus prevention plus verification",
+          "text": "Give the minimal causal fix, the guardrail that stops the class, and how you would prove it: load replay at 1.5x with fault injection, retry budget dashboard, alert on saturation onset not just error rate. End with residual risk and next headroom limit."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Five Whys alone is enough: asking why five times without trace evidence produces a plausible story, not a proof. In distributed systems each why needs a chart showing order and magnitude, or it is fiction.",
+        "There is a single root cause: scalability failures are conjunctions — tight pool *and* retry storm *and* traffic skew. Removing any one may hide it, but prevention must address the amplifier, not just the trigger.",
+        "More logs equal better RCA: unstructured logs without sampling, correlation, and saturation metrics drown you. High-cardinality traces on the critical path beat gigabytes of text.",
+        "Human error is a root cause: a missed index or bad timeout is a trigger. The root includes why it could ship and spread — missing load gate, no retry budget, no bulkhead — or you will rehire the same incident.",
+        "Postmortem equals RCA: a timeline plus action items without verification under load is documentation. If you did not replay load and show the fix holds, you wrote a summary, not an analysis."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use formal RCA and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Match the weight of the process to recurrence risk and blast radius.",
+      "headers": [
+        "Situation",
+        "Use lightweight fix",
+        "Use full RCA"
+      ],
+      "rows": [
+        [
+          "One-off, low blast radius, clear trigger",
+          "Roll back, note it, move on; full RCA costs more than it saves",
+          "Not justified unless pattern repeats"
+        ],
+        [
+          "SLO burn, peak-hour recurrence, unclear order",
+          "Temporary mitigation only to stabilize",
+          "Required: timeline, competing hypotheses, load replay"
+        ],
+        [
+          "Amplifier suspected: retries, fan-out, hot keys",
+          "Cap and shed immediately",
+          "Required: prove amplifier with retry vs saturation onset, then bound it"
+        ],
+        [
+          "Data risk or cascading failure across tenants",
+          "Isolate and stop the line first",
+          "Required: systemic fix plus guardrail and verification"
+        ],
+        [
+          "Capacity question for 2x growth review",
+          "Adding boxes is acceptable short term",
+          "Required as design input: headroom model, bottleneck order, scaling law"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **RCA means aligning load, saturation, and change on one timeline, killing competing hypotheses by onset order, mitigating first, then proving the fix under replayed peak load.** Then sketch the timeline unprompted — that sketch is the interview."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:17:35.814Z",
+    "problems": []
+  }
+}

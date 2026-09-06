@@ -1,0 +1,296 @@
+{
+  "slug": "tiered-storage",
+  "title": "Tiered Storage",
+  "summary": "Tiered Storage moves data between fast-expensive and slow-cheap media by temperature. When to tier, how promotion works, and where it breaks.",
+  "kind": "HLD",
+  "problemSlug": "tiered-storage-145-310",
+  "topic": "High Throughput Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🗄️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "High Throughput Systems",
+    "Storage",
+    "Tiered Storage"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is Tiered Storage? Guide to Tiers, Automation, and Optimization",
+      "url": "https://aerospike.com/blog/tiered-storage-guide/",
+      "source": "aerospike.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is Tiered Storage? - Supermicro",
+      "url": "https://www.supermicro.com/en/glossary/tiered-storage",
+      "source": "supermicro.com",
+      "kind": "article"
+    },
+    {
+      "title": "Tiered Storage: Best Practices for Optimal Data Management",
+      "url": "https://objectfirst.com/guides/data-storage/tiered-storage-best-practices/",
+      "source": "objectfirst.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is Tiered Storage? Definition and related FAQs | Druva",
+      "url": "https://www.druva.com/learning-center/glossary/what-is-tiered-storage-definition-and-related-faqs",
+      "source": "druva.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Tiered storage is **cost control disguised as architecture**. You accept extra complexity in placement, lookup, and rehydration so you can serve 95% of traffic from 10% of the bytes. If your access distribution is flat, tiering is pure overhead — do not build it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Tiered storage is an explicit mapping from **data temperature to physical media**, enforced by policy. Hot data lives on low-latency, high-cost, low-capacity media — DRAM, NVMe SSD. Warm data lives on throughput-optimized media — dense SSD, HDD. Cold data lives on high-latency, low-cost, effectively infinite media — object storage, tape, deep archive. Every read or write first resolves *which tier owns the bytes*, then pays that tier's latency and cost. That extra lookup is the tax. The payout is you stop paying NVMe prices to store logs nobody will ever read again."
+    },
+    {
+      "type": "paragraph",
+      "text": "Three properties separate real tiering from just buying two disks. First, **placement is policy-driven**, not manual: age, access frequency, size, business class decide the tier. Second, **movement is automatic and bidirectional**: promotion pulls hot bytes up, demotion pushes cold bytes down. Third, **the namespace is unified**: callers address a logical key, the system resolves the physical location. Without that third property you built two independent systems and pushed the routing problem onto every client. That fails review."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The tiers you actually see"
+    },
+    {
+      "type": "table",
+      "caption": "Canonical tiers by latency, cost, and durability trade-off.",
+      "headers": [
+        "Tier",
+        "Typical media",
+        "Access time",
+        "Why it exists"
+      ],
+      "rows": [
+        [
+          "Hot / Tier 0",
+          "DRAM, NVMe SSD, local flash",
+          "microseconds to single-digit ms",
+          "Absorb p99 reads and writes; smallest, most expensive"
+        ],
+        [
+          "Warm / Tier 1",
+          "Dense SSD, HDD, network-attached disk",
+          "10-50 ms",
+          "Hold the working set overflow and recent history at 5-10x lower $/GB"
+        ],
+        [
+          "Cold / Tier 2",
+          "Object store, erasure-coded cluster",
+          "100 ms to seconds + first-byte penalty",
+          "Durable bulk retention; pays retrieval and egress instead of provisioned IOPS"
+        ],
+        [
+          "Frozen / Archive",
+          "Tape, deep glacier-class store",
+          "minutes to hours rehydration",
+          "Compliance and backup; restore is a batch job, not a read"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not obsess over the number of tiers. Two well-tuned tiers beat four poorly separated ones. The decisive question is **temperature skew**: if 5% of keys serve 90% of reads, even one boundary between NVMe and object storage cuts cost by an order of magnitude. If every key is equally likely, no boundary helps — you just added a metadata lookup and a rehydration path for nothing. Demand the access histogram before agreeing to tier."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every operation goes through three stages: **classify, locate, enforce**. On write, the ingest path tags the object with initial temperature — stream ingest and transaction logs start hot, backups and derived snapshots start cold. On read, a tier index or metadata store resolves key to current tier and issues the fetch, promoting on hit if thresholds are crossed. In the background, a scanner or event-driven policy engine demotes anything that has cooled. The trade-off is consistency of location: synchronous movement gives strong guarantees but blocks I/O; asynchronous movement keeps the fast path fast but means location metadata is briefly stale and reads may need forwarding."
+    },
+    {
+      "type": "mermaid",
+      "title": "Tier lifecycle and read/write path",
+      "caption": "Writes land hot, reads promote, background policy demotes.",
+      "code": "flowchart TD\n  W[Client Write] --> C[Classifier: size, age, tenant, hint]\n  C -->|hot| H[Hot Tier: NVMe]\n  C -->|cold| O[Cold Tier: Object Store]\n  R[Client Read] --> M[Metadata Index: key to tier]\n  M -->|hot hit| H\n  M -->|cold hit| O\n  O -->|fetch| P{Promote?}\n  P -->|frequent| H\n  P -->|one-off| O\n  H -->|cooled| D[Policy Engine: LRU LFU age size]\n  D -->|demote| O\n  O -->|expired| A[Archive: rehydrate only]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Promotion and demotion are where designs live or die. Simple **age-based TTL** — demote after N days without access — is predictable and cheap to operate, but blind to resurrected keys. **Frequency-based** promotion — promote after K hits in T minutes — adapts to real load but needs per-key counters and risks stampedes on scan workloads. Production systems combine them: small hot window with admission filter plus large cold store, background compaction to rewrite, and explicit bypass hints for bulk scans and backfills. The trade-off every time: smarter policy saves $/GB but costs metadata memory, CPU, and operational surprise."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "tier_policy.py",
+      "code": "class TierRouter:\n    def __init__(self, hot, cold, meta, policy):\n        self.hot = hot      # low latency, bounded capacity\n        self.cold = cold    # high latency, unbounded\n        self.meta = meta    # key -> (tier, last_access, hits)\n        self.policy = policy\n\n    def get(self, key):\n        loc, stat = self.meta.locate(key)\n        if loc == \"hot\":\n            data = self.hot.read(key)\n            stat.touch()  # cheap in-memory counter, no movement yet\n            return data\n        # cold read: decide promote vs serve-through\n        data = self.cold.read(key)\n        if self.policy.should_promote(stat):  # e.g. >=3 hits in 10 min\n            # async copy up; serve from cold this time to protect p99\n            self.policy.enqueue_promotion(key)\n        return data\n\n    def background_demote(self):\n        # run hourly, not inline: keeps write path O(1)\n        for key, stat in self.meta.scan_cold_candidates():\n            if self.policy.should_demote(stat):  # age > 30d and hits == 0\n                self.cold.write(key, self.hot.read(key))\n                self.meta.update(key, tier=\"cold\")\n                self.hot.delete(key)"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Tiering vs caching: stop confusing them"
+    },
+    {
+      "type": "paragraph",
+      "text": "Caching keeps a *copy* upstairs and the authority downstairs; eviction is free because the lower copy is intact. Tiering keeps a *single authoritative copy* in exactly one tier; movement is a migration, not an eviction, and a bug loses data. That is why tiering needs transactional move — copy, verify, flip pointer, delete — while a cache can drop. The trade-off: tiering saves capacity at every level, caching saves correctness risk. If your hot tier can be wiped without data loss, you built a cache. If wiping it pages someone at 3am, you built tiers. Say which one you mean in the interview before you draw anything."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of tiered storage.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "When the bill comes due"
+      ],
+      "rows": [
+        [
+          "10-50x lower $/GB for cold bytes",
+          "Extra metadata lookup on every I/O",
+          "p99 inflates if index is remote or uncached"
+        ],
+        [
+          "Unbounded retention without provisioning hot capacity",
+          "Rehydration latency and per-GB retrieval + egress fees",
+          "First scan of cold data blows SLO and budget together"
+        ],
+        [
+          "Isolation: hot traffic unaffected by bulk growth",
+          "Background movers compete for disk and network",
+          "Demotion storms during peak double tail latency"
+        ],
+        [
+          "Lifecycle compliance almost for free",
+          "Stale location, dangling pointers, partial moves",
+          "Crash during copy-verify-flip leaves two truths"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is **thrashing at the boundary**. Set promotion too eager and a nightly analytics scan pulls terabytes of cold parquet into NVMe, evicting the actual working set; next morning every user read misses and re-promotes, and the cluster spends the day copying data back and forth. Symptom you will see: hot-tier hit ratio collapses from 95% to 40% at the same hour daily, disk write amplification spikes, p99 triples while throughput looks flat. Fix is admission control — `bypass-cache` headers for scans, TinyLFU-style frequency sketch before promotion, separate scan tier — not more flash. More flash just gives the scan more room to destroy."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Cold stampede:** first touch of a large cold dataset queues thousands of rehydrations. Symptom: object-store `GET` throttling, queue depth exploding, timeouts cascading to hot path. Mitigation: coalesce duplicate fetches, cap promotion concurrency, serve degraded from cold with higher timeout.",
+        "**Metadata hotspot:** tier index lives on one shard or one in-memory map. Symptom: CPU-saturated router while disks sit idle, `locate()` dominating trace spans. Mitigation: partition index by key hash, cache locations at edge, make location hints versioned.",
+        "**Silent cost inversion:** retrieval + egress exceeds the savings of demotion. Symptom: bill rises *after* you tiered aggressively, especially with repeated cold re-reads. Mitigation: track re-read rate per prefix; if re-read within 30 days, it was never cold.",
+        "**Partial move corruption:** crash between copy and pointer flip. Symptom: two tiers claim ownership, reads flap, GC deletes the live copy. Mitigation: write-ahead move journal, checksum-verify before flip, GC only unreferenced generations."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The fee nobody models",
+      "text": "Cold storage is cheap to *keep* and expensive to *touch*. Minimum storage duration, per-request fees, early-delete penalties, and rehydration throughput caps turn a clever demotion policy into a budget incident. Model **$/read**, not just $/GB-month, or your TCO math is fiction."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What to draw and what to say"
+    },
+    {
+      "type": "paragraph",
+      "text": "Start from workload, not media. Ask for object size distribution, read/write ratio, reuse distance, and retention requirement. A 10KB OLTP row with 90% re-read in 24 hours wants NVMe plus object overflow. A 128MB immutable segment written once and scanned monthly wants direct-to-cold with hot index only. The trade-off you are defending: fine-grained per-key tiering maximises savings but explodes metadata; prefix- or partition-level tiering — per-table, per-tenant, per-day — is coarse but operable. Most passing designs tier at **SST / segment / partition granularity**, not per row."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "State the temperature hypothesis",
+          "text": "I assume Zipfian access: X% of reads hit Y% of keys, retention Z months. If that is wrong, tiering is wrong. Ask for the histogram and propose two tiers to start."
+        },
+        {
+          "title": "Fix the namespace and index",
+          "text": "Single logical key, versioned location pointer in a partitioned metadata store. Reads resolve then fetch. Writes go to hot unless tagged cold. Moves are copy-verify-flip, never in-place update."
+        },
+        {
+          "title": "Define policy with numbers",
+          "text": "Promote after N hits in M minutes via sketch; demote after D days cold or when hot exceeds 70% full. Scans bypass promotion. Background movers rate-limited to P% of I/O. Numbers invite challenge — that is the point."
+        },
+        {
+          "title": "Handle cold reads explicitly",
+          "text": "Serve-through with async promote, request coalescing, separate timeout and concurrency budget for cold. Archive needs explicit rehydrate API returning a ticket, not a blocking read."
+        },
+        {
+          "title": "Close with cost and SLO",
+          "text": "Show $/GB-month vs p50/p99 per tier, retrieval cost per expected re-read rate, and what happens when the boundary is wrong. That one paragraph separates Medium from Strong Hire."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you downleveled"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**More tiers is more sophisticated.** No. Each boundary adds policy, monitoring, and failure modes. Two tiers with correct admission beats four tiers with thrash.",
+        "**Tiering is free performance.** It is the opposite: you trade median latency and operational load for cost. Hot p99 only stays flat if promotion, index caching, and mover isolation are correct.",
+        "**LRU alone is a policy.** LRU reacts to recency, not frequency or cost. Without size-awareness and scan resistance, one full table scan evicts everything valuable.",
+        "**Cold means deleted.** Cold still needs durability, encryption, access control, and discoverability. If legal hold or GDPR delete cannot reach the archive, the design is non-compliant.",
+        "**Automatic means unsupervised.** Every automated tiering system needs guardrails: hot-watermark alerts, demotion dry-run, re-read audit, and a one-click pause for movers. Automation without a brake is an outage generator."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, when to skip it"
+    },
+    {
+      "type": "table",
+      "caption": "Use tiering for skew and retention; skip it for uniform or tiny data.",
+      "headers": [
+        "Use tiering when",
+        "Skip tiering when"
+      ],
+      "rows": [
+        [
+          "Working set << total dataset and reuse is skewed",
+          "Access is uniform — every byte equally hot"
+        ],
+        [
+          "Retention is months/years but re-read window is days",
+          "Dataset fits comfortably on one media class"
+        ],
+        [
+          "Object sizes are large and immutable (segments, blobs, snapshots)",
+          "Objects are tiny — metadata and request fees dominate"
+        ],
+        [
+          "Cost pressure dominates and cold SLO can be seconds/minutes",
+          "SLO demands single-digit ms on 100% of keys"
+        ],
+        [
+          "Regulatory archive with rare but mandatory retrieval",
+          "Team has no capacity to operate movers, index, and billing alarms"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "Tiered storage puts each byte on the cheapest media that still meets its **reuse-distance SLO**, using a unified namespace with async promote on frequency and demote on age — and you only build it when access skew pays for the extra lookup and rehydration paths."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:45:17.767Z",
+    "problems": []
+  }
+}

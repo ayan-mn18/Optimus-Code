@@ -31,6 +31,14 @@ export async function mapWithConcurrency(items, limit, worker) {
   return results;
 }
 
+/** Control characters Postgres will not store, and JSON should not carry. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /\\u000[0-8bcef]|\\u001[0-9a-f]|[\u0000-\u0008\u000b\u000c\u000e-\u001f]/gi;
+
+export function stripControlChars(text) {
+  return text.replace(CONTROL_CHARS, ' ');
+}
+
 export const STAGES = ['intake', 'resolve', 'harvest', 'extract', 'compose', 'validate', 'publish'];
 
 /* ---------------------------------------------------------------- intake -- */
@@ -262,7 +270,10 @@ export async function runPipeline(request, { onStage = () => {}, fetchImpl = fet
   };
 
   await fs.mkdir(BLOG_DIR, { recursive: true });
-  await fs.writeFile(file, JSON.stringify(doc, null, 2));
+  // Postgres text columns reject raw control characters (SQLSTATE 22P05), and a
+  // single one anywhere in a 280-article batch fails the whole seed. Strip them
+  // where the document is written rather than discovering it at insert time.
+  await fs.writeFile(file, stripControlChars(JSON.stringify(doc, null, 2)));
 
   return {
     slug: job.slug,

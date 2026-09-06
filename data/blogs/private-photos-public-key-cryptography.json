@@ -1,0 +1,256 @@
+{
+  "slug": "private-photos-public-key-cryptography",
+  "title": "Private Photos & Public Key Cryptography",
+  "summary": "How to design truly private photos in a social network with hybrid public-key cryptography, and what it costs.",
+  "kind": "HLD",
+  "problemSlug": "private-photos--public-key-cryptography-144-304",
+  "topic": "Building Social Network",
+  "difficulty": "Medium",
+  "coverEmoji": "🔐",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Social Network",
+    "Cryptography",
+    "Privacy"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Public-key cryptography - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Public-key_cryptography",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Public Key and Private Key: How they Pair & Work Together - PreVeil",
+      "url": "https://www.preveil.com/blog/public-and-private-key/",
+      "source": "preveil.com",
+      "kind": "article"
+    },
+    {
+      "title": "Public Key Cryptography Simply Explained - HackerNoon",
+      "url": "https://hackernoon.com/public-key-cryptography-simply-explained-e932e3093046",
+      "source": "hackernoon.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Private does not mean checked by an API. Private means unreadable even when the storage leaks.** If your CDN, cache, database replica, or ex-employee can see cleartext pixels, you built access control, not privacy. Public-key cryptography is how you distribute decryption power without ever distributing a shared secret — and that distinction is the entire interview."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What private actually means here"
+    },
+    {
+      "type": "paragraph",
+      "text": "In a Building Social Network problem, a private photo has two separate guarantees and candidates constantly collapse them into one. First is **authorization**: the feed service, album service, and CDN must refuse to serve bytes to non-viewers. That is just ACLs and signed URLs. Second is **confidentiality**: even if someone bypasses that layer — scraped URL, leaked S3 bucket, cache poisoning, rogue insider, database dump — they still get useless ciphertext. Public-key cryptography only buys you the second. You generate a mathematically linked keypair per user. The **public key** can live in a directory for anyone to see. The **private key** never leaves the owner's device or hardware enclave. Anyone can lock a box with your public key, but only you can open it with your private key. No shared password to rotate, intercept, or leak in transit. If you cannot state your threat model that crisply, the rest of your design is hand-waving."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why asymmetric at all? Because a social graph is a key-distribution nightmare. With pure symmetric encryption you would need a shared secret between the uploader and every viewer, exchanged securely beforehand, rotated on every unfriend, and stored safely on both sides. That is **O(viewers) secrets per photo** with no safe channel to bootstrap them. Public keys invert the problem: viewers publish one long-lived public key once, uploaders use it on demand without ever talking to the viewer. The trade-off is brutal and you must name it: asymmetric primitives are ~1000x slower than AES and cannot encrypt a 4MB image directly, so you never encrypt the photo with RSA or elliptic-curve crypto. You encrypt a tiny key with the public key, and the photo with that key. That hybrid construction is non-negotiable."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: hybrid encryption or you fail the round"
+    },
+    {
+      "type": "paragraph",
+      "text": "The production pattern is **envelope encryption**, and every serious answer converges on it because physics forces it. For each private photo — or better, each private album version — the uploader generates a fresh random 256-bit Data Encryption Key, the DEK. The photo bytes are encrypted client-side with **AES-256-GCM**, which gives you confidentiality plus an authentication tag that detects tampering. The ciphertext goes to blob storage. The DEK itself never goes to storage in cleartext. It is **wrapped** once per authorized viewer with that viewer's public key using RSA-OAEP or ECIES, and those tiny wrapped blobs live in your metadata database next to the photo ID. To view, the client fetches its own wrapped DEK, unwraps it locally with its private key, fetches the ciphertext via a short-lived signed CDN URL, and decrypts locally. Why this shape? Symmetric crypto handles bulk data at line speed; asymmetric crypto handles the key-distribution problem for tiny payloads. You pay one extra DB lookup and one unwrap per view to avoid ever having a server-side master key that can decrypt everyone."
+    },
+    {
+      "type": "mermaid",
+      "title": "Private photo upload and view",
+      "caption": "Hybrid flow: bulk data uses AES, key distribution uses public keys.",
+      "code": "flowchart TD\n  U[Uploader Client] --> G[Generate random DEK]\n  G --> E[Encrypt photo with AES-GCM]\n  E --> S[Upload ciphertext to blob store]\n  G --> W[Wrap DEK with each viewer public key]\n  W --> K[Store wrapped DEKs in key service]\n  V[Viewer Client] --> K\n  K --> D[Unwrap DEK with viewer private key]\n  D --> F[Fetch ciphertext via signed URL]\n  F --> P[Decrypt locally and display]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Key placement is where juniors get vague and seniors get specific. Public keys live in a strongly consistent directory service keyed by user ID with versioning, because a stale or spoofed public key means encrypting to an attacker. Private keys live in exactly two acceptable places: on-device keystore or a KMS-backed hardware module if you do server-assisted decryption. They are never in your application database, never in logs, never in a cache. The wrapped DEKs are not secret in the same way — they are only useful to the holder of the matching private key — so they can sit in a normal replicated SQL or NoSQL table indexed by `photo_id, viewer_id`. The CDN and blob store only ever see AES ciphertext and short-lived signed URLs. That separation is why a leaked bucket is a privacy incident report, not a user-notification breach. The trade-off you accepted: you cannot do server-side thumbnails, blur detection, or compression on private photos without either client-side preprocessing or a trusted enclave, because the server cannot see pixels."
+    },
+    {
+      "type": "table",
+      "caption": "Core decisions and what each one costs you.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Hybrid AES plus public-key wrap vs pure RSA on image",
+          "Line-speed bulk encryption and large-file support; RSA only touches 32 bytes",
+          "Two crypto systems to implement, audit, and get wrong; need careful nonce and tag handling"
+        ],
+        [
+          "Per-photo DEK vs one key per user or album",
+          "Blast radius of one; instant revocation per photo; different viewer sets per photo",
+          "Key table explodes to photos times viewers; envelope fetch on every cold view"
+        ],
+        [
+          "Client-side encrypt and wrap vs server-side encrypt",
+          "True end-to-end privacy; storage and CDN are zero-trust",
+          "No server thumbnails or ML scanning; broken clients ship broken crypto; key recovery is painful"
+        ],
+        [
+          "Per-viewer wrapped DEKs vs single group key",
+          "No shared group secret; adding a viewer is one wrap, no re-key for others",
+          "Removing a viewer forces re-encryption or at least re-keying, otherwise old copies still decrypt"
+        ],
+        [
+          "Short-lived signed CDN URLs over ciphertext vs direct blob reads",
+          "Stolen URLs expire in minutes; authorization stays at edge without exposing keys",
+          "URL minting service becomes hot path; clock skew and replay need handling"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "This design fails in four predictable ways and each has a telltale symptom. First is **private-key loss**. Phones are wiped, users reinstall, and if the private key was device-only with no encrypted backup, every old private photo becomes permanently unreadable. Symptom: support tickets for grey tiles with `DEK_UNWRAP_FAILED` in client logs, while public photos load fine. The fix is a recovery escrow — wrap the private key itself with a passphrase-derived key or split it with Shamir sharing — but that reintroduces a weaker link, which is the trade-off you must state. Second is **metadata leakage**. You encrypted pixels but left thumbnails, EXIF GPS, filenames like `mexico-honeymoon.jpg`, face-tag embeddings, and viewer lists in cleartext. Symptom: privacy bug reports where attackers reconstruct who, where, and with whom without ever decrypting a pixel. Encrypt or strip all derivatives client-side or treat them as public by explicit product decision."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Thumbnails load but full images fail with authentication-tag errors — you re-compressed or re-encoded ciphertext or AES-GCM nonce was reused after a retry.",
+        "One user can suddenly view photos they were removed from — you revoked the ACL but never rotated the DEK, so their cached wrapped key still decrypts the old ciphertext.",
+        "CPU spikes on upload for large albums — you wrapped the DEK serially with RSA-2048 for 500 viewers instead of batching or using elliptic-curve crypto.",
+        "All private photos for a cohort become unreadable after a key-directory migration — you changed public-key IDs without re-wrapping, orphaning every envelope.",
+        "Signed URL sharing bypasses privacy — a viewer forwards their 7-day URL and anyone can fetch ciphertext, and if they also kept the DEK, forwarding equals permanent access."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Third is **revocation theater**, the classic HLD trap. Removing a viewer from an ACL does not remove the bytes they already downloaded nor the DEK they already unwrapped. If you keep the same DEK and ciphertext, revocation is a lie. Honest revocation means generating a new DEK, re-encrypting the photo, re-wrapping for the remaining viewers, deleting the old ciphertext, and expiring CDN cache. Symptom of skipping it: revoked ex-friends still see the image from local cache or a retained key, and your audit log says denied while pixels say otherwise. Why teams skip it: re-encryption of a 200-photo album shared with 100 people is a thundering herd of crypto and invalidation. The pragmatic trade-off most systems pick is lazy rotation — keep serving old ciphertext to old viewers until the next edit, but rotate immediately on explicit block or report. Say that out loud. Fourth is **unauthenticated public keys**. If an attacker can publish their key as Alice, every future private photo for Alice is readable by the attacker. Symptom: no errors at all, which is what makes it lethal. You need key transparency or at least signed key uploads with device attestation."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "envelope.py",
+      "code": "# Simplified envelope encryption. Real code uses libsodium / Tink, not raw RSA.\nfrom os import urandom\nfrom cryptography.hazmat.primitives.ciphers.aead import AESGCM\n\ndef encrypt_photo(photo_bytes: bytes, viewer_public_keys: dict) -> dict:\n    dek = urandom(32)  # 256-bit per-photo DEK, never reused\n    nonce = urandom(12)\n    ciphertext = AESGCM(dek).encrypt(nonce, photo_bytes, associated_data=None)\n    # wrap() below is RSA-OAEP or ECIES seal with each viewer's public key\n    envelopes = {uid: wrap(pub, dek) for uid, pub in viewer_public_keys.items()}\n    return {\"ct\": ciphertext, \"nonce\": nonce, \"envelopes\": envelopes}\n\ndef decrypt_photo(bundle: dict, my_uid: str, my_private_key) -> bytes:\n    wrapped = bundle[\"envelopes\"][my_uid]\n    dek = unwrap(my_private_key, wrapped)  # fails closed if revoked\n    return AESGCM(dek).decrypt(bundle[\"nonce\"], bundle[\"ct\"], None)"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Scaling this to social-network load"
+    },
+    {
+      "type": "paragraph",
+      "text": "At feed scale the crypto is rarely the bottleneck — the key fan-out is. A photo shared with 1,000 followers means 1,000 wraps on write and a `photo_id` to envelope lookup on read. Do wraps asynchronously after upload acknowledges: store the ciphertext immediately, enqueue a fan-out job to wrap the DEK per viewer, and let early viewers retry envelope fetch for a second. Cache wrapped DEKs at the edge keyed by `photo_id:viewer_id:dek_version` with a short TTL, because envelope rows are tiny and hot. Serve ciphertext from the same CDN as public photos — the CDN does not need to be trusted since it only holds AES-GCM blobs — but mint signed URLs with 5-minute expiry and bind them to the viewer ID so forwarding dies quickly. Put public keys in a separate low-write, high-read directory with aggressive caching and version pins in the envelope (`wrapped_for_key_version=14`) so rotation does not silently orphan data. The trade-off you are buying with all this machinery: write amplification on share and revoke in exchange for zero-trust storage and no global decryption key that makes you a single breach away from headlines."
+    },
+    {
+      "type": "mermaid",
+      "title": "Revocation without lying",
+      "caption": "Removing a viewer must rotate the DEK, not just the ACL.",
+      "code": "flowchart LR\n  R[Remove viewer request] --> N[Generate new DEK version]\n  N --> C[Re-encrypt photo bytes]\n  C --> W[Re-wrap for remaining viewers only]\n  W --> I[Invalidate CDN and delete old ciphertext]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They start with share with friends only",
+          "text": "Do not jump to crypto. First separate authorization from confidentiality and ask who the adversary is: curious CDN operator, leaked bucket, revoked viewer, or government request. That one question decides whether ACLs suffice or you need end-to-end envelopes."
+        },
+        {
+          "title": "They add private photos must survive a storage leak",
+          "text": "Now propose hybrid encryption explicitly: random DEK per photo, AES-GCM for bytes, public-key wrap per viewer. Say why pure RSA is disqualified on performance and size limits. Draw the upload and view paths with where each key lives."
+        },
+        {
+          "title": "They revoke a viewer or add 500 followers",
+          "text": "Walk the fan-out cost and the re-encryption rule. Adding is cheap, one wrap. Removing honestly requires DEK rotation plus CDN invalidation. Offer lazy rotation as the pragmatic trade-off and name what breaks if you skip it."
+        },
+        {
+          "title": "They push scale and features",
+          "text": "Discuss envelope table schema, key-version pinning, async wrap workers, signed URLs, and why server thumbnails are impossible without client preprocessing. Mention key recovery and key transparency before they ask."
+        },
+        {
+          "title": "They probe depth with what ifs",
+          "text": "Answer what if the private key is lost, what if the public directory is poisoned, what if the URL is forwarded. Each answer should pair a mechanism with its cost, never a free fix."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that kill you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Encrypting the photo with the public key directly.** RSA cannot encrypt megabytes, and ECB-style chunking destroys security. The public key only ever wraps a 32-byte DEK.",
+        "**TLS equals private photos.** TLS protects bytes in transit to the server, then the server sees cleartext. End-to-end privacy means the server only ever stores ciphertext.",
+        "**ACLs equal encryption.** An ACL is a polite server saying no. A leak, backup, or insider bypasses it silently. Only ciphertext survives those paths.",
+        "**Hashing is encryption.** Hashes are one-way fingerprints for passwords, not reversible locks for photos. You cannot decrypt a hash.",
+        "**One keypair for signing and encryption.** Reusing the same key for signatures and decryption invites cross-protocol attacks. Use separate keys with distinct usages and rotate them independently."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use end-to-end envelopes only where the privacy is worth the operations cost.",
+      "headers": [
+        "Scenario",
+        "Verdict",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Private albums, DMs, medical or kid photos with explicit privacy promise",
+          "Use hybrid public-key envelopes",
+          "Leak must yield ciphertext; key distribution across social graph demands asymmetric wrap"
+        ],
+        [
+          "Public feed, stories, marketplace images needing thumbnails and search",
+          "Do not use; use ACLs plus signed URLs",
+          "Server needs cleartext for derivatives and ranking; envelopes would block every feature for zero benefit"
+        ],
+        [
+          "Small close-friends shares under ~200 viewers per photo",
+          "Use per-photo DEK with per-viewer wraps",
+          "Fan-out is manageable and revocation blast radius stays tiny"
+        ],
+        [
+          "Celebrity broadcast to millions with rare revokes",
+          "Do not per-viewer wrap; use broadcast or group-key scheme",
+          "Millions of wraps per post is pure write amplification; rotate a shared group key instead and accept weaker revocation"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "If you remember nothing else, remember the sizing rule: envelopes scale with the product of private photos and viewers per photo. That product is small for true private sharing and enormous for broadcast. Pick per-viewer envelopes for the first, group keys or plain ACLs for the second, and say why you switched. Interviewers reward that threshold thinking far more than reciting algorithm names. Private-key crypto is not magic dust you sprinkle on a feed; it is a deliberate decision to make the server blind, which breaks every server-side feature you love. Own that cost and you sound senior."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Wrap a fresh AES key per private photo with each viewer's public key, serve only ciphertext over short-lived URLs, and rotate that AES key the moment you revoke anyone — because ACLs control access, but only envelopes survive a leak.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:36:18.587Z",
+    "problems": []
+  }
+}

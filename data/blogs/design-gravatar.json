@@ -1,0 +1,407 @@
+{
+  "slug": "design-gravatar",
+  "title": "Design Gravatar",
+  "summary": "Design Gravatar as a read-heavy avatar CDN: hash emails, store one original, serve resized variants from edge cache. Includes architecture, data model, code, and scaling math.",
+  "kind": "HLD",
+  "problemSlug": "design-gravatar-144-304",
+  "topic": "Building Social Network",
+  "difficulty": "Medium",
+  "coverEmoji": "🖼️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Social Network",
+    "CDN",
+    "Caching"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Cracking the Machine Coding Round - Abhishek Deb - Medium",
+      "url": "https://abhishekdeb48.medium.com/all-about-machine-coding-round-8e56c866fe87",
+      "source": "abhishekdeb48.medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Machine Coding Interview Experience: Designing from Scratch - LinkedIn",
+      "url": "https://www.linkedin.com/posts/pranoti-bulakh-407637148_in-my-recent-interview-experiences-i-noticed-activity-7437714786517397504-A2Ai",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "Machine Coding Round: The Complete Frontend Guide (2026)",
+      "url": "https://www.greatfrontend.com/blog/machine-coding-round",
+      "source": "greatfrontend.com",
+      "kind": "article"
+    },
+    {
+      "title": "Kritika kumari on X: \" How I Prepared for Machine Coding Rounds I never ...",
+      "url": "https://x.com/kritikatwtss/status/1754707472261304350",
+      "source": "x.com",
+      "kind": "article"
+    },
+    {
+      "title": "Do you know what's a “Machine Coding Round” | Navyaa Sharma",
+      "url": "https://www.linkedin.com/posts/navyaa-sharma-here_jobinterviews-softwareengineering-coding-activity-7407034570363162625-RNWT",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "Interview Questions : r/graphic_design - Reddit",
+      "url": "https://www.reddit.com/r/graphic_design/comments/1cg3zb2/interview_questions/",
+      "source": "reddit.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "Gravatar looks trivial — `hash email, return image`. The real test is **whether you can design a read-heavy, cache-friendly image CDN where the hot 1% of avatars absorbs 99% of traffic**. Anyone can draw boxes. Strong candidates explain *why* the origin never sees most requests, *why* resizing happens once not per request, and what tradeoff every cache layer buys you."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a public avatar hosting service. Users register an email and upload an image. Any third-party site can embed `<img src=\".../avatar/HASH?s=80&d=identicon\">` and get the correct avatar without authentication. Requirements: deterministic lookup by email, resizable output, sensible default when no image exists, content rating filter, and fast global reads at social-network scale. Writes are rare. Reads are massive, repetitive, and cacheable. Your design must make reads cheap even when millions of blogs embed the same commenter avatars, while keeping uploads consistent and abuse-resistant."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`GET /avatar/{emailHash}?s={size}&d={default}&r={rating}` — returns image bytes with long cache headers. `emailHash` is MD5 or SHA256 of normalized email.",
+        "`POST /avatar` (authenticated) — upload or replace avatar for your email. Server generates and stores the original plus lazy variants.",
+        "`GET /avatar/{emailHash}/meta` — optional JSON metadata: rating, upload time, has-custom-image flag. Useful for moderation and debugging."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Hash the email, never expose it",
+      "text": "Never use raw email in the URL. Normalize first — **trim, lowercase, then hash** — or `User@Example.com` and `user@example.com` map to different avatars and your cache hit rate collapses. The hash is also a privacy boundary: it prevents harvesters from scraping emails off image URLs. Tradeoff: hashes are opaque, so you cannot reverse them for support without a separate authenticated index."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not start drawing CDN boxes until you pin the workload. Gravatar is the purest example of read-write asymmetry in social systems, and every sizing decision flows from that ratio. Ask sharp questions, write the answers down, and force the interviewer to commit. If they say avatars change often or every request needs fresh authorization, your entire caching strategy changes."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Read vs write ratio?",
+          "text": "Assume 1000:1 or worse. Comment widgets and profile pages fetch the same avatar hundreds of times per upload. This justifies aggressive edge caching and lazy variant generation."
+        },
+        {
+          "title": "What sizes and defaults?",
+          "text": "Agree on discrete sizes: 32, 64, 128, 256, 512. Arbitrary sizes explode cache cardinality. Defaults: 404, blank, identicon, monsterid, wavatar, retro. Rating: g, pg, r, x."
+        },
+        {
+          "title": "Consistency requirement?",
+          "text": "Is stale-for-60-seconds acceptable after an upload? Almost always yes. That one concession lets you use CDN caching with purge-on-write instead of bypassing cache."
+        },
+        {
+          "title": "Scale target?",
+          "text": "How many stored avatars and requests per second? Push for numbers: e.g. 500M stored identities, 200K read RPS peak, 200 write RPS. Size origin, cache, and store from this."
+        },
+        {
+          "title": "Abuse and privacy?",
+          "text": "Do we enforce rating filters server-side? Do we rate-limit uploads and scan for illegal content? Hash enumeration is a real attack — agree you will not add a list-all API."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Agreed scope before architecture.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Upload / replace avatar by authenticated email",
+          "Only write path; must be safe and idempotent"
+        ],
+        [
+          "Functional",
+          "Public fetch by emailHash + size + default + rating",
+          "Deterministic, no auth, embeddable anywhere"
+        ],
+        [
+          "Functional",
+          "Default image generation when no custom avatar",
+          "Keeps embed code simple; no broken images"
+        ],
+        [
+          "Functional",
+          "Rating gate (g/pg/r/x)",
+          "Prevents adult avatars leaking onto kids sites"
+        ],
+        [
+          "Non-functional",
+          "p99 read < 50ms globally, >99.9% CDN hit rate",
+          "Origin cannot survive uncached social traffic"
+        ],
+        [
+          "Non-functional",
+          "Durable storage, 11x9s for originals",
+          "Loss of user image is unforgivable"
+        ],
+        [
+          "Non-functional",
+          "Eventual consistency < 1 min after upload",
+          "Tradeoff: allows edge caching with async purge"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the naive monolith"
+    },
+    {
+      "type": "paragraph",
+      "text": "The obvious first sketch is a single web server with a relational table `email -> image_blob` that resizes on every request with an image library and returns bytes. It passes a demo with ten users. It dies in production for three compounding reasons. First, every request hits origin, so 200K RPS melts your app tier. Second, resizing a JPEG on the hot path costs 20-80ms of CPU — you pay that cost millions of times for the *same* `(hash, size)` pair because nothing is memoized. Third, storing blobs in the database bloats it, ruins buffer pool efficiency, and makes replication painful. The tradeoff you refused here is freshness vs cost: you treated every read as if it needed computation, when 99.9% of reads are repeats of bytes you already computed."
+    },
+    {
+      "type": "list",
+      "items": [
+        "No CDN: no geographic locality, no absorption of hot keys, origin bandwidth explodes.",
+        "Resize-per-request: CPU-bound, high tail latency, trivially cacheable work repeated forever.",
+        "Blob-in-DB: table scans slow down, backups balloon, cannot serve range requests efficiently.",
+        "No normalization: ` Foo@Bar.com ` misses cache and creates duplicate identities."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Split the system into **write-once, read-many** paths. Writes go to an API service that stores one high-resolution original in object storage and one metadata row. Reads never touch that write path in steady state. They hit CDN edge, then a small image-variant service backed by a distributed cache, then object storage. The key insight: **precompute or lazily memoize a tiny discrete set of sizes** and address them deterministically as `{hash}/{size}.jpg`. The CDN can then cache each variant as an immutable object with a long `max-age` plus `ETag`. Upload invalidates by purging CDN keys and bumping a version. You trade a little storage (5 sizes per user) for eliminating all per-request resize CPU and almost all origin traffic."
+    },
+    {
+      "type": "mermaid",
+      "title": "Gravatar high-level architecture",
+      "caption": "Read path is served from edge; write path stores original and purges.",
+      "code": "flowchart TD\n    Browser[Embedding Site] --> CDN[CDN Edge PoP]\n    Uploader[Logged-in User] --> LB[Load Balancer]\n    LB --> API[Avatar API Service]\n    API --> Auth[Auth Service]\n    API --> META[Metadata DB]\n    API --> OBJ[Object Store - Originals]\n    API --> PURGE[CDN Purge Queue]\n    PURGE --> CDN\n    CDN --> VAR[Variant Service]\n    VAR --> RC[Redis - Hot Variants]\n    VAR --> OBJ\n    VAR --> CDN"
+    },
+    {
+      "type": "paragraph",
+      "text": "The request flow is brutally simple on purpose. `GET /avatar/205e460...?s=80&d=identicon&r=g` hashes to cache key `v1:205e460:s80`. CDN checks edge. On miss, the variant service checks Redis. On miss, it fetches the original from object storage, resizes once, stores the variant back to object storage under a versioned key, populates Redis, and returns with `Cache-Control: public, max-age=86400, immutable` plus `ETag`. Browsers and shared caches do conditional `If-None-Match` after that, so repeat views cost zero bytes. Upload is the only path that does work: authenticate, validate rating and size, write original, update metadata, enqueue CDN purges for all sizes. Tradeoff: purge is eventually consistent — a user may see their old face for 30-60 seconds, which is the price of a 99%+ edge hit rate."
+    },
+    {
+      "type": "mermaid",
+      "title": "Core data model",
+      "caption": "One original, many immutable variants, metadata separate from bytes.",
+      "code": "classDiagram\n    class Account {\n        String userId\n        String emailHash\n        String rating\n        int version\n    }\n    class Original {\n        String emailHash\n        String objectKey\n        int width\n        int height\n    }\n    class Variant {\n        String emailHash\n        int size\n        int version\n        String objectKey\n    }\n    class DefaultStyle {\n        String name\n        String generator\n    }\n    Account --> Original : owns\n    Original --> Variant : derives\n    Variant --> DefaultStyle : fallback"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep bytes and metadata apart — that separation is the whole scalability story. Object storage holds the only truth for pixels: one original at full resolution, plus one object per `(hash, size, version)` variant, content-addressed and immutable. The metadata store holds tiny rows: `emailHash -> userId, version, rating, hasImage, updatedAt`. It never holds blobs, so it stays small, cacheable, and cheap to replicate. Redis holds only hot variants and negative entries for missing avatars, with short TTLs to bound stampede risk. Why version in the key? Because **immutable keys make CDN caching safe**: `.../hash.v42.s80.jpg` never changes meaning, so you can cache it for a year and invalidate by writing a new version rather than relying on slow global purges. Tradeoff: you store 5x objects, but object storage is pennies per GB while origin CPU is dollars per hour."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "GravatarService.java",
+      "code": "import java.security.MessageDigest;\nimport java.util.Set;\n\npublic class GravatarService {\n    private static final Set<Integer> ALLOWED_SIZES = Set.of(32, 64, 128, 256, 512);\n    private static final int DEFAULT_SIZE = 80;\n\n    // Normalize MUST happen before hashing. Tradeoff: strictness vs usability.\n    // We lowercase + trim so cache keys converge. Non-ASCII uses UTF-8 bytes.\n    public static String emailHash(String email) {\n        String norm = email == null ? \"\" : email.trim().toLowerCase();\n        try {\n            MessageDigest md = MessageDigest.getInstance(\"MD5\");\n            byte[] d = md.digest(norm.getBytes(java.nio.charset.StandardCharsets.UTF_8));\n            StringBuilder sb = new StringBuilder();\n            for (byte b : d) sb.append(String.format(\"%02x\", b));\n            return sb.toString();\n        } catch (Exception e) { throw new IllegalStateException(e); }\n    }\n\n    public static int clampSize(int requested) {\n        // Discrete sizes bound cache cardinality. Tradeoff: slight quality\n        // mismatch vs 100x fewer cache keys than arbitrary s=1..2048.\n        int best = DEFAULT_SIZE; int bestDiff = Integer.MAX_VALUE;\n        for (int s : ALLOWED_SIZES) {\n            int diff = Math.abs(s - requested);\n            if (diff < bestDiff) { bestDiff = diff; best = s; }\n        }\n        return best;\n    }\n\n    public String variantKey(String emailHash, int size, long version) {\n        return String.format(\"v1/%s/%d/v%d.jpg\", emailHash, clampSize(size), version);\n    }\n\n    // Rating gate happens at variant serve time, not upload time alone,\n    // so a site requesting r=g never gets an r-rated image even if cached.\n    public boolean allowed(String imageRating, String requested) {\n        return rank(imageRating) <= rank(requested);\n    }\n    private int rank(String r) {\n        return switch (r == null ? \"g\" : r) {\n            case \"g\" -> 0; case \"pg\" -> 1; case \"r\" -> 2; case \"x\" -> 3;\n            default -> 0;\n        };\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "variant_server.py",
+      "code": "import hashlib\n\nALLOWED = {32, 64, 128, 256, 512}\n\ndef email_hash(email: str) -> str:\n    norm = (email or \"\").strip().lower()\n    return hashlib.md5(norm.encode(\"utf-8\")).hexdigest()\n\ndef clamp_size(s: int) -> int:\n    # Snap to nearest allowed size to protect hit rate.\n    return min(ALLOWED, key=lambda a: abs(a - s))\n\ndef serve(hash_: str, size: int, rating: str, meta: dict, cache, store, cdn):\n    # Single-flight + negative caching. Tradeoff: brief staleness\n    # for missing users in exchange for surviving thundering herds.\n    key = f\"v1:{hash_}:{clamp_size(size)}:{meta.get('version', 0)}\"\n    hit = cache.get(key)\n    if hit:\n        return hit, \"HIT\"\n    if not meta.get(\"has_image\"):\n        body = render_default(hash_, size)  # identicon / retro / 404\n        cache.setex(key, 300, body)  # short TTL for negatives\n        return body, \"DEFAULT\"\n    body = store.get(f\"variants/{key}.jpg\")\n    if body is None:\n        orig = store.get(f\"originals/{hash_}.jpg\")\n        body = resize(orig, clamp_size(size))  # done ONCE per version\n        store.put(f\"variants/{key}.jpg\", body)\n    cache.setex(key, 3600, body)\n    return body, \"MISS\"\n"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Capacity and complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Back-of-envelope for social-scale Gravatar.",
+      "headers": [
+        "Quantity",
+        "Estimate",
+        "Reasoning"
+      ],
+      "rows": [
+        [
+          "Stored identities",
+          "500M hashes",
+          "Email-linked users across embedding sites"
+        ],
+        [
+          "Original size",
+          "~100 KB avg after validation",
+          "Downscale uploads >2048px on write"
+        ],
+        [
+          "Variant amplification",
+          "5x sizes -> ~500 KB per user",
+          "32/64/128/256/512 JPEG/WebP"
+        ],
+        [
+          "Total object storage",
+          "~250 TB",
+          "500M * 500KB; trivial for object store"
+        ],
+        [
+          "Read QPS",
+          "200K peak, 20K avg",
+          "Comment widgets refetch same avatars"
+        ],
+        [
+          "CDN hit rate",
+          "98-99.5%",
+          "Zipf: top 1% avatars dominate"
+        ],
+        [
+          "Origin QPS",
+          "1-4K after CDN",
+          "Only misses + uploads reach variant service"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Do the math out loud — interviewers grade it. 200K RPS of 5KB thumbnails is 8 Gbps of edge egress, which a CDN absorbs without blinking, but would cost a fortune and collapse any origin fleet if served directly. With a 99% hit rate, origin sees 2K RPS, each a Redis `GET` plus occasional object fetch — roughly ten small hosts behind a load balancer. Storage is the opposite story: 250TB sounds large but object storage treats it as cold capacity at cents per GB-month, far cheaper than adding origin CPU to resize per request. Time complexity is `O(1)` per read (hash + cache lookup) and `O(pixels)` once per `(hash, size, version)` write. The tradeoff you state explicitly: you burn storage to buy CPU and latency."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency and the hardest follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "The killer follow-up is **thundering herd on a celebrity avatar plus stale upload**. When a viral commenter appears on a homepage, 50K requests for the same cold `(hash, size)` arrive in one second. Without protection, all 50K miss CDN, all 50K hit Redis, all 50K resize the same JPEG and hammer object storage. Fix it with three layers: CDN `stale-while-revalidate` so edge serves slightly old bytes while one request revalidates, Redis single-flight with a short lock (`SET NX EX 5`) so only one thread does the resize, and negative caching for missing hashes so enumeration attacks do not become a database DoS. On the write side, uploads race with reads: bump `version` atomically in metadata, write new variant objects under new keys, *then* purge CDN. Readers never see torn images because keys are immutable — they see v41 or v42, never half of v42. Tradeoff: you accept double storage during rollout and delayed visibility for rock-solid consistency without distributed locks on reads."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Do not resize on read without a lock",
+      "text": "The most common failed design resizes inside the request handler with no memoization or mutex. Under load that is a **self-inflicted DDoS**: CPU saturates, latencies spike, health checks fail, autoscaling adds hosts that also resize, and the system never recovers. Always resize once per version, store the result, and make concurrent readers wait on the first writer."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Conditional requests and ETags?",
+          "text": "Return strong ETag = hash of variant key + version. Support If-None-Match -> 304. Tradeoff: saves bytes at cost of a round trip; CDN handles it at edge so origin sees nothing."
+        },
+        {
+          "title": "How do defaults work without storage?",
+          "text": "Generate identicon/retro deterministically from hash bits at edge or variant service. No storage needed. Cache them like real variants but with shorter TTL since style may change."
+        },
+        {
+          "title": "How do you handle deletion and GDPR?",
+          "text": "Delete original + variants, tombstone metadata, purge CDN, and rotate version. Tradeoff: CDN purge is async, so agree on a bounded window where bits may linger at edge."
+        },
+        {
+          "title": "How do you prevent hot keys melting Redis?",
+          "text": "Two-level cache: in-process LRU for top 10K keys + Redis + CDN. Replicate hot keys with local TTL of seconds. Tradeoff: tiny staleness for massive load shedding."
+        },
+        {
+          "title": "WebP / AVIF negotiation?",
+          "text": "Vary on Accept header or use separate .webp keys. Tradeoff: doubles variant count but cuts bytes 30-50%. Do it only for large sizes where savings matter."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Unnormalized email: leading spaces, uppercase, plus-aliasing — normalize before hash or cache splits.",
+        "`s=0`, `s=9999`, non-numeric size — clamp to allowed set, never allocate unbounded buffers.",
+        "Missing avatar + `d=404` — must return real 404 status, not a 200 image, or embeds cannot detect absence.",
+        "Rating escalation: image rated `r` requested with `r=g` — must fall back to default, never leak bytes.",
+        "Animated GIF bomb or 50MB upload — validate dimensions, MIME sniff, downscale synchronously on write.",
+        "Hash enumeration scraping — rate-limit misses, require CAPTCHA after N uploads, never expose email-to-hash reverse lookup.",
+        "CDN purge failure after upload — versioned keys mean old URL still works; new reads use new version once metadata propagates."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak vs strong signals for this HLD.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Workload",
+          "Treats reads and writes equally",
+          "Names 1000:1 ratio, designs around Zipf + CDN absorption"
+        ],
+        [
+          "Caching",
+          "\"Add Redis\" with no keys or TTLs",
+          "Exact keys, immutable versioned objects, ETag + negative cache + single-flight"
+        ],
+        [
+          "Storage",
+          "Blobs in relational DB",
+          "Originals + memoized variants in object store, tiny metadata rows"
+        ],
+        [
+          "Scaling math",
+          "No numbers",
+          "250TB, 200K RPS -> 2K origin RPS derivation with hit-rate assumption"
+        ],
+        [
+          "Consistency",
+          "Claims instant global invalidation",
+          "Admits 30-60s staleness tradeoff, explains versioned keys vs purge"
+        ],
+        [
+          "Abuse",
+          "Ignores rating / enumeration",
+          "Rating gate on serve, upload validation, miss rate-limiting"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "45-minute plan",
+      "text": "Spend it like this: **0-5 min** clarify ratio, sizes, consistency, scale. **5-10 min** write API + requirements table. **10-15 min** kill the naive monolith with CPU math. **15-30 min** draw CDN -> variant service -> Redis -> object store, explain read vs write paths and versioned keys. **30-38 min** capacity math + thundering herd + ETag handling. **38-45 min** follow-ups: defaults, deletion, WebP, hot keys. Close by restating the core tradeoff: *extra variant storage buys near-zero origin load and global p99.*"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:41:38.098Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,299 @@
+{
+  "slug": "rest",
+  "title": "REST",
+  "summary": "REST as a set of scaling constraints — resources, statelessness, uniform interface, and caching — with honest trade-offs, failure modes, and interview tactics.",
+  "kind": "HLD",
+  "problemSlug": "rest-93-206",
+  "topic": "Application Programming Interface (API)",
+  "difficulty": "Medium",
+  "coverEmoji": "🔌",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "API",
+    "REST"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is REST API (RESTful API)? Explained - Codecademy",
+      "url": "https://www.codecademy.com/article/what-is-rest-api",
+      "source": "codecademy.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is RESTful API? - AWS",
+      "url": "https://aws.amazon.com/what-is/restful-api/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    },
+    {
+      "title": "REST - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/REST",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "What is REST? A Beginner's Guide to REST APIs and How They Work",
+      "url": "https://www.youtube.com/watch?v=hlsxmp9kc0o",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "REST is not **CRUD over HTTP**. It is a set of constraints that let thousands of independently deployed clients and servers share state at web scale **without coordination**. If your design does not exploit statelessness, cacheability, and a uniform interface to remove coordination, you are doing JSON-RPC and calling it REST. Name that trade-off out loud."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What REST is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "REST — Representational State Transfer — is an architectural style for distributed systems where **everything important is a resource** addressed by an identifier, and clients manipulate those resources only by exchanging **representations** of their current state. The client never touches the server's internal objects directly. It sends a representation — typically JSON — that says *here is what I want this resource to become*, and the server replies with a representation of the result. That indirection is the whole point. It decouples the client's model from the server's storage model, so either side can be rewritten, scaled, or replaced as long as the identifier and representation contract holds. Trade-off: you pay serialization and modeling overhead on every interaction to buy independent evolution."
+    },
+    {
+      "type": "paragraph",
+      "text": "The style is defined by six constraints: client-server separation, statelessness, cacheability, uniform interface, layered system, and code-on-demand as the sole optional one. The uniform interface is where most designs live or die, and it has four sub-rules: resources are identified independently of their representation, manipulation happens through those representations, messages are self-descriptive, and hypermedia drives application state. In practice almost nobody implements the fourth fully, which is why purists argue most APIs are merely REST-inspired. That criticism is correct and mostly irrelevant. What matters is which constraints you keep and **why you dropped the rest**. Trade-off: strict uniform interface reduces coupling but increases upfront design cost and chattiness."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Statelessness is the load-bearing wall"
+    },
+    {
+      "type": "paragraph",
+      "text": "Statelessness means every request carries all context needed to process it — authentication, target resource, intent, version. The server holds no conversational memory between requests. No sticky sessions, no *current step* held in RAM. This is what lets any server handle any request, lets a load balancer spray traffic blindly, lets you kill and replace a fleet at 3 AM without draining conversations, and lets requests be retried against a different replica after a failure. The cost is explicit and recurring: larger requests, repeated authentication and authorization checks, and no natural place for multi-step transactions. You push session state to the client or to shared storage. Trade-off: you trade per-request overhead and externalized state management for near-linear horizontal scalability and trivial failover."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: resources, verbs, representations"
+    },
+    {
+      "type": "paragraph",
+      "text": "You model nouns, not actions. `/orders/123` is a resource. `/createOrder` is not — that is RPC wearing a REST costume. The HTTP verb supplies the action semantics: `GET` reads without side effects, `PUT` replaces a resource at a known identifier, `POST` creates a subordinate or triggers a non-idempotent process, `PATCH` applies a partial change, `DELETE` removes. Status codes, headers, and content negotiation are part of the contract, not decoration. `ETag` and `Last-Modified` enable conditional requests. `Cache-Control` tells intermediaries what may be reused. Get this layer right and proxies, CDNs, and browsers do work for you for free. Get it wrong and you reimplement caching, retry, and routing badly in application code. Trade-off: honoring HTTP semantics gives you the entire web caching and tooling ecosystem; ignoring them forces you to rebuild it."
+    },
+    {
+      "type": "mermaid",
+      "title": "REST request lifecycle",
+      "caption": "A stateless request flowing through cacheable layers; any server replica can serve it.",
+      "code": "graph TD\n  Client[Client holds state] -->|GET resource plus auth| LB[Load Balancer]\n  LB -->|any replica| S1[Server replica A]\n  LB -->|any replica| S2[Server replica B]\n  S1 -->|check cache headers| Cache[Cache or CDN]\n  Cache -->|hit returns representation| Client\n  Cache -->|miss forwards| DB[(Shared store)]\n  S1 -->|200 plus ETag Cache-Control| Client"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk the diagram: the client issues a `GET` with credentials and validators such as `If-None-Match`. The load balancer picks any healthy replica because no replica holds conversation state — that is statelessness paying off. The replica first checks cacheability rules before touching shared storage. On a hit, an intermediary answers without ever reaching origin. On a miss, the origin reads from the shared store, stamps the response with `ETag` and `Cache-Control`, and returns a representation. Retries are safe for `GET`, `PUT`, and `DELETE` because they are defined as idempotent; the client can replay the same request against a different replica after a timeout. `POST` has no such guarantee, which is why creation endpoints need idempotency keys if clients will retry. Trade-off: layered caching cuts origin load and tail latency but introduces staleness you must explicitly bound."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "paragraph",
+      "text": "Choose REST when you want leverage from the existing web. Reject it when its constraints fight your workload. There is no design where you get decoupling, cacheability, and low latency for free at the same time."
+    },
+    {
+      "type": "table",
+      "caption": "What each REST constraint buys and what it charges.",
+      "headers": [
+        "Constraint or choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Stateless requests",
+          "Any replica serves any request; trivial scale-out and failover",
+          "Bigger requests, repeated auth checks, state pushed to client or shared store"
+        ],
+        [
+          "Uniform resource interface",
+          "Clients and servers evolve independently; proxies understand traffic",
+          "Chatty interactions; awkward fit for actions and workflows"
+        ],
+        [
+          "Cacheable responses",
+          "Origin offload, lower p99 latency, CDN leverage",
+          "Staleness, invalidation complexity, debugging through layers"
+        ],
+        [
+          "Layered system",
+          "Encapsulate legacy, enforce security at gateways, swap internals",
+          "Extra hops, header stripping bugs, opaque failures"
+        ],
+        [
+          "JSON over HTTP/1.1 text",
+          "Universal tooling, human-debuggable, firewall-friendly",
+          "Verbose payloads, head-of-line blocking, poor fit for streaming or binary"
+        ],
+        [
+          "Synchronous request-response",
+          "Simple mental model, easy retries for idempotent verbs",
+          "Client blocked on slowest dependency; cascading timeouts under load"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The most common failure is **chatty resource modeling taken literally**. A list endpoint returns 50 order summaries, and the client then fires 50 follow-up `GET` calls to hydrate each one because the representation omitted what the UI actually needs. That is the N+1 problem moved to the network. Symptom you would see: origin request count multiplies by page size, p99 latency climbs linearly with list length, and the cache hit rate collapses because each detail URL is cold. The fix is not to abandon resources — it is to design representations around use cases with embedding (`?expand=items`), pagination cursors, and field selection. Trade-off: fatter representations waste bytes on some callers to save round trips for most callers. Measure both."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure family is **broken safety and idempotency**. A `GET` triggers an action, a `PUT` increments a counter, or a `POST` create is retried by a mobile client on a flaky network and mints duplicate orders. Symptom: duplicate side effects after timeouts, non-replayable pipelines, and cache poisoning where a proxy caches a response that should never have been cached. A related failure is casual versioning — renaming a field or changing `422` to `400` and breaking every client pinned to the old contract. Symptom: a spike in `4xx` errors correlated with a deploy, with no server-side exception to chase. The defense is mechanical: keep `GET` side-effect free, make `PUT` and `DELETE` truly idempotent, require `Idempotency-Key` on `POST` creation paths, and version by contract evolution with additive changes first. Trade-off: strictness slows feature velocity but prevents distributed data corruption."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Cache hit rate near zero with high origin CPU: responses marked non-cacheable by default or `Cache-Control` stripped at the gateway.",
+        "Duplicate creates after client timeouts: `POST` retried without an idempotency key; look for identical payloads with distinct IDs minutes apart.",
+        "`4xx` cliff after a release: breaking field rename or tightened validation; version negotiation missing.",
+        "p99 explosion on list pages: N+1 hydration; trace shows fan-out of dozens of `GET` calls per screen.",
+        "Thundering herd on expiry: identical TTLs stampede origin; look for synchronized miss spikes."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete shape: what good looks like"
+    },
+    {
+      "type": "paragraph",
+      "text": "Syntax does not make a design RESTful, but inconsistent syntax guarantees it is unmaintainable. Plural nouns, stable identifiers, verbs confined to HTTP methods, and errors that a machine can branch on — that is the baseline. Below is the shape to defend in a review."
+    },
+    {
+      "type": "code",
+      "language": "http",
+      "filename": "orders.http",
+      "code": "GET /v1/orders?limit=50&cursor=eyJpZCI6IjEyMyJ9 HTTP/1.1\nAccept: application/json\nIf-None-Match: \"a3f9c1\"\n\nHTTP/1.1 200 OK\nCache-Control: private, max-age=30\nETag: \"a3f9c1\"\nContent-Type: application/json\n\n{\n  \"data\": [{ \"id\": \"ord_123\", \"status\": \"paid\", \"total_cents\": 4200 }],\n  \"page\": { \"next_cursor\": \"eyJpZCI6IjE3MyJ9\", \"has_more\": true }\n}\n\nPOST /v1/orders HTTP/1.1\nIdempotency-Key: 7d9f2a4e-3c1b-4f8a-9e0d-1a2b3c4d5e6f\nContent-Type: application/json\n\n{ \"cart_id\": \"cart_88\", \"currency\": \"USD\" }"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "error_model.py",
+      "code": "ERROR_BODY = {\n    \"error\": {\n        \"code\": \"order_not_found\",      # stable, machine-readable; never rename\n        \"message\": \"No order with id ord_999.\",  # human-readable; may change\n        \"request_id\": \"req_5X8k2m\",      # correlate across layers\n        \"retryable\": False                # tells client whether to retry\n    }\n}\n# Rules: 400 = client sent garbage, 401 = unauthenticated,\n# 403 = authenticated but forbidden, 404 = identifier unknown,\n# 409 = conflict with current state, 422 = semantically invalid,\n# 429 + Retry-After = back off, 5xx = our fault, safe to retry if idempotent."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape survives: cursor pagination keeps ordering stable under concurrent inserts where offset pagination skips and duplicates rows. `ETag` plus `If-None-Match` turns polls into cheap `304` responses. `Idempotency-Key` on `POST` converts an unsafe retry into a safe replay — the server stores the key with the result and returns the original on duplicate submission. The error envelope separates the **stable code** machines switch on from the human message you will reword. Trade-off: idempotency storage and cursor bookkeeping add server-side state and complexity to preserve the client-visible statelessness guarantee."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "paragraph",
+      "text": "Nobody asks you to recite constraints. They ask you to design an API for something like a URL shortener, a file store, or an ordering service, then watch whether your resource model, verb choice, and failure handling hold up under scale and concurrency. Lead with resources and invariants, not endpoints."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Model resources before endpoints",
+          "text": "Name nouns and their lifecycles: order goes created -> paid -> fulfilled. Say what the identifier is and who mints it. Server-minted IDs prevent client collisions; trade-off is an extra round trip versus client-minted UUIDs."
+        },
+        {
+          "title": "Assign verbs by safety and idempotency",
+          "text": "State explicitly: GET is safe, PUT and DELETE are idempotent, POST is neither. Show where retries are legal. This one paragraph separates candidates who memorized verbs from those who operated them."
+        },
+        {
+          "title": "Design for the hostile network",
+          "text": "Add pagination, filtering limits, timeouts, Retry-After on 429, and Idempotency-Key on creates. Explain what happens when the client times out but the server succeeded — the core distributed question hiding in every API task."
+        },
+        {
+          "title": "Bound caching and staleness",
+          "text": "Mark each response cacheable or not and why. Private user data gets short max-age plus validators; public catalog gets long TTL plus explicit purge. Say the worst case a client can observe if it reads stale."
+        },
+        {
+          "title": "Evolve without breaking",
+          "text": "Commit to additive changes, stable error codes, and explicit versioning policy. Argue for version in URL versus header and pick one with a reason: URL versions are visible and routable; headers keep identifiers clean but complicate caching and debugging."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Say this when pressed",
+      "text": "If asked *why not just POST everything*, answer: **because then every intermediary is blind and every retry is dangerous**. REST confines action semantics to verbs so caches, load balancers, and clients can reason about safety without reading your documentation."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "REST is JSON over HTTP. No — JSON over HTTP with action URLs and stateful sessions is RPC. The constraints define REST, not the serialization.",
+        "Stateless means no state anywhere. No — it means no *conversational* state on the server. Databases, caches, and idempotency stores are expected; per-connection session memory is not.",
+        "POST is the default create and PUT is update. Wrong axis. PUT is idempotent replace at a client- or server-known identifier; POST is subordinate create or non-idempotent process. Use idempotency semantics, not CRUD labels.",
+        "HATEOAS links are pointless ceremony. Dismissing them misses the point: links decouple clients from URL construction. Even a minimal `_links` block with `self` and `next` pays off when you restructure routes.",
+        "Status code 200 with an error body is friendlier. It breaks every intermediary, retry policy, and client library that branches on status. Use the correct code plus a stable error body.",
+        "Versioning solves breaking changes. Versioning *contains* them at the cost of maintaining parallel contracts. Prefer additive evolution; reserve a version bump for genuinely incompatible shifts."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use REST and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Fit assessment: default to REST for resource CRUD, reach for alternatives on narrow workloads.",
+      "headers": [
+        "Use REST when",
+        "Avoid REST when",
+        "Prefer instead"
+      ],
+      "rows": [
+        [
+          "Public or multi-client APIs with independent release cycles",
+          "Bidirectional streaming, live collaboration, push-heavy feeds",
+          "WebSockets or server-sent events for push; trade persistent connection cost for freshness"
+        ],
+        [
+          "Resource lifecycles with cacheable reads and idempotent writes",
+          "Fine-grained, highly interactive queries with deep joins",
+          "GraphQL-style aggregation; trade endpoint simplicity for query power and single round trip"
+        ],
+        [
+          "Operations that map cleanly to safe and idempotent verbs",
+          "Low-latency binary or high-throughput internal RPC at tight SLOs",
+          "Binary RPC with schemas; trade debuggability for payload efficiency and deadlines"
+        ],
+        [
+          "You need CDN, proxy, and browser caching leverage",
+          "Multi-step sagas requiring atomicity across resources",
+          "Workflow engine or transactional outbox; trade purity for explicit coordination"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The opinionated default: start with REST for anything shaped like *named things with lifecycles* exposed to more than one client. It is the cheapest way to get caching, independent deploys, and a debuggable contract. Move away only when a measured bottleneck — payload size, round-trip count, or streaming need — justifies surrendering that ecosystem. Never split the difference by tunneling verbs inside `POST` bodies while claiming REST benefits; you keep the overhead and lose the intermediaries. Trade-off stated plainly: alternatives beat REST on their home turf by sacrificing the uniformity that makes REST cheap to operate."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "**REST models state as addressable resources manipulated through self-descriptive representations with stateless, cacheable verbs — so independent clients and replicas scale without coordination, at the cost of chattiness and strict contract discipline.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:48:57.675Z",
+    "problems": []
+  }
+}

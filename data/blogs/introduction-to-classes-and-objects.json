@@ -1,0 +1,263 @@
+{
+  "slug": "introduction-to-classes-and-objects",
+  "title": "Introduction to Classes and Objects",
+  "summary": "Class is the type and access boundary; object is independent heap state plus identity. Design choice is where you draw the boundary and what you hide.",
+  "kind": "LLD",
+  "problemSlug": "introduction-to-classes-and-objects-29-65",
+  "topic": "Object oriented Programming (OOPS)",
+  "difficulty": "Easy",
+  "coverEmoji": "🧱",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "OOPS",
+    "Classes",
+    "Objects"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Classes and Objects in Java - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/java/classes-objects-java/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Understand Classes & Objects in 8 Minutes - YouTube",
+      "url": "https://www.youtube.com/watch?v=BM9tPve8T1o",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Classes and Objects",
+      "url": "https://www.cs.fsu.edu/~myers/c++/notes/classes.html",
+      "source": "cs.fsu.edu",
+      "kind": "article"
+    },
+    {
+      "title": "Class in Object-Oriented Programming (OOP) | Cincom",
+      "url": "https://www.cincom.com/blog/smalltalk/class-in-object-oriented-programming/",
+      "source": "cincom.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A **class is a type that decides what state can exist and who is allowed to touch it**. An **object is one isolated chunk of that state with its own identity on the heap**. If your design does not give each object independent state behind a controlled boundary, you do not have objects — you have a struct with functions."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A class is a user-defined type. It declares three things: the shape of state (fields), the allowed operations on that state (methods), and the rules for creating valid state (constructors). It also declares the access boundary: which members are part of the contract and which are implementation detail. The class itself holds no per-instance data. It is a compile-time template plus method code shared by all instances. The trade-off is made here: you pay upfront definition cost and boilerplate to gain compiler-checked structure and a single place to enforce invariants."
+    },
+    {
+      "type": "paragraph",
+      "text": "An object is an instance of that type, and every useful object has three properties. **State** is the current values in its fields. **Behavior** is what its methods can do with that state. **Identity** is what distinguishes this instance from another instance with identical field values. Two `Dog` objects both named `Tuffy` aged 5 are not the same dog if they are two allocations — `==` on references tells you that, `equals` on values does not. The trade-off: identity plus owned state gives you isolation and reasoning power, but every object costs a heap allocation, header overhead, and reference indirection versus a flat primitive."
+    },
+    {
+      "type": "mermaid",
+      "title": "From class definition to living object",
+      "caption": "Class code is shared; state is per-object on the heap; the variable holds only identity.",
+      "code": "flowchart TD\n  ClassDef[Class definition - fields plus methods] --> NewOp[new plus constructor]\n  NewOp --> HeapObj[Heap object - own state]\n  NewOp --> StackRef[Stack reference - identity]\n  StackRef --> MethodCall[Method call on reference]\n  HeapObj --> MethodCall\n  MethodCall --> HeapObj"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: declare, allocate, initialize"
+    },
+    {
+      "type": "paragraph",
+      "text": "Nothing exists until three steps happen. **Declaration** like `Dog tuffy;` creates only a reference slot, initially null. No object, no memory for fields, no invariant. **Allocation** with `new` reserves heap memory for the fields plus object header and yields an identity. **Initialization** runs the constructor, which must take the raw memory from an invalid to a valid state. Skip this discipline and you get the classic production bug: a non-null reference pointing at default-zeroed state that violates every assumption. Constructor enforcement is the trade-off: mandatory parameters make invalid objects unrepresentable, but they make deserialization, testing, and frameworks harder because every creation path must supply the full valid state."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Dog.java",
+      "code": "public class Dog {\n    String name;\n    String breed;\n    int age;\n\n    public Dog(String name, String breed, int age) {\n        this.name = name;\n        this.breed = breed;\n        this.age = age;\n    }\n\n    public String describe() {\n        return name + \" is a \" + breed + \", age \" + age;\n    }\n}\n\n// Usage: two instances share structure and code, not state.\n// Dog a = new Dog(\"Tuffy\", \"Papillon\", 5);\n// Dog b = new Dog(\"Tuffy\", \"Papillon\", 5);\n// a == b is false: same values, different identity.\n// a.describe() and b.describe() run the same code on different heap state."
+    },
+    {
+      "type": "paragraph",
+      "text": "The memory model is why aliasing surprises juniors. The variable `a` lives on the stack or inside another object and holds only a reference — a pointer to identity. The fields `name`, `breed`, `age` live on the heap inside the object. Assignment `Dog b = a;` copies the reference, not the object, so `b.age = 6` mutates the same heap cell `a` sees. `new` is the only thing that gives you fresh independent state. The trade-off is fundamental: reference semantics make passing large objects cheap because you copy 8 bytes, but they make reasoning about who mutated what expensive because any holder of the reference can mutate shared heap state."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The access boundary is the design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Fields should be private by default and exposed only through intentional methods. Not because privacy is virtuous, but because every public field doubles as an uncontrolled write API that no invariant can survive. If `age` is public, nothing stops `-40`. If `age` is private and mutated only through `haveBirthday()` or a validated setter, the class can guarantee `age >= 0` forever and change internal representation — `int age` to `LocalDate birthDate` — without breaking callers. The trade-off: encapsulation buys you freedom to refactor and enforce rules, but you pay in boilerplate and in the temptation to add a getter for everything, which re-exposes the field and deletes the benefit you just paid for."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "EncapsulatedDog.java",
+      "code": "public class EncapsulatedDog {\n    private String name;\n    private int age;\n\n    public EncapsulatedDog(String name, int age) {\n        if (name == null || name.isBlank()) throw new IllegalArgumentException(\"name required\");\n        if (age < 0) throw new IllegalArgumentException(\"age cannot be negative\");\n        this.name = name;\n        this.age = age;\n    }\n\n    public String getName() { return name; }\n    public int getAge() { return age; }\n\n    // Behavior, not a setter: the only legal mutation is controlled.\n    public void haveBirthday() { this.age += 1; }\n}"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Static is not object state"
+    },
+    {
+      "type": "paragraph",
+      "text": "`static` fields and methods belong to the class, not to any instance. There is exactly one copy shared by every object. Use it for true class-level facts: constants, instance counters, factories. Never use it for per-request or per-entity state, because you have just created global mutable state wearing object-oriented syntax. The trade-off is brutal: static is convenient and allocation-free, which is why novices overuse it, but it destroys isolation, makes tests order-dependent, and breaks the moment two threads or two tenants need different values. If you are writing `static int age` inside `Dog`, you have one age for all dogs. That is never what you meant."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of the class-object model",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Class with private fields + behavior",
+          "Invariants enforced in one place; safe refactoring",
+          "More code; must design the method surface carefully"
+        ],
+        [
+          "Public fields / record-style holder",
+          "Less boilerplate; easy construction and debugging",
+          "No control over mutation; invariants leak to every caller"
+        ],
+        [
+          "Heap object per entity",
+          "Independent state + identity; aliasing is explicit",
+          "Allocation + GC pressure; indirection cost vs primitives"
+        ],
+        [
+          "Constructor validation",
+          "Invalid states unrepresentable; fail fast at creation",
+          "Rigid creation; harder for mappers, tests, and partial builds"
+        ],
+        [
+          "Inheritance for reuse",
+          "Shared code with polymorphic substitution",
+          "Fragile base class; hidden coupling; prefer composition"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Classes fail in four predictable ways. First, the **anemic object**: private fields with dumb getters and setters and all logic in a manager elsewhere. You paid for encapsulation and got a struct. Invariants live nowhere. Second, the **god object**: one class that knows about persistence, validation, formatting, and networking because it was convenient to add one more method. Changes collide and tests need the whole world. Third, **leaked representation**: returning a mutable internal list or date directly, so callers mutate your private state without calling you. Fourth, **aliasing plus null**: storing a passed-in mutable reference without copying it, or dereferencing a declared-but-never-initialized reference. The trade-off in every case is short-term velocity versus long-term containment. Skipping the boundary ships faster this sprint and charges interest on every later change."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`NullPointerException` on a freshly declared reference: symptom is a crash on the first method call because declaration is not instantiation — `Dog d; d.getAge()` never allocated.",
+        "State corrupts silently across callers: symptom is one request overwriting another because two variables alias the same heap object or share a `static` field.",
+        "Invariant violation at a distance: symptom is `age = -1` in the database because a public field or unvalidated setter bypassed the constructor check.",
+        "Defensive-copy bug: symptom is a caller mutating the list you returned from `getOrders()` and your internal state changes without any log line inside your class.",
+        "Constructor does real work (I/O, threading, statics): symptom is slow startup, flaky tests, and objects that are half-built when construction throws midway."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Aliasing is the exam trap",
+      "text": "Passing an object passes its identity, not a copy. If your constructor stores the caller's list directly, you share fate. Copy mutable inputs in, copy mutable outputs out — or document shared ownership explicitly. The trade-off: copying costs CPU and memory but buys isolation; sharing is fast but requires a protocol for who may mutate."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Define it without reciting a textbook",
+          "text": "Say class as type plus boundary, object as identity plus owned heap state. Then point at `int` vs `1` or `Dog` vs `new Dog(...)` to show even built-ins follow the same rule."
+        },
+        {
+          "title": "Write the two-instance proof",
+          "text": "Create two objects with identical values, show `==` is false, mutate one, show the other is unchanged. This proves you understand identity versus equality and heap independence."
+        },
+        {
+          "title": "Harden one field",
+          "text": "Take a public field, make it private, add constructor validation and one behavior method instead of a setter. Narrate the trade-off: boilerplate now for invariant safety forever."
+        },
+        {
+          "title": "Draw the memory split",
+          "text": "Sketch stack reference versus heap object and walk through `Dog b = a` versus `new Dog(a)`. Interviewers promote on this distinction more than on syntax."
+        },
+        {
+          "title": "Defend composition over inheritance",
+          "text": "When asked to extend, prefer embedding a collaborator over subclassing. Explain why: inheritance couples you to base-class internals; composition keeps the boundary explicit at the cost of one more field."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Class and object are synonyms: no — class is the definition and shares code; object is the allocated instance with its own state and identity.",
+        "Declaring a variable creates an object: no — `Dog d;` is a null reference. Only `new` plus a constructor brings an object into existence.",
+        "Objects live where variables live: no — variables hold references on the stack; non-primitive objects live on the heap and are reached through those references.",
+        "Private means secure: no — it means contained. Reflection and same-class code can still reach it. The goal is a small, changeable interface, not security.",
+        "More getters mean more encapsulation: backwards — every trivial getter re-exposes representation. Expose behavior (`haveBirthday()`) not raw state.",
+        "Static fields give each object its own copy: backwards — static is one copy for the class. Per-object state must be instance fields."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "When a class earns its place — and when it does not",
+      "headers": [
+        "Use a class when",
+        "Use something else when"
+      ],
+      "rows": [
+        [
+          "Entity has identity + lifecycle: Customer, Order, Dog",
+          "Value is defined purely by contents: use immutable value holder"
+        ],
+        [
+          "Invariant must hold across mutations: age non-negative",
+          "No invariant and no behavior: plain data carrier is clearer"
+        ],
+        [
+          "Multiple instances need isolated state with shared behavior",
+          "Only one instance ever exists with global config: consider explicit singleton scope, not statics scattered everywhere"
+        ],
+        [
+          "Behavior varies by type and needs polymorphism",
+          "Behavior is a single function: a function or strategy interface avoids a hierarchy"
+        ]
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "A **class defines the state shape, allowed operations, and access boundary as a type; an object is one independently mutable instance of that type with its own identity on the heap** — so design the boundary to enforce invariants, not just to hold data."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:48:28.913Z",
+    "problems": []
+  }
+}

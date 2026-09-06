@@ -1,0 +1,309 @@
+{
+  "slug": "how-they-were-invented-depth-of-it",
+  "title": "How they were invented (Depth of it)",
+  "summary": "How high-throughput systems were invented: three breaks with threaded RPC — evented I/O, shared-nothing partitions, and buffered batch pipelines — and what that costs you.",
+  "kind": "HLD",
+  "problemSlug": "how-they-were-invented-depth-of-it-145-310",
+  "topic": "High Throughput Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "⚡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "High-Throughput",
+    "System-Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "IT: Mega Guide to understanding the Lore. : r/ItTheMovie - Reddit",
+      "url": "https://www.reddit.com/r/ItTheMovie/comments/kw43ay/it_mega_guide_to_understanding_the_lore/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "The True Origin of IT (According to Stephen King) - YouTube",
+      "url": "https://www.youtube.com/watch?v=Z_6960FnbUg",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "The Entire It Story Finally Explained - YouTube",
+      "url": "https://www.youtube.com/watch?v=i_V72xzUGqA",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "It | Stephen King Wiki | Fandom",
+      "url": "https://stephenking.fandom.com/wiki/It_(Creature)",
+      "source": "stephenking.fandom.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Throughput is not speed. It is the decision to do less work per request, wait less per request, and refuse work rather than collapse.** Every high-throughput design is a pipeline with a bounded buffer, batched work, and partitioned state. If you cannot point to where you queue, where you batch, and where you shed load, you do not have a high-throughput system."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A high-throughput system sustains a target rate of useful work — requests per second, writes per second, bytes per second — without violating its latency bound and without unbounded resource growth. The definition has three parts and all three must hold at once: the offered load stays servable, the **p99 latency** stays flat as load rises, and queues stay bounded. If you serve the rate but latency climbs linearly, you built a batch job, not a serving system. If latency is flat but you drop or delay without policy, you built an uncontrolled lossy system. Precision matters here because most candidates conflate throughput with concurrency or with low latency. They are related by **Little’s Law**: `concurrency = throughput × latency`. You cannot raise throughput by adding threads past the point where latency degrades. You raise it by lowering per-request cost, overlapping waits, and partitioning so more work happens in parallel without coordination."
+    },
+    {
+      "type": "paragraph",
+      "text": "That is why the invention of high-throughput systems was not one invention. It was the removal of three per-request taxes that made the old threaded request-response server fall over: the thread and stack cost per connection, the coordination cost of shared mutable state, and the idle-wait cost of synchronous downstream calls. Each tax looked harmless at low load. Each becomes a hard ceiling at high load. The systems that survive deliberately design those taxes out, and they pay a different price for doing so — buffering delay, operational complexity, and weaker ordering or consistency. Name that exchange every time or you are hand-waving."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How they were invented: the three breaks"
+    },
+    {
+      "type": "paragraph",
+      "text": "Break one was killing the process and thread per connection. The old shape gave every connection its own thread, its own stack, and blocking I/O. It is simple to reason about and trivial to debug, which is why it survived so long. It dies for a structural reason: memory and context-switch cost scale with connections, not with useful work. Ten thousand mostly-idle keep-alive connections consume ten thousand stacks and force the scheduler to thrash, even when almost no bytes are moving. The fix was evented I/O with a small set of loop threads and non-blocking sockets. One thread watches thousands of file descriptors, does only the ready work, and never blocks on a slow peer. The trade-off is brutal and permanent: you trade simple sequential code for state machines, backpressure handling, and latency that depends on never blocking the loop. Any blocking call smuggled into the event loop punishes every connection at once."
+    },
+    {
+      "type": "paragraph",
+      "text": "Break two was killing shared-everything state. Once I/O stopped being the bottleneck, the lock became the bottleneck. A single shared table, counter, or queue protected by a lock serialises all workers no matter how many cores you add. Contention does not just slow you down — it collapses throughput past a point because threads burn CPU spinning and retrying instead of doing work. The fix was **shared-nothing partitioning**: hash or range-split the keyspace so each core, process, or node owns its slice and never coordinates on the hot path. Coordination moves to the edges — routing, rebalancing, and rare cross-partition operations. The reason this wins is mechanical: owned data needs no lock, fits in local cache, and appends sequentially. The price is that anything global — counts, transactions, ordered scans, rebalancing — becomes expensive, asynchronous, or approximate. If your workload is mostly cross-partition, partitioning made it worse."
+    },
+    {
+      "type": "paragraph",
+      "text": "Break three was killing synchronous waiting. Even with fast I/O and no locks, a request that does three downstream calls in sequence pays the sum of their latencies and holds resources while idle. At high fan-in that idle hold is what exhausts you. The fix was to stop treating a request as a thread waiting for answers and start treating it as work moving through a pipeline: accept fast, buffer briefly, batch aggressively, flush asynchronously, and acknowledge by policy rather than by completion. Logging pipelines, ingest paths, and write-heavy stores all converged on the same shape — bounded in-memory buffer, size-or-time batch trigger, sequential flush, retry with idempotence. Batching amortises the expensive part: syscalls, network round trips, disk seeks, serialisation. Buffering absorbs bursts that would otherwise force over-provisioning by an order of magnitude. The cost is that you added delay on purpose and accepted that a crash loses the unflushed window unless you paid for durable buffering."
+    },
+    {
+      "type": "mermaid",
+      "title": "The canonical high-throughput pipeline",
+      "caption": "Every stage has a bound. The queue is where you shed, not where you hide.",
+      "code": "flowchart TD\n    A[Accept - event loop, never blocks] --> Q[Bounded queue - backpressure point]\n    Q --> B[Batcher - size or time trigger]\n    B --> W1[Worker 1 - owns partition A]\n    B --> W2[Worker 2 - owns partition B]\n    B --> W3[Worker 3 - owns partition C]\n    W1 --> S[Append-only store - sequential flush]\n    W2 --> S\n    W3 --> S\n    Q -. reject or degrade .-> R[Load shedder - 429 + retry-after]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that diagram as a set of decisions, not boxes. The accept stage exists so connection cost stays flat. The bounded queue exists so overload becomes explicit rejection instead of slow death. The batcher exists so per-item overhead collapses by 10x to 100x. The partitioned workers exist so cores scale without locks. The append-only flush exists so disks and networks see sequential work, which is the only pattern they do fast. Remove any one and throughput falls off a cliff for a specific reason: remove the bound and you get memory exhaustion, remove batching and you get syscall saturation, remove partitioning and you get lock collapse, remove sequential flush and you get random I/O meltdown."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism, stripped down"
+    },
+    {
+      "type": "paragraph",
+      "text": "Four mechanisms do almost all the work. First, **multiplexing**: one thread drives many connections via readiness notification, so idle connections cost a table entry instead of a stack. Use it because thread-per-connection ties memory to connections rather than to throughput. Second, **batching and pipelining**: group `N` items and pay one syscall, one round trip, one fsync, one serialisation header. A pipeline that flushes every 1,000 rows or every 10 milliseconds turns 100,000 I/O operations into 100. Use it because fixed per-operation cost dominates at high rates. Third, **partitioning with affinity**: route the same key to the same worker so state stays hot in CPU cache and no cross-thread write occurs. Use it because cache misses and atomic contention are silent throughput killers that no amount of hardware fixes. Fourth, **explicit backpressure**: when the bounded buffer fills, propagate pressure upstream — block, shed, degrade, or spill — instead of queueing without limit. Use it because unbounded queues do not absorb load, they defer and amplify failure. Every other trick — zero-copy, connection reuse, binary protocols, preallocation — is an optimisation on top of these four. Do not start with zero-copy when you have no bound on your queue."
+    },
+    {
+      "type": "table",
+      "caption": "The real trade-offs. Each row is a choice you must defend.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay",
+        "Why it hurts later"
+      ],
+      "rows": [
+        [
+          "Event loop + non-blocking I/O",
+          "Flat memory with many idle connections, no thread thrash",
+          "No blocking calls allowed; harder debugging and state handling",
+          "One slow handler stalls all connections on that loop"
+        ],
+        [
+          "Shared-nothing partitions",
+          "Linear core scaling, no hot lock, cache-friendly ownership",
+          "Cross-partition work is slow; rebalancing is operational pain",
+          "Hot keys still collapse a single partition"
+        ],
+        [
+          "Batch by size or time",
+          "10-100x lower per-item syscall and network cost",
+          "Added delay; partial-batch and flush tuning forever",
+          "Wrong batch size gives either high latency or low throughput"
+        ],
+        [
+          "Bounded buffer + load shedding",
+          "Predictable memory, fast explicit failure instead of cascade",
+          "You must design rejection: codes, retries, degraded modes",
+          "Clients that retry aggressively will retry-storm you"
+        ],
+        [
+          "Async acknowledge / buffered durability",
+          "Huge write throughput by avoiding per-write fsync",
+          "Crash loses unflushed window; recovery logic is mandatory",
+          "Operators will assume durability you did not promise"
+        ],
+        [
+          "Append-only sequential flush",
+          "Disks and networks run at their fastest pattern",
+          "Reads need indexes or compaction; storage grows until cleaned",
+          "Compaction debt arrives exactly at peak load if untuned"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "It fails at the buffer first. The symptom is unmistakable once you have seen it: **p50 latency looks fine, p99 explodes, then throughput collapses to near zero while CPU looks busy**. What happened is the queue grew without bound, each request waited longer, clients timed out and retried, and retries added load to an already full queue. This is a retry-driven death spiral. Memory climbs, garbage collection pauses lengthen, timeouts fire earlier, and the system does no useful work because it spends everything managing backlog. The fix is not more capacity. The fix is a bound plus a shedding policy: return `429` with `Retry-After`, drop low-priority traffic, or spill to disk with a hard cap. If your design has no explicit shed path, your shed path is the out-of-memory killer, and it chooses what to kill."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure is skew and downstream coupling. One partition receives a disproportionate share — a hot key, a large tenant, a poison message that takes 50x longer — and that worker falls behind while others sit idle. The symptom is different: overall throughput looks healthy but one partition’s lag grows monotonically, batch flush times diverge, and tail latency tracks exactly one shard. Related failure: a synchronous downstream you thought was fast starts taking ten times longer, and because your workers block or hold slots waiting, your throughput inherits the downstream’s outage. You see thread-pool exhaustion, connection-pool wait time spiking, and batch sizes shrinking because the time trigger fires before the size trigger. The cures are partitioning discipline — split hot keys, isolate tenants, bound per-item processing time — and bulkheads with timeouts, hedged requests, and circuit breaking so one slow dependency cannot occupy your whole pipeline."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Queue depth growing while worker idle time is zero — you are arrival-limited, shed or scale ingress, not workers.",
+        "p99 climbing but p50 flat — buffering delay plus retries; check retry rate before adding capacity.",
+        "One partition lagging while others are flat — hot key or skewed routing, not a global capacity problem.",
+        "Throughput drops exactly when garbage collection or compaction runs — you tuned for steady state and ignored background work.",
+        "Client timeouts rising with server CPU below saturation — you are blocked on a downstream, not short on CPU."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The bomb most teams build",
+      "text": "An unbounded cache or queue in front of a high-throughput path is not a buffer, it is a delayed crash. If the arrival rate can exceed the service rate for longer than memory allows, you must shed, spill with a cap, or degrade. Anything else just chooses a worse time to fail."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "pipeline.py",
+      "code": "from collections import deque\nimport time\n\nclass BoundedBatcher:\n    def __init__(self, max_items=10000, batch_size=1000, max_wait_ms=10):\n        self.q = deque()\n        self.max_items = max_items          # THE bound: memory cannot grow past this\n        self.batch_size = batch_size        # size trigger: amortise per-flush cost\n        self.max_wait_ms = max_wait_ms      # time trigger: cap added delay\n        self.last_flush = time.monotonic()\n\n    def offer(self, item) -> bool:\n        # Backpressure is explicit: False means caller must shed / retry / degrade.\n        # Never block the event loop here, never grow without limit.\n        if len(self.q) >= self.max_items:\n            return False\n        self.q.append(item)\n        return True\n\n    def should_flush(self) -> bool:\n        if len(self.q) >= self.batch_size:\n            return True\n        elapsed_ms = (time.monotonic() - self.last_flush) * 1000\n        return len(self.q) > 0 and elapsed_ms >= self.max_wait_ms\n\n    def drain_batch(self):\n        n = min(len(self.q), self.batch_size)\n        batch = [self.q.popleft() for _ in range(n)]\n        self.last_flush = time.monotonic()\n        return batch\n# Flush path must be: partition by key -> sequential append -> idempotent retry.\n# If flush fails, retry the *batch* with an idempotency key, not each item."
+    },
+    {
+      "type": "paragraph",
+      "text": "That small config carries the whole design philosophy. `max_items` protects memory and turns overload into a boolean the caller must handle. `batch_size` controls efficiency: too small and you pay per-item overhead, too large and you add tail delay and huge retry units. `max_wait_ms` caps the delay you deliberately added — this is the latency cost of throughput, stated openly. The comment about idempotent batch retry matters more than it looks: once you batch, failure units are batches, so a naive per-item retry duplicates work and reorders data. Give each batch an idempotency key and make the store handle duplicate delivery, or your exactly-once claim is fiction."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Numbers you must be able to do on a whiteboard"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers do not want benchmarks, they want arithmetic that proves the shape fits. Start from the target: say 50,000 writes per second, each 1 KB, with a 500 ms p99 bound. That is 50 MB/s ingress — trivial for a network, punishing for per-write fsyncs. If one fsync costs 2 ms, a single thread doing synchronous writes caps at 500 writes per second. You need either 100 parallel sync writers, which destroys the disk pattern, or batching: 1,000 items per flush turns 50,000 fsyncs into 50, and the disk sees sequential appends it can actually sustain. Then apply Little’s Law to size concurrency: at 50,000 rps with 100 ms average hold time you need 5,000 concurrent slots. If each slot is a thread with a 1 MB stack, that sizing alone tells you threads are the wrong tool. That two-minute calculation justifies the event loop, the batcher, and the partition count without any hand-waving about performance."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Size the load before drawing anything",
+          "text": "State rps, item size, read-write ratio, and latency bound. Compute bytes per second and concurrent slots via Little’s Law. Say what that rules out — usually thread-per-request and per-item fsync."
+        },
+        {
+          "title": "Draw the pipeline with bounds labeled",
+          "text": "Accept, bounded queue, batcher with size and time triggers, partitioned workers, sequential store. Label every queue with its cap and its shed policy. Unlabeled queues are the first thing a strong interviewer attacks."
+        },
+        {
+          "title": "Choose the partition key and defend it",
+          "text": "Show routing: hash on tenant, device, or key. Explain what happens on hot keys, how you split them, and what becomes cross-partition. If you cannot name a hot key, you have not thought about skew."
+        },
+        {
+          "title": "Prove backpressure end to end",
+          "text": "Walk one overload scenario: buffer fills, you return 429 with backoff, clients retry with jitter, low-priority traffic degrades first. Explain why retries are idempotent and bounded, or admit the retry storm will kill you."
+        },
+        {
+          "title": "Name the durability and ordering you actually provide",
+          "text": "Say whether acknowledge happens before or after flush, what is lost on crash, and whether order is per-partition or global. High throughput almost always means per-partition order and a bounded loss window — say it plainly."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`More threads means more throughput.` No — past the contention point, threads add switching and locking cost while holding latency constant. Throughput comes from less work and less waiting, not more waiters.",
+        "`Async makes everything faster.` Async removes idle waiting; it does not make CPU work cheaper. If the bottleneck is serialisation or a hot lock, async just moves the queue.",
+        "`Kafka-style buffering means no data loss.` Buffering means a defined loss window unless the buffer is durable and replicated. Unflushed memory is by definition losable.",
+        "`Average latency proves the design.` Averages hide queues. A system with 20 ms average and 5 second p99 under load is already in failure — check tails and queue depth.",
+        "`One big queue balances load better, so bounds are pessimisation.` One unbounded queue balances briefly, then shares fate: one slow consumer stalls everything and memory dies. Bounded per-partition queues isolate failure.",
+        "`Batching is just an optimisation.` At high rates batching is the architecture. The difference between one fsync per write and one per thousand writes is the difference between impossible and trivial."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use the pipeline shape when rate dominates; avoid it when correctness or interaction dominates.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Sustained write or event rates far above per-operation cost",
+          "Use it",
+          "Only batching plus partitioning amortises fixed costs enough to survive"
+        ],
+        [
+          "Bursty traffic with strict tail-latency bound",
+          "Use bounded buffer + shed",
+          "Buffer absorbs bursts; bound keeps tails flat instead of drifting"
+        ],
+        [
+          "Keys naturally partitionable, mostly independent work",
+          "Use shared-nothing partitions",
+          "Ownership removes locks and keeps caches hot at scale"
+        ],
+        [
+          "Strong global ordering or cross-key transactions required",
+          "Do not use pure pipeline",
+          "Partitioning breaks global order; you need coordination, which caps throughput by design"
+        ],
+        [
+          "Low-rate interactive reads needing immediate consistency",
+          "Do not batch aggressively",
+          "Added batch delay hurts more than per-request savings help"
+        ],
+        [
+          "Small payloads where durability per item is mandatory",
+          "Do not ack before flush",
+          "Async ack buys throughput by risking loss — unacceptable when each item is irreplaceable"
+        ]
+      ]
+    },
+    {
+      "type": "quote",
+      "text": "You do not get high throughput by handling each request faster. You get it by handling each request together, without waiting, and without asking permission.",
+      "cite": "design rule taped to the whiteboard"
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**High-throughput systems were invented by removing per-connection threads, shared locks, and synchronous waits — replacing them with evented I/O, partitioned ownership, and bounded batch pipelines — trading added delay and weaker global guarantees for sustained rate.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:46:34.376Z",
+    "problems": []
+  }
+}

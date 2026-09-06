@@ -1,0 +1,280 @@
+{
+  "slug": "state-design-pattern",
+  "title": "State Design Pattern",
+  "summary": "State replaces branching on status with delegated state objects — when Document.publish() behaves differently in Draft vs Moderation, that difference lives in DraftState vs ModerationState, not in if-else.",
+  "kind": "LLD",
+  "problemSlug": "state-design-pattern-36-76",
+  "topic": "Behavioral Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "🔄",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Behavioral",
+    "State-Pattern",
+    "FSM"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "State - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/state",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "State Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/state-design-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "State · Design Patterns Revisited - Game Programming Patterns",
+      "url": "https://gameprogrammingpatterns.com/state.html",
+      "source": "gameprogrammingpatterns.com",
+      "kind": "article"
+    },
+    {
+      "title": "Mastering the State Design Pattern in Java: A Detailed Guide with Examples",
+      "url": "https://medium.com/@ahmettemelkundupoglu/mastering-the-state-design-pattern-in-java-a-detailed-guide-with-examples-4544a975a914",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**State is not a fancy `switch`. It is moving the `switch` out of the context and into the type system.** If your `publish()` has `if (state == DRAFT) ... else if (state == MODERATION)` in more than one method, you do not have state logic — you have scattered transition logic waiting to diverge. State fixes that by making the current state an object that answers the call."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "State lets an object **change behavior without changing class** by delegating state-dependent operations to a current state object. The context — say `Document` — exposes stable methods like `publish()` and `approve()`. It holds a reference to a `DocumentState`. Every call is forwarded: `state.publish(this)`. Swapping the reference *is* the transition. The caller never branches, never checks an enum, never knows which concrete state is active. That ignorance is the point. You add a new behavior variant by adding a new class, not by editing every method that ever looked at the status field."
+    },
+    {
+      "type": "paragraph",
+      "text": "The critical distinction is **who owns the transition rules**. In a naive enum-plus-`switch` design, the context owns both behavior *and* transitions, so every new state touches every method. In State, each concrete state owns its own transitions: `DraftState.publish()` knows it moves to `ModerationState`; `ModerationState.publish()` knows it refuses; `ModerationState.approve(admin)` knows it moves to `PublishedState`. The context becomes dumb plumbing — `setState()` plus delegation. That is why State looks identical to Strategy in UML but means the opposite: Strategy is client-chosen and static per call, State is context-internal and changes on its own as a side effect of the calls themselves."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Context (`Document`):** stable public API, holds exactly one `currentState` reference, delegates every state-sensitive call, exposes a narrow `changeState()` used only by states — never by clients.",
+        "**State interface (`DocumentState`):** declares one method per state-sensitive operation (`publish`, `approve`, `reject`). Every concrete state must implement all of them, even if the implementation is an explicit no-op or rejection. That explicitness is the documentation.",
+        "**Concrete states (`DraftState`, `ModerationState`, `PublishedState`):** each one encodes what is legal *here* and what the next state is. Illegal operations fail locally instead of falling through a shared conditional."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The runtime loop is always the same three steps: client calls context, context forwards to state with itself as argument, state optionally replaces the context's state before returning. The `Document` reference passed into the state method is what makes transitions possible without exposing internals to the client — the state can call `doc.setState(new PublishedState())` while the client just called `doc.approve(user)`. This is why the state interface methods almost always take the context as a parameter. Without that back-pointer you end up returning a next-state enum and reintroducing the `switch` you were trying to kill. The trade-off: states now depend on the context, so you have a deliberate two-way coupling. Keep `setState` package-private or otherwise restricted, or clients will start yanking the machine into arbitrary states and your transition guarantees evaporate."
+    },
+    {
+      "type": "mermaid",
+      "title": "State structure",
+      "caption": "Context delegates to the active state; states drive transitions.",
+      "code": "classDiagram\n  class Document {\n    -DocumentState state\n    +publish()\n    +approve()\n    +reject()\n    +setState(DocumentState state)\n  }\n  class DocumentState {\n    <<interface>>\n    +publish(Document doc)\n    +approve(Document doc)\n    +reject(Document doc)\n  }\n  class DraftState {\n    +publish(Document doc)\n    +approve(Document doc)\n    +reject(Document doc)\n  }\n  class ModerationState {\n    +publish(Document doc)\n    +approve(Document doc)\n    +reject(Document doc)\n  }\n  class PublishedState {\n    +publish(Document doc)\n    +approve(Document doc)\n    +reject(Document doc)\n  }\n  Document --> DocumentState : delegates to\n  DocumentState <|.. DraftState\n  DocumentState <|.. ModerationState\n  DocumentState <|.. PublishedState\n  DraftState ..> Document : transitions\n  ModerationState ..> Document : transitions"
+    },
+    {
+      "type": "mermaid",
+      "title": "Document lifecycle",
+      "caption": "Legal transitions are encoded in states, not in client code.",
+      "code": "stateDiagram-v2\n  [*] --> Draft\n  Draft --> Moderation : publish\n  Moderation --> Published : approve by admin\n  Moderation --> Draft : reject\n  Moderation --> Moderation : publish is no-op\n  Published --> Published : publish is no-op\n  Published --> [*]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Notice where the guard lives: the admin check does **not** live in `Document.approve()`. It lives in `ModerationState.approve()`, because only that state knows the rule that approval requires an admin while `DraftState.approve()` is meaningless and `PublishedState.approve()` is a no-op. If you hoist permission checks into the context you split one transition across two classes and you are back to hunting two files for every bug. The cost of doing it right is class count — three states times three operations is nine small methods where a `switch` would have been nine branches in one file. You pay in files to win in isolation: changing moderation policy touches exactly one class and cannot accidentally alter draft behavior."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What State buys you and what it charges.",
+      "headers": [
+        "Dimension",
+        "Enum plus switch",
+        "State objects"
+      ],
+      "rows": [
+        [
+          "Adding a state",
+          "Edit every method that switches on status. Cheap for 2 states, catastrophic past 4 because you will miss one branch.",
+          "Add one class. Existing states and context are untouched. Costs one new file but eliminates shotgun surgery."
+        ],
+        [
+          "Adding an operation",
+          "Add one branch per state inside a single method. Localized and fast.",
+          "Add one method to the interface and implement it in every state, including explicit no-ops. Verbose by design."
+        ],
+        [
+          "Transition visibility",
+          "All transitions visible in one place if disciplined. In practice they drift across methods and contradict each other.",
+          "Transitions distributed per state. Each state is self-consistent, but no single file shows the full machine — you need a diagram."
+        ],
+        [
+          "Testability",
+          "Must cover cross-product of states times operations in one fixture. Tests are brittle string comparisons on enums.",
+          "Each state tests in isolation with a mock context. More test classes, but failures point at exactly one state."
+        ],
+        [
+          "Memory and indirection",
+          "Zero allocation, direct branch. Fastest possible dispatch.",
+          "One delegation hop per call plus state objects. Negligible unless ultra-hot loop, but real — do not use for per-pixel or per-packet dispatch."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "My stance: use `switch` while you have **two states and one state-sensitive method**. The moment a second method starts switching on the same status — `publish()` *and* `approve()` *and* `render()` — the enum has become a shadow type hierarchy and you should promote it to real classes. The trade-off people underestimate is operation growth: State punishes you every time you add a method to the interface because every concrete state must implement it. If operations churn faster than states, State feels heavy. If states and transitions churn faster than operations — the common case for orders, documents, media players, game entities — State wins decisively."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Real State bugs are not logic errors in one state — they are **illegal transitions and leaked references**. The classic failure: states are singletons for memory efficiency, then someone stores per-transition data inside the shared instance (`ModerationState.reviewer = user`) and concurrent documents corrupt each other. The second classic: the context exposes `setState()` publicly, a hurried hotfix sets `order.setState(SHIPPED)` from a controller to skip validation, and the audit trail now shows orders that went `PLACED -> SHIPPED` without payment. The third: states that silently ignore illegal calls. `PublishedState.publish()` doing nothing looks clean, but in production silence means the caller thinks it succeeded. You discover it weeks later as documents stuck in moderation with no error in the logs. Fail loudly or return an explicit result — never swallow."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Symptom: impossible state in the database.** You see `status = PUBLISHED` with `moderatedBy = null`. Cause: transition split between context guard and state action, or a public `setState` bypassed the guard. Fix by making states the sole writers and persisting the transition event, not just the end status.",
+        "**Symptom: intermittent cross-request contamination.** One user's approval moves another user's document. Cause: stateful singleton state instance holding request-scoped fields. Fix by keeping states stateless and passing all per-call data as method arguments, or by creating fresh state instances per transition.",
+        "**Symptom: missing transition after deploy.** New state `ARCHIVED` exists in code but old rows with `status = DELETED` crash deserialization. Cause: no mapping from persisted enum to state class. Fix with an explicit factory plus a fallback `UnknownState` that logs and blocks mutation instead of throwing on read.",
+        "**Symptom: callback storms.** `setState` fires listeners, a listener calls `publish()` re-entrantly, the machine transitions twice in one stack. Cause: transition side effects executed synchronously inside `setState`. Fix by documenting re-entrancy policy and queuing side effects after the swap completes."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that shows the shape"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "DocumentState.java",
+      "code": "interface DocumentState {\n  void publish(Document doc);\n  void approve(Document doc, User user);\n  void reject(Document doc);\n}\n\nfinal class DraftState implements DocumentState {\n  public void publish(Document doc) {\n    doc.setState(new ModerationState());\n  }\n  public void approve(Document doc, User user) {\n    throw new IllegalStateException(\"cannot approve a draft\");\n  }\n  public void reject(Document doc) {\n    throw new IllegalStateException(\"draft is not under review\");\n  }\n}\n\nfinal class ModerationState implements DocumentState {\n  public void publish(Document doc) { /* no-op: already submitted */ }\n  public void approve(Document doc, User user) {\n    if (!user.isAdmin()) throw new SecurityException(\"admin only\");\n    doc.setState(new PublishedState());\n  }\n  public void reject(Document doc) {\n    doc.setState(new DraftState());\n  }\n}\n\nfinal class PublishedState implements DocumentState {\n  public void publish(Document doc) { /* no-op */ }\n  public void approve(Document doc, User user) { /* no-op */ }\n  public void reject(Document doc) {\n    throw new IllegalStateException(\"published doc cannot return to draft\");\n  }\n}\n\nfinal class Document {\n  private DocumentState state = new DraftState();\n  void setState(DocumentState next) { this.state = next; }\n  public void publish() { state.publish(this); }\n  public void approve(User u) { state.approve(this, u); }\n  public void reject() { state.reject(this); }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read this code for what it *refuses* to do. `Document` contains zero `if` statements about status — that absence is the entire design. Each state decides its own legality, and illegal paths throw instead of silently returning, so misuse surfaces at the call site rather than as corrupt data downstream. Transitions allocate a fresh state object, which keeps states stateless and thread-safer at the cost of one small allocation per transition; if transitions fire millions of times per second you would switch to stateless singletons, but for documents, orders, and players that allocation is noise. The deliberate narrowing is `setState` being package-private: only states in the same package can drive the machine, so a controller cannot teleport a document. That one access modifier enforces more correctness than any amount of review comments."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Singleton states will bite you",
+      "text": "Sharing one `ModerationState.INSTANCE` across documents is tempting and usually safe — **only if the state holds zero fields**. The instant you add `attemptCount` or `lastReviewer` to avoid passing parameters, you have built a race condition. Keep states immutable. Pass context and user on every call. Allocate or share, but never store per-entity data in the state object."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the switch smell",
+          "text": "Do not open with the pattern name. Write the enum version with two methods both switching on status, then point at the duplication: adding Archived means touching publish, approve, reject, and render. Say explicitly that the transition table is smeared across methods — that sentence earns more credit than reciting the pattern."
+        },
+        {
+          "title": "Extract the interface from the methods",
+          "text": "Define DocumentState with exactly the state-sensitive operations. Show delegation in the context in three lines. Interviewers check that state methods receive the context so states can transition; forgetting the back-reference is the most common fumble."
+        },
+        {
+          "title": "Place one transition with a guard",
+          "text": "Implement DraftState.publish and ModerationState.approve with the admin check inside the state. Narrate why the guard lives there: the rule belongs to the source state, not to a global validator. This answers the inevitable where does validation go follow-up before it is asked."
+        },
+        {
+          "title": "Handle the illegal call explicitly",
+          "text": "State your policy out loud: throw, return a Result, or no-op with logging — and why silent no-ops corrupt audit trails. Pick throw for domain invariants and Result for user-recoverable rejections. Indecision here reads as never having operated the code."
+        },
+        {
+          "title": "Close with extension and persistence",
+          "text": "Show adding ArchivedState without editing existing states, then answer persistence: store the status enum plus a factory to rehydrate the state object, never serialize the state object itself. Mention hierarchical or pushdown extensions only if asked — volunteering game-engine FSM theory in an order-service interview looks evasive."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "What is actually graded is not whether you can draw the UML — anyone can. It is whether you can name **who owns transitions, how illegal calls surface, and what happens to stored rows when a new state appears**. Candidates who nail delegation but leave `setState` public, or who cannot explain why this is not Strategy, get marked down. The strongest close is a trade-off sentence: State makes adding states cheap and adding operations expensive, so reach for it when states churn and avoid it when operations churn."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**State equals an enum field.** An enum names the state; State encapsulates what is legal in it. If every method still switches on the enum, you have status codes, not the pattern — the conditional count is the test.",
+        "**State equals Strategy.** Same delegation shape, opposite intent. Strategy is injected by the client and typically fixed for the call; State is held privately by the context and replaces itself as a side effect. If the client picks the variant, it is Strategy.",
+        "**All transitions belong in the context.** Putting a giant transition map in the context recentralizes the switch you just removed. Let each state declare its own outgoing edges; reserve the context for delegation plus entry and exit hooks.",
+        "**More states always means State.** Two states and one method is a switch — introducing four classes for it is over-engineering that obscures a trivial branch. The pattern pays off from roughly three states or two state-sensitive methods upward.",
+        "**States should cache entity data.** Storing documentId or retryCount inside the state object couples one machine's history to a reusable behavior object. States hold behavior; the context and the call arguments hold data. Mix them and singletons become race conditions."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Decision guide for the interview and the codebase.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Order, document, ticket, or player lifecycle with 3+ states and guards that differ per state",
+          "Use State",
+          "Transitions are the domain logic. Colocating each state's rules prevents the shotgun surgery of editing every switch on each launch."
+        ],
+        [
+          "Media player, TCP connection, vending machine where the same button means different things per mode",
+          "Use State",
+          "Input handling is inherently state-dependent. Delegation makes play versus pause versus stop behaviors independently testable."
+        ],
+        [
+          "Two statuses and a single if-else, stable for a year",
+          "Do not use",
+          "Four new types to replace three lines is negative leverage. A well-named enum plus one guarded method is clearer and cheaper."
+        ],
+        [
+          "Operations churn weekly but states are fixed",
+          "Do not use",
+          "Every new operation forces edits across all state classes. A visitor or plain polymorphic hierarchy with fewer variants fits better."
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Say this in one sentence",
+      "text": "**State replaces per-method branching on status with a delegated state object that owns its own outgoing transitions, so adding a state means adding a class instead of editing every method.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:59:06.943Z",
+    "problems": []
+  }
+}

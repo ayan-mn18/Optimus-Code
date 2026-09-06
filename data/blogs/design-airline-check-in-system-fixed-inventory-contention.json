@@ -1,0 +1,459 @@
+{
+  "slug": "design-airline-check-in-system-fixed-inventory-contention",
+  "title": "Design Airline Check-in System (Fixed Inventory & Contention)",
+  "summary": "Design a check-in system where 300 seats face 10k concurrent requests: partition by flight, hold-then-confirm seats, and serialize writes to kill double-assigns.",
+  "kind": "HLD",
+  "problemSlug": "design-airline-check-in-system-fixed-inventory--contention-92-302",
+  "topic": "Databases",
+  "difficulty": "Medium",
+  "coverEmoji": "✈️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Databases",
+    "Contention",
+    "Transactions"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.hellointerview.com/community/questions/airline-reservation-system/cmjwof69302ca08addznw8ty2",
+      "title": "Design an airline reservation system | Hello Interview",
+      "source": "hellointerview.com",
+      "kind": "aggregate",
+      "companies": [
+        {
+          "name": "Circle",
+          "quote": "Asked at: Circle Meta Expedia B bol.com + 1 more"
+        },
+        {
+          "name": "Meta",
+          "quote": "Asked at: Circle Meta Expedia B bol.com + 1 more"
+        },
+        {
+          "name": "Expedia",
+          "quote": "Asked at: Circle Meta Expedia B bol.com + 1 more"
+        },
+        {
+          "name": "bol.com",
+          "quote": "Asked at: Circle Meta Expedia B bol.com + 1 more"
+        }
+      ]
+    },
+    {
+      "url": "https://www.youtube.com/watch?v=ckkbxPE-5wc",
+      "title": "System Design: Airline Flight Ticketing (4+ Approaches) - YouTube",
+      "source": "youtube.com",
+      "kind": "roundup",
+      "companies": [
+        {
+          "name": "Microsoft",
+          "quote": "Microsoft Interview Question \\| System Design: Airline Flight Ticketing (4+ Approaches)"
+        }
+      ]
+    },
+    {
+      "url": "https://prachub.com/interview-questions/design-an-airline-booking-system",
+      "title": "Design an airline booking system | Axon Interview Question - PracHub",
+      "source": "prachub.com",
+      "kind": "aggregate",
+      "companies": [
+        {
+          "name": "Axon",
+          "role": "Software Engineer",
+          "quote": "Design an airline booking system Company: Axon"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "BookMyShow LLD | Mock Machine Coding Round | Interview Preparation",
+      "url": "https://www.youtube.com/watch?v=pBG3BAsWCug",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "What and How of Machine Coding interview rounds. - LinkedIn",
+      "url": "https://www.linkedin.com/pulse/what-how-machine-coding-interview-rounds-banty-kumar",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design Ticketmaster w/ a Ex-Meta Staff Engineer - YouTube",
+      "url": "https://www.youtube.com/watch?v=fhdPyoO6aXI",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design an airline reservation system | Hello Interview",
+      "url": "https://www.hellointerview.com/community/questions/airline-reservation-system/cmjwof69302ca08addznw8ty2",
+      "source": "hellointerview.com",
+      "kind": "article"
+    },
+    {
+      "title": "System Design: Airline Flight Ticketing (4+ Approaches) - YouTube",
+      "url": "https://www.youtube.com/watch?v=ckkbxPE-5wc",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design an airline booking system | Axon Interview Question - PracHub",
+      "url": "https://prachub.com/interview-questions/design-an-airline-booking-system",
+      "source": "prachub.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the interviewer is really testing",
+      "text": "This is **not a booking search problem**. Search is easy and cacheable. Check-in is a **fixed-inventory, high-contention write problem**: 300 seats, one flight, thousands of passengers hitting `CheckIn` in the same minute at T-24h. The interviewer wants to hear you say: **inventory cannot be oversold, concurrent seat picks must serialize, and reads must survive a write hotspot.** If you start with microservices and Kafka, you fail. If you start with the seat row lock, you pass."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design the **airline check-in subsystem** for scheduled flights. Passengers with an existing `PNR / booking` check in between 24h and 1h before departure, pick or auto-get a seat, and receive a boarding pass. Inventory is fixed per aircraft layout — e.g. 180-380 seats — and immutable after schedule publish. The system must prevent **double-assignment of the same seat**, handle **concurrent check-ins for the same flight**, support **seat holds, seat changes, group seating, overbooked / standby handling, and un-check-in**, and stay available when one popular flight gets hammered while thousands of other flights are idle."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`GET /bookings/{pnr}` — fetch booking, passengers, flight, eligibility window.",
+        "`GET /flights/{id}/seatmap` — current seat availability, versioned per flight.",
+        "`POST /checkins {pnr, passengerIds, seatPreference?, idempotencyKey}` — check in one or more passengers.",
+        "`POST /checkins/{id}/seat {seatId, idempotencyKey}` — explicit seat pick or change.",
+        "`POST /checkins/{id}/uncheckin` — release seats before gate close.",
+        "`GET /boardingPass/{checkinId}` — idempotent boarding-pass fetch."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Scale that matters: ~5,000 flights/day, ~1M check-ins/day average, but **burst is per-flight, not global**. A 300-seat A320 will see 200+ concurrent `POST /checkins` in the first 60 seconds after check-in opens, plus retries from mobile. Reads of the seat map are 50-100x writes. **Trade-off:** you optimize for single-flight write serialization and globally scalable reads — not for uniform QPS. Consistency beats availability on the seat row; availability beats consistency on the seat-map view."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not jump to architecture. Check-in has hidden business rules that change the database design completely. Ask in this order and lock answers on the whiteboard:"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Booking vs check-in boundary?",
+          "text": "Assume booking/PNR already exists? You do not build payment or pricing here. Check-in only consumes a valid booking. This cuts scope by half."
+        },
+        {
+          "title": "Assigned seating or first-come?",
+          "text": "Can passengers pick exact seats, or auto-assign only? Exact pick means contended writes on hot seat rows (1A, exit rows). Auto-assign lets you pre-allocate blocks and avoid per-seat contention."
+        },
+        {
+          "title": "Overbooking and standby policy?",
+          "text": "Is the flight allowed to check in 105% of seats and bump at gate? If yes, you need separate `capacity` vs `checkedInCount` and a standby queue — you cannot just do `seat.status = ASSIGNED`."
+        },
+        {
+          "title": "Idempotency and retries expected?",
+          "text": "Mobile clients will retry POSTs. Agree that every mutating call carries an `Idempotency-Key`. Without it any lock design double-assigns on retry."
+        },
+        {
+          "title": "Seat change window and gate close?",
+          "text": "Can seats change after check-in, after boarding-pass issue, after gate close? This defines your state machine and whether boarding-pass issue is just a read."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Locked scope for a 45-minute Databases-track discussion.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Eligibility check: flight in window, booking valid, passenger not already checked in",
+          "Prevents 90% of invalid writes before touching hot seat rows"
+        ],
+        [
+          "Functional",
+          "Hold-then-confirm seat assignment with TTL (e.g. 120s)",
+          "Decouples UX think-time from DB lock hold time"
+        ],
+        [
+          "Functional",
+          "Exactly-once seat assignment per passenger, idempotent retries",
+          "Mobile retries must not create two boarding passes"
+        ],
+        [
+          "Functional",
+          "Un-check-in and seat change release inventory atomically",
+          "Otherwise leaked HELD seats shrink a fixed cabin"
+        ],
+        [
+          "Non-functional",
+          "No double-assign under 1000 concurrent picks on one flight",
+          "The core correctness bar"
+        ],
+        [
+          "Non-functional",
+          "p99 check-in < 500ms, seatmap read < 100ms at burst",
+          "Writes serialize; reads must not queue behind them"
+        ],
+        [
+          "Non-functional",
+          "Partition by flightId; hotspot on one flight must not degrade others",
+          "Contention isolation is the scaling strategy"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the naive approach"
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive design everyone proposes: one `seats` table, stateless service, `read seat row -> if AVAILABLE, UPDATE to ASSIGNED` in two round trips, plus a Redis cache of the seat map for speed. It looks clean and passes a single-threaded demo. It collapses the moment check-in opens because **read and write are not atomic** and the cache becomes the source of lies. Two passengers both read `12A=free` from cache, both issue UPDATE, last writer wins — or worse, both succeed. **Trade-off:** you bought low latency and simplicity and paid with lost updates and oversell. Fixed inventory has zero tolerance for that."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NaiveCheckin.java",
+      "code": "// NAIVE — DO NOT DO THIS. Read-check-write race.\npublic boolean checkinNaive(String seatId, String passengerId) {\n    Seat seat = db.query(\"SELECT status FROM seats WHERE seat_id = ?\", seatId);\n    if (seat.status.equals(\"AVAILABLE\")) {\n        // Another request can slip in HERE.\n        db.exec(\"UPDATE seats SET status='ASSIGNED', passenger_id=? WHERE seat_id=?\",\n            passengerId, seatId);\n        return true;\n    }\n    return false;\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Exactly why it fails",
+      "text": "Three fatal flaws: **1. No mutual exclusion** — the check and the update are separate statements, so concurrent transactions interleave. **2. Cache-write divergence** — you invalidate cache after DB write, so 500 readers see stale FREE for seconds. **3. Lock hold during user think time** — if you hold a DB transaction while the user stares at the seat map, connections exhaust and one flight takes down the pool. The fix is not a bigger DB. It is a different concurrency unit."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Partition everything by `flightId`. Route all writes for one flight to one logical writer: either a **Postgres partition / shard keyed by flightId** with row-level locks, or a **per-flight queue** in front of it. Reads come from replicas + versioned seat-map cache. Writes are **short atomic transactions**: `SELECT ... FOR UPDATE` on the exact seat row, or an optimistic `UPDATE ... WHERE status='AVAILABLE' AND version=?`. Seat selection UX uses **ephemeral holds in Redis with TTL**, confirmed asynchronously to Postgres. **Trade-off:** you accept ~100-300ms serialized writes per flight to guarantee correctness, and you buy back perceived speed with holds and cached reads. Throughput per flight is intentionally limited — that is the point."
+    },
+    {
+      "type": "mermaid",
+      "title": "Check-in request path",
+      "caption": "Writes serialize per flight; reads fan out to replicas.",
+      "code": "graph TD\n  C[Client app] --> LB[API Gateway]\n  LB --> CS[Check-in Service]\n  CS --> ELIG[Eligibility check]\n  ELIG --> R[(Redis holds TTL)]\n  R --> P[(Postgres primary by flightId)]\n  P --> RR[(Read replica seatmap)]\n  CS --> K[Kafka outbox]\n  K --> B[Boarding-pass worker]\n  K --> N[Notification worker]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why Postgres as system of record and not pure Redis or Cassandra? Because you need **ACID row atomicity on a single seat**. `SELECT FOR UPDATE` or conditional UPDATE gives you linearizable seat assignment without distributed locks. Redis is a **lease manager**, not inventory truth — it can evict, fail over, and lose a hold. Cassandra gives you scale but `LWT` at 1000 contenders per partition is slow and operationally painful. **Trade-off:** Postgres limits single-flight write QPS to hundreds/sec, which is fine because a flight only has 300 seats. You shard by flight to get global throughput. Never scale the contended unit; isolate it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Data model"
+    },
+    {
+      "type": "mermaid",
+      "title": "Core tables",
+      "caption": "Seat is the contention point; CheckinRecord makes retries safe.",
+      "code": "classDiagram\n  class Booking {\n    String pnr\n    String flightId\n    String status\n    int passengerCount\n  }\n  class Seat {\n    String seatId\n    String flightId\n    String cabin\n    String status\n    int version\n  }\n  class Hold {\n    String holdId\n    String seatId\n    String passengerId\n    int expiresAt\n  }\n  class CheckinRecord {\n    String checkinId\n    String idempotencyKey\n    String seatId\n    String boardingPassId\n  }\n  Booking --> CheckinRecord : yields\n  Seat --> Hold : held by\n  Seat --> CheckinRecord : assigned to"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "schema.sql",
+      "code": "-- Partition by flight_id. Keep seat rows narrow and hot.\nCREATE TABLE seats (\n  flight_id TEXT NOT NULL,\n  seat_id TEXT NOT NULL,\n  cabin TEXT NOT NULL, -- Y, Y+, J\n  status TEXT NOT NULL DEFAULT 'AVAILABLE', -- AVAILABLE, HELD, ASSIGNED, BLOCKED\n  passenger_id TEXT,\n  version INT NOT NULL DEFAULT 0,\n  PRIMARY KEY (flight_id, seat_id)\n) PARTITION BY HASH (flight_id);\n\nCREATE TABLE checkins (\n  checkin_id UUID PRIMARY KEY,\n  flight_id TEXT NOT NULL,\n  pnr TEXT NOT NULL,\n  passenger_id TEXT NOT NULL,\n  seat_id TEXT NOT NULL,\n  idempotency_key TEXT UNIQUE NOT NULL,\n  boarding_pass_id TEXT UNIQUE,\n  created_at TIMESTAMPTZ DEFAULT now(),\n  UNIQUE (flight_id, passenger_id) -- one seat per passenger\n);\n\nCREATE INDEX ON checkins (flight_id, seat_id);"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Core transaction"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "CheckinService.java",
+      "code": "public CheckinResult confirmSeat(String flightId, String seatId,\n    String passengerId, String idemKey) {\n  // 1. Idempotency first — outside the hot lock.\n  CheckinRecord existing = db.findByIdemKey(idemKey);\n  if (existing != null) return CheckinResult.duplicate(existing);\n\n  return db.inTransaction(tx -> {\n    // 2. Lock ONLY the target seat row. Short transaction.\n    Seat s = tx.queryOne(\n      \"SELECT status, version FROM seats \" +\n      \"WHERE flight_id=? AND seat_id=? FOR UPDATE\",\n      flightId, seatId);\n    if (s == null || !s.status.equals(\"HELD\") && !s.status.equals(\"AVAILABLE\"))\n      throw new SeatTakenException(seatId);\n    // Verify caller owns the Redis hold (omitted) or allow AVAILABLE->ASSIGNED.\n    int n = tx.exec(\n      \"UPDATE seats SET status='ASSIGNED', passenger_id=?, version=version+1 \" +\n      \"WHERE flight_id=? AND seat_id=? AND status IN ('AVAILABLE','HELD')\",\n      passengerId, flightId, seatId);\n    if (n == 0) throw new SeatTakenException(seatId);\n\n    // 3. Insert checkin + outbox atomically. Unique idemKey dedups retries.\n    CheckinRecord c = tx.insertCheckin(flightId, passengerId, seatId, idemKey);\n    tx.insertOutbox(\"CHECKED_IN\", c);\n    return CheckinResult.ok(c);\n  });\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "hold.py",
+      "code": "# Hold path: no DB lock while user thinks. Redis lease + Lua atomic check.\n# Trade-off: hold is best-effort UX; confirm in Postgres is truth.\nimport redis\nr = redis.Redis()\nHOLD_LUA = \"\"\"\nif redis.call('EXISTS', KEYS[1]) == 1 then return 0 end\nredis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])\nreturn 1\n\"\"\"\n# key = f\"hold:{flight_id}:{seat_id}\", value = passenger_id, ttl 120s\ndef try_hold(flight_id, seat_id, passenger_id, ttl=120):\n    ok = r.eval(HOLD_LUA, 1, f\"hold:{flight_id}:{seat_id}\", passenger_id, ttl)\n    return bool(ok)  # False -> someone else holds it, pick another seat"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Cost is per-seat-row, not per-flight-scan.",
+      "headers": [
+        "Operation",
+        "Time",
+        "Contention cost"
+      ],
+      "rows": [
+        [
+          "Get seatmap",
+          "O(S) cached, S ~ 300 rows",
+          "No lock; versioned cache, invalidate per flight"
+        ],
+        [
+          "Hold seat (Redis)",
+          "O(1)",
+          "No DB load; TTL auto-releases orphans"
+        ],
+        [
+          "Confirm seat (FOR UPDATE)",
+          "O(1) row lock + index lookup",
+          "Serializes only on same seatId; different seats parallel"
+        ],
+        [
+          "Auto-assign seat",
+          "O(k) scan of free block",
+          "Pre-allocate contiguous blocks per party to avoid full scan"
+        ],
+        [
+          "Un-check-in",
+          "O(1) row update + outbox",
+          "Must delete hold key and bump seatmap version"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency — the hardest follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "The interviewer will push: *what if 1000 people click 12A at once?* Answer with two mechanisms. First, **pessimistic on explicit pick, optimistic on auto-assign**. Explicit pick does `SELECT FOR UPDATE` on that one seat row — 999 wait ~50ms each, one wins, rest get `409 SeatTaken` with a fresh seat map version. That is correct and fast enough because the lock scope is one row, not the flight. Auto-assign must not lock the whole cabin; use `UPDATE seats SET ... WHERE flight_id=? AND status='AVAILABLE' AND cabin=? LIMIT 1` or a pre-shuffled free-list per cabin. **Trade-off:** pessimistic gives clear errors but creates a lock queue on hot seats; optimistic gives higher throughput but more abort-retry. Use each where its pain is cheapest. Second, **never hold a DB transaction across a user or network call**. Hold in Redis, confirm in a <50ms DB transaction. Add a per-flight in-memory queue or rate limiter if the DB primary shows lock-wait spikes — shed load with fast failure, not longer queues."
+    },
+    {
+      "type": "mermaid",
+      "title": "Seat lifecycle",
+      "caption": "Every exit releases inventory; TTL is the safety net.",
+      "code": "stateDiagram-v2\n  [*] --> AVAILABLE\n  AVAILABLE --> HELD : hold TTL 120s\n  HELD --> AVAILABLE : expire or release\n  HELD --> ASSIGNED : confirm txn\n  AVAILABLE --> ASSIGNED : auto-assign txn\n  ASSIGNED --> AVAILABLE : uncheckin\n  ASSIGNED --> BOARDED : gate scan\n  BOARDED --> [*]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Boarding-pass generation and notifications must be **transactional outbox**, not inline. Inside the confirm transaction, write to an `outbox` table; a relay publishes to Kafka. The pass renderer is idempotent on `checkinId`. If it crashes, replay yields the same `boardingPassId`. **Trade-off:** you add ~seconds of eventual consistency to passes/notifications to keep the seat transaction tiny and infallible. Also cap overbooking explicitly: maintain `flights.checked_in_count` with a conditional increment `WHERE checked_in_count < max_allowed`, separate from seat assignment, so standby and bump logic cannot corrupt seat truth."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Group / family seating together?",
+          "text": "Do not lock N rows in random order — deadlock. Sort seatIds, lock in order, or allocate from precomputed contiguous blocks per cabin. State the ordering rule unprompted."
+        },
+        {
+          "title": "Seat change after check-in?",
+          "text": "Two-row atomic swap: lock both rows in sorted order, validate both, update both, bump seatmap version. Old seat must go AVAILABLE in the same transaction or you leak inventory."
+        },
+        {
+          "title": "How do you show a live seat map?",
+          "text": "Versioned snapshot per flight (version++ on every confirm). Clients poll with If-None-Match; server pushes via websocket/SSE on version change. Reads never touch the primary."
+        },
+        {
+          "title": "Graceful overload at T-24h?",
+          "text": "Per-flight token bucket on confirm QPS, Redis-hold first so DB only sees real intent, fast 429 with retry-after plus cached seatmap. Protect the primary, degrade UX honesty."
+        },
+        {
+          "title": "No-show, standby, and gate close?",
+          "text": "Freeze confirms at gate-close timestamp; standby queue promotes in order via same confirm path. Un-check-in after close is rejected — say it, do not allow negative inventory."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Double-click / retry with same `Idempotency-Key` returns the original boarding pass, never a second seat.",
+        "Hold expires between pick and confirm — confirm must fail with `410 HoldExpired`, not silently steal another passenger's hold.",
+        "Two passengers, one PNR, same seat selected — second gets `409` inside the transaction.",
+        "Un-check-in of already-boarded passenger is rejected; `BOARDED` is terminal.",
+        "Flight swap / aircraft change invalidates all seatIds — version the layout, wipe holds, reassign by cabin, notify.",
+        "Orphan holds from crashed clients auto-expire via Redis TTL plus a sweeper that reconciles `HELD` rows older than TTL.",
+        "Clock skew on eligibility window — enforce window server-side on flight departure time, never client time.",
+        "Seat map version mismatch on confirm — client must refetch; never auto-downgrade to a random seat without consent."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak vs strong signals on a Databases-track check-in interview.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Contention model",
+          "\"Use a distributed lock for the flight\"",
+          "\"Lock one seat row for milliseconds; isolate by flightId\""
+        ],
+        [
+          "Correctness",
+          "Read-then-write with cache invalidation",
+          "Atomic conditional UPDATE + idempotency key + outbox"
+        ],
+        [
+          "Hold design",
+          "Hold DB transaction open during UX",
+          "Redis TTL hold, short DB confirm, sweeper for orphans"
+        ],
+        [
+          "Reads vs writes",
+          "All traffic to primary",
+          "Primary for confirms, replicas + versioned cache for seatmap"
+        ],
+        [
+          "Trade-offs",
+          "No numbers, no failure mode",
+          "Names queue depth, lock wait, oversell risk for every choice"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "45-minute plan",
+      "text": "0-5 min: lock scope and state machine. 5-12 min: API + requirements table. 12-20 min: naive + why double-assign happens. 20-32 min: partitioned Postgres + Redis holds + confirm transaction code. 32-40 min: contention deep-dive (hot seat queue, group locking order, idempotency). 40-45 min: outbox, overload, and aircraft-swap edge cases. Close with: **fixed inventory means correctness first, speed second — serialize the seat, not the flight.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:42:54.569Z",
+    "problems": []
+  }
+}

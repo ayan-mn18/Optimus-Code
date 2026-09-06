@@ -1,0 +1,261 @@
+{
+  "slug": "read-uncommited",
+  "title": "Read Uncommited",
+  "summary": "Read Uncommitted means one guarantee only — no dirty writes — and permission to see everything else including aborted data. When it helps, when it corrupts you, and what to say about it.",
+  "kind": "HLD",
+  "problemSlug": "read-uncommited-96-216",
+  "topic": "Data consistency in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔓",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Consistency",
+    "Isolation Levels",
+    "Read-Uncommitted"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Read Uncommitted - Jepsen",
+      "url": "https://jepsen.io/consistency/models/read-uncommitted",
+      "source": "jepsen.io",
+      "kind": "article"
+    },
+    {
+      "title": "Everything you always wanted to know about SQL isolation levels ...",
+      "url": "https://www.cockroachlabs.com/blog/sql-isolation-levels-explained/",
+      "source": "cockroachlabs.com",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding Database Isolation Levels from My Perspective",
+      "url": "https://hosseinnejati.medium.com/understanding-database-isolation-levels-from-my-perspective-27f261eeb976",
+      "source": "hosseinnejati.medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Read Uncommitted guarantees exactly one thing: two uncommitted transactions will not interleave writes to the same object.** Everything else — reading data that later rolls back, seeing a value change mid-transaction, seeing new rows appear mid-scan — is explicitly allowed. If you remember only one sentence: **you are allowed to read in-flight state that may never have logically existed.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read Uncommitted is a **transactional, multi-object** isolation level. Transactional means the unit of reasoning is a group of reads and writes bracketed by `BEGIN` and `COMMIT` or `ABORT`, not a single key operation. Multi-object means the guarantee (or lack of it) spans every row, key, or predicate the transactions touch, not just one cell. Under the definition you should use in a design interview — Adya's formalization, not the loose ANSI SQL wording — Read Uncommitted prohibits **P0, dirty write**: transaction T1 writes `x`, and before T1 commits or aborts, transaction T2 writes the *same* `x`. That interleaving is forbidden. That is the entire prohibition set. It **permits P1 (dirty read)**: T1 writes `x`, T2 reads that `x` before T1 commits. It **permits P2 (fuzzy / non-repeatable read)**: T1 reads `x`, T2 overwrites `x`, T1 reads `x` again and gets a different value. It **permits P3 (phantom)**: T1 evaluates a predicate like `WHERE balance > 100`, T2 inserts a new row matching that predicate, T1 re-evaluates and gets a different set. There is no recency promise and no session stickiness, which is why this level is simultaneously trivial to implement and dangerous to build on."
+    },
+    {
+      "type": "paragraph",
+      "text": "You need to know why the textbooks disagree, because interviewers probe it. The ANSI SQL-92 / SQL-99 text for Read Uncommitted is effectively vacuous — read literally, it constrains almost nothing, which is why implementers and researchers complained it admits nonsense histories even for levels labeled serializable under one reading. Berenson and co-authors pointed out the spec conflated *anomalies to avoid* with *locks to hold*, and argued the only sane interpretation is the preventative one: Read Uncommitted must still forbid dirty writes. The reason is recovery, not purity. If you allow `w1(x) ... w2(x)` with neither committed, and then one aborts, you cannot undo cleanly — the rollback log for `x` is now ambiguous. So every serious engine, even one that advertises the weakest level, enforces at least exclusive write protection on an uncommitted object. Everything weaker than that is not an isolation level, it is corruption. Say that in the interview and you separate yourself from candidates who recite the four levels as a ladder."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: why dirty reads happen"
+    },
+    {
+      "type": "paragraph",
+      "text": "The mechanism is the absence of a mechanism. A Read Committed engine forces a reader to either block on an uncommitted write lock or to read from a committed snapshot or version chain. A Read Uncommitted engine does neither. The writer takes a short exclusive latch to mutate the in-memory page or buffer and leaves it visible; the reader takes no shared lock, checks no commit timestamp, traverses no version list. It just dereferences the latest bytes. That is why it is fast: no lock manager contention on reads, no version allocation, no snapshot wait. The trade-off is direct — **you traded coordination cost for truthfulness**. You removed the exact check that would have told you “this value is provisional, do not act on it.” In a distributed store the same logic applies at the replica: any node can serve whatever it currently holds, even if that write has not been durably committed or replicated, which is why this level can be **totally available** during a partition. Every replica keeps answering. None of them promise they agree."
+    },
+    {
+      "type": "mermaid",
+      "title": "Dirty read timeline",
+      "caption": "T2 observes a value that is later erased by abort.",
+      "code": "flowchart LR\n    T1W[\"T1 writes x=100 uncommitted\"] --> Store[\"Shared buffer\"]\n    Store --> T2R[\"T2 reads x=100\"]\n    T1W --> Rollback[\"T1 aborts\"]\n    T2R --> Bad[\"T2 acts on value that never committed\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk the diagram because this is what you will whiteboard. T1 issues `WRITE x=100` inside an open transaction. The storage layer applies it to the current page image and marks the row dirty but does not force the reader to wait. T2 issues `READ x` with no isolation barrier and gets `100`. So far this looks like normal concurrency. Then T1 hits a constraint violation, a deadlock victim abort, or an application-level rollback, and the engine undoes `x` back to `50`. T2 has already sent `100` to the user, used it in a sum, or — worse — written `y = x + 10` into its own transaction. That derived write is now based on a premise that the log says never happened. There is no repair pass. The database did exactly what you asked: it gave you the freshest bytes without checking whether they were final. Two further pathologies follow from the same lack of ordering, and strong interviewees name them unprompted. First, **no real-time guarantee**: if write `w` completes before read `r` starts in wall-clock time, `r` may still miss `w`. Second, **no per-process order**: you can observe your own prior transaction's write and then miss it in the next transaction, because each transaction is free to land on a different replica state or interleaving. An engine is even free in theory to return empty for all reads by ordering them at time zero, or to push write-only transactions to the end of history where no read observes them. Real engines do not exploit that, but the model permits it — which tells you how weak the promise is."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What Read Uncommitted buys you and what it charges.",
+      "headers": [
+        "Property",
+        "What you get",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Read throughput / latency",
+          "No shared locks, no snapshot waits, no version-chain traversal. Readers never block writers.",
+          "Reads can return aborted, intermediate, or torn values. Any downstream computation inherits that lie."
+        ],
+        [
+          "Write concurrency",
+          "Only dirty writes are serialized. Everything else proceeds.",
+          "Lost-update, skew, and phantom anomalies are your application's problem now."
+        ],
+        [
+          "Availability",
+          "Can be fully available under partition: every node serves local state.",
+          "Replicas diverge freely. There is no promise of recency or monotonic reads."
+        ],
+        [
+          "Implementation cost",
+          "Trivial: read latest bytes. No MVCC retention, no read-timestamp oracle.",
+          "No clean recovery story for anything built on dirty reads. Debugging is forensic, not logical."
+        ],
+        [
+          "Correctness scope",
+          "Safe when the reader tolerates arbitrary staleness and rollback.",
+          "Unsafe the moment a dirty value feeds a write, a constraint check, or a user-visible decision."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The opinionated take: choose Read Uncommitted only when **the cost of being wrong is near zero and the cost of waiting is measurable**. The classic defensible case is a bulk approximate aggregate — `COUNT(*)`, dashboard rollup, or `NOLOCK` scan over a huge table where blocking writers for a precise count would stall ingestion. The trade-off is explicit: you accept an answer that may include rows that vanish a millisecond later in exchange for not contending with the write path. What you must never do is frame it as “faster reads, same correctness.” It is faster reads *because* it skips the correctness work. If an interviewer asks why not default to it, the answer is that the performance win is narrow — modern MVCC makes non-blocking committed reads cheap — while the correctness loss is unbounded, because a single dirty value that flows into a subsequent write poisons state permanently."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Production failures at this level all share one shape: **a decision was made on data that was later undone**. Take inventory decrement. T1 decrements `stock` from `5` to `4` for a held order but has not committed. T2, running a storefront availability check at Read Uncommitted, reads `4`, concludes scarcity, triggers a price surge or an out-of-stock banner. T1 then aborts because payment failed, and `stock` returns to `5`. Customers saw a phantom shortage. Or worse, reversed: T1 increments a balance provisionally, T2 reads the inflated balance and allows a withdrawal, T1 aborts, and you have created money that never existed. The symptom in logs is maddening because each transaction looks locally valid. You will see `READ x=100` followed later by `x` having no commit record, negative stock that corrects itself, duplicate processing where two readers both acted on the same provisional row, or reconciliation jobs that permanently disagree with the operational tables by small, non-reproducible deltas. Monitoring that only checks committed state will show green while users saw garbage."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Flickering reads:** same query run twice in one job returns different rows, including rows that disappear entirely after the source transaction aborts.",
+        "**Ghost money / ghost inventory:** counters, balances, or quotas reflect increments that have no corresponding commit in the WAL or binlog.",
+        "**Cascading dirty writes-by-proxy:** T2 reads dirty `x` and writes `y = f(x)`. Even though P0 was prohibited on `x` directly, `y` is now permanently tainted.",
+        "**Unreproducible bugs:** staging cannot reproduce because the anomaly requires a specific commit/abort interleave under load, not a logic error."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Why the single P0 prohibition matters here: without it, recovery itself breaks. If two uncommitted transactions both wrote `x`, the undo chain cannot deterministically restore the before-image when one aborts — do you restore T1's value or T2's? Engines avoid this by holding an exclusive write lock (or equivalent ownership marker) until commit or abort, even at Read Uncommitted. That is the one piece of coordination you cannot remove. Name that explicitly: **dirty-write protection exists for the database's own crash recovery, not for your application's correctness.** Everything else was deemed your responsibility."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it looks like in SQL"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "isolation.sql",
+      "code": "-- Session A: provisional write, not yet committed\nBEGIN;\nUPDATE accounts SET balance = balance - 100 WHERE id = 1;\n-- holds exclusive write lock on row 1, does NOT commit yet\n\n-- Session B: dirty read allowed only at READ UNCOMMITTED\nSET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;\nBEGIN;\nSELECT balance FROM accounts WHERE id = 1; -- may see the -100\nCOMMIT;\n\n-- Session A then undoes everything Session B just saw\nROLLBACK; -- Session B acted on a balance that never existed"
+    },
+    {
+      "type": "paragraph",
+      "text": "The config worth memorizing: in `PostgreSQL`, `READ UNCOMMITTED` is silently mapped to `READ COMMITTED` — you cannot actually get dirty reads, which surprises candidates who assume portability. In `MySQL / InnoDB` and `SQL Server`, the level is real: readers skip shared locks (`WITH (NOLOCK)` in SQL Server is the same idea per-table) and will see uncommitted row images. That dialect difference is interview gold. If you propose Read Uncommitted for a Postgres-backed service, you have proposed nothing; the engine upgraded you. If you propose it on SQL Server for a hot reporting query, you have accepted torn reads and partially updated rows mid-page-split. Always qualify the engine, because the trade-off only exists where the engine implements it. And never wrap a read-modify-write cycle in this level — `SELECT` dirty then `UPDATE` on that basis turns a permitted dirty read into a permanent dirty derivation."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Define it by prohibition, not vibe",
+          "text": "Say: prohibits P0 only; allows P1, P2, P3. No recency, no monotonic-read guarantee across transactions. This signals you know Adya, not just the acronym ladder."
+        },
+        {
+          "title": "Draw the dirty-read interleave",
+          "text": "Whiteboard w1(x), r2(x), abort-1. Mark the moment T2's output becomes unexplainable from any committed state. Interviewers grade whether you place the abort after the read."
+        },
+        {
+          "title": "Name the availability play",
+          "text": "Explain that this is the only transactional level that can stay fully available under partition alongside Read Committed, precisely because readers never wait. Then add the price: divergence and rollback visibility."
+        },
+        {
+          "title": "Give the engine caveat",
+          "text": "Mention Postgres maps it to Read Committed, SQL Server / InnoDB honor it. Shows you have operated this, not just read about it."
+        },
+        {
+          "title": "Close with the selection rule",
+          "text": "Lowest level that preserves application invariants. Use Read Uncommitted only for throwaway approximate reads; step up to Read Committed the moment a read feeds a write or a user promise."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**“It means no isolation at all.”** Wrong. Dirty writes are still forbidden so the engine can recover. It is minimal isolation, not zero coordination.",
+        "**“Dirty reads are rare so they do not matter.”** At low contention they are rare; under the exact load where you wanted the optimization — hot rows, flash sales — abort rates spike and dirty reads become common.",
+        "**“It is just a faster Read Committed.”** No. Read Committed guarantees you never see uncommitted data (by blocking or snapshotting). That one property change converts entire bug classes from possible to impossible.",
+        "**“If I never abort, dirty reads are safe.”** You do not control aborts — deadlocks, constraint violations, failovers, and timeouts abort for you. Safety cannot rest on hoping every transaction commits.",
+        "**“NOLOCK / READ UNCOMMITTED is fine for reports.”** Only if the report is explicitly approximate. Financial, billing, quota, and compliance reports built on dirty reads produce numbers that cannot be reconciled later."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Selection guidance for system design.",
+      "headers": [
+        "Workload",
+        "Verdict",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Approximate dashboards, bulk counts over TBs, exploratory scans",
+          "Acceptable",
+          "Error bound dwarfs abort noise; avoiding read-write contention is worth inexactness."
+        ],
+        [
+          "Any read that feeds a write (check-then-act, read-modify-write)",
+          "Never",
+          "Dirty input becomes durable output. No downstream level can clean it."
+        ],
+        [
+          "Inventory, balances, quotas, auth decisions",
+          "Never",
+          "Requires committed truth; use Read Committed minimum, often stronger."
+        ],
+        [
+          "Long analytics scan blocking OLTP writers",
+          "Prefer snapshot / MVCC",
+          "Gets non-blocking reads without dirty data — same performance motive, honest trade-off."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The decision rule I give teams: **if the query result is discarded after display and nobody acts on the exact number, Read Uncommitted is negotiable; if the result crosses a trust boundary — into another write, a payment, a user guarantee — it is disqualified.** Most production systems therefore converge on Read Committed as the default (non-blocking committed reads via MVCC in modern engines) and reserve Read Uncommitted for explicitly labeled best-effort paths with `NOLOCK` or equivalent visibly in code review. That visibility is part of the design: anyone reading the query should see that inexactness was chosen deliberately, with its trade-off accepted."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**“Read Uncommitted forbids only concurrent uncommitted writes to the same object so recovery stays possible, and allows dirty, fuzzy, and phantom reads — so use it solely for throwaway approximate reads where blocking writers costs more than occasionally seeing data that later rolls back.”**"
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:33:32.883Z",
+    "problems": []
+  }
+}

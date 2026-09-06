@@ -1,0 +1,299 @@
+{
+  "slug": "singleton-design-pattern",
+  "title": "Singleton Design Pattern",
+  "summary": "Singleton constrains creation to exactly one safely-published instance. When duplication would corrupt state, why the standard implementations differ, and why to prefer injection instead.",
+  "kind": "LLD",
+  "problemSlug": "singleton-design-pattern-35-75",
+  "topic": "Creational Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "🔒",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "lld",
+    "creational",
+    "singleton",
+    "concurrency"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is the Singleton Pattern? (Software Design Patterns) - YouTube",
+      "url": "https://www.youtube.com/watch?v=FJlFbCKgT7Q",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Singleton - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/singleton",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Singleton Pattern - Patterns.dev",
+      "url": "https://www.patterns.dev/vanilla/singleton-pattern/",
+      "source": "patterns.dev",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Singleton is not a sharing trick. It is a **creation constraint**: you make construction impossible for everyone except one controlled path, then you decide exactly when and how that path publishes the result. If you cannot state why a second instance would corrupt state or exhaust a resource, you do not need it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Singleton actually guarantees"
+    },
+    {
+      "type": "paragraph",
+      "text": "A Singleton guarantees exactly **one live instance per scope** — usually per classloader in Java, per process in Python or Node — and provides a single, well-known access point to it. The mechanics are deliberately hostile to normal construction: the constructor is `private`, the instance lives in a `static` field, and the only way in is a static method like `getInstance()`. That method owns two jobs: decide **when** to create (eagerly at class load, or lazily on first call) and ensure **safe publication** so every thread sees a fully constructed object, not a half-initialised husk."
+    },
+    {
+      "type": "paragraph",
+      "text": "That definition exposes why experienced engineers distrust it. It fuses two unrelated responsibilities — **cardinality control** and **global visibility** — into one class. The first can be legitimate: a connection pool, a file writer, or a hardware driver physically cannot be duplicated without double-spending connections, interleaving bytes, or fighting over a device. The second is almost always a liability. Global visibility means any module can reach in, mutate shared state, and create invisible coupling across the codebase. You choose Singleton only when the cost of a second instance is correctness, not convenience. Shared access alone is never justification."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How the mechanism works"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every correct variant follows the same three moves, and the differences are only in timing and locking. First, **block the front door**: a private constructor means `new Config()` fails at compile time, so reflection and serialization become the only smuggling routes — both of which you must explicitly close. Second, **hold the reference statically**: a `private static` field is the single source of truth for identity. Third, **gate creation through one method**: `getInstance()` checks, creates once, and returns the same reference forever. Lazy versions add a concurrency protocol around the check-then-act; eager versions lean on the classloader, which already initialises statics exactly once and with a memory barrier. The WHY is publication: without a `volatile` write, a `synchronized` block, or class-initialisation semantics, Thread B can observe a non-null pointer to memory Thread A has not finished filling in."
+    },
+    {
+      "type": "mermaid",
+      "title": "Lazy Singleton access path",
+      "caption": "Double-checked path: fast unsynchronised read, slow synchronised creation.",
+      "code": "flowchart TD\n  A[Caller calls getInstance] --> B{instance == null?}\n  B -- No --> C[Return existing instance]\n  B -- Yes --> D[Acquire lock]\n  D --> E{Still null inside lock?}\n  E -- No --> C\n  E -- Yes --> F[Create via private constructor]\n  F --> G[Publish via volatile write]\n  G --> C"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Private constructor** — makes uncontrolled creation a compile error. Add a guard inside it that throws if an instance already exists, to defeat reflection.",
+        "**Static holder** — `private static volatile Instance` or a nested holder class. This field *is* the Singleton. Its declaration determines thread safety.",
+        "**Static accessor** — the only legal entry point. Contains the null check, the lock, and the return. Keep it narrow; never put business logic here.",
+        "**Safe publication** — `volatile`, `synchronized`, enum semantics, or class initialisation. Without one of these you have a race, not a pattern."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The implementation spectrum you must be able to write cold"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers do not care that you memorised one version. They care that you can explain why the naive version breaks under threads and what each fix costs. `synchronized getInstance()` is correct and brutally slow on the hot path if you synchronise every call — though modern JVMs make uncontended locks cheaper than folklore suggests, it still serialises readers for no reason. Double-checked locking fixes the throughput problem by checking outside the lock and re-checking inside, but it is **broken unless the field is `volatile`**. Before Java 5 it was broken even with `volatile`; since the revised memory model, `volatile` forbids reordering of the constructor writes past the pointer publish, which is the entire bug. Bill Pugh's holder idiom and `enum` sidestep the protocol by letting the classloader do the locking once, at load time."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "DoubleChecked.java",
+      "code": "public final class Config {\n    // volatile is not an optimisation. It prevents publication of a\n    // half-constructed object: writes inside the constructor cannot\n    // be reordered past this store.\n    private static volatile Config INSTANCE;\n\n    private final Map<String, String> values;\n\n    private Config(Map<String, String> values) {\n        if (INSTANCE != null) {\n            throw new IllegalStateException(\"use getInstance()\");\n        }\n        this.values = Map.copyOf(values);\n    }\n\n    public static Config getInstance() {\n        Config local = INSTANCE; // one volatile read on fast path\n        if (local == null) {\n            synchronized (Config.class) {\n                if (INSTANCE == null) {\n                    INSTANCE = new Config(loadFromDisk());\n                }\n                local = INSTANCE;\n            }\n        }\n        return local;\n    }\n\n    // readResolve stops deserialization from minting a second instance.\n    private Object readResolve() { return getInstance(); }\n\n    private static Map<String, String> loadFromDisk() { return Map.of(); }\n    public String get(String k) { return values.get(k); }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "HolderAndEnum.java",
+      "code": "// Prefer this for lazy singletons in Java. No locks in your code,\n// thread safety comes from class initialisation guarantees (JLS 12.4.2).\npublic final class Registry {\n    private Registry() {}\n\n    private static class Holder {\n        static final Registry INSTANCE = new Registry();\n    }\n\n    public static Registry getInstance() {\n        return Holder.INSTANCE;\n    }\n}\n\n// Prefer this when you want serialization + reflection resistance for free.\n// Enum constants are instantiated once by the JVM and cannot be\n// reflectively constructed or deserialized into duplicates.\nenum AppConfig {\n    INSTANCE;\n    private final Map<String, String> values = new ConcurrentHashMap<>();\n    public String get(String k) { return values.get(k); }\n    public void set(String k, String v) { values.put(k, v); }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "WHY the holder and `enum` win in Java interviews: they move concurrency from code you write to guarantees the platform already provides. No `volatile` to forget, no lock ordering to reason about, no fast-path versus slow-path benchmark to argue. The trade-off is control: eager initialisation pays construction cost at class-load time whether or not you ever use the object, and `enum` cannot lazily defer or take construction arguments. If you need lazy plus parameters — `init(url)` called once — you no longer have a pure Singleton; you have a one-shot registry, and you should say so explicitly and guard re-initialisation with an `AtomicReference.compareAndSet` or fail loudly on second `init`."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, without the sales pitch"
+    },
+    {
+      "type": "table",
+      "caption": "Each benefit is bought with coupling or test pain. Name both.",
+      "headers": [
+        "Claimed benefit",
+        "Real cost",
+        "The trade-off"
+      ],
+      "rows": [
+        [
+          "Single identity prevents duplicate resources",
+          "Global mutable state visible everywhere",
+          "Correct only when two instances would corrupt data or exhaust a finite resource; otherwise global access is pure debt"
+        ],
+        [
+          "Lazy creation defers expensive work",
+          "Locking + publication protocol on every first access",
+          "Lazy pays complexity; eager pays startup cost — pick holder idiom to make lazy free, or admit you want eager"
+        ],
+        [
+          "Simple API: no plumbing, just call getInstance()",
+          "Hidden dependencies, untestable call graph",
+          "You save five constructor parameters and lose the ability to substitute a fake — mocking statics requires bytecode tricks"
+        ],
+        [
+          "Centralises cross-cutting config",
+          "Order-of-initialisation and lifecycle rigidity",
+          "Who initialises it, with what arguments, and in what order? In tests and in modular runtimes that question has no good answer"
+        ],
+        [
+          "Enum version is concise and safe",
+          "No inheritance, no lazy args, awkward in DI frameworks",
+          "You trade flexibility for ironclad uniqueness — correct for stateless coordinators, wrong for anything configurable per environment"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Singleton failures never look like pattern failures. They look like flaky reads, duplicated side effects, or tests that pass alone and fail together. The mechanism is always the same: either publication was unsafe, scope was misunderstood, or mutable state leaked through the global handle. In a large service the most expensive failure is not a crash — it is two objects both believing they are *the* instance, each holding a different view of the world."
+    },
+    {
+      "type": "table",
+      "caption": "Failure modes mapped to observable symptoms.",
+      "headers": [
+        "Failure",
+        "Root cause",
+        "Symptom you observe"
+      ],
+      "rows": [
+        [
+          "Half-constructed read",
+          "Double-checked locking without `volatile`, or unsafe lazy in C++ / Java",
+          "Intermittent `NullPointerException` inside fields set by constructor; only under load, never in debugger"
+        ],
+        [
+          "Two singletons, both alive",
+          "Multiple classloaders, multiple pods, or deserialization without `readResolve`",
+          "`instanceA != instanceB`, duplicate pool connections, double-flushed analytics, lock that does not mutually exclude"
+        ],
+        [
+          "Reflection breakout",
+          "Constructor does not guard against second invocation via `setAccessible(true)`",
+          "Test or plugin mints a fresh instance; config changes stop propagating"
+        ],
+        [
+          "Mutable global corruption",
+          "Singleton exposes setters or a mutable collection directly",
+          "Unrelated request changes flag for everyone; order-dependent test failures; impossible-to-reproduce staging bug"
+        ],
+        [
+          "Startup deadlock / slow boot",
+          "Eager singleton does I/O in static initializer; holder triggers chain of class loads",
+          "Service hangs at boot, `ExceptionInInitializerError`, cascading timeouts on deploy"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The volatile line is load-bearing",
+      "text": "If you write double-checked locking in Java and omit `volatile`, you have not written a Singleton — you have written a **race with a cache**. The JVM may publish the pointer before the constructor's writes complete. It will pass every unit test and fail at 3am under GC pressure. When the interviewer asks *why volatile*, the answer is **ordering, not visibility**: it bars store-store reordering across the publish."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Singleton versus just passing it in"
+    },
+    {
+      "type": "paragraph",
+      "text": "Modern codebases rarely need the pattern because module scope plus dependency injection covers both halves better. A module-level object in Python or JavaScript already gives you single identity without a class ceremony, and a DI container can scope any bean as a singleton while keeping it an ordinary, constructor-injected parameter. The difference is **explicitness**: injected dependencies appear in signatures, can be replaced with fakes, and have a managed lifecycle with startup and shutdown hooks. A static `getInstance()` hides all three. Choose global access only for truly ambient, stable, unmocked infrastructure — a clock, an ID generator — and even then prefer injecting a `Clock` interface so tests can freeze time."
+    },
+    {
+      "type": "mermaid",
+      "title": "Global access vs injected dependency",
+      "caption": "Hidden global fan-in versus explicit wiring. Same identity, opposite testability.",
+      "code": "graph LR\n  A[Controller] --> G[Config.getInstance]\n  B[Service] --> G\n  C[Repository] --> G\n  G --> R[(Shared State)]\n  D[Controller] --> I[IConfig]\n  E[Service] --> I\n  F[Repository] --> I\n  I --> P[ProdConfig]\n  I --> T[TestFake]"
+    },
+    {
+      "type": "table",
+      "caption": "Use it when duplication breaks correctness. Otherwise inject.",
+      "headers": [
+        "Use Singleton when",
+        "Do NOT use it when"
+      ],
+      "rows": [
+        [
+          "Exactly one coordinator must exist: pool, sequencer, device driver, single writer",
+          "You just want convenient access — use a parameter, a context object, or DI scope"
+        ],
+        [
+          "Construction is expensive and stateless reuse is provably safe",
+          "State varies per request, tenant, or test — you need a factory or scoped instance"
+        ],
+        [
+          "Identity must be stable across unrelated call sites with no wiring path",
+          "Call graph allows explicit passing — hidden globals make reasoning harder for zero gain"
+        ],
+        [
+          "Platform gives you safety for free: Java enum, holder idiom",
+          "Language makes statics per-module or per-isolate — you will get one-per-worker confusion"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Write getInstance() thread-safe",
+          "text": "Start with the holder idiom, not DCL. State why: class-initialisation lock is correct by construction. Only write DCL if asked for lazy with arguments, and narrate the `volatile` ordering argument as you write it."
+        },
+        {
+          "title": "Break your own code",
+          "text": "Volunteer the three breakouts before they ask: reflection via private constructor, serialization without `readResolve`, and cloneable. Add the `INSTANCE != null` guard, `readResolve()`, and `final` class. Interviewers score this higher than the happy path."
+        },
+        {
+          "title": "Defend or kill the global",
+          "text": "Expect: why not a static utility class? Why not DI? Answer crisply: static utilities carry no identity or lazy lifecycle; DI singleton scope is preferable in app code. Use raw Singleton only at library boundaries or where no container exists."
+        },
+        {
+          "title": "Scale the scope",
+          "text": "Follow-up is always scope: what happens with two classloaders, two pods, or two threads calling `init(config)`? Correct answer: Singleton is per-classloader, not per-cluster. Distributed uniqueness needs a coordinator — database constraint, ZooKeeper lock, single-writer service — not a pattern."
+        },
+        {
+          "title": "Test it",
+          "text": "Close by describing how you would test consumers: inject the interface, substitute a fake, reset state between tests. If state cannot be reset, the design is untestable and you should say you would replace the static access with injection."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Singleton guarantees one instance globally** — false. It guarantees one per classloader or isolate. Two classloaders, two workers, or two containers each get their own *the* instance.",
+        "**`synchronized` on the method is the safe default** — correct but crude. It serialises every read. DCL with `volatile` or the holder idiom preserves safety without the hot-path lock.",
+        "**Enum is overkill** — backwards. In Java, a single-element `enum` is the shortest correct answer: reflection-proof, serialization-proof, and obviously intentional.",
+        "**Singleton and static class are interchangeable** — no. A static utility holds no identity, cannot implement an interface polymorphically, and cannot be lazily created or replaced. Singleton holds stateful identity.",
+        "**Making it a Singleton makes it thread-safe** — dangerous. Uniqueness says nothing about concurrent mutation. A Singleton wrapping a `HashMap` with setters is a shared race condition with a fancy name. Guard state with immutability or concurrent structures."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Singleton restricts a class to one safely-published instance reached through a single accessor — use the holder idiom or enum, guard reflection and serialization, and prefer DI scoping unless a second instance would corrupt correctness.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:56:09.935Z",
+    "problems": []
+  }
+}

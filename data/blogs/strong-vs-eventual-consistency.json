@@ -1,0 +1,288 @@
+{
+  "slug": "strong-vs-eventual-consistency",
+  "title": "Strong vs Eventual Consistency",
+  "summary": "Strong vs eventual consistency is a read-guarantee tradeoff: when you acknowledge the write versus when all replicas agree. Strong blocks for coordination, eventual acks fast and converges later.",
+  "kind": "HLD",
+  "problemSlug": "strong-vs-eventual-consistency-91-200",
+  "topic": "System Design Tradeoffs",
+  "difficulty": "Medium",
+  "coverEmoji": "⚖️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "System Design Tradeoffs",
+    "Consistency",
+    "Distributed Systems"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "System design — eventual consistency vs strong consistency",
+      "url": "https://medium.com/@qingedaig/system-design-eventual-consistency-vs-strong-consistency-feee5fd8d3fc",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Eventual consistency - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Eventual_consistency",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Making Sense of Strong, Weak, and Eventual Consistency",
+      "url": "https://dev.to/lovestaco/making-sense-of-strong-weak-and-eventual-consistency-2jf4",
+      "source": "dev.to",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Consistency is **when a write becomes visible to every reader**. Strong says: once I acknowledge the write, no reader will ever see the old value again. Eventual says: I will acknowledge fast, and readers *may* see the old value for a while. Every other difference — latency, availability, complexity — follows from that single choice."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "**Strong consistency** — usually meaning **linearizability** in interviews — gives you a global order illusion. If write `W(x=2)` completes at time `T`, then every read that starts after `T`, on any replica, in any region, returns `x=2` (or a later value). It behaves as if there were one copy and operations happened atomically in real time. **Eventual consistency** gives you a convergence promise only: *if writes stop*, all replicas will eventually agree. It says nothing about what happens before convergence. Between the write and convergence, different replicas can return different values, in different orders, with no bound on the gap."
+    },
+    {
+      "type": "paragraph",
+      "text": "Make it concrete. Client A writes `balance = 90` in `us-east`. Client B reads `balance` in `us-west` 20ms later. Under strong consistency, B **must** see `90`. The system either delays A's acknowledgment until `us-west` is updated, or it delays B's read until it has caught up. Under eventual consistency, B is allowed to see `100` — the stale value — for seconds or minutes. The trade-off is explicit: strong pays coordination cost on the write or read path to prevent stale reads; eventual refuses to pay it and pushes the inconsistency to the application. That is why you pick strong for money and inventory, and eventual for feeds, likes, and carts."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Strong consistency under the hood"
+    },
+    {
+      "type": "paragraph",
+      "text": "Strong is not magic; it is **synchronous coordination**. The write is not acknowledged until enough replicas agree that it happened. In practice that means one of three shapes: a **leader** that serializes all writes and replicates before acking, a **quorum** where `W + R > N` so any read quorum overlaps any write quorum, or **consensus** such as Paxos or Raft for leader election and log replication. All three force at least one network round trip before success. That is why strong writes are slower and fail when a quorum is unreachable. You are buying a guarantee — no stale read after ack — by spending latency and availability. If you are not spending one of those, you do not have strong consistency, whatever the documentation claims."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Eventual consistency under the hood"
+    },
+    {
+      "type": "paragraph",
+      "text": "Eventual is **asynchronous replication**. The write is acknowledged by one replica — often the nearest one — and propagated in the background via log shipping, gossip, or anti-entropy repair. Readers read from whatever replica is close, which may not have the new value yet. Because replicas can accept concurrent writes while disconnected, the system needs a **conflict policy**: last-writer-wins by timestamp, version vectors with application merge, or CRDTs for counters and sets. There is no global order, only a promise that the background protocol will keep retrying until replicas match. That is why eventual writes almost never block and survive partitions, but reads can regress — you can see `v2`, then `v1`, then `v2` again — unless you add stickiness or monotonic-read logic on top."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: where the wait happens"
+    },
+    {
+      "type": "mermaid",
+      "title": "Write path: blocking vs background replication",
+      "caption": "Strong waits for replicas before success. Eventual succeeds first and replicates later.",
+      "code": "flowchart LR\n  W[Client Write x=2] --> S[Strong Path]\n  W --> E[Eventual Path]\n  S --> S1[Replicate to quorum]\n  S1 --> S2[Ack only after majority stored]\n  S2 --> S3[All later reads see x=2]\n  E --> E1[Ack from one replica]\n  E1 --> E2[Return success immediately]\n  E2 --> E3[Propagate in background]\n  E3 --> E4[Replicas converge later]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the diagram as a latency story. In the strong path, the acknowledgment moves **after** replication. The client holds the connection open while the leader waits for followers. If a follower is slow, the write is slow. If a majority is down, the write fails outright — that failure is the guarantee working. In the eventual path, the acknowledgment moves **before** replication. The client gets success in a single-region round trip, and the system owes it a debt: propagate, retry, resolve conflicts. That debt is invisible when the network is healthy and painfully visible during a partition, when two sides accept divergent writes that must be merged later. Choose based on who you want to suffer during a failure — the writer who gets an error, or the reader who gets stale data."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Strong vs eventual across the dimensions interviewers probe.",
+      "headers": [
+        "Dimension",
+        "Strong consistency",
+        "Eventual consistency"
+      ],
+      "rows": [
+        [
+          "Read guarantee",
+          "No stale read after ack; linearizable order",
+          "Stale, reordered, or regressing reads allowed until convergence"
+        ],
+        [
+          "Write latency",
+          "High: 1-2 cross-replica round trips before ack; p99 tied to slowest quorum member",
+          "Low: single-replica ack; p99 tied to nearest replica"
+        ],
+        [
+          "Availability during partition",
+          "Low: writes and sometimes reads fail to preserve correctness",
+          "High: both sides keep accepting writes; merge later"
+        ],
+        [
+          "Throughput / scale",
+          "Limited by leader or quorum coordination; cross-region throughput suffers",
+          "Scales linearly with replicas; each region serves locally"
+        ],
+        [
+          "Operational complexity",
+          "Leader election, consensus, failover, quorum tuning; fewer app-level anomalies",
+          "Gossip, repair, vector clocks, conflict resolution, client reconciliation; simpler ops, harder app logic"
+        ],
+        [
+          "Data-loss risk",
+          "Low once acked — a quorum has it",
+          "Window of loss — acked but not yet replicated data dies with its replica"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The reason both survive is that neither wins on all axes. Strong concentrates complexity in the **infrastructure** — you run consensus, you tune quorums, you accept that a network cut means errors. Eventual concentrates complexity in the **application** — you write idempotent consumers, merge functions, apology flows for oversells. Junior answers say eventual is faster and therefore better. Senior answers name who pays: with strong, the user sees latency and errors; with eventual, the developer sees merge logic and the business sees reconciliation cost. If you cannot name the payer, you have not understood the trade-off."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Strong fails loudly. When a quorum is lost, writes time out and reads block or throw. You will see elevated `p99` write latency first — the leader waiting on a slow follower — then a cliff: `QuorumNotAvailable`, leader-election storms, or cross-region writes queuing until they hit timeouts. The dashboard symptom is **unavailability correlated with network health**, not wrong data. That is by design, but it still pages you at 3am when one zone flaps and your checkout refuses to take money because it cannot prove no one else spent it."
+    },
+    {
+      "type": "paragraph",
+      "text": "Eventual fails quietly, which is worse. The system stays green while users see wrong data. The classic symptoms are **oversell** (two buyers both purchase the last item because each region saw `stock=1`), **read-your-write failure** (user posts a comment, refreshes, and it is gone because the read hit a different replica), **monotonic-read violation** (timeline shows a new post, then on refresh it disappears), and **lost update** (two offline edits both acked, last-writer-wins silently discards one). You detect these not in infrastructure metrics but in business metrics: refund rate, duplicate charges, support tickets saying *I just paid but my balance did not change*."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Strong + partition = rejected writes.** Symptom: `PUT /transfer` returns `503` even though each node is healthy. Cause: no majority. Trade-off working as intended.",
+        "**Strong + slow replica = tail latency.** Symptom: `p50` fine, `p99` explodes on writes. Cause: leader waits for the slowest quorum member before acking.",
+        "**Eventual + concurrent writes = silent conflict.** Symptom: two edits both succeed, one vanishes. Cause: last-writer-wins by timestamp without merge logic.",
+        "**Eventual + sticky routing missing = ghost reads.** Symptom: user creates an item, immediate fetch returns `404`. Cause: write went to replica A, read went to replica B before replication.",
+        "**Eventual + long partition = unmergeable divergence.** Symptom: repair queue grows, version histories fork. Cause: no conflict path was designed because *it will converge* was treated as a strategy."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Do not say eventually means in a few milliseconds",
+      "text": "Eventual has **no time bound**. Convergence could be 50ms or 50 minutes. If your feature needs *stale by at most 2 seconds*, that is a bounded-staleness requirement, not eventual. Saying *eventual is fast enough* without measuring replication lag is how oversells ship to production."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What the choice looks like in config and code"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "quorum.py",
+      "code": "N = 3  # replicas\n# Strong: overlapping quorums. W + R > N guarantees the read sees the last write.\nW_STRONG, R_STRONG = 2, 2  # write waits for 2, read waits for 2 -> overlap on >=1 node\n# Eventual: fast ack, no overlap. Stale reads possible.\nW_EVENTUAL, R_EVENTUAL = 1, 1\n\ndef can_ack(write_acks: int, W: int) -> bool:\n    return write_acks >= W  # strong blocks until quorum; eventual returns after 1\n\ndef may_read_stale(W: int, R: int) -> bool:\n    # No overlap -> a read quorum can miss the write quorum entirely.\n    return (W + R) <= N\n\nassert may_read_stale(W_STRONG, R_STRONG) is False   # linearizable read after ack\nassert may_read_stale(W_EVENTUAL, R_EVENTUAL) is True  # must handle staleness in app"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet is the whole interview in six lines. `W + R > N` is why strong works: any reader must intersect any writer on at least one replica that has the latest value. You pay for two network waits — one on write, one on read — and you must handle quorum failure as an error. `W=1, R=1` is why eventual is fast: one local ack, one local read, no intersection. You pay later in application code: retries, read-repair, session stickiness so a user reads from the replica they wrote to, and a merge function for when two `W=1` writes collide. When an interviewer asks you to tune consistency, they mean moving `W` and `R`, not swapping databases."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They give you a feature, not a definition.",
+          "text": "Design likes, payments, carts, or inventory. Your first job is to classify each operation by its stale-read cost. Never answer strong vs eventual for the whole system — answer per operation."
+        },
+        {
+          "title": "They force a partition.",
+          "text": "What happens when `us-east` cannot talk to `eu-west`? If you said strong, you must say writes fail. If you said eventual, you must say both sides diverge and describe the merge. Hedging here fails the round."
+        },
+        {
+          "title": "They ask for the read path.",
+          "text": "Draw where the read goes: leader, quorum, or nearest replica. Then state the guarantee in one sentence: *after this write acks, what can the next read return?* Vague answers about sync vs async do not pass."
+        },
+        {
+          "title": "They push on conflicts.",
+          "text": "Two users decrement the last item concurrently. Who wins, who gets told, and how? Last-writer-wins, conditional write with version check, or reservation pattern — pick one and defend the user experience."
+        },
+        {
+          "title": "They ask you to change your mind.",
+          "text": "Now make it cheaper, or now make it correct. Show you can slide `W` and `R`, add stickiness for read-your-write, or isolate strong to a narrow scope like a ledger while leaving the rest eventual."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Strong means fast and correct.** It means correct and slow. Coordination costs at least a round trip; cross-region strong means cross-region latency on every write.",
+        "**Eventual means data loss.** It means delayed visibility. Data is lost only if an acked-but-unreplicated replica dies before propagation — a durability window, not the definition.",
+        "**Causal or sequential consistency is strong enough for money.** It is not. Only linearizability prevents two spenders from both seeing sufficient balance. Weaker models allow concurrent stale reads.",
+        "**Adding more replicas makes strong more available.** It makes it less available for writes unless you also lower `W`. More replicas means more members that can break quorum.",
+        "**Eventual needs no conflict handling because conflicts are rare.** Partitions make them certain. If you have no merge function, you have last-writer-wins by accident — and silent overwrites.",
+        "**You pick one model per database.** You pick per request. The same store can do `W=ALL` for a transfer and `W=ONE` for a profile bio. The senior move is mixed consistency by operation."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use which — and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Scope consistency to the operation, not the company.",
+      "headers": [
+        "Use strong when",
+        "Use eventual when",
+        "Never use"
+      ],
+      "rows": [
+        [
+          "Ledger, balance, payment authorization — double-spend costs real money",
+          "Feed, likes, view counts, comments — stale by seconds is invisible",
+          "Strong for view counters: you pay cross-region latency for precision no one needs"
+        ],
+        [
+          "Inventory decrement, seat reservation, unique username claim",
+          "Shopping cart, preferences, product catalog cache — mergeable or regenerable",
+          "Eventual for inventory without reservation: oversell becomes a business loss, not a technical quirk"
+        ],
+        [
+          "Leader election, locks, schema changes, conditional writes (`if version == v`)",
+          "DNS, session state with stickiness, analytics ingestion",
+          "Eventual for access-control writes: a revoked permission must be visible immediately"
+        ],
+        [
+          "Any read where stale means irreversible action (ship, charge, grant access)",
+          "Any write where unavailability is worse than staleness (post, react, browse)",
+          "Strong across continents for every read: you inherit the slowest region on the critical path"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The practical pattern is **narrow strong core, wide eventual edge**. Keep a small strongly consistent authority for the invariant that cannot break — the ledger, the stock reservation, the uniqueness table — and let everything around it be eventual with explicit repair. Example: checkout does a strongly consistent conditional decrement on `stock` (`if stock > 0 then stock -= 1`), then updates the recommendation feed and order history asynchronously. The trade-off is contained: you spend latency only where correctness pays for it, and you write merge logic only where staleness is tolerable. If you propose one model for the entire design, the interviewer will correctly assume you have never operated either."
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Strong blocks writers so readers never go stale; eventual lets writers succeed so readers may go stale until replicas converge — pick strong where a stale read causes irreversible harm, eventual everywhere else.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:29:15.394Z",
+    "problems": []
+  }
+}

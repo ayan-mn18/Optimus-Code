@@ -1,0 +1,276 @@
+{
+  "slug": "advantages-disadvantages-of-caching",
+  "title": "Advantages / Disadvantages of caching",
+  "summary": "Caching buys read speed by storing a disposable copy close to the reader — and charges you in staleness, invalidation, and failure modes. When reads repeat, pay it. When they don't, don't.",
+  "kind": "HLD",
+  "problemSlug": "advantages-disadvantages-of-caching-95-187",
+  "topic": "Caching Mechanisms",
+  "difficulty": "Easy",
+  "coverEmoji": "⚡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Caching",
+    "System Design",
+    "Performance"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Pros and Cons of Caching Data in Software Development",
+      "url": "https://www.bytesizedpieces.com/posts/cache-pro-con",
+      "source": "bytesizedpieces.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is Caching? How It Works and Its Limitations. - Hazelcast",
+      "url": "https://hazelcast.com/foundations/caching/caching/",
+      "source": "hazelcast.com",
+      "kind": "article"
+    },
+    {
+      "title": "A Comprehensive Guide to Caching: Benefits, Challenges, and Best ...",
+      "url": "https://medium.com/@DevBox_rohitrawat/a-comprehensive-guide-to-caching-benefits-challenges-and-best-practices-70bf88976858",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Cache Memory in Computer Organization - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/computer-organization-architecture/cache-memory-in-computer-organization/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A cache does not make your system faster. It **avoids work you have already done** — but only if the same read repeats before the copy goes stale. No repeat, no win. Every advantage below is that avoided work. Every disadvantage is the price of trusting a copy."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What caching actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A cache is a temporary, explicitly disposable copy of data placed on a faster path than the source of truth. The source — database, origin service, disk — remains authoritative. The copy lives in memory, on local disk, or at the edge, and it carries an expiration or invalidation rule that says when to stop trusting it. That last part is the whole subject. Without a defined moment when the copy becomes untrustworthy, you do not have a cache, you have a second database that will silently diverge. Choose caching when repeat reads dominate and you can state, in milliseconds or in events, how stale you are willing to be."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this wins is arithmetic, not magic. Memory lookup costs fractions of a millisecond. A primary-key database read costs single to tens of milliseconds plus connection and query overhead. A cross-region or downstream service call costs tens to hundreds of milliseconds plus serialization and tail-latency risk. If your workload reads the same key 100 times per write, serving 99 of those from memory deletes 99 database round-trips, 99 connection acquisitions, and 99 chances to queue behind a slow query. The trade-off: you now own two problems you did not have before — **consistency lag** between copy and truth, and **capacity management** for a store that is smaller than the dataset by design."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How a read and write actually move"
+    },
+    {
+      "type": "paragraph",
+      "text": "The default pattern you should assume is cache-aside, also called lazy loading. On read, the application checks the cache first. On a hit, it returns immediately and the database sees nothing. On a miss, it fetches from the source, stores the result with a time-to-live, then returns. Writes go to the source of truth first, then invalidate or overwrite the cached entry — never the reverse, because a crash between cache-write and DB-write leaves a lie that survives restart. This ordering is deliberate: it keeps the database authoritative and makes the cache recoverable by eviction. The cost is the miss path, which is strictly slower than no cache at all, plus invalidation logic on every write path you will forget at least once."
+    },
+    {
+      "type": "mermaid",
+      "title": "Cache-aside request path",
+      "caption": "Hit avoids the database. Miss pays for both database and fill.",
+      "code": "flowchart TD\n  A[Client Request] --> B{Cache Lookup}\n  B -->|Hit| C[Return from cache]\n  B -->|Miss| D[Read source of truth]\n  D --> E[Fill cache with TTL]\n  E --> F[Return to client]\n  G[Write Request] --> H[Write source of truth]\n  H --> I[Invalidate or update cache]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two knobs control behavior: **expiration** and **eviction**. Expiration answers *how long is this copy trustworthy* — a TTL of 60 seconds bounds staleness to 60 seconds but guarantees refetch churn. Eviction answers *what leaves when memory is full* — typically least-recently-used, which protects hot keys and sacrifices cold ones. Get the TTL wrong and you either serve stale pricing or hammer the database for data nobody re-reads. Get eviction wrong and one scan of cold keys flushes every hot key you were depending on. Size the cache for the working set, not the dataset, and set TTL from product tolerance for staleness, not from vibes."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade, stated honestly"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every row below follows the same law: the left column is avoided work, the right column is new responsibility. If you cannot name what you pay, you do not understand what you bought. Memorize this shape for interviews — interviewers promote candidates who volunteer the cost without being asked."
+    },
+    {
+      "type": "table",
+      "caption": "Each caching benefit and the specific complexity that funds it.",
+      "headers": [
+        "Advantage",
+        "What you actually gain",
+        "What you pay for it"
+      ],
+      "rows": [
+        [
+          "Lower read latency",
+          "Hits skip query planning, disk I/O, and network hops; p50 and p99 drop sharply on hot keys",
+          "Miss path is slower; TTL bounds staleness but never eliminates it"
+        ],
+        [
+          "Higher throughput and IOPS",
+          "In-memory layer absorbs thousands of repeat reads per second per node",
+          "Cache cluster needs sizing, sharding, and failover of its own"
+        ],
+        [
+          "Reduced load on database",
+          "Fewer concurrent queries means shorter queues, fewer timeouts, less replica lag",
+          "Write path must now invalidate correctly or reads diverge silently"
+        ],
+        [
+          "Lower compute and I/O cost",
+          "Fewer database CPU cycles, disk reads, and downstream calls per user request",
+          "Memory is expensive per GB; oversized or low-hit-ratio caches waste more than they save"
+        ],
+        [
+          "Better resilience under spikes",
+          "Hot content survives even if the database slows, up to TTL expiry",
+          "Expiry during an outage turns a slow backend into a thundering herd that finishes it"
+        ],
+        [
+          "More predictable tail latency",
+          "Hot keys stop queueing behind slow analytical queries on the primary",
+          "Cold keys, evictions, and hot-key imbalance create new tail spikes you must monitor"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Caches fail in ways that look like other systems failing, which is why they waste so much on-call time. The database looks slow when the cache is cold. The data looks corrupt when the cache is stale. The service looks flaky when one key hashes to one node. Learn the mapping from symptom to cache cause, because your dashboards will otherwise send you to the wrong runbook."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Stale read: user sees old price, old permissions, old inventory.** Cause is write-through missed, TTL too long, or one of three write paths forgot to invalidate. Symptom is correct-after-refresh or correct-on-one-node-but-wrong-on-another. Fix is versioned keys or event-driven invalidation, at the cost of tighter coupling to write events.",
+        "**Thundering herd on expiry: latency cliff and database CPU spike at exact TTL boundaries.** A thousand clients miss the same key in the same second and all hit the database. Symptom is periodic p99 spikes aligned to TTL. Fix is request coalescing, jittered TTL, or background refresh — all extra code on the miss path.",
+        "**Cold start after deploy or eviction: everything is slow for minutes.** New nodes start empty, so hit ratio drops to near zero and the database absorbs full traffic. Symptom is elevated latency and connection exhaustion right after a rollout. Fix is warming from a snapshot or gradual rollout, which trades deploy simplicity for safety.",
+        "**Hot key imbalance: one node saturates while others idle.** A celebrity profile or flash-sale item hashes to a single shard. Symptom is CPU and bandwidth skew plus timeouts only for that key. Fix is key replication or local L1 in front of shared L2, which trades memory duplication for balance.",
+        "**Unbounded growth and eviction churn: hit ratio collapses under scans.** Caching per-user or per-query-variant keys without a bound fills memory with entries read exactly once. Symptom is high eviction rate, low hit ratio, and no latency improvement. Fix is strict key discipline and separate caches for hot shared data versus cold personal data.",
+        "**Poisoned entry: one bad value served at memory speed to everyone.** An error page, null, or partial object gets cached with a long TTL. Symptom is an outage that survives database recovery until TTL expires or manual purge. Fix is never cache errors by default and keep a purge path — operational overhead you must build before you need it."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The herd deserves special attention because it turns your resilience story upside down. A cache that protects the database during normal traffic becomes the weapon that kills it during expiry if every copy dies at once. The standard defense is three layers: jitter TTLs so keys do not expire together, coalesce concurrent misses so only one thread fetches and the rest wait, and refresh hot keys in the background before expiry. Each layer is a trade-off — jitter adds slight staleness variance, coalescing adds waiting latency on misses, background refresh adds complexity and wasted fetches for keys that cool off."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What the code boundary looks like"
+    },
+    {
+      "type": "paragraph",
+      "text": "Good cache code makes three decisions visible: TTL per data class, no caching of failures, and single-flight on misses. If a reviewer cannot see the TTL and the invalidation call in the same file as the write, the design is already wrong. The snippet below is cache-aside with a short TTL for semi-static data and a guard so concurrent misses do not all hit the database. The trade-off is written into the code: extra latency and lock contention on miss, in exchange for database survival."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cache_aside.py",
+      "code": "import time\nfrom threading import Lock\n\ncache = {}  # key -> (value, expires_at)\nlocks = {}\nlocks_guard = Lock()\nTTL_SECONDS = 60  # product decision: 60s staleness is acceptable here\n\ndef get_profile(user_id, db_fetch):\n    now = time.time()\n    entry = cache.get(user_id)\n    if entry and entry[1] > now:\n        return entry[0]  # hit: no DB load, bounded staleness\n\n    # miss: single-flight so only one thread fetches\n    with locks_guard:\n        lock = locks.setdefault(user_id, Lock())\n    with lock:\n        entry = cache.get(user_id)  # re-check after acquiring\n        if entry and entry[1] > time.time():\n            return entry[0]\n        value = db_fetch(user_id)  # slower, authoritative\n        if value is None:\n            return None  # never cache misses/errors with long TTL\n        cache[user_id] = (value, time.time() + TTL_SECONDS)\n        return value\n\ndef update_profile(user_id, new_value, db_write):\n    db_write(user_id, new_value)  # truth first\n    cache.pop(user_id, None)  # invalidate second; crash order matters"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Place the cache and name the pattern",
+          "text": "Say where it sits — client, CDN edge, application L1, shared Redis-like L2, or database buffer — and pick cache-aside versus read-through versus write-through. Justify by write rate: cache-aside for read-heavy with tolerant staleness, write-through when reads must not see stale values and you accept slower writes."
+        },
+        {
+          "title": "Quantify staleness and TTL per data type",
+          "text": "Never say cache everything for 5 minutes. Split data: user sessions need invalidation on logout, product catalog tolerates minutes, inventory tolerates seconds at most. State the TTL and the invalidation event for each, because that split is what the interviewer is scoring."
+        },
+        {
+          "title": "Size from working set and hit ratio",
+          "text": "Estimate hot keys times object size, then set an eviction policy like LRU and a target hit ratio above 90% for the hot tier. Say what you will measure — hit ratio, eviction rate, miss latency — and what action each metric triggers, such as growing shards or shortening TTL."
+        },
+        {
+          "title": "Defuse the herd and the hot key",
+          "text": "Volunteer jittered TTL, single-flight miss coalescing, and hot-key replication before being asked. Explain each cost: jitter spreads expiry, coalescing adds wait on miss, replication burns memory. Candidates who name all three pass; candidates who say cache will handle spikes fail."
+        },
+        {
+          "title": "State what you will not cache",
+          "text": "Close by excluding low-repeat, unshareable, or strongly consistent data — one-off search filters, per-request tokens, ledger balances. This proves you understand caching is a repeat-rate bet, not a default layer. Name the alternative: index, faster query, or stronger database instead."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Caching makes writes faster.** It does not — it makes writes harder. Every write now pays invalidation plus the risk of divergence. If you need faster writes, look at batching, partitioning, or a log-structured store, not a cache.",
+        "**A higher hit ratio always means a better design.** A 99% hit ratio on data nobody needed fast is wasted memory. Hit ratio only matters multiplied by avoided cost per hit. Measure latency saved and database load removed, not the ratio alone.",
+        "**TTL solves consistency.** TTL bounds staleness; it never provides correctness. If the product cannot tolerate any stale read — balances, permissions, seat assignment — you need invalidation, versioning, or no cache, not a shorter TTL.",
+        "**One shared cache fits all access patterns.** Mixing hot shared catalog data with cold per-user blobs in one LRU guarantees the cold scan evicts the hot set. Separate caches by lifetime and shareability or accept chronic churn.",
+        "**Cached data is free persistence.** It is the opposite: treat every entry as deletable at any moment. Any logic that breaks when an entry vanishes — sessions without fallback, counters without flush — is a correctness bug waiting for an eviction."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use caching as a repeat-rate bet with a staleness budget, not as a default.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Reasoning"
+      ],
+      "rows": [
+        [
+          "Read-heavy, few hot keys, tolerant staleness",
+          "Cache aggressively",
+          "High repeat rate funds invalidation cost; latency and DB load drop sharply"
+        ],
+        [
+          "Spiky traffic on shareable content",
+          "Cache at edge plus app layer",
+          "Absorbs flash crowds; layered TTLs isolate origin from herd"
+        ],
+        [
+          "Write-heavy or per-key-unique reads",
+          "Do not cache",
+          "Hit ratio stays near zero while invalidation and memory costs stay high"
+        ],
+        [
+          "Strong consistency required",
+          "Do not cache, or cache with invalidation + versioning",
+          "Stale window violates correctness; TTL alone is insufficient"
+        ],
+        [
+          "Large cold scans or one-off analytics",
+          "Bypass cache",
+          "Scan pollutes LRU and evicts hot working set; use direct read or separate store"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The decision rule fits on an index card: cache when repeat reads times cost-per-read exceeds invalidation plus memory plus operational risk. That is why catalog pages, session profiles, and rendered feeds are canonical wins, while unique search queries, real-time balances, and bulk exports are canonical losses. When in doubt, instrument first — if the top 1% of keys does not serve the majority of reads, no TTL or cluster size will save the design. Fix access skew or query shape before adding a layer that only multiplies states to reason about."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Caching trades bounded staleness and invalidation complexity for avoided repeat work — use it when hot reads repeat and stale-for-seconds is acceptable, and never for data that must be exactly current.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:38:16.261Z",
+    "problems": []
+  }
+}

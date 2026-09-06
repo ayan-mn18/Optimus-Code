@@ -1,0 +1,300 @@
+{
+  "slug": "stateful-vs-stateless-architecture",
+  "title": "Stateful vs Stateless Architecture",
+  "summary": "Stateful keeps per-client context on the server; stateless makes every request self-contained and pushes state outward. The tradeoff is affinity and speed versus replaceability and scale.",
+  "kind": "HLD",
+  "problemSlug": "stateful-vs-stateless-architecture-91-202",
+  "topic": "System Design Tradeoffs",
+  "difficulty": "Medium",
+  "coverEmoji": "⚖️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "System Design Tradeoffs",
+    "Scalability",
+    "Sessions"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Stateful vs stateless applications - Red Hat",
+      "url": "https://www.redhat.com/en/topics/cloud-native-apps/stateful-vs-stateless",
+      "source": "redhat.com",
+      "kind": "article"
+    },
+    {
+      "title": "Stateful vs. stateless architecture for scalable systems explained",
+      "url": "https://aerospike.com/blog/stateful-vs-stateless-architecture-guide/",
+      "source": "aerospike.com",
+      "kind": "article"
+    },
+    {
+      "title": "Stateful Vs Stateless Architecture - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/stateful-vs-stateless-architecture/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Stateful vs Stateless Architectures Explained - YouTube",
+      "url": "https://www.youtube.com/watch?v=20tpk8A_xa0",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**State is never destroyed, only relocated.** Stateful keeps it in the server that served you last. Stateless pushes it into the client request plus a shared store. Every scaling, availability, and latency argument follows from that placement. If you remember nothing else, remember: pick who is allowed to forget, and you have picked your architecture."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely — no hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "A **stateful** server retains conversational context between requests. Request N+1 is only correct if it lands on — or can reach — the memory written by request N. That memory is typically a session object, a socket, a game-room struct, or a checkout cart held in RAM or local disk. A **stateless** server retains no such context. Each request must carry everything needed to authorize and execute it: identity, intent, version, idempotency key. Whatever history the system needs lives elsewhere — in a token the client holds, in a database, in a cache — never in the handling process itself. The test is brutal and binary: **can any healthy server handle any incoming request correctly?** If yes, you are stateless. If only *that* server can, you are stateful."
+    },
+    {
+      "type": "paragraph",
+      "text": "The confusion comes from equating stateless with storageless. A stateless application tier still reads and writes massive state; it just does not *own* it in-process. The database, object store, queue, and distributed cache hold the truth. The compute nodes are interchangeable workers that fetch what they need, do the work, and forget. That is why the correct mental model is not *memory versus no memory*, but **affinity versus interchangeability**. Stateful binds correctness to routing. Stateless binds correctness to data access. The first forces the load balancer to be smart about history. The second forces every request to pay a fetch-and-verify tax. Choose which tax you would rather pay under load, because you will pay one of them."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Stateful correctness depends on routing:** same user, same connection, same server — or explicit replication of that server's memory.",
+        "**Stateless correctness depends on request completeness:** same user, any server, as long as the token is valid and the shared store is reachable.",
+        "**In-memory is not the definition:** a server that caches aggressively but can lose that cache without breaking correctness is still stateless.",
+        "**A database behind a stateful server does not make it stateless:** if loss of local session breaks active users even while the database is healthy, the tier is stateful."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: where the memory lives"
+    },
+    {
+      "type": "paragraph",
+      "text": "In a stateful flow, the first request creates the affinity. The server authenticates the user, allocates a session object keyed by a session ID, stores cart items, cursor position, game state, or subscription offset in local memory, and returns a bare reference — usually a cookie containing only that ID. Every follow-up is cheap because the working set is already warm in the heap: no re-authentication, no re-fetch, pointer dereference and go. That is *why* stateful feels fast after login. The trade-off is that the load balancer must now honor that affinity with sticky routing, and the server becomes a single point of failure for everyone pinned to it. Scale means copying live memory to peers, which is coordination work that grows with write rate, not read rate."
+    },
+    {
+      "type": "mermaid",
+      "title": "Stateful request flow",
+      "caption": "Session lives on Server 1; Server 2 cannot serve the same user without replication.",
+      "code": "flowchart TD\n  Client --> LB[Load Balancer]\n  LB --> S1[Server 1]\n  LB --> S2[Server 2]\n  S1 --> MEM1[(Session Memory)]\n  S2 --> MEM2[(Empty)]\n  S1 -.->|async replication| S2"
+    },
+    {
+      "type": "paragraph",
+      "text": "In a stateless flow, the first request externalizes the affinity. The server authenticates once, then signs a token or writes a row describing the session into a shared store, and hands the client a self-describing credential. Every follow-up arrives with that credential attached. Any server can verify the signature, extract the user ID and permissions, fetch the current cart or profile from the shared store, execute, and discard everything. That is *why* stateless survives server loss: there is nothing valuable in the crashed process to lose. The trade-off is paid on every single request — cryptographic verification plus at least one network hop to shared state. You traded sticky routing complexity for per-request lookup latency and downstream load. Under high throughput, that shared store becomes the system."
+    },
+    {
+      "type": "mermaid",
+      "title": "Stateless request flow",
+      "caption": "Any server can serve any request by verifying the token and reading shared state.",
+      "code": "flowchart TD\n  Client2[Client + Token] --> LB2[Load Balancer]\n  LB2 --> A[Any Server]\n  LB2 --> B[Any Other Server]\n  A --> DB[(Shared Store)]\n  B --> DB"
+    },
+    {
+      "type": "paragraph",
+      "text": "Notice what this does to the load balancer. With stateful, the balancer is part of the correctness protocol: it must implement sticky hashing by IP or cookie, track server health per session, and drain sessions gracefully on deploy. A bad balancer decision is user-visible corruption or logout. With stateless, the balancer is dumb by design — round-robin or least-connections is enough — because correctness does not depend on placement. That is why teams chasing rapid autoscaling prefer stateless compute: adding or removing a node requires zero session migration. The cost moved from the balancer to the data layer, which must now handle N times more small reads and stay fast when a node dies mid-request."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Same workload, opposite bills to pay.",
+      "headers": [
+        "Dimension",
+        "Stateful",
+        "Stateless"
+      ],
+      "rows": [
+        [
+          "Horizontal scale",
+          "Hard: new nodes start empty; need warm-up or state transfer. Trade-off: capacity is not instantly usable.",
+          "Easy: new nodes serve immediately. Trade-off: shared store must absorb the added read pressure."
+        ],
+        [
+          "Availability on crash",
+          "Session loss unless replicated. Trade-off: you buy availability with replication lag and split-brain risk.",
+          "Request retry on any node. Trade-off: you buy availability with idempotency and shared-store uptime."
+        ],
+        [
+          "Steady-state latency",
+          "Low after session establishment — local memory hit. Trade-off: first request and failover are expensive.",
+          "Higher median — verify + fetch every time. Trade-off: predictable latency at the cost of a floor you cannot optimize away."
+        ],
+        [
+          "Memory and cost",
+          "Memory grows with active users per server; over-provision for peak affinity. Trade-off: cheap per-request, expensive idle.",
+          "Memory flat per server; cost concentrates in cache and database. Trade-off: cheap compute, expensive data layer."
+        ],
+        [
+          "Consistency",
+          "Easy within one server, painful across servers. Trade-off: local correctness versus cluster divergence.",
+          "Single source of truth in the store. Trade-off: every reader pays coordination delay to see the same truth."
+        ],
+        [
+          "Operability",
+          "Deploys need draining, sticky migration, session bleed. Trade-off: slower, safer rollouts or dropped users.",
+          "Deploys are kill-and-replace. Trade-off: faster rollouts but any store slowdown becomes a global outage."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "There is no dominant choice because the bottleneck moves. Stateful optimizes for **repeated interaction with the same working set** — the second, third, and thousandth request from the same client reuses hot memory and avoids re-validation. That wins when round-trips to shared state dominate your latency budget, such as live collaboration, multiplayer ticks, or streaming aggregation. Stateless optimizes for **independent requests from many distinct clients** — the system cares about aggregate throughput and replaceability more than per-session warmth. That wins when arrival rate is spiky, nodes churn constantly, and any request must succeed anywhere. The honest framing in design review is: *do I want affinity complexity or lookup complexity?* Anyone promising both low per-request cost and free horizontal scale is hiding the state somewhere you have not looked yet."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Stateful fails on membership change. A deploy, autoscale-in, or single process crash destroys the sessions pinned to that node unless you replicated them synchronously — which most teams do not, because synchronous replication doubles write latency. What you see is distinctive: a sharp cliff of logouts, emptied carts, or disconnected sockets correlated exactly with a deployment or a host death, while error rates on the database look clean. Sticky sessions make it worse by piling reconnecting users onto the survivors, creating a hot-node cascade. Recovery requires users to log in again and rebuild context, which means the failure is not just an error spike but a thundering herd of fresh session creations that overloads authentication right after the incident."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Symptom: 1% of users lose sessions every deploy** — cause: in-memory sessions with no drain; fix: externalize or implement connection draining with session bleed.",
+        "**Symptom: one server at 95% CPU, rest at 20%** — cause: sticky hash skewed by a few heavy users; fix: bounded-load consistent hashing or split hot sessions.",
+        "**Symptom: replica lag shows stale cart after refresh** — cause: async session replication; fix: read-your-write routing or move that write to the shared store.",
+        "**Symptom: autoscale-up does not relieve latency** — cause: new nodes have cold sessions; fix: warm-up traffic or stop pinning that workload."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Stateless fails on the shared dependency. Because every request verifies a token and reads backing state, a slow cache, an expired signing key, or a throttled database turns into a system-wide latency floor, not an isolated blip. What you see is different: all servers healthy, CPU low, but p99 explodes and queue depth grows everywhere at once. Token design adds its own cliff — oversized JWTs carrying permissions and preferences bloat every request, inflate bandwidth, and cannot be revoked without a denylist lookup, which quietly reintroduces the state you claimed to remove. Recovery is usually fast once the store recovers, because compute nodes hold nothing to rebuild. The trade-off is blast radius: one slow store slows every stateless server identically, whereas a stateful crash only kills its own users."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The production gotcha",
+      "text": "Most outages blamed on stateless services are signing-key or cache-expiry outages. Rotate keys with overlapping validity, version your token schema, and treat the session store as a critical path with its own SLO, circuit breaker, and bulkhead. Stateless does not remove the single point of failure — it concentrates it in the store."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code: the difference in twenty lines"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "session_vs_token.py",
+      "code": "# STATEFUL: correctness lives in this process's dict.\n_sessions: dict[str, dict] = {}\n\ndef stateful_add_to_cart(session_id: str, item: str):\n    sess = _sessions.get(session_id)  # None on any other server -> fails\n    if sess is None:\n        raise LookupError(\"unknown session: wrong server or restarted\")\n    sess[\"cart\"].append(item)  # fast: local memory, no I/O\n    return sess[\"cart\"]\n\n# STATELESS: correctness lives in the request + shared store.\ndef stateless_add_to_cart(token: str, item: str, store):\n    claims = verify_signature(token)  # crypto cost on EVERY request\n    cart = store.read(f\"cart:{claims['uid']}\")  # network cost on EVERY request\n    cart.append(item)\n    store.write(f\"cart:{claims['uid']}\", cart, idempotency_key=claims[\"jti\"])\n    return cart"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet is the whole debate in miniature. The stateful path is one dictionary lookup — microseconds, zero network — but the function is only correct on the machine that owns `_sessions`. Move the request and it throws. The stateless path is correct anywhere, but it pays verification plus a read-modify-write cycle every time, and it needs an idempotency key because retries from the load balancer are now expected, not exceptional. That is why experienced reviewers ask about retry semantics the moment you say stateless: at-least-once delivery plus a shared store forces you to make writes idempotent, whereas stateful code often gets away with non-idempotent in-memory mutation until replication exposes it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from a functional flow",
+          "text": "Pick login-to-checkout or join-room-to-message. Draw where user context lives after request one. Interviewers want the placement named explicitly, not waved at."
+        },
+        {
+          "title": "Force the scale question",
+          "text": "Ask: what happens when we go from 1 to 50 app servers? Show sticky routing versus any-node routing. Name the trade-off: instant capacity versus per-request fetch cost."
+        },
+        {
+          "title": "Kill a server on the whiteboard",
+          "text": "Cross out one box mid-session. Walk through what the user experiences in each design. This is where stateful replication lag and stateless store dependence become visible."
+        },
+        {
+          "title": "Push the follow-ups",
+          "text": "Answer logout and revocation, cart consistency across tabs, and deploy without dropping connections. Each follow-up punishes pure in-memory state and oversized non-revocable tokens equally."
+        },
+        {
+          "title": "Land the hybrid",
+          "text": "Close by externalizing durable state to a store while keeping ephemeral hot state local with a bounded TTL. Justify why: durability where loss hurts, locality where latency hurts."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the interviewer is grading",
+      "text": "They are not grading the definition. They are grading whether you trace a request end-to-end, locate the state on the diagram, and predict the failure when placement changes. Say the trade-off out loud every time you move state."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Stateless means no database.** No — it means no *per-server* session memory. The database load usually *increases* because every request re-fetches.",
+        "**Sticky sessions make stateful scalable.** They make routing work, not scaling work. They create hot nodes, slow deploys, and correlated failure.",
+        "**JWTs eliminate server state.** They move it into the token plus whatever revocation list, version check, and backing row you still need. Large claims and instant revocation reintroduce lookups.",
+        "**Caching equals stateless.** A cache you can lose without user-visible loss is an optimization. A cache whose loss logs users out is state, whatever you call it.",
+        "**Stateful is always legacy.** Real-time games, voice bridges, and streaming joins keep connection-local state deliberately because per-message store round-trips would blow the latency budget. The trade-off is intentional."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Choose by interaction pattern, not fashion.",
+      "headers": [
+        "Use stateful when",
+        "Use stateless when",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Connection is long-lived and chatty: sockets, game ticks, collaborative editing",
+          "Requests are independent: REST reads, checkout submits, webhooks",
+          "Chatty workloads amortize session setup; independent workloads benefit from any-node routing."
+        ],
+        [
+          "Loss of mid-stream context is expensive: media relay, match state",
+          "Retry on any node must succeed: payments, idempotent writes",
+          "Stateful preserves hot context; stateless requires idempotency and shared truth."
+        ],
+        [
+          "Working set fits in RAM and is reused heavily per user",
+          "Fleet churns hourly via autoscaling or spot",
+          "Locality wins when reuse is high; replaceability wins when membership changes constantly."
+        ],
+        [
+          "Strict per-message latency forbids a store hop",
+          "Global scale needs multi-region failover",
+          "A store hop sets a latency floor; cross-region affinity sets an availability ceiling."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Production systems almost always land hybrid, and you should say so. Keep durable truth — identity, cart, ledger — in a shared store with explicit consistency. Keep ephemeral heat — connection buffers, subscription cursors, rate-limit windows — local with short TTLs and a defined rebuild path. Use sticky routing only as a performance hint, never as a correctness requirement: any server must be able to reconstruct or reject cleanly if affinity breaks. The principle is simple: **externalize what would anger the user if lost, localize what would slow the user if fetched.** That sentence resolves most arguments about sessions, tokens, and caches without appealing to ideology."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "**Choose stateless compute with externalized state by default for scale and replaceability, and keep stateful affinity only where per-request re-fetch would break latency — naming the lookup-versus-affinity trade-off each time.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:32:48.479Z",
+    "problems": []
+  }
+}

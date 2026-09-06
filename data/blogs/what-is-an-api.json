@@ -1,0 +1,326 @@
+{
+  "slug": "what-is-an-api",
+  "title": "What is an API ?",
+  "summary": "An API is an enforced contract between software: what you can ask for, how, and what you get back — without seeing the implementation.",
+  "kind": "HLD",
+  "problemSlug": "what-is-an-api-93-185",
+  "topic": "Application Programming Interface (API)",
+  "difficulty": "Easy",
+  "coverEmoji": "🔌",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "API",
+    "Fundamentals"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is an API? - Application Programming Interfaces Explained",
+      "url": "https://aws.amazon.com/what-is/api/",
+      "source": "aws.amazon.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is an API? · GitHub",
+      "url": "https://github.com/resources/articles/what-is-an-api",
+      "source": "github.com",
+      "kind": "article"
+    },
+    {
+      "title": "APIs Explained (in 4 Minutes) - YouTube",
+      "url": "https://www.youtube.com/watch?v=bxuYDT-BWaI",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "An API is **a boundary you can enforce**. It hides how a system works and exposes only what callers are allowed to depend on: operations, inputs, outputs, and failure modes. That is the entire point. Every benefit — reuse, independent deploys, polyglot services — comes from that hiding. Every cost — versioning pain, latency, breaking changes — comes from the fact that once other teams build on the boundary, you can no longer change it freely. If you remember nothing else: **design the contract like you will have to live with it for five years, because you will.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What an API actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "An API — application programming interface — is a precise, machine-checkable agreement between a provider and a consumer. The provider says: these are the operations I offer, these are the shapes of data I accept and return, these are the errors you must handle, and these are the rules for authentication, rate limits, and evolution. The consumer codes against that agreement and knows nothing about tables, languages, frameworks, or deploy topology on the other side. That ignorance is deliberate. It is what lets a mobile client written in Swift call a service written in Java backed by three datastores without either side caring. Without an explicit contract you do not have an API. You have shared implementation details, and any internal change becomes a distributed outage."
+    },
+    {
+      "type": "paragraph",
+      "text": "Strip it to parts and there are always four pieces. First, **operations**: what can be invoked, whether `GET /orders/{id}`, a `GetOrder` procedure call, or a `order.created` event you subscribe to. Second, **schemas**: the exact fields, types, required versus optional, and constraints. Third, **semantics**: what the operation actually promises — is it idempotent, is it ordered, is it transactional, how fresh is a read. Fourth, **policies**: who may call, how often, what it costs in quota, and how failures are signaled. Beginners obsess over the first two and ignore the last two. Experienced engineers do the opposite, because semantics and policies are where production breaks. A field missing from a schema is a bug. A retry that double-charges because you never defined idempotency is an incident."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**It is a contract, not code.** The interface definition outlives any single implementation. You should be able to rewrite the server entirely without changing the contract.",
+        "**It hides state and reveals behavior.** Callers ask for outcomes — create this, fetch that — not for direct access to memory, tables, or files.",
+        "**It must define failure as carefully as success.** Status codes, error shapes, retry guidance, and timeout expectations are part of the API, not documentation garnish.",
+        "**It creates coupling at the contract layer to remove coupling everywhere else.** Trade-off: you gain independent evolution of internals, you pay with rigid versioning discipline at the edge."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How a call actually moves"
+    },
+    {
+      "type": "paragraph",
+      "text": "Most APIs you design in interviews are network APIs, usually over HTTP. The flow is brutally simple and worth stating exactly because candidates wave their hands here. The client builds a request: a method plus a target plus headers plus an optional body. The network carries bytes. The provider authenticates the caller, validates the input against the schema, routes to a handler, executes business logic that may touch databases or downstream services, then translates the outcome back into a response: a status, headers, and a body. Nothing about this requires HTTP — the same shape holds for a library call or inter-process call — but the network version adds two brutal realities: latency is no longer zero and partial failure is normal. The request can be lost, duplicated, delayed, or processed twice. That is why a serious API design spends more time on timeouts, retries, and idempotency than on resource naming. The happy path is trivial. The contract under failure is the design."
+    },
+    {
+      "type": "mermaid",
+      "title": "Request lifecycle",
+      "caption": "Every network API call follows this path. Validation and failure handling are part of the contract.",
+      "code": "flowchart LR\n    Client --> Req[\"HTTP request\\nmethod + path + headers + body\"]\n    Req --> Check[\"Contract check\\nauth + validation + routing\"]\n    Check --> Logic[\"Implementation\\nbusiness logic + datastore\"]\n    Logic --> Resp[\"HTTP response\\nstatus + headers + body\"]\n    Resp --> Client"
+    },
+    {
+      "type": "paragraph",
+      "text": "Take a concrete web call. `GET /v1/orders/42` with an authorization header is not just a URL. The method `GET` declares intent: a safe, idempotent read with no side effects, which is why caches and retries can treat it differently from `POST`. The path identifies a resource. Headers carry cross-cutting context: identity, content negotiation, idempotency keys, tracing IDs. The body, for writes, carries the state transition you want. The response mirrors this: a status code tells the caller which class of outcome happened so retry logic can branch without parsing a body, headers carry pagination cursors, rate-limit state, and cache directives, and the body carries the representation. Why this shape? Because intermediaries — load balancers, caches, gateways — need to make decisions from method, status, and headers alone without understanding your domain. Trade-off: you accept the overhead and rigidity of a uniform envelope in exchange for a whole ecosystem of generic infrastructure that works without custom code."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "api_client.py",
+      "code": "import requests\n\n# Contract: GET /v1/orders/{id} -> 200 + Order | 404 + Problem | 429 + Retry-After\nresp = requests.get(\n    \"/v1/orders/42\",\n    headers={\n        \"Authorization\": \"Bearer <token>\",\n        \"Accept\": \"application/json\",\n    },\n    timeout=(2, 5),  # connect, read: timeouts are part of using the contract\n)\n\nif resp.status_code == 200:\n    order = resp.json()  # validated against Order schema\nelif resp.status_code == 404:\n    order = None  # normal control flow, not an exception\nelif resp.status_code == 429:\n    # Contract says: honor Retry-After, back off. Do not spin.\n    raise RuntimeError(f\"throttled, retry after {resp.headers.get('Retry-After')}\")\nelse:\n    resp.raise_for_status()"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The four styles you must compare"
+    },
+    {
+      "type": "paragraph",
+      "text": "There is no best API style. There is only the style whose trade-offs you can afford for this specific interaction. In a design interview you will be expected to name the options, pick one with a reason, and state what you gave up. Memorize these four and the decision becomes mechanical. Default to the boring choice unless a measured requirement forces you off it. Clever protocol selection without a load shape or client constraint to justify it reads as inexperience."
+    },
+    {
+      "type": "table",
+      "caption": "Core API styles compared on mechanism and cost.",
+      "headers": [
+        "Style",
+        "How it works",
+        "Strength",
+        "Cost / trade-off"
+      ],
+      "rows": [
+        [
+          "REST over HTTP + JSON",
+          "Resources named by paths, manipulated with verbs, state in bodies",
+          "Universal tooling, cacheable, human-debuggable, firewall-friendly",
+          "Over-fetching and under-fetching; many round trips; weak typing unless you add a schema"
+        ],
+        [
+          "GraphQL",
+          "Single endpoint, client sends query shape, server returns exactly that shape",
+          "Eliminates over-fetching; fast frontend iteration without backend changes",
+          "Caching is hard; query cost is unpredictable; you must budget complexity and depth or one client can sink you"
+        ],
+        [
+          "gRPC + Protobuf",
+          "Typed service methods over HTTP/2 with binary encoding and streaming",
+          "Strict contracts, tiny payloads, bidirectional streaming, code generation",
+          "Binary is opaque to debug; browser support is awkward; tight schema coupling punishes fast-breaking frontend change"
+        ],
+        [
+          "SOAP / WS-*",
+          "XML envelopes with strict WSDL contract and built-in standards for security and transactions",
+          "Formal contracts and enterprise features like message-level security",
+          "Extreme verbosity and tooling weight; slow to build and painful to evolve; only pick when a counterparty forces it"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "My opinionated default: **build synchronous service-to-service and public APIs as REST with JSON and an explicit schema, and reach for gRPC only for high-volume internal calls or streaming.** Why? REST wins on operability. Any engineer can `curl` it, any gateway can cache and rate-limit it, any log shows the problem. You pay in payload size and chatty fetches. gRPC reverses that: you gain efficiency and type safety, you pay in debuggability and browser friction. GraphQL is a frontend-velocity tool, not a backend-simplicity tool — it moves complexity from the client into query planning, authorization per field, and cost control on the server. Choose it when product iteration is blocked by backend deploys and you are willing to operate a query-cost budget. Otherwise it is an expensive way to avoid designing good resources."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Access models: who gets in"
+    },
+    {
+      "type": "paragraph",
+      "text": "Separate the protocol question from the exposure question. The same REST contract behaves differently as an internal, partner, or open interface because the trust and change-velocity assumptions flip. Internal APIs can break and be fixed in lockstep with one deploy train — trade-off is speed now versus hidden coupling later when ten teams depend on your shortcut. Partner APIs need keys, quotas, and a deprecation policy because you cannot Slack the counterparty to fix their client. Open APIs need OAuth scopes, aggressive throttling, and a compatibility promise measured in years, because abuse is guaranteed and every field you add is forever. Getting this wrong is a classic failure: teams ship an internal-shaped API to the public, then discover they cannot rename anything without breaking strangers."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Internal:** default-allow inside the network, fast iteration, weak versioning. Risk: sprawling undocumented dependencies that freeze refactors.",
+        "**Partner:** per-consumer keys, quotas, SLAs, versioned endpoints. Risk: one noisy consumer starves others unless you isolate quotas.",
+        "**Open / public:** standardized auth, strict rate limits, long deprecation windows. Risk: every design mistake is permanent.",
+        "**Composite / aggregation:** one facade that fans out to many services. Risk: you hide latency and partial failure behind a clean shape — you must decide what a partial success means."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "APIs do not fail with clean exceptions. They fail with timeouts, duplicated effects, stale reads, and thundering retries that turn one slow dependency into a full outage. The mechanism is always the same: the contract underspecified behavior under stress, so every client guessed differently. If the API does not say whether `POST /payments` is idempotent, clients will retry it, and retries will double-charge. If it does not return `Retry-After` on `429`, clients will retry immediately, and throttling will become a self-inflicted DDoS. If pagination cursors expire silently, clients will loop forever or skip records. Design the failure contract first: every mutating endpoint gets an idempotency story, every error gets a retryability label, every list gets stable ordering and cursor expiry semantics. That is not polish. That is the API."
+    },
+    {
+      "type": "table",
+      "caption": "Common API failures, the symptom you observe, and the contract gap behind it.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Root contract gap"
+      ],
+      "rows": [
+        [
+          "Non-idempotent retry",
+          "Duplicate orders, double charges on transient timeout",
+          "No idempotency key; retry creates a new resource each time"
+        ],
+        [
+          "Retry storm",
+          "Latency spike cascades to all callers after one slowdown",
+          "Missing Retry-After, no backoff guidance, no client-side budget"
+        ],
+        [
+          "Breaking field change",
+          "Mobile clients crash after a backend deploy",
+          "Renamed or removed field without versioning; no additive-only rule"
+        ],
+        [
+          "Unbounded list or query",
+          "One request times out workers, memory spikes on server",
+          "No page size cap, no query cost limit, no depth limit"
+        ],
+        [
+          "Auth confusion",
+          "Intermittent 401s, leaked data across tenants",
+          "Coarse scopes, IDs trusted from body instead of token, no audience check"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Authentication versus authorization is where interviews separate candidates. Authentication answers *who is calling* — tokens, signatures, mutual TLS. Authorization answers *what they may do* — scopes, policies, tenant isolation. Conflating them produces the ugliest bug class in APIs: the confused-deputy read where the caller is authenticated but the object ID comes from the URL and is never checked against ownership. Fix it with a rule you can state in one line: **never trust an identifier from the request as proof of ownership; resolve ownership from the credential.** Trade-off: fine-grained checks on every object cost a lookup per request and complicate caching, but coarse checks leak data. There is no middle ground worth defending."
+    },
+    {
+      "type": "code",
+      "language": "http",
+      "filename": "contract.http",
+      "code": "POST /v1/payments HTTP/1.1\nIdempotency-Key: 550e8400-e29b-41d4-a716-446655440000\nContent-Type: application/json\n\n{\"orderId\": \"42\", \"amountCents\": 1999}\n\n# First attempt -> 200 OK {\"paymentId\": \"pay_9\", \"status\": \"succeeded\"}\n# Retried with SAME key after timeout -> 200 OK, same paymentId, no second charge.\n# Retried with DIFFERENT key -> 409 Conflict {\"code\": \"idempotency_key_reuse\"}\n# Contract rule: server stores key -> result for 24h. Client generates key per intent."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Versioning: the contract will change"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every successful API breaks. The only question is whether the break is planned. The durable rule is **additive changes only within a version**: you may add optional fields and new endpoints, you may never rename, remove, or change the meaning of existing fields. When you must break, ship a new version — path versioning like `/v2` is the most legible and gateway-friendly — and run both for a defined sunset period with metrics on old-version traffic. Header versioning is cleaner in theory and invisible in practice, which means harder debugging and weaker cache separation. Trade-off stated plainly: path versions duplicate surface and routing logic, but every log line, dashboard, and cache key tells you which contract is in play. That observability is worth the duplication. Whatever you choose, never version by magic behavior flags, and never break a versioned contract without moving the version."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Define the resource model before endpoints",
+          "text": "Say what the nouns are and their identifiers. For a booking system: users, resources, bookings. Then map operations. Interviewers fail candidates who list verbs before nouns."
+        },
+        {
+          "title": "Write two calls end to end",
+          "text": "Pick one read and one write. Show method, path, headers, request body, success status plus body, and two error cases. This forces you to commit to idempotency and error shapes."
+        },
+        {
+          "title": "State auth, limits, and pagination",
+          "text": "Name the credential type, the scope model, the rate-limit key and response, and the pagination mechanism with cursor expiry. These four lines signal seniority more than any clever path design."
+        },
+        {
+          "title": "Argue the style choice",
+          "text": "Say why REST versus gRPC versus GraphQL for this workload. Cite payload size, client type, caching needs, and streaming. Name what you sacrificed."
+        },
+        {
+          "title": "Close with evolution",
+          "text": "Explain your additive-only rule, how you would ship a breaking change, and how you detect old-version usage. End with idempotency and retry behavior for the write path."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**An API is the same as a web service.** No. A library, an OS call, and a queue consumer all expose APIs. HTTP is one transport, not the definition.",
+        "**REST means any JSON over HTTP.** No. Without resource naming, correct verb semantics, and meaningful status codes, you have JSON-RPC with pretty paths — which is fine, but do not call it REST to sound rigorous.",
+        "**Status 200 with an error string is harmless.** It breaks every generic client. Retries, caches, load balancers, and monitors branch on status. Put machine-actionable outcome in the status, detail in the body.",
+        "**More endpoints means a richer API.** The opposite. Each endpoint is surface you must version, secure, throttle, and support. Fewer, well-scoped operations with good filtering beat a sprawling surface.",
+        "**Documentation is the contract.** Documentation describes the contract; the schema plus validation plus tests enforce it. If a field is undocumented but accepted, clients will depend on it."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to expose an API and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Judgment table: API boundaries pay off in some places and tax you in others.",
+      "headers": [
+        "Situation",
+        "Do this",
+        "Why / trade-off"
+      ],
+      "rows": [
+        [
+          "Independent teams or deploy units need to interact",
+          "Expose a versioned API",
+          "Decouples release trains; costs versioning and compatibility work"
+        ],
+        [
+          "High-volume internal hot path between two services you own",
+          "Use a typed RPC with code generation",
+          "Cuts payload and enforces schema; costs debuggability and flexibility"
+        ],
+        [
+          "Frontend needs many shapes over the same graph",
+          "Consider a query-shaped endpoint with cost limits",
+          "Unblocks UI iteration; you accept server-side complexity and budgeting"
+        ],
+        [
+          "One-off script or single-owner automation",
+          "Do not build a public-grade API; use a function or direct access",
+          "An enforced contract with SLAs is overhead with no second consumer"
+        ],
+        [
+          "Realtime fan-out or state changes",
+          "Expose events or webhooks, not polling endpoints",
+          "Push scales and stays fresh; you accept at-least-once delivery and must design for duplicates"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The senior move is knowing when *not* to add an endpoint. Every operation you publish is a promise to keep it working, fast, secure, and compatible while callers multiply. If only one caller exists and you own both sides, a shared module or a narrow internal call is cheaper than a versioned boundary. Add the boundary when organizational or scaling pressure demands independent evolution — separate owners, separate deploy cadence, untrusted callers. Until then, restraint is the design. An API is a liability you accept to buy independence. Price it like one."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "An API is **an enforced contract of operations, schemas, semantics, and policies that lets callers get outcomes without knowing the implementation — and its real design is how it behaves under retry, change, and abuse.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:48:35.037Z",
+    "problems": []
+  }
+}

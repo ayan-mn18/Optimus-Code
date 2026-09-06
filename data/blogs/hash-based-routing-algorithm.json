@@ -1,0 +1,290 @@
+{
+  "slug": "hash-based-routing-algorithm",
+  "title": "Hash based Routing Algorithm",
+  "summary": "Hash-based routing maps each key to an owner with pure computation, no coordinator. This concept page explains naive modulo, consistent hashing with virtual nodes, real failure modes, and when to use it.",
+  "kind": "HLD",
+  "problemSlug": "hash-based-routing-algorithm-90-198",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔀",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Routing",
+    "Consistent-Hashing"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Hash-Based Routing | Cloud Foundry Docs",
+      "url": "https://docs.cloudfoundry.org/devguide/hash-based-routing.html",
+      "source": "docs.cloudfoundry.org",
+      "kind": "article"
+    },
+    {
+      "title": "Hash routing - Glossary - MDN Web Docs",
+      "url": "https://developer.mozilla.org/en-US/docs/Glossary/Hash_routing",
+      "source": "developer.mozilla.org",
+      "kind": "article"
+    },
+    {
+      "title": "Load Balancing Hash Algorithms - Huawei Technical Support",
+      "url": "https://support.huawei.com/enterprise/en/doc/EDOC1100086965",
+      "source": "support.huawei.com",
+      "kind": "article"
+    },
+    {
+      "title": "Hash-based Routing in MoE Models - ApX Machine Learning",
+      "url": "https://apxml.com/courses/mixture-of-experts-advanced-implementation/chapter-2-advanced-routing-mechanisms/hash-based-routing",
+      "source": "apxml.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Hash-based routing buys you **coordination-free ownership**: any client can compute `owner = route(hash(key))` without asking a master. The trade-off is brutal and unavoidable — **you trade perfect balance and flexibility for deterministic, O(1) routing**. If you accept that, everything else is implementation detail."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Hash-based routing is a rule for assigning every request or piece of data to exactly one node in a distributed set, using only the key and the current membership view. You hash the routing key — a user ID, cache key, shard key, partition key — with a stable, uniform hash function like `murmur3`, `xxhash`, or `SHA-256` truncated, then map that hash value to a node. No ZooKeeper lookup on the hot path, no broadcast, no central directory. Every router, client, and server that agrees on the hash function and the node list computes the same answer independently. That is why it scales: routing cost does not grow with cluster size, and routing state is just an array of node identities."
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive form is `index = hash(key) % N`, where `N` is the node count. The production form is almost never that. It is **consistent hashing on a ring with virtual nodes**: you hash both nodes and keys into the same `2^32` or `2^64` space, sort them on a ring, and assign each key to the first node clockwise from its hash. Each physical node claims `V` virtual positions — typically 100 to 500 — to smooth out variance. The reason for the added complexity is remapping cost. With modulo, adding or removing one node reshuffles roughly `(N-1)/N` of all keys. With a ring, only `1/N` of keys move, specifically the keys owned by the affected range. You pay extra memory and lookup logic to buy minimal disruption on membership change."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The path is always the same: extract a stable routing key, hash it, map hash to owner, forward. The critical design decision is where that logic lives. Put it in a smart client or sidecar proxy and you remove a hop and a single point of failure, at the cost of pushing membership updates to every client. Put it in a dedicated routing tier and you simplify clients, at the cost of an extra network hop and a tier you must scale. Most scalable systems choose smart clients plus a gossip or control-plane broadcast for membership. The hash function itself must be uniform and stable across languages and restarts — never use a language-default `hashCode()` that changes per process."
+    },
+    {
+      "type": "mermaid",
+      "title": "Naive hash routing path",
+      "caption": "Every router computes the same owner without coordination.",
+      "code": "flowchart TD\n  Req[\"Request with key user:8421\"] --> Extract[\"Extract routing key\"]\n  Extract --> Hash[\"hash(key) -> 64-bit int\"]\n  Hash --> Map[\"Map to owner: mod N or ring lookup\"]\n  Map --> A[\"Node A\"]\n  Map --> B[\"Node B\"]\n  Map --> C[\"Node C\"]\n  A --> Serve[\"Serve or forward\"]\n  B --> Serve\n  C --> Serve"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk this flow for `user:8421` with `N=3`. Every proxy hashes the same string to, say, `0x9F3A...`, computes `value % 3 = 1`, and forwards to Node B. Node B is authoritative for that key, so caches, rate limits, and writes for that user naturally serialize there without distributed locking. Add a fourth node and modulo breaks: `value % 4` now points elsewhere for most keys, so caches miss en masse and shards need bulk migration. That remapping storm is exactly why naive modulo is an interview trap — it is correct until membership changes, then it punishes you. The ring version replaces the `% N` box with a sorted search for the next virtual node, which bounds the damage."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "From modulo to ring: why naive breaks"
+    },
+    {
+      "type": "paragraph",
+      "text": "Consistent hashing fixes the remapping problem by decoupling hash space from node count. Imagine a clock face from `0` to `2^32-1`. Hash each virtual node to a random position on that clock. Hash each key to a position. Walk clockwise until you hit a virtual node — its physical owner wins. When Node D joins, it inserts its `V` points at random positions and steals only the narrow arcs immediately preceding them from their current owners. When a node dies, only its arcs fall to clockwise successors. Nothing else moves. Virtual nodes matter because a single random point per physical node would leave huge variance — one node might own 40% of the ring by luck. With 200 points per node, the law of large numbers evens out ownership to within a few percent, at the cost of a larger sorted ring to store and binary-search. Trade-off named: **memory and lookup cost for balance quality**."
+    },
+    {
+      "type": "mermaid",
+      "title": "Consistent hash ring with virtual nodes",
+      "caption": "Keys attach to the next virtual node clockwise; physical load is the sum of its virtual arcs.",
+      "code": "flowchart LR\n  K[\"hash(user:8421) = 42\"] --> Search[\"Clockwise search on ring 0-255\"]\n  Search --> V1[\"A-2 at 55\"]\n  Search --> V2[\"B-1 at 120\"]\n  Search --> V3[\"C-3 at 210\"]\n  V1 --> PA[\"Physical Node A\"]\n  V2 --> PB[\"Physical Node B\"]\n  V3 --> PC[\"Physical Node C\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "In this toy ring, key hash `42` walks clockwise to `A-2 at 55`, so Node A owns it. If Node D joins with a virtual node at `48`, only keys in `(previous point, 48]` move — a sliver. That locality is the whole point. In code this is a sorted list of `(token, node)` tuples plus binary search, or a balanced tree for fast inserts. On membership change you publish a versioned ring — epoch `17`, token list hash — and routers cut over atomically. Requests in flight with epoch `16` finish on the old ring; new requests use `17`. Without versioning you get split-brain ownership during propagation, where two nodes both think they own a key and both accept writes. That is not a hash problem, it is a distribution-of-config problem, and you must design for it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What hash routing gives you and what it charges in return.",
+      "headers": [
+        "Property",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Routing cost",
+          "O(1) compute, no lookup RPC, no coordinator bottleneck",
+          "Every participant must hold a consistent membership view; stale views misroute"
+        ],
+        [
+          "Scaling membership",
+          "Add capacity by adding nodes; with ring only ~1/N keys move",
+          "Need data migration, cache warmup, and versioned ring distribution"
+        ],
+        [
+          "Load balance",
+          "Uniform hash spreads random keys evenly without a balancer",
+          "No adaptivity: hot keys and skewed key popularity crush one node"
+        ],
+        [
+          "Fault isolation",
+          "Deterministic ownership makes reasoning and debugging simple",
+          "Failure concentrates: successor inherits full load of dead node instantly"
+        ],
+        [
+          "State",
+          "Tiny: node list plus V tokens per node",
+          "Rebalancing granularity is fixed by V; too few tokens means lumpy, too many means slow convergence"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The opinionated summary: use hash routing to **eliminate coordination**, not to **achieve balance**. It gives near-perfect balance only when keys are numerous, uniformly hashed, and roughly equal cost. Skewed workloads — one celebrity key with 1000x traffic, or variable-weight requests — defeat the math. That is why serious deployments layer bounded-load consistent hashing on top: if the hashed owner is over its load threshold, probe the next `k` clockwise candidates and pick the least loaded. You sacrifice strict determinism for survival. Name that trade-off explicitly in design reviews: deterministic single-owner versus overload protection. You cannot have both without an extra directory."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Hash routing fails in three predictable ways, and each has a distinct smell. First, **hot keys**: uniform hashing balances key *count*, not request *weight*. Ten million requests for one key all land on one node regardless of ring quality, driving CPU to 100% while peers sit idle. Second, **membership churn storms**: if health checks flap, nodes join and leave repeatedly, every flap triggers range migration and cache invalidation, which spikes backend load, which causes more health failures — a death spiral. Third, **heterogeneous capacity**: treating a 64-core machine and an 8-core machine as equal ring citizens overloads the small box. All three stem from the same root: the hash is blind to runtime reality. The fix is always an escape hatch outside the hash — replication, shedding, or weighted tokens — not a better hash function."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Cache hit rate cliff on scale-out: after adding nodes, p99 latency spikes and backend QPS jumps 5-10x for minutes. Cause is mass remapping with naive modulo or cold new ranges with no warming. You will see miss storms, not errors.",
+        "Single-node saturation with idle peers: one node at 95% CPU and elevated GC while others sit at 20%. Cause is a hot key or a large, frequently accessed object. The hash is working as designed; the workload is skewed.",
+        "Flapping ownership and duplicate writes: two nodes both accept writes for the same key during ring propagation. Symptom is version conflicts, lost updates, or double counting. Cause is unversioned membership cutover.",
+        "Cascading overload on node loss: a node dies, its clockwise successor suddenly doubles its QPS and then dies too. Symptom is sequential failures walking around the ring. Cause is no bounded-load probing and no replica fallback."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The reshard trap",
+      "text": "Never autoscale a hash-routed tier on CPU alone without **migration throttling and warmup**. New nodes with empty caches look healthy, attract their full hash share immediately, then drown and get killed by the autoscaler. Require staged ramp, prefetched hot ranges, and a cap on concurrent range moves."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes it concrete"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "consistent_hash.py",
+      "code": "import bisect, hashlib\n\ndef token(s: str) -> int:\n    # Stable across processes and languages. Never use hash().\n    return int(hashlib.md5(s.encode()).hexdigest(), 16)\n\nclass ConsistentHash:\n    def __init__(self, nodes, vnodes=200):\n        self.vnodes = vnodes\n        self.ring: list[tuple[int, str]] = []\n        for n in nodes:\n            self.add_node(n)\n\n    def add_node(self, node: str):\n        for i in range(self.vnodes):\n            self.ring.append((token(f\"{node}#{i}\"), node))\n        self.ring.sort()  # O(V log V) on membership change, not per request\n\n    def remove_node(self, node: str):\n        self.ring = [(t, n) for t, n in self.ring if n != node]\n\n    def owner(self, key: str) -> str:\n        h = token(key)\n        keys = [t for t, _ in self.ring]\n        idx = bisect.bisect_right(keys, h) % len(self.ring)\n        return self.ring[idx][1]\n\n# Naive modulo for contrast: fast but remaps ~all keys on N change.\ndef naive_owner(key: str, nodes: list[str]) -> str:\n    return nodes[token(key) % len(nodes)]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three choices in that snippet carry the design. First, `md5` as a stable hash — in production prefer `murmur3` or `xxhash` for speed, but stability across deploys matters more than cryptographic strength. Second, pre-sorted `ring` with `bisect` — routing is `O(log(V*N))` binary search, cheap enough for millions of lookups per second, while insert and remove pay the sort cost off the hot path. Third, `vnodes=200` — that constant is the balance knob. Raise it for smoother distribution across many nodes and heterogeneous weights (give big machines more tokens); lower it to shrink gossip payloads and speed convergence. If you need weighted capacity, do not add special cases — just scale `vnodes` per node proportional to CPU or memory. Same code, no new mechanism."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with the naive answer and kill it yourself",
+          "text": "Say `hash(key) % N` first, then immediately state why it fails: adding a node remaps almost everything. Interviewers promote you when you volunteer the failure mode before they ask. Draw the remapping math: only 1/N keys should move."
+        },
+        {
+          "title": "Draw the ring with virtual nodes",
+          "text": "Sketch hash space, place tokens, walk a key clockwise. State V explicitly and justify 100-500 as variance control. Mention binary search for lookup and versioned ring distribution for atomic cutover."
+        },
+        {
+          "title": "Quantify membership change",
+          "text": "Show join moves only predecessor arcs, leave moves only dead arcs to successors. Contrast with modulo. If asked for numbers: with N nodes and uniform keys, each node owns ~1/N of keys; churn cost is proportional to keys in affected ranges, not total keys."
+        },
+        {
+          "title": "Break your own design with skew",
+          "text": "Introduce a hot key 1000x hotter than average and heterogeneous nodes. Propose bounded-load probing, key splitting (append suffix to hot key), replication of hot ranges, and weighted vnodes. This is where medium becomes senior."
+        },
+        {
+          "title": "Close with operations",
+          "text": "Explain health checking, flap damping, migration throttling, cache warming, and replica fallback on owner failure. State the invariant: at most one writer per key per ring epoch, with epochs to prevent split brain."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Consistent hashing balances load.** No — it balances key *count* under uniform hashing. It knows nothing about request rate, CPU cost per key, or node size. Without weights or load-aware fallback, skew will still pin one node.",
+        "**More virtual nodes is always better.** Beyond ~200-500 per node, balance gains flatten while ring size, gossip bandwidth, and convergence time keep growing. Tune V to cluster size and heterogeneity, then stop.",
+        "**Hash routing eliminates the need for replication.** Routing picks an owner; replication keeps data alive when that owner dies. Without replicas or fallback to the next clockwise node, a single failure makes its ranges unavailable.",
+        "**Any hash function works.** Language-default hashes randomize per process for security and break cross-node agreement. You need a stable, uniform, cross-language function and a fixed serialization of the key.",
+        "**Hash routing and load balancing are the same thing.** A balancer optimizes for current utilization and can send any request anywhere stateless. Hash routing optimizes for deterministic affinity and state locality. Confusing them leads to putting stateful workloads behind round-robin and wondering why caches never hit."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Decision guide for hash-based routing in scalable designs.",
+      "headers": [
+        "Scenario",
+        "Use hash routing",
+        "Use something else"
+      ],
+      "rows": [
+        [
+          "Distributed cache / key-value sharding",
+          "Yes — affinity gives high hit rates and no directory lookup",
+          "If working set is tiny enough for full replication, just replicate"
+        ],
+        [
+          "Stateful session or connection affinity",
+          "Yes — same user always lands on same server without sticky cookies",
+          "If requests are stateless, prefer least-connections or latency-aware balancing"
+        ],
+        [
+          "Highly skewed or celebrity keys",
+          "Only with splitter, replication, or bounded-load probing layered on top",
+          "Alone — one node will melt while hash math looks fine"
+        ],
+        [
+          "Rapidly changing membership / spot capacity",
+          "Only with flap damping, versioned rings, and throttled migration",
+          "With naive modulo or ungated autoscaling — expect remap storms"
+        ],
+        [
+          "Strong global balance or priorities",
+          "No — hash is blind to cost and priority",
+          "Central scheduler or load-aware directory that can place by actual weight"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The rule of thumb: choose hash routing when **deterministic locality matters more than perfect instantaneous balance** — caches, shards, queues, and stateful services where hitting the same owner avoids a fetch or a lock. Choose a directory or balancer when placement must react to load, heterogeneity, or priority in real time. Many production systems do both: hash for the fast path, with a bounded probe to `k` successors and a control plane that adjusts weights and moves virtual nodes in the background. You keep O(1) routing in the common case and buy adaptivity where the hash is blind. Name that hybrid explicitly — pure hash versus hash-plus-directory is the trade-off the interviewer wants to hear."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Route by `owner = clockwise_successor(hash(key))` on a versioned ring with weighted virtual nodes, so any client finds the owner without coordination and only `1/N` keys move on membership change — then handle skew with bounded-load probing and hot-key splitting.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:14:18.047Z",
+    "problems": []
+  }
+}

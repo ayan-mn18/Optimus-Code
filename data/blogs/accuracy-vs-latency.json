@@ -1,0 +1,296 @@
+{
+  "slug": "accuracy-vs-latency",
+  "title": "Accuracy vs Latency",
+  "summary": "Accuracy vs latency is the core HLD time-for-correctness trade-off: every millisecond buys computation, data, or consensus, and interviewers want to hear where you spend it and what you ship when the deadline hits.",
+  "kind": "HLD",
+  "problemSlug": "accuracy-vs-latency-91-183",
+  "topic": "System Design Tradeoffs",
+  "difficulty": "Medium",
+  "coverEmoji": "⏱️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "System Design Tradeoffs",
+    "Latency",
+    "Accuracy"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Latency vs. Accuracy in System Design - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/latency-vs-accuracy-in-system-design/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "The Latency vs Accuracy Framework: Choosing the Right System Design ...",
+      "url": "https://medium.com/@anandvlinkedin/the-latency-vs-accuracy-framework-choosing-the-right-system-design-trade-off-e2a1e0d84981",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Throughput vs Latency: Understanding the Key Difference ...",
+      "url": "https://estuary.dev/blog/latency-vs-throughput/",
+      "source": "estuary.dev",
+      "kind": "article"
+    },
+    {
+      "title": "Latency vs Quality: Tradeoffs in AI Workflow Design - GMI Cloud",
+      "url": "https://www.gmicloud.ai/en/blog/latency-vs-quality-tradeoffs-in-ai-workflow-design",
+      "source": "gmicloud.ai",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Latency and accuracy trade against each other because **correctness takes work, and work takes time**. More candidates checked, more replicas consulted, more features scored, fresher data fetched — every one of those improves the answer and worsens the response time. There is no design that maximizes both. There is only a deadline, a fallback, and an explicit decision about what ships when time runs out."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What accuracy vs latency actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Latency is **time to a usable response**, measured as p50 and p99 under load, not averages on an empty system. It includes network transit, queueing, computation, and I/O. Accuracy is **how right and how complete the response is**: correct value, correct ranking, fresh data, full coverage, low false positives and false negatives. The trade-off exists because the operations that increase accuracy — consult more partitions, wait for a quorum, run a larger model, rerank 1000 candidates instead of 50, join against the freshest feature store — all consume the same budget latency is measured against. If you refuse to pick, the queue picks for you in the form of timeouts."
+    },
+    {
+      "type": "paragraph",
+      "text": "Be precise about which accuracy you mean, because each one costs a different kind of latency. **Freshness accuracy** costs a synchronous read or a cache invalidation: serve from CDN in 20ms and you may be stale; go to origin and you add 150ms. **Coverage accuracy** costs fan-out: ask 1 shard and you answer fast but miss results; scatter to 20 shards and your p99 becomes the slowest shard. **Model accuracy** costs compute depth: a heuristic or tiny model answers in 10ms with 85% precision; a large reranker or multi-step reasoning chain takes 800ms to reach 95%. **Consistency accuracy** costs coordination: return the local replica now, or wait for a quorum and pay cross-region round trips. Name which one the requirement cares about before you optimize anything."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: where time buys correctness"
+    },
+    {
+      "type": "paragraph",
+      "text": "Almost every latency-sensitive system converges on the same shape: a **fast path that is usually good enough, a slow path that is more correct, and a deadline that decides between them**. The request first hits caches, materialized views, heuristics, or a small model. In parallel or on miss, you start the expensive work — fan-out to shards, fetch fresh features, run verification, consult a quorum. A deadline propagates down the call tree. When it fires, you return the best answer you have and optionally reconcile later. The WHY is tail control: without a deadline, one slow dependency determines your p99. With a deadline, you bound latency and let accuracy degrade gracefully instead of failing outright."
+    },
+    {
+      "type": "mermaid",
+      "title": "Deadline-bounded accuracy",
+      "caption": "Fast path first, slow path bounded by a deadline, best-effort on timeout.",
+      "code": "flowchart TD\n  A[Client Request + Deadline] --> B{Fast Path Hit?}\n  B -->|Yes: Cache / Heuristic| C[Return in ms]\n  B -->|No| D[Fan-out / Deep Compute]\n  D --> E[Aggregate + Verify]\n  E --> F{Deadline Left?}\n  F -->|Yes| G[Accurate Response]\n  F -->|No| H[Best-Effort + Reconcile Later]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The critical detail is **deadline propagation, not just a top-level timeout**. If the API has 300ms, the fan-out layer gets 250ms, leaf shards get 180ms, and the reranker gets what remains. Without that, each layer adds its own timeout and the user waits for the sum. The second detail is **what best-effort means**: return partial shard results with a flag, serve a slightly stale price with a TTL, return the small-model answer and kick off async refinement. The trade-off every time: a hard bound on latency forces you to define degraded-but-acceptable accuracy in advance. Teams that skip that definition end up returning errors or silently wrong answers under pressure."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The five places you pay time for correctness"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Avoid the work: cache, precompute, materialize.** Serve a precomputed ranking, embedding index, or aggregate. You trade freshness and personalization for single-digit milliseconds. WHY it wins: no compute on the hot path. Trade-off: invalidation lag becomes your accuracy ceiling.",
+        "**Do less work per item: heuristics, quantization, small models, early exit.** Score with 20 features instead of 500, use int8 instead of fp32, route easy queries to the tiny model. WHY it wins: 5-10x latency cut. Trade-off: long-tail queries lose precision where it matters most.",
+        "**Do work in parallel: scatter-gather, hedging, speculative execution.** Query 3 replicas and take the first, fan out to shards concurrently. WHY it wins: p99 drops because you stop waiting for stragglers. Trade-off: you multiply load and cost, which becomes latency again under saturation.",
+        "**Do the work elsewhere or later: async verification, write-behind reconciliation, streaming refinement.** Return now, verify fraud / abuse / final price asynchronously. WHY it wins: user-perceived latency collapses. Trade-off: you must handle compensation when the async check disagrees.",
+        "**Wait for more truth: quorum reads, strong consistency, fresh feature fetch, deep rerank.** Consult a majority, bypass cache, rerank top-1000. WHY it wins: measurably fewer wrong answers. Trade-off: your p99 is now tied to the slowest participant plus compute depth."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers reject answers that pretend caching or scaling removes the tension. It moves it. Faster hardware and more parallelism buy headroom, but product requirements immediately spend it on deeper models and fresher data. State both sides every time you propose a knob."
+    },
+    {
+      "type": "table",
+      "caption": "Each latency win has a named accuracy or cost bill.",
+      "headers": [
+        "Choice",
+        "Latency win",
+        "Accuracy / robustness bill"
+      ],
+      "rows": [
+        [
+          "Serve from cache / CDN / materialized view",
+          "20-50ms, shields origin, absorbs spikes",
+          "Stale reads; misses personalization; invalidation complexity; thundering herd on expiry"
+        ],
+        [
+          "Heuristic or small model first",
+          "10-100ms vs 500ms+; cheap to scale",
+          "Lower precision/recall; biased on edge cases; needs routing and eval to stay honest"
+        ],
+        [
+          "Scatter-gather + take-first / hedged requests",
+          "Cuts p99 by ignoring stragglers",
+          "2-3x load; partial coverage if you cap fan-out; duplicate side effects if not idempotent"
+        ],
+        [
+          "Timeout + degraded fallback",
+          "Bounded p99; survives dependency outage",
+          "Partial or approximate answers; clients must handle flags; silent quality drop if unmonitored"
+        ],
+        [
+          "Quorum / strong consistency / fresh read",
+          "Correct, defensible answer",
+          "Cross-region RTTs; higher p99; lower availability under partition — you pay CAP directly"
+        ],
+        [
+          "Deep rerank / large model / multi-step reasoning",
+          "Best relevance and fewest false decisions",
+          "Seconds of compute; expensive GPUs; queueing collapse under load without admission control"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The meta-trade-off: **predictability vs peak quality**. A system that always answers in 120ms with 90% precision beats a system that answers in 80ms half the time and 4 seconds the other half with 96% precision, because callers build timeouts around your p99, not your average. That is WHY search, autocomplete, feeds, and ads all ship tiered quality: top-tier latency SLO with explicitly lower accuracy, plus a slower path for the queries where accuracy pays. If you propose the slow path, you must also propose admission control, load shedding, and a fallback — otherwise your accurate design is a latency outage waiting for traffic."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Stale-cache incident: fast but wrong.** Symptom: p99 looks perfect, correctness metrics crater — users see old prices, revoked permissions, or yesterday's rankings. Cause: TTL too long, no version check, no single-flight refresh. You optimized latency and stopped measuring accuracy.",
+        "**Rerank blowup: accurate but timed out.** Symptom: p50 fine, p99 explodes 10x during peak; upstream retries amplify it. Cause: reranking 1000 candidates with no deadline propagation or max-candidate cap. The fix is a budget: rerank min(N, time-left) and ship partial.",
+        "**Hedging overload: p99 fix becomes capacity collapse.** Symptom: latency improves at low QPS, then everything degrades at once. Cause: unconditional hedged requests at p95 add 30-50% load, which creates the queueing you tried to avoid. Hedge only when idle capacity exists and make requests idempotent.",
+        "**Silent degradation: fallback without a signal.** Symptom: dashboards green, user complaints rising. Cause: timeout fallback returns 200 OK with partial data and no `degraded:true` flag, no counter, no shadow eval. You cannot tune a trade-off you do not measure — emit fallback rate, coverage, and freshness age on every response.",
+        "**Async reconciliation gap: now vs truth diverge.** Symptom: order accepted then cancelled, fraud caught after payout, count corrected minutes later. Cause: you returned before verification with no compensation path. Low perceived latency is correct only if the business accepts reversals."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "What to monitor",
+      "text": "Track **latency and accuracy as a pair**: p50/p99 latency alongside fallback rate, result coverage, data age, and a sampled correctness score. Alert when fallback rate rises even if latency is flat — that is your accuracy silently paying for your SLO."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Making the trade-off explicit in code"
+    },
+    {
+      "type": "paragraph",
+      "text": "The design only counts if the deadline is enforced in code, not in a diagram. The pattern below is the one to defend: try the cheap correct-enough path, fan out with a bounded budget, return best-effort with a flag. WHY this shape: it makes the trade-off reviewable — product can see exactly what ships on timeout — and it prevents one slow leaf from owning your p99."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "bounded_search.py",
+      "code": "import time\nfrom concurrent.futures import ThreadPoolExecutor, wait, ALL_COMPLETED\n\ndef search(query: str, deadline_ms: int = 250):\n    start = time.monotonic()\n    def time_left_ms():\n        return deadline_ms - int((time.monotonic() - start) * 1000)\n\n    # 1. Fast path: usually good enough, single-digit ms.\n    hit = cache_get(query)\n    if hit and hit.fresh_enough(max_age_s=60):\n        return result(items=hit.items, degraded=False, source=\"cache\")\n\n    # 2. Slow path: fan-out bounded by remaining budget.\n    # Trade-off: smaller budget = lower coverage but bounded p99.\n    budget = time_left_ms()\n    if budget <= 20:\n        return result(items=hit.items if hit else [], degraded=True, source=\"stale\")\n\n    shards = route_shards(query, max_shards=8 if budget > 150 else 3)\n    with ThreadPoolExecutor(max_workers=len(shards)) as pool:\n        futs = [pool.submit(query_shard, s, query) for s in shards]\n        done, _ = wait(futs, timeout=budget / 1000.0, return_when=ALL_COMPLETED)\n        got = [f.result() for f in done if not f.exception()]\n\n    if not got:\n        return result(items=hit.items if hit else [], degraded=True, source=\"stale\")\n\n    # 3. Spend what is left on accuracy, not more.\n    remaining = time_left_ms()\n    items = merge(got)\n    if remaining > 40:\n        items = rerank(items, top_k=50 if remaining < 100 else 200)\n        degraded = len(done) != len(shards)  # partial coverage => flag it\n    else:\n        degraded = True  # no time to verify => say so\n\n    return result(items=items, degraded=degraded, source=\"origin\")"
+    },
+    {
+      "type": "paragraph",
+      "text": "Three decisions carry the interview: `max_shards` shrinks as budget shrinks, so coverage degrades instead of latency spiking. `rerank` gets `top_k` proportional to time left, so model depth is a function of deadline, not a constant. Every return carries `degraded`, so the caller and your metrics distinguish a full answer from a fast one. The trade-off every time: you write more plumbing — timeouts, merge logic, flags — to buy a p99 you can promise without lying about correctness."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Force the SLO out of the prompt",
+          "text": "Ask: what p99 at what QPS, and what does wrong cost? Autocomplete at 100ms tolerates approximate; payment authorization does not. If the interviewer will not give numbers, propose your own: 200ms p99, 95% coverage, max data age 60s — then design to them."
+        },
+        {
+          "title": "Name the accuracy dimension",
+          "text": "Say which one you are trading: freshness, coverage, model quality, or consistency. For feed ranking it is coverage plus rerank depth; for inventory it is freshness plus consistency. This stops generic caching hand-waving."
+        },
+        {
+          "title": "Draw the two paths and the deadline",
+          "text": "Sketch fast path, slow path, and where the deadline cuts. Show propagation: gateway 300ms, fan-out 220ms, leaves 150ms. Interviewers pass candidates who bound the tail, not those who list components."
+        },
+        {
+          "title": "Pick fallbacks with flags",
+          "text": "For each dependency, state timeout, fallback, and signal: stale cache with age header, partial shards with coverage count, small-model answer with rescore queued. No silent fallbacks — that is the most common fail."
+        },
+        {
+          "title": "Close with measurement and levers",
+          "text": "End with: we will A/B fallback thresholds against correctness metrics, add admission control and load shedding to protect p99, and expose levers — TTL, fan-out cap, rerank depth — so product can move along the curve without a redesign."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail interviews"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**\"Average latency is fine.\"** No. Users and callers feel p99 and timeouts. An average of 100ms with a 2s tail breaks every upstream deadline. Design to p99, report p50/p99/p99.9.",
+        "**\"More data always means more accuracy.\"** Past a point it means more stragglers and noisier features. Reranking 5000 vs 500 rarely moves relevance but reliably moves p99. Cap candidates and prove gains offline.",
+        "**\"Caching improves both.\"** Caching improves latency and throughput at the direct cost of freshness accuracy. If you propose a cache, you must propose TTL, invalidation, and stale-while-revalidate behavior.",
+        "**\"Async makes it accurate and fast.\"** Async makes it *perceived* fast. The system is still eventually accurate, and you now owe a compensation path for every disagreement between the fast answer and the verified one.",
+        "**\"A bigger model fixes quality without latency cost.\"** It fixes quality by spending latency and money. If you want the big model on the hot path, you must also bring quantization, distillation, speculative decoding, or routing so easy requests never pay the full price."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to favor which side"
+    },
+    {
+      "type": "table",
+      "caption": "Default stance by workload; move only with measured SLOs.",
+      "headers": [
+        "Scenario",
+        "Favor",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Autocomplete, typeahead, feed prefetch",
+          "Latency (50-150ms p99)",
+          "User abandons slow keystrokes; approximate prefix matches are acceptable; refine as they type"
+        ],
+        [
+          "Search, ads / feed ranking, recommendations",
+          "Tiered: fast base + bounded rerank",
+          "Relevance pays, but only within a deadline; ship small-model ranking, spend leftover budget on rerank"
+        ],
+        [
+          "Fraud, abuse, access control, inventory hold",
+          "Accuracy first, latency bounded with compensation",
+          "A wrong allow is far costlier than 300ms; return pend-or-deny and reconcile asynchronously"
+        ],
+        [
+          "LLM RAG / agents",
+          "Latency via routing + progressive disclosure",
+          "Stream tokens early, retrieve in parallel, cap reasoning steps; deep reasoning only for high-value intents with user consent to wait"
+        ],
+        [
+          "Billing, ledger, reservations, config rollout",
+          "Accuracy / consistency, accept higher latency",
+          "Silent wrongness compounds; callers can retry a slow 500ms but cannot un-charge or un-book"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The opinionated default: **start latency-bounded, then buy accuracy only where eval proves it moves the business metric**. Most teams do the reverse — build the most correct pipeline, then panic-cache it when p99 misses. That retrofit produces stale, unflagged fallbacks. If you start with deadlines, flags, and tiered quality, every later accuracy investment slots into leftover budget instead of breaking the SLO."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "I will **bound p99 with propagated deadlines and ship the best answer available at the deadline — cached, partial, or small-model — flagged as degraded, then spend any remaining budget on fan-out, freshness, and rerank depth where measurement shows it actually improves correctness.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:27:09.025Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,314 @@
+{
+  "slug": "chain-of-responsibility",
+  "title": "Chain of Responsibility",
+  "summary": "Chain of Responsibility decouples sender from handler by passing a request down an ordered chain until something claims it. Cheap to extend, painful to debug.",
+  "kind": "LLD",
+  "problemSlug": "chain-of-responsibility-36-76",
+  "topic": "Behavioral Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "⛓️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Behavioral Design Patterns",
+    "Chain of Responsibility"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Chain-of-responsibility pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Chain-of-responsibility_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Chain of Responsibility Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/chain-responsibility-design-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Chain of Responsibility (CoR) - | NHVR",
+      "url": "https://www.nhvr.gov.au/safety-accreditation-compliance/chain-of-responsibility",
+      "source": "nhvr.gov.au",
+      "kind": "article"
+    },
+    {
+      "title": "What is Chain of Responsibility? - Logistics Bureau",
+      "url": "https://www.logisticsbureau.com/chain-of-responsibility/",
+      "source": "logisticsbureau.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Chain of Responsibility means **the sender does not pick the receiver**. It fires a request into an ordered line of handlers and each one decides: **handle it, pass it on, or do both then pass**. If you cannot state who handles what and in what order, you do not have this pattern — you have a mystery pipeline."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A Chain of Responsibility is an ordered list of processing objects sharing a common `handle(request)` contract. The client calls only the head. Each handler inspects the request, optionally mutates it or produces side effects, then makes an explicit routing decision: terminate the chain by returning a result, forward the same request object to `next`, or partially process and still forward. The chain owns ordering; handlers own predicates. That split is the entire pattern."
+    },
+    {
+      "type": "paragraph",
+      "text": "It replaces a central dispatcher — the giant `if-else`, `switch`, or nested validation block — with distributed routing. Instead of one place that knows every rule, knowledge is fragmented across handlers that each know one rule plus a pointer to the next handler. The trade-off is immediate: you gain **open-closed extension** (add a new handler without touching old code) and you pay with **implicit control flow** (no single place shows the full decision path). Choose it when handler set and order change often; reject it when you need the decision path to be obvious at a glance."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Request:** a dumb data object that flows untouched or mutated down the chain. Keep it immutable if handlers only decide; make it mutable only if handlers enrich.",
+        "**Handler:** one predicate plus one action plus a `next` reference. If a handler needs to know its position in the chain, the design is already broken.",
+        "**Chain builder:** the only place that knows the order. Construct it at startup, not per-request, or you pay allocation cost for zero benefit.",
+        "**Terminal handler:** a default that returns an error, a no-op, or throws. A chain without an explicit terminator silently drops requests, which is how outages start."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every correct implementation has two operations: `setNext(handler)` to link, and `handle(request)` to process. The base handler implements the forwarding logic once so concrete handlers only implement `canHandle` and `process`. The client never branches. It calls `head.handle(request)` and gets back whatever the first claiming handler returned, or whatever the terminal handler produced. Order is semantics: put cheap, high-reject-rate, security-critical handlers first so expensive handlers never run on garbage."
+    },
+    {
+      "type": "mermaid",
+      "title": "Request flow through the chain",
+      "caption": "Each handler either terminates or forwards. Order defines priority.",
+      "code": "flowchart LR\n  Client --> H1[AuthHandler]\n  H1 --> H2[RateLimitHandler]\n  H2 --> H3[ValidationHandler]\n  H3 --> H4[BusinessHandler]\n  H4 --> T[DefaultHandler]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Construction and execution must be separated. Build the chain once with a builder or factory, inject it as a single `Handler` dependency, and treat it as immutable at runtime. Rebuilding per request wastes objects and invites ordering drift between code paths. Dynamic reordering at runtime is almost always a mistake: it turns a static, reviewable pipeline into mutable global state. If you need conditional branches, make the condition explicit inside one handler rather than rewiring pointers under load. The trade-off: static chains are predictable but rigid; dynamic chains are flexible but untestable."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Pure chain vs broadcast chain"
+    },
+    {
+      "type": "paragraph",
+      "text": "In the strict form exactly one handler claims the request and the chain stops — think support escalation where a ticket is resolved at exactly one level. In the loose form every handler gets a look and may act before forwarding — think servlet filters, logging, or middleware where authentication, metrics, and compression all touch the same request. Decide which you are building on day one and enforce it in the base class. Mixing both in one chain without a naming convention is why teams end up with handlers that both return a response *and* call next, producing double-writes and duplicated side effects."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What you gain and what you pay for with this pattern.",
+      "headers": [
+        "Benefit",
+        "Cost",
+        "When it bites"
+      ],
+      "rows": [
+        [
+          "Decoupled sender: client knows only the head",
+          "Control flow becomes invisible; no single method shows the path",
+          "Debugging a production miss requires tracing 6 files instead of reading one function"
+        ],
+        [
+          "Open-closed: add handlers without editing existing code",
+          "Ordering becomes hidden global logic; wrong order silently changes behavior",
+          "Security check placed after caching serves private data from cache"
+        ],
+        [
+          "Handlers are independently testable units",
+          "Integration behavior is emergent; unit tests pass while the assembled chain fails",
+          "Two handlers each assume the other validates input"
+        ],
+        [
+          "Request can have multiple potential handlers with fallback",
+          "No guarantee of handling; request can fall off the end",
+          "Missing terminal handler turns a misconfiguration into a silent drop"
+        ],
+        [
+          "Cross-cutting concerns compose cleanly",
+          "Per-hop overhead and object churn on hot paths",
+          "10-handler chain on 100k RPS adds measurable latency and GC pressure"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The dominant trade-off is **extensibility versus observability**. A chain lets a new engineer add a handler in one file with zero merge conflicts, which feels productive. The cost arrives six months later when nobody can answer *why did this request take this path* without adding logging to every hop. Mitigate it deliberately: log handler name and decision at `debug`, propagate a `handledBy` field on the request or response, and expose chain order at startup. If you skip that instrumentation to save time, you did not save time — you deferred it to an incident at 2am."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Chains do not fail loudly. They fail by doing nothing, doing twice, or doing in the wrong order. Because each hop looks correct in isolation, the failure only exists in composition, which means code review and unit tests systematically miss it. You learn about it from symptoms downstream: a metric that never fires, a request that returns `null`, latency that grows linearly with features."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Silent drop:** no terminal handler, or every predicate returns false. Symptom: client gets `null` or times out, no exception, no log. Fix with a mandatory default handler that returns an explicit error and alerts.",
+        "**Swallowed short-circuit:** an early handler returns success for requests it should have forwarded. Symptom: downstream handlers starve, audit or billing steps silently skipped. Usually caused by an overly broad `canHandle`.",
+        "**Double handling:** two handlers both claim overlapping predicates and both act. Symptom: duplicate emails, double charges, duplicated log lines. Root cause is broadcast semantics smuggled into a pure chain.",
+        "**Order inversion:** caching placed before auth, validation after execution. Symptom: stale or unauthorized responses that pass all unit tests because each handler is correct alone.",
+        "**Mutation poisoning:** an upstream handler mutates the shared request and a downstream handler branches on the mutated field. Symptom: flaky behavior that depends on chain order and is unreproducible when handlers are tested alone.",
+        "**Cycle or unbounded growth:** `setNext` wired into a loop, or handlers appended per request without clearing. Symptom: `StackOverflowError` or steadily climbing latency and memory until the process dies."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Add the terminator or expect an outage",
+      "text": "Every chain needs an explicit end: return an error, throw `UnhandledRequest`, or emit a metric. **An unhandled request must be louder than a handled one.** If falling off the end is indistinguishable from success, you will discover misconfiguration from customers, not dashboards."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that shows the shape"
+    },
+    {
+      "type": "paragraph",
+      "text": "The base class must own forwarding so concrete handlers cannot forget it. Note the return type: returning an `Optional` or result object forces each handler to decide between terminating and forwarding, which makes the decision visible in code. A `void handle()` signature hides it and invites the both-return-and-forward bug."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "HandlerChain.java",
+      "code": "import java.util.Optional;\n\nrecord Request(String userId, String payload, boolean authenticated) {}\nrecord Response(String handledBy, String body) {}\n\nabstract class Handler {\n    private Handler next;\n\n    Handler linkWith(Handler next) {\n        this.next = next;\n        return next; // enables head.linkWith(a).linkWith(b)\n    }\n\n    final Optional<Response> handle(Request req) {\n        if (canHandle(req)) return Optional.of(process(req));\n        if (next != null) return next.handle(req);\n        return Optional.empty(); // caller maps this to terminal handler\n    }\n\n    protected abstract boolean canHandle(Request req);\n    protected abstract Response process(Request req);\n}\n\nfinal class AuthHandler extends Handler {\n    protected boolean canHandle(Request req) { return !req.authenticated(); }\n    protected Response process(Request req) {\n        return new Response(\"auth\", \"401 unauthorized\");\n    }\n}\n\nfinal class BusinessHandler extends Handler {\n    protected boolean canHandle(Request req) { return req.authenticated(); }\n    protected Response process(Request req) {\n        return new Response(\"business\", \"ok:\" + req.payload());\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ChainAssembly.java",
+      "code": "// Build once at startup. Order IS the policy.\nHandler head = new AuthHandler();\nHandler terminal = new BusinessHandler();\nhead.linkWith(terminal);\n\n// Client knows only the head. Trade-off: one-line call,\n// full routing logic hidden inside the chain.\nResponse out = head.handle(new Request(\"u1\", \"pay\", true))\n    .orElse(new Response(\"default\", \"422 unprocessable\"));\n\n// Broadcast variant (filters): same interface, different base.\n// Each handler always calls next after acting:\n//   act(req); return next == null ? done(req) : next.handle(req);"
+    },
+    {
+      "type": "mermaid",
+      "title": "Static structure of the chain",
+      "caption": "Base handler owns forwarding; concrete handlers own predicates.",
+      "code": "classDiagram\n  class Handler {\n    <<abstract>>\n    +linkWith(Handler) Handler\n    +handle(Request) Response\n    +canHandle(Request) bool\n    +process(Request) Response\n  }\n  class AuthHandler {\n    +canHandle(Request) bool\n    +process(Request) Response\n  }\n  class BusinessHandler {\n    +canHandle(Request) bool\n    +process(Request) Response\n  }\n  class DefaultHandler {\n    +canHandle(Request) bool\n    +process(Request) Response\n  }\n  Handler <|-- AuthHandler\n  Handler <|-- BusinessHandler\n  Handler <|-- DefaultHandler\n  Handler --> Handler : next"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Implementation choices that matter"
+    },
+    {
+      "type": "paragraph",
+      "text": "Return a value, do not use `void`. `Optional<Response>`, a result enum, or a boolean `handled` flag forces the routing decision into the type system. Prefer composition over inheritance when handlers need shared behavior like logging or metrics — wrap the head with a decorator rather than stuffing it into the base class, or every handler inherits coupling it did not ask for. Keep handlers stateless; any per-request state lives on the request object, any shared state is injected and thread-safe. A stateful handler in a singleton chain is a race condition waiting for concurrency."
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They ask for middleware or filters",
+          "text": "Design logging, auth, rate-limit, validation around a core service. Start with the `Handler` interface, show the base forwarding method, then two concrete handlers. Say explicitly: broadcast semantics, every handler forwards."
+        },
+        {
+          "title": "They ask for escalation or approval",
+          "text": "Support tiers, expense approvals, leave requests where exactly one level decides. Show pure semantics with `canHandle` predicates and a terminal reject handler. Name the trade-off: easy to add tiers, hard to see final approver."
+        },
+        {
+          "title": "They ask where the chain is built",
+          "text": "This is the grading moment. Answer: once at startup via builder or config, injected as one dependency. Building per request or hardcoding `new NextHandler()` inside a handler destroys testability and is the most common fail."
+        },
+        {
+          "title": "They inject a new requirement mid-round",
+          "text": "Add caching, add a fraud check, skip validation for internal callers. Do not edit existing handlers — append or insert one handler and state where in the order and why. That demonstrates open-closed rather than just reciting it."
+        },
+        {
+          "title": "They ask about failure and observability",
+          "text": "Volunteer the terminator, the `handledBy` field, and per-handler decision logs before they ask. Then discuss thread safety: stateless handlers, immutable request or defensive copy. Interviewers promote candidates who raise operability without prompting."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "What is actually graded is not whether you can draw boxes in a line. It is whether you constrain the pattern: define pure versus broadcast up front, fix the order deliberately with cheap and security-critical handlers first, and close the end with a default. Candidates who jump to code without stating ordering rationale or termination behavior signal they have memorised the diagram but never operated one."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "Your 45-minute play",
+      "text": "Say: **I will use a pure chain, order is auth → throttle → validate → execute → default-reject, built once and injected.** Write the base `handle` once, two handlers, one assembly snippet, one test showing a request falling through to default. Spend remaining time on ordering justification and the unhandled-request path — that is where senior signals live."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**It is not a Decorator:** Decorator always calls every layer to enrich one behavior. Chain stops (or may stop) when something claims the request. If every handler always runs, you built middleware, which is only one flavor of the chain.",
+        "**Sender ignorance is not free:** the client is decoupled, but the chain builder now holds all the coupling. You moved the dependency, you did not delete it. Name where it lives.",
+        "**More handlers does not mean cleaner code:** splitting a 50-line validator into 10 one-predicate handlers replaces one readable function with ten files plus invisible ordering. Below three handlers, plain conditionals win.",
+        "**It does not guarantee handling:** the pattern has no built-in exhaustiveness check. Without a terminal handler or compiler-enforced predicate coverage, some inputs match nothing.",
+        "**Handlers must not know their neighbors:** the moment a handler references a concrete next type or checks position, you have re-coupled what the pattern decoupled. Only the builder knows order."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use the chain for variable pipelines, not for fixed logic.",
+      "headers": [
+        "Use it",
+        "Do not use it"
+      ],
+      "rows": [
+        [
+          "Handler set or order varies by tenant, environment, or over time",
+          "Two or three fixed branches that never change — an `if-else` is clearer and faster"
+        ],
+        [
+          "Request has a natural priority ladder with fallback (escalation, validation pipeline)",
+          "Every branch must run every time with no routing decision — use a list of steps, not a chain"
+        ],
+        [
+          "Cross-cutting middleware: auth, throttling, logging, compression around a core call",
+          "Performance-critical hot loop where per-hop dispatch cost matters; unroll or use a table"
+        ],
+        [
+          "You need third parties to plug in handling without touching core code",
+          "Debuggability matters more than extensibility, e.g. payment routing where every path must be auditable inline"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The heuristic is blunt: if you can name the full handler list today and it will be identical next year, do not build a chain — you are paying opacity tax for extension you will never use. If product keeps inserting steps between existing steps, or different deployments need different orders, the tax buys something real. Even then, cap chain length, freeze order at startup, and make the assembled order printable. A chain you cannot print at boot is a chain you cannot reason about in review."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "**Chain of Responsibility routes a request through an ordered, startup-built list where each handler either claims it or forwards it, trading obvious control flow for open-closed extension — so I always add a terminal handler and log who handled what.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:59:34.447Z",
+    "problems": []
+  }
+}

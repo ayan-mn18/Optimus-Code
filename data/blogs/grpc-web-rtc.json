@@ -1,0 +1,281 @@
+{
+  "slug": "grpc-web-rtc",
+  "title": "Grpc / Web RTC",
+  "summary": "gRPC vs WebRTC for HLD: why gRPC owns structured control and WebRTC owns P2P media, and why production systems use gRPC to signal WebRTC.",
+  "kind": "HLD",
+  "problemSlug": "grpc-web-rtc-94-210",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "📡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "gRPC",
+    "WebRTC"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "jsmouret/grpc-over-webrtc - GitHub",
+      "url": "https://github.com/jsmouret/grpc-over-webrtc",
+      "source": "github.com",
+      "kind": "article"
+    },
+    {
+      "title": "gRPC WebRTC Signalling Service | Robotics Toolkit Documentation",
+      "url": "https://docs-automate.dronedeploy.com/robotics-toolkit/api-and-sdk-access/grpc-apis/grpc-webrtc-signalling-service/",
+      "source": "docs-automate.dronedeploy.com",
+      "kind": "article"
+    },
+    {
+      "title": "How robots talk: building distributed robots with gRPC and WebRTC",
+      "url": "https://grpc.io/blog/robotics/",
+      "source": "grpc.io",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Do not pick **gRPC *or* WebRTC**. gRPC is a **client-server RPC system** for structured control. WebRTC is a **negotiated peer-to-peer transport** for low-latency media and data. The winning design uses **gRPC as the control and signaling plane to establish the WebRTC media plane**, then gets out of the way. If you argue one replaces the other, you fail the question."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "gRPC in one paragraph, no hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "gRPC is **contract-first RPC over HTTP/2** (increasingly HTTP/3), usually with **Protobuf** as the IDL and wire format. You define `service` and `message` types, generate stubs, and call remote methods as if local across four shapes: **unary, server-streaming, client-streaming, bidirectional-streaming**. HTTP/2 gives you **multiplexed streams on one TCP connection, header compression with HPACK, flow control, and deadlines/cancellation** propagated as metadata. The trade-off is explicit: you buy **strong typing, codegen, backpressure, and efficient binary framing** at the cost of **browser hostility, load-balancer complexity, and binary opacity**. Browsers cannot speak raw gRPC; they need **gRPC-Web via a proxy** that translates to HTTP/1.1 plus Server-Sent Events or chunked responses, which kills full bidirectional streaming."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "WebRTC in one paragraph, no hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "WebRTC is not a protocol. It is a **negotiated stack for NAT-traversing, encrypted peer-to-peer delivery**: **SDP for capability negotiation, ICE plus STUN/TURN for connectivity, DTLS for key exchange, SRTP/SCTP for media and data**. There is no fixed server; two agents exchange an **offer/answer** describing codecs, resolutions, and data channels, then probe each other with **ICE candidates (host, server-reflexive, relay)** until they find a working path. Once `DTLS-SRTP` handshakes, audio/video/data flows **directly peer-to-peer with congestion control tuned for latency, not throughput**. The trade-off is inverted from gRPC: you buy **sub-300ms media without a media server in the hot path and adaptive bitrate under loss** at the cost of **nasty connection setup, per-call state, codec fragility, and relay bills when P2P fails**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: gRPC sets up what it cannot carry"
+    },
+    {
+      "type": "paragraph",
+      "text": "WebRTC has a deliberate hole: **it defines no signaling**. It assumes you already have a way to get the offer, answer, and ICE candidates from A to B before any direct path exists. That is exactly what gRPC is good at. So the production pattern is always two planes: a **persistent gRPC session to a signaling/control service** for identity, routing, and negotiation, and a **short-lived WebRTC `PeerConnection` to the peer** for media and high-frequency telemetry. gRPC handles auth, stream discovery (`which camera / which robot`), SDP delivery, trickled ICE, and teardown. WebRTC handles frames and unreliable data. Mixing them up — sending video over gRPC streams or sending device commands over lossy data channels — is why most whiteboard designs collapse under follow-ups."
+    },
+    {
+      "type": "mermaid",
+      "title": "Signaling then streaming",
+      "caption": "gRPC signals, WebRTC streams. If signaling dies, media keeps flowing; if media dies, signaling re-negotiates.",
+      "code": "flowchart TD\n  OP[Operator Browser] -->|gRPC bidi stream: register, SendOffer SDP| SIG[Signaling Service]\n  SIG -->|gRPC stream: DeliverOffer streamID| AG[Device Agent]\n  AG -->|gRPC: SendAnswer SDP| SIG\n  SIG -->|gRPC: DeliverAnswer| OP\n  OP -->|gRPC: Trickle ICE candidates| SIG\n  AG -->|gRPC: Trickle ICE candidates| SIG\n  OP <-->|WebRTC P2P DTLS-SRTP SCTP| AG"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk the sequence precisely because interviewers probe it. First the operator opens a **long-lived gRPC bidirectional stream** and registers interest in a logical `streamId` like `/project/device/camera-front`. Second it creates a local `RTCPeerConnection`, adds transceivers (`H.264`, `Opus`), gathers local ICE candidates via STUN, and emits an **SDP offer**. Third that offer plus candidates go **over gRPC** to the agent; the agent sets it as remote description, creates an **SDP answer** constrained to what it can actually encode, and returns it over gRPC. Fourth both sides trickle candidates until ICE elects a pair — host-host on same LAN, reflexive over NAT, or relay via TURN. Fifth `DTLS` handshakes over the elected pair and `SRTP` keys are derived. From here **no signaling server sees media**. Renegotiation, mute, resolution change, or ICE restart all go back through gRPC while media continues on the old path until replaced. That separation is the whole reliability story."
+    },
+    {
+      "type": "table",
+      "caption": "Head-to-head on the axes interviewers actually care about.",
+      "headers": [
+        "Axis",
+        "gRPC",
+        "WebRTC"
+      ],
+      "rows": [
+        [
+          "Connection model",
+          "Client-server to known endpoint, LB-friendly if configured",
+          "Peer-to-peer after rendezvous, per-session state on both ends"
+        ],
+        [
+          "Transport",
+          "HTTP/2 over TCP/TLS, multiplexed RPC streams",
+          "ICE/UDP with DTLS-SRTP for media, SCTP for data channels"
+        ],
+        [
+          "Traversal",
+          "Works through proxies and firewalls, fails on naive L7 LBs",
+          "Needs STUN for NAT binding, TURN relay for symmetric NATs"
+        ],
+        [
+          "Data model",
+          "Typed request/response and streams with deadlines",
+          "Unreliable or partially-reliable frames and datagrams with jitter buffers"
+        ],
+        [
+          "Browser story",
+          "Requires gRPC-Web proxy, no true bidi in browser",
+          "Native RTCPeerConnection, MediaStream, DataChannel APIs"
+        ],
+        [
+          "Latency tuning",
+          "Optimized for throughput and correctness, retransmits everything",
+          "Optimized for freshness, drops late frames, adapts bitrate"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that table as a decision rule, not trivia. If the data needs **schema, exactly-once semantics, authz per method, and replay**, it belongs on gRPC. If the data loses value after 200ms — **live video, teleoperation sticks, voice** — it belongs on WebRTC, because **TCP retransmission of a stale frame actively hurts**. The cost of getting this backwards is concrete: video over gRPC accumulates head-of-line blocking on lossy links and adds server egress for bytes the server never needed to see; commands over WebRTC data channels lose deadlines, retries, and audit trails. That is why robotics and conferencing systems converge on the same hybrid: **gRPC for `StartStream`, `SendCommand`, `GetState`, WebRTC for `Track` and volatile telemetry**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why the pairing wins: control plane vs data plane"
+    },
+    {
+      "type": "paragraph",
+      "text": "Separating signaling from media lets each plane scale and fail independently. The signaling tier is **low-bandwidth, stateful, and global** — it tracks presence, routes offers by `streamId`, enforces policy, and fans out answers. You can run it behind standard gRPC infrastructure with sticky routing for streams, rate limits on offers, and an allowlist of codecs. The media plane is **high-bandwidth, ephemeral, and local** — ideally peer-to-peer, falling back to a regional TURN relay only when NAT demands it. Trade-off named: you accept **two connection lifecycles and split-brain debugging** to gain **an order-of-magnitude lower media latency and no central media bottleneck**. A pure SFU or pure gRPC-streaming design is simpler to reason about but pays for every byte in server CPU and adds a network hop exactly where jitter hurts most."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Transport detail interviewers probe"
+    },
+    {
+      "type": "paragraph",
+      "text": "Expect pressure on three specifics. First, **gRPC needs L4 or HTTP/2-aware L7 balancing**; a default HTTP/1.1 round-robin balancer pins all multiplexed streams to one backend and creates hot shards, so you need **connection-level balancing, client-side pick-first or round-robin, and deadlines with hedged retries**. Second, **WebRTC needs UDP and ephemeral ports**; corporate firewalls that allow only 443/TCP force you into `TURN/TLS` on 443, which re-centralizes the supposedly P2P path and must be capacity-planned. Third, **codec intersection is a contract**: if the device encodes only `H.264 Constrained Baseline` and the browser offers only `VP9`, negotiation succeeds on paper and fails in practice with black video. Pin the codec profile in the signaling API and reject offers early rather than debugging frozen frames later."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The bill lives in TURN",
+      "text": "P2P works in the demo on one LAN. In production **30-60% of sessions relay** through TURN behind carrier-grade NATs. TURN egress is your largest cost line and your tail-latency source. Design for it: **regional TURN, credentials short-lived via gRPC, metrics on relay rate vs P2P rate**, and a degradation policy that drops resolution before dropping the call."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Failures split cleanly by plane, and the symptom tells you which plane broke. Signaling failures look like **control errors**: `UNAVAILABLE`, missed deadlines, or offers that never get answers. Media failures look like **quality collapse**: frozen video, robotic audio, or a data channel that opens but never flows. The dangerous case is **half-open state** — signaling thinks the session is alive while ICE has already failed, so the UI shows *connected* over a dead picture. You need heartbeats on both planes and a single session state machine that kills the call if either plane times out, otherwise operators stare at stale last-frames and trust them."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**ICE fails behind symmetric NAT, symptom: offer/answer succeeds but no media.** Both sides gather only host and reflexive candidates that are unroutable. Fix is TURN relay, not retrying SDP. Alert on `iceConnectionState=failed` with successful signaling as the discriminator.",
+        "**gRPC LB pins streams, symptom: one backend at 90% CPU while others idle.** HTTP/2 multiplexing defeats per-request balancing. Fix with client-side load balancing, `max concurrent streams` limits, and reconnect jitter. Symptom you see is rising p99 on unary calls collocated with streaming.",
+        "**Codec mismatch, symptom: connected with bitrate but black or green video.** SDP accepted but decoder cannot handle profile-level. Fix by constraining offer/answer to tested profiles and validating `m=video` lines server-side. Log negotiated `a=fmtp` on every session.",
+        "**Signaling-media split brain, symptom: UI says live, media timestamp is 20s old.** Signaling heartbeat passes over TCP while UDP media is blackholed. Fix with media liveness (RTCP receiver reports, data-channel ping) and auto ICE-restart triggered over gRPC.",
+        "**TURN credential expiry mid-call, symptom: working call drops at fixed interval (e.g. every 10 min).** Short-lived TURN passwords from the signaling service expire. Fix with proactive refresh over the existing gRPC stream before expiry, not reactive re-dial."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Two more slow burns. Head-of-line blocking on gRPC video prototypes shows up as **latency that grows with loss**: one dropped TCP segment stalls all multiplexed streams, so teleop feels rubber-banded even though throughput looks fine. And clock drift between sender RTCP and player playout shows up as **gradual A/V desync** — fix with jitter buffers keyed to RTCP SR, not wall clock. Name these explicitly in the interview; they prove you have operated the stack, not just drawn it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concrete shape: signaling contract"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep the signaling API tiny and typed. It does three jobs: **presence (who publishes what), negotiation (offer/answer + ICE), and control (start/stop/move)**. Media never touches it. Version the SDP as an opaque string — do not model SDP fields in Protobuf, the WebRTC spec churns — but model routing, codec policy, and ICE servers as first-class fields so the server can enforce them. Use a bidirectional stream for trickle, not unary polling, because candidates arrive incrementally over seconds and polling adds seconds to join time for no benefit."
+    },
+    {
+      "type": "code",
+      "language": "proto",
+      "filename": "signaling.proto",
+      "code": "syntax = \"proto3\";\npackage signaling.v1;\n\nservice Signaling {\n  // Bidirectional rendezvous: client registers, then trickles\n  // Offer/Answer + ICE. Server routes by stream_id.\n  rpc Session(stream SessionMsg) returns (stream SessionMsg);\n  // Short-lived TURN credentials; never hardcode shared secrets.\n  rpc GetIceServers(GetIceServersReq) returns (GetIceServersResp);\n}\n\nmessage SessionMsg {\n  string session_id = 1;\n  string stream_id = 2;   // e.g. /project/device/front-camera\n  oneof payload {\n    SdpOffer offer = 3;\n    SdpAnswer answer = 4;\n    IceCandidate candidate = 5;\n    Keepalive ping = 6;\n    Hangup hangup = 7;\n  }\n}\nmessage SdpOffer { string sdp = 1; string required_codec = 2; }\nmessage SdpAnswer { string sdp = 1; string selected_codec = 2; }\nmessage IceCandidate { string candidate = 1; string sdp_mid = 2; int32 mline = 3; }\nmessage Keepalive { int64 client_ts_ms = 1; }\nmessage Hangup { string reason = 1; }\nmessage GetIceServersReq { string session_id = 1; }\nmessage GetIceServersResp { repeated IceServer servers = 1; int64 ttl_seconds = 2; }\nmessage IceServer { repeated string urls = 1; string username = 2; string credential = 3; }"
+    },
+    {
+      "type": "code",
+      "language": "typescript",
+      "filename": "client-session.ts",
+      "code": "// gRPC-Web stream carries signaling; RTCPeerConnection carries media.\nconst pc = new RTCPeerConnection({ iceServers: await getIceServers() });\npc.ontrack = (e) => { videoEl.srcObject = e.streams[0]; };\npc.onicecandidate = (e) => {\n  if (e.candidate) signal.send({ candidate: toProto(e.candidate) });\n};\n// Media liveness independent of gRPC keepalive.\npc.addEventListener('connectionstatechange', () => {\n  if (pc.connectionState === 'failed') signal.send({ restartIce: true });\n});\nconst offer = await pc.createOffer({ offerToReceiveVideo: true });\nawait pc.setLocalDescription(offer);\nsignal.send({ offer: { sdp: offer.sdp, required_codec: 'H264' } });\nsignal.onMessage = async (msg) => {\n  if (msg.answer) await pc.setRemoteDescription({ type: 'answer', sdp: msg.answer.sdp });\n  if (msg.candidate) await pc.addIceCandidate(fromProto(msg.candidate));\n};"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start with the split",
+          "text": "Say: gRPC for control/signaling, WebRTC for media/data. Draw two arrows: thin gRPC line to signaling service, thick P2P line between peers. This preempts the should-we-stream-video-over-gRPC trap."
+        },
+        {
+          "title": "Define the session lifecycle",
+          "text": "Register -> discover streamId -> offer/answer -> trickle ICE -> DTLS-SRTP -> RTCP feedback -> ICE-restart or hangup. State where state lives: signaling service holds session map, peers hold PeerConnection. Mention TTL and explicit hangup to avoid ghost sessions."
+        },
+        {
+          "title": "Go deep on NAT traversal",
+          "text": "Explain host vs srflx vs relay candidates, why symmetric NAT forces TURN, and why you need regional TURN on 443/TLS as fallback. Quote the trade-off: P2P latency vs relay cost. Interviewers promote you here, not on Protobuf syntax."
+        },
+        {
+          "title": "Handle scale and failure",
+          "text": "Signaling scales horizontally with sticky sessions or shared pub/sub for routing; media scales by staying P2P plus autoscaled TURN. Add heartbeats on both planes, negotiated codec allowlist, and metrics: join latency, ICE failure rate, relay rate, frozen-frame rate."
+        },
+        {
+          "title": "Close with why not alternatives",
+          "text": "Why not WebSocket + HLS for live control? Latency (2-20s) and no P2P. Why not raw UDP? No NAT traversal, encryption, or congestion control. Naming the rejected option with its penalty is what scores Senior and above."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Browsers speak gRPC natively.** They do not. You need gRPC-Web plus a proxy, and you lose true bidirectional streaming. If the design needs browser-to-backend bidi RPC, use WebSockets or WebTransport, not raw gRPC.",
+        "**WebRTC is just video.** The data channel (`SCTP` over `DTLS`) carries arbitrary low-latency data and is often better than media for sticks and telemetry — but it is loss-tuned, so do not put commands needing exactly-once semantics there.",
+        "**gRPC streaming replaces WebRTC for live media.** It works in a demo and dies on lossy networks due to TCP head-of-line blocking and server egress. Use it for signaling and recorded playback, not interactive media.",
+        "**P2P means no servers.** You still need signaling, STUN/TURN, identity, and metrics servers. P2P removes media from the hot path; it does not remove infrastructure.",
+        "**DTLS-SRTP is optional internally.** It is mandatory in WebRTC. No SDES fallback, no plaintext RTP. Plan certificate handling and key rotation accordingly.",
+        "**One SDP exchange is enough.** Network changes, mute/unmute, and resolution switches need renegotiation or ICE-restart. Design the signaling stream to stay open for the whole session."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "Use the hybrid when freshness beats correctness; stay on gRPC alone when correctness beats freshness.",
+      "headers": [
+        "Use gRPC + WebRTC when",
+        "Stay on gRPC (or HTTP) alone when"
+      ],
+      "rows": [
+        [
+          "Interactive media or voice under ~500ms: calls, teleop, live robot view",
+          "Playback or record-and-replay: VOD, audit logs, file transfer"
+        ],
+        [
+          "P2P saves real egress: many viewers per publisher, regional peers",
+          "Few peers or compliance requires server-side inspection/recording"
+        ],
+        [
+          "Volatile data tolerates loss: frames, sticks, presence",
+          "Data needs transactions, exactly-once, replay: payments, commands, config"
+        ],
+        [
+          "Browsers and devices must connect without inbound ports",
+          "Clients are backend services in one VPC with stable LBs"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Use **gRPC for typed, reliable control and WebRTC signaling, and WebRTC P2P for loss-tolerant live media** — because signaling needs correctness and media needs freshness, and no single transport optimizes both."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:10:27.963Z",
+    "problems": []
+  }
+}

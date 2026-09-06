@@ -1,0 +1,442 @@
+{
+  "slug": "design-notification-system",
+  "title": "Design Notification System",
+  "summary": "Design a multi-channel notification system that survives provider failures, per-user spam limits, and traffic spikes — async intake, partitioned queues, channel workers, and explicit retry accounting.",
+  "kind": "HLD",
+  "problemSlug": "design-notification-system-150-318",
+  "topic": "More Interview Problems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔔",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Notification System",
+    "Message Queue",
+    "Rate Limiting",
+    "Reliability"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.linkedin.com/posts/prateek7248_notification-system-activity-7325731117955698688-p6n2",
+      "title": "How to design a notification system with Factory Pattern - LinkedIn",
+      "source": "linkedin.com",
+      "kind": "roundup",
+      "companies": [
+        {
+          "name": "Amazon",
+          "quote": "If you're preparing for LLD rounds at companies like Amazon, Google, or Flipkart, this one is a must-know!"
+        },
+        {
+          "name": "Google",
+          "quote": "If you're preparing for LLD rounds at companies like Amazon, Google, or Flipkart, this one is a must-know!"
+        },
+        {
+          "name": "Flipkart",
+          "quote": "If you're preparing for LLD rounds at companies like Amazon, Google, or Flipkart, this one is a must-know!"
+        }
+      ]
+    },
+    {
+      "url": "https://www.glassdoor.com/Interview/PointClickCare-Sr-Software-Engineer-Interview-Questions-EI_IE452666.0,14_KO15,35.htm",
+      "title": "PointClickCare Sr Software Engineer Interview Experience ...",
+      "source": "glassdoor.com",
+      "kind": "report",
+      "companies": [
+        {
+          "name": "PointClickCare",
+          "role": "Sr. Software Engineer",
+          "date": "Jul 28, 2026",
+          "quote": "Design Notification system, design rate limiter"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "How to design a notification system with Factory Pattern - LinkedIn",
+      "url": "https://www.linkedin.com/posts/prateek7248_notification-system-activity-7325731117955698688-p6n2",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "PointClickCare Sr Software Engineer Interview Experience ...",
+      "url": "https://www.glassdoor.com/Interview/PointClickCare-Sr-Software-Engineer-Interview-Questions-EI_IE452666.0,14_KO15,35.htm",
+      "source": "glassdoor.com",
+      "kind": "article"
+    },
+    {
+      "title": "System Design Interview: Design a Notification System - Medium",
+      "url": "https://medium.com/@bugfreeai/system-design-interview-design-a-notification-system-dc550b32abab",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "How does machine coding round works. Please help for interview.",
+      "url": "https://www.reddit.com/r/developersIndia/comments/1u67nlu/how_does_machine_coding_round_works_please_help/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "Machine Coding Round: The Complete Frontend Guide (2026)",
+      "url": "https://www.greatfrontend.com/blog/machine-coding-round",
+      "source": "greatfrontend.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design Notification System | machine coding round preparation - YouTube",
+      "url": "https://www.youtube.com/watch?v=rKLxhXpBrOI",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the interviewer is really testing",
+      "text": "Not whether you can name Kafka and Redis. The test is: **can you separate what must be synchronous from what must be durable?** Intake must be fast and lossless. Delivery must be slow, rate-limited, retried, and observable. Candidates who draw one box called \"notification service\" and then call Twilio synchronously fail. Strong candidates enforce idempotency at the edge, partition by user to get ordering and rate limits for free, and isolate each third-party provider so one outage cannot block the others."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a system that sends notifications — **email, SMS, push, and in-app** — on behalf of many product services to tens of millions of users. A caller provides a `userId`, a `templateId` or raw payload, a channel hint, and a priority. The system must respect user preferences and quiet hours, enforce per-user and per-channel rate limits, survive downstream provider outages, retry with backoff, deduplicate retries, and expose delivery status. Expected scale to design for: **10K-100K requests per second sustained, 10x bursts during events**, with transactional messages delivered in seconds and marketing messages in minutes. The trade-off that dominates every decision: **durability and control beat raw latency** — you accept queueing delay to gain backpressure, retries, and throttling."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`POST /v1/notifications` — accepts `requestId` (client-supplied idempotency key), `userId`, `channel` (preferred or `any`), `templateId + params` or inline `content`, `priority (critical / transactional / promotional)`. Returns `202 Accepted` with `notificationId` immediately. Never blocks on provider I/O.",
+        "`GET /v1/notifications/{id}` — returns `queued | throttled | sending | delivered | failed | suppressed` plus per-attempt history.",
+        "`PUT /v1/users/{id}/preferences` — opt-in/out per channel and category, quiet-hours window, locale. This is a read-heavy source of truth every send must check."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you design"
+    },
+    {
+      "type": "paragraph",
+      "text": "You get points for forcing the vague prompt into a testable contract. Do not start drawing boxes until you have pinned down priority classes and delivery semantics, because they decide whether you need one queue or three and whether retries are safe."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "What are the message classes and SLAs?",
+          "text": "Is an OTP that must arrive in 5 seconds treated the same as a weekly digest? Agree on at least two lanes: critical/transactional with low-latency target, and bulk/promotional that tolerates minutes of delay and aggressive throttling. Without this you cannot size queues or justify priority."
+        },
+        {
+          "title": "Delivery semantics: at-most-once or at-least-once?",
+          "text": "Push and SMS providers do not give you transactions. Confirm you will build at-least-once delivery with idempotency keys end-to-end, and that duplicates are suppressed by receiver-side dedup, not by wishing the queue was exactly-once."
+        },
+        {
+          "title": "Who owns templates and preferences?",
+          "text": "Ask whether templates are versioned and rendered inside this system or passed in fully rendered. Ask where opt-out lives and how fast a preference change must take effect. This decides your cache TTL and whether sends must re-validate before each retry."
+        },
+        {
+          "title": "Rate limits and quiet hours?",
+          "text": "Pin numbers: max N pushes per user per day, max M SMS per hour, no promotional sends 22:00-08:00 in user timezone. If the interviewer says “don’t spam users,” turn it into a rule engine requirement with counters, not a vague promise."
+        },
+        {
+          "title": "Scale and retention?",
+          "text": "Peak QPS, average payload size, how long to retain notification history and attempt logs for audits and debugging. 100 bytes vs 10KB payloads and 7 days vs 2 years retention change your storage choice completely."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Agreed scope before architecture. If you skip this, every later choice looks arbitrary.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Accept send request, validate, persist, return ID in <100ms p99",
+          "Callers must not be coupled to provider latency; intake is the durability boundary"
+        ],
+        [
+          "Functional",
+          "Preference + template resolution per send",
+          "Sending to opted-out users is a correctness bug, not a UX annoyance"
+        ],
+        [
+          "Functional",
+          "Per-user, per-channel rate limiting and quiet-hours suppression",
+          "This is the core anti-spam guarantee; it needs counters, not comments"
+        ],
+        [
+          "Functional",
+          "Channel routing with fallback (push -> SMS -> email) per policy",
+          "Providers fail independently; routing is how you meet SLA anyway"
+        ],
+        [
+          "Functional",
+          "Status tracking + webhooks from providers reconciled",
+          "Without an attempt log you cannot retry correctly or debug"
+        ],
+        [
+          "Non-functional",
+          "Durable under bursts; no loss on process crash",
+          "Trade-off: add queue latency to survive 10x spikes"
+        ],
+        [
+          "Non-functional",
+          "Per-channel isolation and independent scaling",
+          "One slow SMS provider must not starve OTP push"
+        ],
+        [
+          "Non-functional",
+          "Idempotent end-to-end via requestId",
+          "Retries are mandatory, so duplicates must be harmless"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the synchronous fan-out (and why it collapses)"
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive design is an API server that validates, looks up preferences in the database, renders a template, then directly calls the email/SMS/push provider over HTTP and returns success or failure to the caller. It is easy to draw and passes a demo with ten users. It fails in production for four structural reasons. First, **caller latency is tied to the slowest provider** — one 3-second SMTP timeout becomes your API’s p99. Second, **there is no backpressure** — a flash sale that fires 500K sends in a minute either times out or OOMs the API tier. Third, **retries are the caller’s problem**, so every product team reinvents backoff badly and hammers an already-degraded provider. Fourth, **rate limiting is impossible to enforce globally** when ten API replicas each hold local counters. The trade-off is stark: you saved one queue and bought cascading failure. Say this explicitly, then move on — do not defend the naive version."
+    },
+    {
+      "type": "paragraph",
+      "text": "The fix is not “add Kafka” as decoration. The fix is to **move the durability boundary to intake** and make everything after it asynchronous and countable. Accept, deduplicate, persist, then dispatch by priority and channel. That one inversion gives you retries, throttling, per-channel isolation, and replay for free, at the cost of eventual delivery that you must expose via status APIs."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design — async pipeline with isolated channel workers"
+    },
+    {
+      "type": "paragraph",
+      "text": "Structure the system as five stages: **intake, routing, queueing, execution, observation.** Intake is stateless API nodes behind a load balancer that validate, enforce idempotency on `requestId`, and write a notification record to a transactional store before enqueueing. A router resolves template, locale, preferences, and eligible channels, then places the message on a **priority + channel partitioned topic**. Separate worker pools per channel drain their own partitions, check Redis-backed rate limits, and call providers through a circuit breaker. Delivery receipts come back via webhooks into a tracker that updates status and schedules retries onto a delay queue with exponential backoff and jitter. The WHY: partitioning by `userId` gives you per-user ordering and lets rate-limit checks hit the same partition owner; separating pools by channel gives you blast-radius isolation — SMS congestion never blocks critical push. The trade-off: you now operate two sources of truth (DB for state, queue for transit) and must reconcile them with the attempt log."
+    },
+    {
+      "type": "mermaid",
+      "title": "End-to-end notification pipeline",
+      "caption": "Durability at intake, isolation per channel, async reconciliation.",
+      "code": "graph TD\n  Client[Product Services] --> LB[Load Balancer]\n  LB --> API[Notification API - validate + dedup]\n  API --> DB[(Notification Store)]\n  API --> Pref[Preference + Template Service]\n  API --> Q1[(Queue - Critical)]\n  API --> Q2[(Queue - Transactional)]\n  API --> Q3[(Queue - Promotional)]\n  Q1 --> RP[Router - channel resolution]\n  Q2 --> RP\n  Q3 --> RP\n  RP --> QPUSH[(Push Topic - by userId)]\n  RP --> QSMS[(SMS Topic - by userId)]\n  RP --> QEMAIL[(Email Topic - by userId)]\n  QPUSH --> WPUSH[Push Workers]\n  QSMS --> WSMS[SMS Workers]\n  QEMAIL --> WEMAIL[Email Workers]\n  WPUSH --> RL[(Redis - rate limits + dedup)]\n  WSMS --> RL\n  WEMAIL --> RL\n  WPUSH --> PROV[Provider Gateway - breaker + fallback]\n  WSMS --> PROV\n  WEMAIL --> PROV\n  PROV --> TRACK[Delivery Tracker + Retry Scheduler]\n  TRACK --> DB\n  TRACK --> DLQ[(Delay Queue + DLQ)]\n  DLQ --> RP"
+    },
+    {
+      "type": "paragraph",
+      "text": "Key choices to defend: **Kafka (or equivalent log) over in-memory queues** because you need replay after a bad deploy and retention for audit — trade-off is operational complexity you pay once versus message loss you pay forever. **Redis with sliding-window counters for rate limits** because per-send DB reads would melt at 50K RPS — trade-off is approximate limits under failover, which is acceptable for anti-spam but not for billing. **Separate topics per priority** because a single FIFO lets bulk mail head-of-line-block an OTP — trade-off is slightly lower utilisation of workers, fixed by letting critical workers steal from bulk when idle, never the reverse."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Object shape that survives new channels"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers often collapse this HLD into a factory-pattern question: how do you add WhatsApp without editing every call site. The answer is to keep channel logic behind a `Sender` interface and let intake and workers depend only on that abstraction. Creation lives in one registry. Routing policy decides ordering and fallback; the factory only instantiates. That separation is the whole point — policy changes daily, provider SDKs change rarely, and neither should force a redeploy of the other. The trade-off of the registry approach versus a switch statement: one extra indirection buys open-for-extension without shotgun edits."
+    },
+    {
+      "type": "mermaid",
+      "title": "Sender extension model",
+      "caption": "Workers depend on abstraction; new channels register, not modify.",
+      "code": "classDiagram\n  class NotificationService {\n    +send(req) NotificationId\n    +getStatus(id) Status\n  }\n  class Sender {\n    <<interface>>\n    +send(msg) Receipt\n    +channel() String\n  }\n  class EmailSender {\n    +send(msg) Receipt\n  }\n  class SmsSender {\n    +send(msg) Receipt\n  }\n  class PushSender {\n    +send(msg) Receipt\n  }\n  class SenderFactory {\n    +register(channel, supplier)\n    +resolve(channel) Sender\n  }\n  class RateLimiter {\n    +allow(userId, channel) bool\n  }\n  class TemplateRenderer {\n    +render(templateId, params, locale) Content\n  }\n  NotificationService --> SenderFactory : resolves\n  SenderFactory --> Sender : creates\n  Sender <|.. EmailSender\n  Sender <|.. SmsSender\n  Sender <|.. PushSender\n  NotificationService --> RateLimiter : checks\n  NotificationService --> TemplateRenderer : renders"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working skeleton"
+    },
+    {
+      "type": "paragraph",
+      "text": "Show this code, not pseudocode about Kafka. It proves you understand the two invariants that matter: **intake is idempotent and durable before ack**, and **execution is guarded by rate limits with safe retry**. Everything else is configuration."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NotificationService.java",
+      "code": "class NotificationService {\n  private final NotificationStore store;\n  private final SenderFactory senders;\n  private final RateLimiter limiter;\n  private final QueueProducer producer;\n\n  // Intake: fast, idempotent, durable. Never calls provider here.\n  public String submit(SendRequest req) {\n    if (req.requestId() == null || req.userId() == null) throw new IllegalArgumentException(\"requestId+userId required\");\n    // Trade-off: DB check on intake costs ~5ms but makes retries safe.\n    // Without it, client retries during a timeout create duplicates.\n    return store.insertIfAbsent(req.requestId(), () -> {\n      Notification n = new Notification(req, \"QUEUED\");\n      store.persist(n);              // durability boundary\n      producer.publish(topicFor(req), n); // partitioned by userId\n      return n.id();\n    });\n  }\n\n  // Worker path: one invocation per attempt, per channel.\n  public void dispatch(Notification n, String channel) {\n    if (!limiter.allow(n.userId(), channel, n.priority())) {\n      store.markThrottled(n.id(), channel);\n      return; // re-enqueued by scheduler, not retried as failure\n    }\n    try {\n      Receipt r = senders.resolve(channel).send(n.rendered());\n      store.markSent(n.id(), channel, r.providerId());\n    } catch (ProviderException e) {\n      // Trade-off: fail open to fallback only for non-critical opt-outs.\n      store.appendAttempt(n.id(), channel, e.code());\n      throw e; // delay-queue schedules backoff; breaker counts it\n    }\n  }\n  private String topicFor(SendRequest r) {\n    return r.priority().name().toLowerCase() + \".\" + r.channelHint();\n  }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "worker_retry.py",
+      "code": "import random, time\n\ndef run_worker(consumer, service, breaker, scheduler):\n    for msg in consumer:  # partition key = user_id -> per-user order\n        channel = msg.channel\n        if not breaker.allow(channel):\n            # Trade-off: shed fast and requeue with delay rather than\n            # blocking the partition on a dead provider.\n            scheduler.delay(msg, seconds=30)\n            consumer.commit(msg)\n            continue\n        try:\n            service.dispatch(msg.notification, channel)\n            breaker.success(channel)\n        except Exception as e:\n            breaker.failure(channel)\n            # Exponential backoff with jitter avoids thundering herd\n            # when a provider recovers. Max 5 attempts, then DLQ.\n            if msg.attempt >= 5:\n                service.mark_failed(msg.notification.id, channel, str(e))\n            else:\n                backoff = min(900, (2 ** msg.attempt) * 5)\n                scheduler.delay(msg, seconds=backoff + random.uniform(0, 5))\n        consumer.commit(msg)  # at-least-once: commit after handling"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Capacity and complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Back-of-envelope numbers to say out loud. Interviewers grade the arithmetic.",
+      "headers": [
+        "Operation",
+        "Complexity / Cost",
+        "Note"
+      ],
+      "rows": [
+        [
+          "Intake (validate + dedup + persist)",
+          "O(1) + 1 DB write, p99 <100ms",
+          "Idempotency table indexed on requestId, TTL 7-30 days"
+        ],
+        [
+          "Preference + template resolve",
+          "O(1) cache hit, O(log N) on miss",
+          "Cache in Redis with 60s TTL; version templates to avoid stale renders"
+        ],
+        [
+          "Enqueue / dispatch",
+          "O(1) amortised per message",
+          "Partition by userId; parallelism = partitions, not threads"
+        ],
+        [
+          "Rate-limit check",
+          "O(1) Redis INCR + sliding window",
+          "Lua script for atomic check-and-increment; approximate under failover"
+        ],
+        [
+          "Storage (100M users x 30 notifs/mo, 1KB)",
+          "~3TB/mo before compression",
+          "Trade-off: keep hot status 30 days in DB, cold attempts in object store"
+        ],
+        [
+          "Throughput (50K RPS x 2KB)",
+          "~100 MB/s ingress, 3x with replication",
+          "Three priority topics let you provision critical 10x leaner than bulk"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Say the bottleneck out loud: **Redis rate-limit hot keys for celebrity events and the SMS provider quota** will saturate long before Kafka does. Mitigation is per-channel token buckets with local burst caches plus provider-level quotas enforced at the gateway, not in each worker. If you need 100K RPS sustained, you shard Redis by user hash and accept that cross-shard global caps are approximate — exact global counting at that rate requires a single serialiser you cannot afford."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency and the hardest follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "The hardest question is always some variant of: how do you stop double-sends when the client retries, the worker retries, and the provider webhook arrives twice. The answer has three layers and you must name all three. First, **intake dedup on `requestId`** with insert-if-absent so two identical POSTs return the same `notificationId` — trade-off is a unique index write on every send, worth it. Second, **per-attempt idempotency keys sent to the provider** (`notificationId:attemptNo`) so a retried HTTP call does not create two SMS — this requires providers that accept client tokens, otherwise you must suppress on your side by checking attempt state before re-sending. Third, **webhook reconciliation keyed on provider message ID**, processed idempotently into the attempt log — out-of-order delivered-then-failed callbacks must not flip terminal state backwards; enforce a state machine where `delivered` is terminal and `failed` after `delivered` is ignored and alerted. Workers themselves are stateless and horizontally scalable precisely because all coordination lives in the store and Redis; two workers can process different users concurrently with no locks, while same-user messages serialize on the partition. The trade-off you must state: you choose at-least-once plus dedup over distributed transactions because 2PC across Kafka, Redis, and a third-party SMS gateway is fiction."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Retry storms kill faster than outages",
+      "text": "Naive fixed-interval retry on provider 503 turns a 1-minute blip into a self-DDoS when thousands of workers wake up together. **Always use exponential backoff with jitter, per-channel circuit breakers, and a separate delay queue** so retries do not compete with first-time critical sends. Cap attempts (e.g., 5 for transactional, 2 for promotional) and park the rest in a DLQ with manual replay — unbounded retry is just a slow outage."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Provider down for an hour — what happens to OTPs?",
+          "text": "Breaker opens after N failures, router fails over to next eligible channel per policy, critical queue gets priority workers, bulk senders are paused. Show the fallback matrix and say the trade-off: fallback SMS costs 10x push and may violate quiet hours — critical overrides quiet hours, promotional never does."
+        },
+        {
+          "title": "Add WhatsApp as a new channel next sprint?",
+          "text": "Implement Sender interface, register in SenderFactory, add topic partition and worker pool, add rate-limit namespace and template set. No change to intake or router contract. This is why the factory exists."
+        },
+        {
+          "title": "Guarantee per-user ordering?",
+          "text": "Partition all of a user’s messages by userId to one consumer, sequence-number per user, and suppress reordering on retry by holding later promotional messages while a critical retry is in flight — or explicitly relax ordering for bulk to gain throughput."
+        },
+        {
+          "title": "Priority starvation?",
+          "text": "Separate queues plus weighted worker allocation. Critical workers can steal bulk capacity; bulk can never steal critical. Bulk gets token-bucketed to provider quotas."
+        },
+        {
+          "title": "Observability and abuse?",
+          "text": "Per-notification attempt log, per-channel delivery rate, provider latency histograms, rate-limit hit rate, DLQ depth alerts. Per-API-key quotas to stop one tenant starving others."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Duplicate `POST` with same `requestId` arriving on two API nodes concurrently — unique constraint returns existing ID, no second enqueue.",
+        "User opts out between enqueue and dispatch — re-check preferences in worker, mark `suppressed`, do not bill retry.",
+        "Push token expired / email hard bounce — mark channel invalid, trigger fallback once, then stop retrying that channel.",
+        "Template version deleted after enqueue — fail fast to DLQ with `template_missing`, never render partially.",
+        "Quiet-hours boundary crossed while queued — hold promotional until window opens; let critical through with audit flag.",
+        "Provider webhook arrives before worker marks `sending` — upsert by provider ID, state machine ignores regressions.",
+        "Clock skew across workers breaks fixed-window limits — use Redis server-side time in Lua script, not worker wall clock.",
+        "Poison message that crashes renderer every time — after 3 fast failures route to DLQ, alert, keep partition moving."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What you are graded on"
+    },
+    {
+      "type": "table",
+      "caption": "Weak answers name components. Strong answers name guarantees and costs.",
+      "headers": [
+        "Dimension",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Scoping",
+          "One queue, one worker, direct provider call",
+          "Priority lanes + per-channel isolation with reason: blast radius and head-of-line blocking"
+        ],
+        [
+          "Reliability",
+          "“Kafka is durable so we’re safe”",
+          "Durability boundary at intake, attempt log, delay queue + DLQ, at-least-once with three-layer dedup"
+        ],
+        [
+          "Throttling",
+          "“We’ll rate-limit the API”",
+          "Per-user sliding windows in Redis via atomic Lua, quiet hours, tenant quotas; admits approximation trade-off"
+        ],
+        [
+          "Extensibility",
+          "Switch statement over channel enums",
+          "Sender interface + registry; new channel without touching intake/router"
+        ],
+        [
+          "Operability",
+          "No mention of webhooks or status",
+          "Reconciliation state machine, breaker metrics, DLQ replay runbook, per-channel dashboards"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "45-minute plan",
+      "text": "0-8 min: clarify message classes, SLAs, idempotency, limits. 8-12 min: lock requirements table and burst math. 12-17 min: dismiss synchronous design with specific failure modes. 17-35 min: draw intake → router → priority/channel topics → isolated workers → breaker → tracker/DLQ; defend partitioning, Redis limits, and dedup layers. 35-42 min: deep-dive retries + provider outage + new-channel extension with code sketch. 42-45 min: edge cases and metrics unprompted. If you are short on time, cut bulk-mail discussion — never cut idempotency or rate limiting."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:44:15.033Z",
+    "problems": []
+  }
+}

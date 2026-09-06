@@ -1,0 +1,310 @@
+{
+  "slug": "able-to-see-live-text-commentary",
+  "title": "Able to see Live Text Commentary",
+  "summary": "Live text commentary is an ordered human narrative over unreliable networks. Design for late joiners, bad radios, and screen readers first, then worry about scale.",
+  "kind": "HLD",
+  "problemSlug": "able-to-see-live-text-commentary-148-322",
+  "topic": "User Empathy, User Experience, Future Proofing & Realistic Design",
+  "difficulty": "Medium",
+  "coverEmoji": "📝",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Live Commentary",
+    "User Experience"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Use Live Text to interact with content in a photo or video on iPhone",
+      "url": "https://support.apple.com/guide/iphone/interact-with-content-in-a-photo-or-video-iph37fdd714b/ios",
+      "source": "support.apple.com",
+      "kind": "article"
+    },
+    {
+      "title": "How to Use Live Text and Visual Lookup on iPhone",
+      "url": "https://twit.tv/posts/tech/how-use-live-text-and-visual-lookup-iphone",
+      "source": "twit.tv",
+      "kind": "article"
+    },
+    {
+      "title": "New Live Text Features in iOS 16! - YouTube",
+      "url": "https://www.youtube.com/watch?v=iHHo7kXxQKE",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "(PDF) Live text commentaries on the Internet as real-time narratives",
+      "url": "https://www.academia.edu/26379777/Live_text_commentaries_on_the_Internet_as_real_time_narratives",
+      "source": "academia.edu",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Live text commentary is **not chat and not streaming video**. It is a slow, human-curated, append-only narrative that must stay coherent for someone joining in minute 89 on a dying 3G connection. If your design optimises for publisher throughput instead of late-joiner clarity, you failed the question."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely, without hand-waving"
+    },
+    {
+      "type": "paragraph",
+      "text": "A live text commentary system lets a small set of trusted editors publish short timestamped updates — goals, fouls, quotes, context — and lets a very large set of readers follow that narrative within seconds, in order, without refreshing. Readers can join at any time, scroll back, and catch up in under ten seconds. The write rate is human: one event every 5 to 30 seconds per match, bursty around key moments. The read rate is massive and spiky: thousands to millions of concurrent readers per event, with 10x surges on goals, red cards, and full-time."
+    },
+    {
+      "type": "paragraph",
+      "text": "That asymmetry is the whole design. You do not need consensus, you do not need exactly-once delivery, and you do not need sub-100ms latency. You need **total order, durable history, and cheap fan-out**. Every client must see event 412 before 413, even if 413 arrived first over the network, even if the client disconnected for four minutes in a tunnel. The trade-off you are making explicit: you sacrifice publisher flexibility and ultra-low latency in exchange for reader simplicity and resilience."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Who you are really designing for"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers who tag this with user empathy are not asking for a WebSocket diagram. They are checking whether you think about the reader who is not you: on a prepaid Android phone, on a train, using a screen reader, paying per megabyte, or following a team in a language you do not speak. A realistic design starts from those constraints and works backward to infrastructure. That is why you talk about text first, not video. Text is accessible, translatable, searchable, and costs bytes, not megabytes. Choosing text as the core medium is itself an empathy decision — and you should say why."
+    },
+    {
+      "type": "list",
+      "items": [
+        "The commuter on intermittent connectivity who disconnects for 3 minutes and must re-sync without missing context or seeing duplicates.",
+        "The blind supporter using a screen reader who hears every update linearly — auto-refresh that steals focus or re-reads the whole feed is unusable.",
+        "The low-battery, low-data user who cannot afford a persistent socket or image-heavy payloads and needs a polling fallback.",
+        "The late joiner at minute 70 who needs the story so far in 5 entries, not 200, to understand why the crowd is angry.",
+        "The anxious fan who checks the score during work and needs glanceable state — score, minute, last event — without opening the full feed."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Model the match as a single ordered log, not as a set of messages. Editors write to an ingest service, a human review step approves or corrects, a sequencer assigns the next monotonic `seq` number for that match, and that immutable event is appended to durable storage. Readers never talk to the writers. They talk to a read-optimised fan-out layer that serves from memory and edge cache. This separation is deliberate: it isolates the correctness problem — ordering and editing — from the scale problem — serving millions of identical reads. You pay the cost of an extra hop to gain the ability to scale reads independently, which is exactly the trade-off you want when reads outnumber writes 100,000 to 1. "
+    },
+    {
+      "type": "mermaid",
+      "title": "Commentary pipeline",
+      "caption": "Writers append through a sequencer; readers fan out from cache, never from the write path.",
+      "code": "flowchart LR\n  E[Editor Client] --> I[Ingest API]\n  I --> M[Review Queue]\n  M --> S[Sequencer per Match]\n  S --> L[Durable Event Log]\n  L --> C[Fanout Cache]\n  C --> P[Push Gateway]\n  C --> H[Polling API]\n  P --> A[Live Clients]\n  H --> B[Degraded Clients]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The sequencer is the only component allowed to assign order, and there is one logical sequencer per match. That sounds like a bottleneck, and it is — intentionally. At one event per few seconds, a single writer with an atomic counter handles the load with headroom to spare. In return you eliminate the hardest distributed problem: out-of-order merges from multiple editors. Clients key everything off `match_id + seq`, not timestamps. Timestamps lie because clocks skew and editors correct typos; sequence numbers do not. The trade-off: you accept a per-match single point of contention to buy global simplicity for every reader."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Delivery: push, pull, and graceful degradation"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not pick one delivery mechanism. Ship three and negotiate down. Use server-sent events as the default for live viewers because it is HTTP-based, survives proxies better than raw sockets, auto-reconnects, and matches the one-way nature of commentary — the client almost never speaks except to say *I have up to seq 418*. Keep WebSockets only if you already need bidirectional features like polls or reactions on the same connection; otherwise it adds connection state and load-balancer stickiness for no benefit. And always keep short-polling as a fallback: `GET /matches/{id}/events?since=418&limit=20` served from edge cache. Polling is boring, cacheable, and works everywhere, which is why it saves you when push fails. The trade-off is explicit: push gives immediacy at the cost of connection state; polling gives resilience and cacheability at the cost of 10 to 15 seconds of staleness. Empathy means letting the client degrade without the user noticing."
+    },
+    {
+      "type": "mermaid",
+      "title": "Client sync logic",
+      "caption": "Every client syncs by sequence number, not by time, so reconnects are idempotent.",
+      "code": "stateDiagram-v2\n  [*] --> Bootstrap: open match\n  Bootstrap --> Live: fetch snapshot + tail\n  Live --> Reconnecting: disconnect\n  Reconnecting --> Live: resume since last seq\n  Reconnecting --> Polling: push fails twice\n  Polling --> Live: push healthy again"
+    },
+    {
+      "type": "table",
+      "caption": "Core trade-offs, stated honestly.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Single sequencer per match",
+          "Total order with no merge logic; trivial client reasoning",
+          "Write throughput capped; failover must preserve counter"
+        ],
+        [
+          "Immutable events + corrections as new events",
+          "History is auditable; caches stay valid; no invalidation storms",
+          "Clients must render supersedes logic; storage grows slightly"
+        ],
+        [
+          "SSE by default, polling fallback",
+          "Low operational complexity; works through proxies and low-end devices",
+          "No native sub-second latency; polling clients lag by design"
+        ],
+        [
+          "Edge-cacheable snapshot + delta",
+          "Late joiners served in one round trip; origin shielded from surges",
+          "Snapshot generation lag; need versioned cache keys per seq"
+        ],
+        [
+          "Plain text core + optional enrichment",
+          "Accessible, translatable, cheap on data; future media attaches cleanly",
+          "Less visually rich than video-first rivals; editors must write well"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "This system does not fail with a clean outage. It fails with confusion: duplicate goals, missing minutes, frozen feeds that look live. Design your failure modes around perception, not just availability. A feed that silently stops at minute 78 while showing a live dot is worse than an explicit error, because the user trusts stale state. Every failure response must answer two questions on screen: *how old is what I am seeing* and *what do I do next*."
+    },
+    {
+      "type": "table",
+      "caption": "Failures you must name in the interview.",
+      "headers": [
+        "Failure",
+        "User-visible symptom",
+        "Design answer"
+      ],
+      "rows": [
+        [
+          "Thundering herd on goal",
+          "Polling spike melts origin; tail latency jumps to 20s",
+          "Pre-warm edge snapshot; serve deltas from CDN; jittered backoff on clients"
+        ],
+        [
+          "Editor corrects seq 412 after 413 shipped",
+          "Clients show contradictory facts; screen readers repeat both",
+          "Never mutate; emit 414 with supersedes 412; client collapses visually"
+        ],
+        [
+          "Push gateway drops 30% of sockets",
+          "Feed freezes but header still says live",
+          "Heartbeat every 15s with last seq; show staleness banner after 2 missed beats"
+        ],
+        [
+          "Clock skew across editors",
+          "Events appear out of narrative order if sorted by time",
+          "Sort and sync strictly by seq; display minute as data, not ordering key"
+        ],
+        [
+          "Cache poisoned with bad snapshot",
+          "Late joiners see wrong score for minutes",
+          "Version snapshots by high-water seq; purge by key, not by TTL alone"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The goal-moment surge deserves special attention because it is the only true scale event. Normal load might be 50k concurrent readers with 5-second polling. A last-minute winner can triple that in 20 seconds as people share links and dormant tabs wake up. If your polling endpoint hits origin, you will cascade. The fix is not bigger servers; it is making the hot path cacheable. A snapshot object like `match:481516:summary:seq-425` with a 5-second TTL absorbs 95% of the surge at the edge. You trade a few seconds of staleness — acceptable for text — for survival. Say that trade-off out loud."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Ordering is not timestamps",
+      "text": "Never order by `created_at`. Two editors, two laptops, two clocks — you will interleave stoppage-time chaos. Order by a server-assigned `seq` per match and treat client clocks as display hints only. If you sort by time in the interview, expect to be corrected."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Event schema that future-proofs you"
+    },
+    {
+      "type": "paragraph",
+      "text": "Future-proofing here does not mean predicting features. It means adding new event types and renderers without breaking old clients or invalidating caches. The way to do that is a small, versioned, text-first schema where unknown fields are ignored and unknown types degrade to plain text. An old app from two years ago should still render a new *expected-goals* card as a sentence, not crash. That property lets product iterate without forced upgrades, which is a retention decision disguised as a technical one."
+    },
+    {
+      "type": "code",
+      "language": "json",
+      "filename": "event.json",
+      "code": "{\n  \"match_id\": \"epl-2026-ars-che\",\n  \"seq\": 425,\n  \"v\": 1,\n  \"minute\": 89,\n  \"type\": \"goal\",\n  \"text\": \"Saka cuts inside and curls it far corner. 2-1.\",\n  \"supersedes\": null,\n  \"state\": { \"home\": 2, \"away\": 1, \"phase\": \"second_half\" },\n  \"media\": { \"opt_image\": \"cdn-id-8821\", \"alt\": \"Saka celebrating\" }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep `text` mandatory and everything else optional. Keep `state` denormalised on every event so any single event plus the snapshot can render the header — score, minute, phase — without a second fetch. That duplication costs bytes per event but saves a round trip for every degraded client, which is the right trade when readers are on lossy networks. Version with `v` and never rename fields; add new ones. Corrections are new events with `supersedes` pointing backward, so caches remain immutable and CDN purge becomes a non-issue."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Realistic design: what to cut on purpose"
+    },
+    {
+      "type": "paragraph",
+      "text": "A medium-difficulty interview expects a credible 45-minute slice, not a production blueprint. Cut personalization, cut reactions, cut multi-language live translation from the critical path. State them as explicit non-goals with a path to add later: reactions become a separate counter service, translation becomes an async enrichment that attaches to the event without blocking the base text. What you must not cut: auth for editors, audit trail of who published what, rate limits on ingest, and abuse handling for user comments if you allow them. Separating staff-written commentary from fan chat into two different logs is a safety and scaling choice — one needs ordering guarantees, the other needs spam filtering — and conflating them is the most common realism failure."
+    },
+    {
+      "type": "list",
+      "items": [
+        "It is not a chat room: readers do not need to publish to the same log, so you do not need presence, typing indicators, or total-order broadcast for millions of writers.",
+        "Polling is not a failure: for a 10-second cadence narrative, 10-second polling is on-spec for most users and dramatically cheaper to operate than persistent sockets.",
+        "More regions does not mean fresher data: commentary tolerates 2 to 5 seconds of edge staleness, so favour cache hit rate over write propagation speed.",
+        "Editing does not mean mutating: in-place edits break caches and confuse screen readers; append a correction event instead.",
+        "Accessibility is not a polish step: focus management, live-region politeness, and alt text determine whether the core loop works for a large minority."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "When this shape fits, and when it does not.",
+      "headers": [
+        "Use this design when",
+        "Do not use it when"
+      ],
+      "rows": [
+        [
+          "Few trusted writers, huge read fan-out, human-paced cadence",
+          "Anyone can write at high rate — you need moderation queues and sharding, not a sequencer"
+        ],
+        [
+          "Order and catch-up matter more than raw latency",
+          "You need sub-second interaction like bidding or gaming — use state sync, not an event log"
+        ],
+        [
+          "Clients are heterogeneous and often degraded",
+          "All clients are modern desktop on reliable networks — persistent sockets alone may suffice"
+        ],
+        [
+          "History must be replayable and searchable after full-time",
+          "Ephemeral reactions where history has no value — use fire-and-forget counters"
+        ]
+      ]
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Open with the user, not the stack",
+          "text": "Name two readers — late joiner and screen-reader user — and derive requirements: snapshot plus delta, seq-based resume, staleness indicator. This signals empathy before boxes."
+        },
+        {
+          "title": "Draw the write path first",
+          "text": "Editor to review to sequencer to durable log. Justify the per-match sequencer as a deliberate bottleneck that buys order at human write rates."
+        },
+        {
+          "title": "Draw the read path second",
+          "text": "Durable log to fan-out cache to edge to SSE plus polling fallback. Show snapshot versioned by high-water seq and explain the surge trade-off."
+        },
+        {
+          "title": "Name failures unprompted",
+          "text": "Goal surge, push drop, correction after ship, clock skew. For each, state the on-screen symptom and the client behaviour, not just the server fix."
+        },
+        {
+          "title": "Close with scope control",
+          "text": "List non-goals — chat, personalization, live translation — and show where each would attach later without breaking the v1 schema."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **it is a per-match ordered log with a single sequencer, served as a cacheable snapshot plus deltas over SSE with polling fallback, so any client can resume by sequence number and degrade without losing the story.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:20:38.147Z",
+    "problems": []
+  }
+}

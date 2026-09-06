@@ -1,0 +1,290 @@
+{
+  "slug": "lld-interview-tips",
+  "title": "LLD Interview Tips",
+  "summary": "LLD interviews reward working, extensible class design under time pressure — not pattern trivia. This guide gives the delivery loop, trade-offs, and failure modes to pass.",
+  "kind": "LLD",
+  "problemSlug": "lld-interview-tips-5-9",
+  "topic": "Introduction to Low Level Design",
+  "difficulty": "Easy",
+  "coverEmoji": "🧩",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "OOP",
+    "Interview-Tips",
+    "Design-Patterns"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Can someone help me on what to expect in LLD interviews at Amazon?",
+      "url": "https://www.reddit.com/r/leetcode/comments/1jblada/can_someone_help_me_on_what_to_expect_in_lld/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "How I'd Prepare for an LLD Interview in 7 Days - Medium",
+      "url": "https://medium.com/@shivali0087/how-id-prepare-for-an-lld-interview-in-7-days-if-i-had-to-start-from-scratch-87294ee08ff5",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "LLD Interview Tips That Will Help You Ace the Process!",
+      "url": "https://www.linkedin.com/posts/kriti-rohilla_%F0%9D%90%8B%F0%9D%90%8B%F0%9D%90%83-%F0%9D%90%88%F0%9D%90%A7%F0%9D%90%AD%F0%9D%90%9E%F0%9D%90%AB%F0%9D%90%AF%F0%9D%90%A2%F0%9D%90%9E%F0%9D%90%B0-%F0%9D%90%93%F0%9D%90%A2%F0%9D%90%A9%F0%9D%90%AC-%F0%9D%90%93%F0%9D%90%A1%F0%9D%90%9A-activity-7339505232931864576-OKoL",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "Low Level Design in a Hurry - Hello Interview",
+      "url": "https://www.hellointerview.com/learn/low-level-design/in-a-hurry/introduction",
+      "source": "hellointerview.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "An LLD interview is a **coding interview about structure**. The interviewer wants to see you turn vague nouns into **small classes with clear owners, explicit interactions, and code that still compiles when requirements shift**. If you can name a pattern but cannot defend *why this class owns this behavior*, you fail. If you write clean, runnable code with justified trade-offs, you pass — even with no pattern names dropped."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What LLD is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Low-Level Design is the decision of **what objects exist, what each one knows, what each one does, and how they call each other** — expressed as compilable code, not boxes and arrows. In a 35 to 45 minute round you are given a self-contained domain like parking lot, elevator, locker, or game. You must produce: entities with fields, public methods with signatures, ownership of state and behavior, and the control flow for 2-3 core use cases end to end. The grading rubric is brutal and simple: does the core flow run, can a new requirement be added without rewriting the core, and did you avoid leaking responsibilities across layers. Everything else — diagrams, pattern names, `SOLID` recitation — is supporting evidence, not the verdict."
+    },
+    {
+      "type": "paragraph",
+      "text": "That is why LLD sits between two neighbors and is neither. It is not high-level design: no load balancers, no sharding, no eventual consistency. It is not a data-structures round either: nobody cares if your lookup is `O(log n)` versus `O(1)` if your `ParkingLot` class both prices tickets, assigns spots, and processes payments. The trade-off you are being tested on is **modeling clarity versus implementation speed**. Over-model and you never finish the driver code. Under-model and you finish fast with a god class that collapses on the first follow-up like *add EV spots* or *add dynamic pricing*. The pass zone is a minimal skeleton that runs, with seams left exactly where change is likely."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: a 45-minute delivery loop"
+    },
+    {
+      "type": "mermaid",
+      "title": "LLD delivery loop",
+      "caption": "The order is the strategy: lock scope, freeze skeleton, then earn the right to code.",
+      "code": "flowchart TD\n  A[Clarify 2 min] --> B[Scope and assumptions]\n  B --> C[List entities and verbs]\n  C --> D[Assign ownership]\n  D --> E[Skeleton classes and signatures]\n  E --> F[Implement core flow]\n  F --> G[Drive and extend]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The loop works because it forces **irreversible decisions early and reversible details late**. You spend the first five minutes shrinking the problem: which 2-3 flows are in scope, what is explicitly out, what are the types of inputs and outputs. Then you name candidate nouns and verbs without coding — `Vehicle`, `Spot`, `Ticket`, `park()`, `unpark()`, `price()` — and immediately assign each verb to exactly one owner. That ownership step is the whole interview. Once every behavior has a single home, writing the skeleton — class names plus empty method signatures — takes five minutes and lets the interviewer veto the structure before you have invested twenty minutes in method bodies. The trade-off here is **upfront alignment cost versus rework cost**: two minutes of confirmation saves fifteen minutes of rewriting a wrong hierarchy."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Why this order wins"
+    },
+    {
+      "type": "paragraph",
+      "text": "Most failures come from coding in discovery order: start with `User`, add fields as you remember them, sprinkle `if` branches for each new rule. That produces code that runs for the happy path and cannot absorb the follow-up. The delivery loop inverts it: you decide **extensibility seams before logic**. You choose composition over inheritance for `Spot` types because adding `EVSpot` should not touch `Vehicle`. You put pricing behind a `PricingStrategy` interface not because the book says so, but because the interviewer *will* ask for surge or hourly pricing and you want that change to be one new class, not edits in five places. The cost is that you look slower for the first ten minutes. The payoff is that the last ten minutes — live extension — look effortless, which is exactly what a hiring signal needs."
+    },
+    {
+      "type": "table",
+      "caption": "Every LLD choice buys something and sells something. Say both out loud.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Skeleton first, bodies second",
+          "Interviewer corrects structure cheaply; no wasted logic",
+          "Looks slow early; requires discipline to not dive into code"
+        ],
+        [
+          "Composition over inheritance",
+          "New types added without editing parents; no fragile base class",
+          "More small classes and wiring; slightly more boilerplate"
+        ],
+        [
+          "Interface for volatile behavior (pricing, allocation, notification)",
+          "Follow-ups become additive; tests can mock one seam",
+          "Indirection overhead; overkill if behavior never varies"
+        ],
+        [
+          "Rich domain objects vs anemic getters/setters",
+          "Invariants enforced where data lives; fewer illegal states",
+          "Harder to serialize; must decide where validation lives"
+        ],
+        [
+          "In-memory runnable code vs framework-heavy code",
+          "Compiles and demos in the round; interviewer can trace flow",
+          "Not production-persistent; must state what you stubbed"
+        ],
+        [
+          "2-minute clarification vs 10-minute interrogation",
+          "More coding time; shows product judgment",
+          "Risk of wrong assumption; must write assumptions down to hedge"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How good designs die in the room"
+    },
+    {
+      "type": "paragraph",
+      "text": "In production terms, LLD failures do not crash — they **ossify**. The symptom the interviewer watches for is the same symptom a tech lead dreads six months later: a small requirement change ripples across the codebase. You add hourly billing and suddenly `Ticket`, `Gate`, `ParkingLot`, and `Payment` all need edits. You add a new vehicle size and a `switch` on an enum grows a fourth branch in three files. That brittleness has a visible in-room signature: long pauses before the follow-up, followed by edits scattered across classes, followed by *this would be easier if I rewrote it*. The trade-off you missed was **localizing variation**: you stored a rule that changes often inside a class that should rarely change. Interviewers probe this deliberately with *now add X* because it exposes whether your seams sit on the right boundaries."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**God class symptom:** one class holds spots, tickets, pricing, and payments. Follow-up edit touches 50+ lines in one file. Fix is to split by lifecycle: inventory vs transaction vs policy.",
+        "**Primitive obsession symptom:** vehicle type or spot status as raw `String` or `int` with `if-else` everywhere. New type means hunting branches. Fix is an enum plus a strategy or polymorphic subtype.",
+        "**Leaky ownership symptom:** two classes both mutate `Spot.isOccupied`. Double-booking or lost updates in the driver demo. Fix is single writer: only `SpotManager` transitions state.",
+        "**Inheritance trap symptom:** `CarSpot extends Spot` plus `EVSpot extends CarSpot` to reuse code. Next requirement breaks the chain. Fix is composition: `Spot` has-a `Size` and `Set<Feature>`.",
+        "**Dead diagram symptom:** beautiful UML, no runnable flow. Time expires with empty method bodies. Fix is time-boxing: diagram is a 3-minute sketch, then skeleton, then one vertical slice that runs."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Time is the hidden rubric",
+      "text": "You are graded on **finished vertical slice plus one extension**, not on completeness. A design that parks and unparks one vehicle end to end beats a design that models ten entities with no working flow. Time-box ruthlessly: 5 minutes scope, 10 minutes skeleton, 20 minutes core code, 10 minutes drive plus extension. Say the time-box out loud so the interviewer trusts your pacing."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code where it clarifies: skeleton first"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ParkingLotSkeleton.java",
+      "code": "enum VehicleSize { BIKE, CAR, TRUCK }\n\nclass Vehicle {\n    final String plate; final VehicleSize size;\n    Vehicle(String plate, VehicleSize size) { this.plate = plate; this.size = size; }\n}\n\nclass Spot {\n    final String id; final VehicleSize size;\n    private boolean occupied;\n    Spot(String id, VehicleSize size) { this.id = id; this.size = size; }\n    synchronized boolean canFit(Vehicle v) { return !occupied && v.size.ordinal() <= size.ordinal(); }\n    synchronized void occupy() { occupied = true; }\n    synchronized void vacate() { occupied = false; }\n}\n\ninterface PricingStrategy { double price(long minutesParked, VehicleSize size); }\nclass HourlyPricing implements PricingStrategy {\n    public double price(long m, VehicleSize s) { return Math.ceil(m / 60.0) * (s == VehicleSize.CAR ? 20 : 10); }\n}\n\nclass SpotManager {\n    private final List<Spot> spots;\n    SpotManager(List<Spot> spots) { this.spots = spots; }\n    // Single writer for allocation: the only place that mutates Spot state.\n    synchronized Optional<Spot> allocate(Vehicle v) {\n        for (Spot s : spots) if (s.canFit(v)) { s.occupy(); return Optional.of(s); }\n        return Optional.empty();\n    }\n    synchronized void release(Spot s) { s.vacate(); }\n}\n\nclass ParkingLot {\n    private final SpotManager spots; private final PricingStrategy pricing;\n    ParkingLot(SpotManager spots, PricingStrategy pricing) { this.spots = spots; this.pricing = pricing; }\n    Ticket park(Vehicle v) { /* allocate -> create ticket -> return */ return null; }\n    double unpark(Ticket t) { /* compute price -> release -> return amount */ return 0; }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This skeleton exists to make three ownership calls visible before any logic is written. `Spot` owns its own occupancy invariant but does not decide allocation — that is why `canFit` is synchronized and dumb, while `SpotManager` is the sole allocator. The trade-off is **one extra class versus no double-booking**: without a single writer, two concurrent `park()` calls can grab the same spot and your driver demo fails in front of the interviewer. `PricingStrategy` is an interface from minute one not out of dogma but because pricing is the most volatile axis; adding surge pricing later is one new file, zero edits to `ParkingLot`. `ParkingLot` itself stays an orchestrator — it sequences allocate, ticket, price, release — so it stays open for extension but closed for modification. Show this file, narrate those two trade-offs, get a nod, *then* fill in `park` and `unpark`."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Clarify for two minutes, then stop",
+          "text": "Ask only load-bearing questions: what are the core flows, what are input/output types, single vs multi-threaded, do I persist or stay in memory, do I need `list` or `cancel` operations. Write the answers as assumptions on the board. The trade-off is coverage versus momentum: every extra minute here is a minute stolen from runnable code, so cap it and move."
+        },
+        {
+          "title": "Narrow scope in writing",
+          "text": "State: in-scope is park, unpark, and price; out-of-scope is payments gateway, multi-floor navigation, and admin dashboards. Interviewers score this explicitly because it mirrors real scoping. The trade-off is perceived completeness versus demonstrable depth: a smaller scope finished cleanly signals seniority more than a large scope half-built."
+        },
+        {
+          "title": "Name entities, assign verbs, freeze the skeleton",
+          "text": "List nouns, cross out non-entities like `System` or `Manager-of-everything`, then put each verb next to exactly one class. Draw a 6-box class sketch with associations and cardinalities only — no full UML ceremony unless asked. Ask: does this split survive adding one new type? The trade-off is upfront design talk versus coding time, and you want the interviewer to co-sign the split now."
+        },
+        {
+          "title": "Justify one pattern, by name, with a reason",
+          "text": "Say: Strategy for pricing because rules vary independently; Observer or queue for notifications because publishers should not block; Factory only if object creation has branching. Never stack patterns to impress. The trade-off is flexibility versus indirection: each pattern adds a seam future code can exploit but also a hop the reader must trace, so tie each one to a concrete follow-up it absorbs."
+        },
+        {
+          "title": "Implement one vertical slice that runs",
+          "text": "Code `park` then `unpark` with a tiny `main` or test that creates a lot, parks a car, advances time, unparks, and prints the fee. Handle the unhappy paths that matter: lot full, duplicate park, invalid ticket. The trade-off is happy-path speed versus credibility: two error branches cost three minutes and prove you think about invariants, which is what separates mid-level from senior."
+        },
+        {
+          "title": "Drive the extension live",
+          "text": "Invite the follow-up: what would you like to add — EV spots, dynamic pricing, concurrency? Implement it by adding a class, not editing five. Narrate the diff: one new file, zero changes to core. The trade-off is rehearsal versus adaptability: you cannot predict the follow-up, but if your seams are on volatile axes you can absorb any of them without restructuring."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that kill you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**LLD is UML drawing.** No. Diagrams are a communication aid. Runnable code with clear ownership is the deliverable. A sketch plus compiling code beats a perfect diagram with stubs.",
+        "**More patterns means better design.** No. Each unused pattern is speculative complexity. One well-placed `Strategy` you can defend beats four patterns you cannot justify when asked *what breaks if I remove this?*",
+        "**`SOLID` is a checklist to recite.** Interviewers test application, not acronyms. Saying *`ParkingLot` depends on `PricingStrategy`, not `HourlyPricing`, so pricing can change without touching orchestration* proves Dependency Inversion far better than expanding the letters.",
+        "**Requirements gathering should be exhaustive.** In LLD, over-clarifying starves coding time. Ask the five questions that change the class shape, record the rest as assumptions, and start building. Judgment under ambiguity is part of the score.",
+        "**Thread safety means sprinkling `synchronized` everywhere.** Blanket locking hides the ownership problem and kills throughput. Identify the single writer for each piece of mutable state, lock there, and keep value objects immutable.",
+        "**Edge cases do not matter if the design is pretty.** They do. Duplicate `park`, full lot, expired ticket, and concurrent allocate are where god classes and leaky ownership reveal themselves. Drive them in your demo."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "A pragmatic view of SOLID and OOP"
+    },
+    {
+      "type": "paragraph",
+      "text": "Treat `SOLID` as four heuristics with costs, not commandments. Single Responsibility earns its keep when it puts volatile reasons to change in different files — splitting `SpotManager` from `PricingStrategy` is worth it because allocation and pricing change for different reasons. Open-Closed earns its keep when extension is additive — a new pricing rule as a new class, not a new branch. Liskov and Interface Segregation matter when you use subtyping: prefer narrow interfaces like `Pricer` or `Allocator` over a fat `ParkingService` so callers do not depend on methods they never call. The trade-off with strict purity is **readability versus ceremony**: five one-method interfaces for a 40-minute round slow the reader down. Favor composition, immutable value objects for `Ticket` and `Vehicle`, and explicit constructor injection so dependencies are visible at a glance."
+    },
+    {
+      "type": "table",
+      "caption": "Where to lean in and where to hold back in a timed round.",
+      "headers": [
+        "Technique",
+        "Use it when",
+        "Skip it when"
+      ],
+      "rows": [
+        [
+          "Class sketch (boxes + methods)",
+          "Always — 3 minutes to align on ownership before code",
+          "Never skip; but do not turn it into full UML with visibilities"
+        ],
+        [
+          "Strategy for pricing / allocation / sorting",
+          "Rule varies by type, time, or config and will be extended",
+          "Only one fixed rule exists and no follow-up is plausible"
+        ],
+        [
+          "Observer / events for notifications",
+          "Side effects like SMS or dashboard must not block core flow",
+          "Round has no notifications or single synchronous caller"
+        ],
+        [
+          "Inheritance hierarchy",
+          "True is-a with shared invariant and substitutable behavior",
+          "Merely sharing fields — use composition with `Size` or `Feature` flags"
+        ],
+        [
+          "Factory / Builder",
+          "Creation branches on type or has many optional fields",
+          "Construction is one `new` with two required args"
+        ],
+        [
+          "Concurrency control",
+          "Prompt says multi-threaded or multiple gates/terminals",
+          "Explicitly single-threaded game or CLI — note assumption instead"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Preparation compounds if it is deliberate. Do not binge twenty problems shallowly. Take four archetypes — resource allocation like parking or lockers, games like chess or tic-tac-toe, booking like movies or cabs, and pipelines like logging or rate limiting — and build each twice: once for the core slice, once under a nasty follow-up you invent yourself. The second pass is where judgment forms, because you feel which seam saved you and which abstraction got in the way. Time yourself, write the driver, break thread safety on purpose, then fix it with a single writer. The trade-off in prep is **breadth versus depth**: depth on four archetypes transfers to any prompt, while shallow breadth leaves you fluent at whiteboard talk and mute when the editor opens."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "\"I will scope to two flows, assign each behavior to exactly one owner with composition over inheritance, freeze a skeleton for your sign-off, then implement a runnable slice behind narrow interfaces so the likely follow-up is additive.\" Say it, then do exactly that."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:48:22.881Z",
+    "problems": []
+  }
+}

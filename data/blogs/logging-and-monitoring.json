@@ -1,0 +1,299 @@
+{
+  "slug": "logging-and-monitoring",
+  "title": "Logging and Monitoring",
+  "summary": "Logging and monitoring for scalable distributed systems: how logs, metrics, and traces fit together, how the collection pipeline survives load, and what trade-offs interviewers expect you to defend.",
+  "kind": "HLD",
+  "problemSlug": "logging-and-monitoring-90-299",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "📡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Logging",
+    "Monitoring",
+    "Observability"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "11 Best Log Monitoring Tools for Developers in 2025 - Last9",
+      "url": "https://last9.io/blog/log-monitoring-tools-for-developers/",
+      "source": "last9.io",
+      "kind": "article"
+    },
+    {
+      "title": "The Art of Combining Logging Metrics and Monitoring - Cribl",
+      "url": "https://cribl.io/blog/combining-logging-metrics-and-monitoring/",
+      "source": "cribl.io",
+      "kind": "article"
+    },
+    {
+      "title": "Best Log Analysis Tools in 2026: A Complete SRE Guide - OpenObserve",
+      "url": "https://openobserve.ai/blog/best-log-analysis-tools/",
+      "source": "openobserve.ai",
+      "kind": "article"
+    },
+    {
+      "title": "What is log monitoring? - Elastic",
+      "url": "https://www.elastic.co/what-is/log-monitoring",
+      "source": "elastic.co",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "In a distributed system **metrics tell you *when* something is wrong, logs and traces tell you *why* — but only if they share correlation IDs, clocks, and service identity.** Without that join key you do not have observability, you have three expensive piles of disconnected data. Every scaling decision flows from this: collect separately, store by access pattern, query together."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What logging and monitoring actually are"
+    },
+    {
+      "type": "paragraph",
+      "text": "Be precise, because interviewers punish hand-waving here. A **log** is a discrete, timestamped record of an event that happened: request received, retry attempted, payment rejected for reason X. It carries high-detail context but is expensive to store and search. A **metric** is a numeric measurement aggregated over time: requests per second, `p99` latency, queue depth, error ratio. It is cheap, lossy by design, and ideal for thresholds and trend detection. A **trace** is the path of one request across services, built from spans linked by a `trace_id`. It answers *where did time go and where did it break* when no single service owns the failure."
+    },
+    {
+      "type": "paragraph",
+      "text": "**Monitoring** is the active loop: collect signals, evaluate rules, page a human or trigger automation. **Observability** is the property that lets you ask *new* questions you did not predefine — slice errors by build version, replay a specific user session, compare tail latency before and after a deploy. Monitoring without observability means you only catch failures you predicted. Logs without aggregation means you drown in detail you cannot query. The scalable design keeps both: cheap always-on metrics for detection, sampled high-fidelity logs and traces for explanation, joined on demand."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Logs:** ground truth, high cardinality, high volume. Use for root cause, audit, debugging edge cases. Trade-off: you cannot keep everything searchable forever.",
+        "**Metrics:** pre-aggregated counters, gauges, histograms. Use for SLOs, alerts, autoscaling, dashboards. Trade-off: aggregation destroys the individual story.",
+        "**Traces:** request-scoped causality across service boundaries. Use for latency breakdown and dependency failures. Trade-off: full capture is unaffordable; you must sample intelligently.",
+        "**Events and profiles:** deploys, config changes, restarts, CPU flame graphs. Use to correlate *what changed* with *what broke*. Trade-off: useless unless timestamped and labeled consistently."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How the pipeline actually works"
+    },
+    {
+      "type": "paragraph",
+      "text": "You never let application threads write directly to a remote index. That couples request latency to observability health — the first overload takes down both. The sane shape is: emit locally, buffer durably, process asynchronously, store by temperature, query through one correlation layer. The buffer is the load-bearing wall. When log volume spikes 20x during an incident, the buffer absorbs it instead of dropping the signals you need most or backpressuring the serving path."
+    },
+    {
+      "type": "mermaid",
+      "title": "Telemetry pipeline that survives spikes",
+      "caption": "Local agents decouple apps from backends; durable buffer and tiered storage decouple ingest rate from query cost.",
+      "code": "flowchart LR\n  A[\"App: emit structured log, metric, span\"] --> B[\"Local Agent: batch, compress, retry\"]\n  B --> C[\"Durable Buffer: Kafka queue\"]\n  C --> D[\"Stream Processor: enrich, redact, drop, sample\"]\n  D --> E[\"Hot Index: last 24h searchable\"]\n  D --> F[\"Warm Object Store: 30-90d compressed\"]\n  D --> G[\"Metric Store: pre-aggregated series\"]\n  E --> H[\"Query: dashboards, search, alerts\"]\n  F --> H\n  G --> H"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape and not direct writes? **Trade-off: durability and isolation versus freshness and cost.** A local agent with disk-backed retry means a network partition does not lose the evidence you need to diagnose it. A durable queue means the indexer can crash, lag, or scale without blocking producers. Stream processing before storage is where you win or lose money: drop debug logs from healthy requests, redact PII, attach `service, version, region, trace_id` once so every downstream query does not re-parse strings. Hot storage is SSD-backed index for fast ad-hoc search over hours; warm storage is columnar objects for scans over weeks. You pay for speed only where humans are actively debugging."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The signals, honestly compared"
+    },
+    {
+      "type": "table",
+      "caption": "Pick the signal by the question you need to answer, not by habit.",
+      "headers": [
+        "Signal",
+        "Strength",
+        "Weakness / Cost",
+        "Scale rule"
+      ],
+      "rows": [
+        [
+          "Logs (structured JSON)",
+          "Arbitrary context per event; best for why did this request fail",
+          "Highest bytes per insight; full-text index scales with volume, not value",
+          "Log at INFO by default, DEBUG behind dynamic flag + sampling; never log payloads at scale"
+        ],
+        [
+          "Metrics (counters, histograms)",
+          "Tiny, fast, perfect for SLOs and autoscaling",
+          "Histograms lie if buckets are wrong; labels explode series count",
+          "Cap label cardinality; pre-aggregate at edge; alert on ratios, not raw counts"
+        ],
+        [
+          "Traces (sampled spans)",
+          "Shows cross-service causality and tail-latency contributors",
+          "Full capture multiplies storage with fan-out; tail sampling needs buffering",
+          "Head-sample 1-5%, tail-sample 100% of errors and slow traces; propagate context always"
+        ],
+        [
+          "Continuous profiling + events",
+          "Links regressions to code lines and deploys",
+          "Low frequency insight; noisy if always on at high resolution",
+          "Always-on at low overhead, detailed capture triggered by alert"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "**Failure 1: the log flood takes down the observer.** A retry storm or verbose error loop emits gigabytes per minute. Without backpressure and shedding, the collector saturates CPU, the queue fills, and agents start blocking or OOMing application pods. Symptom you see: gaps in telemetry *during* the incident, indexer lag climbing from seconds to tens of minutes, and application `p99` degrading because logging is synchronous. Fix is structural: async appenders with bounded queues and drop policies, per-service rate limits, and automatic downgrade of noisy loggers. Trade-off you must name: you deliberately lose low-value logs to preserve serving traffic and high-value error samples."
+    },
+    {
+      "type": "paragraph",
+      "text": "**Failure 2: cardinality explosion in metrics.** Someone adds `user_id` or `request_path` with unbounded values as a metric label, or creates a histogram series per pod. Series count goes from 100k to 10M overnight. Symptom you see: query latency for dashboards jumps from 200ms to 30s, the time-series store runs out of memory, and alert evaluation lags so pages arrive 15 minutes late. This is why metrics must be aggregated before storage and labels must be bounded to low-cardinality dimensions like `service, endpoint_template, status_code, region`. Move high-cardinality needs to logs or traces where the cost model fits. Trade-off: you give up slice-by-anything on metrics to keep detection fast and cheap."
+    },
+    {
+      "type": "paragraph",
+      "text": "**Failure 3: uncorrelated signals during a cascade.** Service A shows elevated latency, Service D logs timeouts, but there is no shared `trace_id`, clocks drift, and service names differ between logs and dashboards. Symptom you see: four engineers each staring at a different screen, all correct locally and all wrong globally, while mean time to resolution stretches into hours. Root cause was a slow dependency two hops away. The fix is boring and non-negotiable: propagate trace and request IDs at every boundary including queues and background jobs, synchronise clocks, enforce a single service naming and labeling schema at the collector. Trade-off: you pay a small per-request propagation and enrichment tax to buy back hours of incident time."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Alert fatigue is a design bug",
+      "text": "If alerts fire on raw error counts, every deploy and traffic spike pages someone. Alert on **SLO burn rate**: what fraction of the error budget you consumed over the last hour versus the last six hours. Pair every page with a runbook link and three exemplar logs or traces. **Noisy alerts get muted; muted alerts miss real outages.** That trade-off is operational, not theoretical."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What good looks like in code and config"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "telemetry.py",
+      "code": "import logging, json, time, random\n\nclass JsonFormatter(logging.Formatter):\n    def format(self, record):\n        # Enrich once at emit time so storage never re-parses strings.\n        payload = {\n            \"ts\": int(time.time() * 1000),\n            \"level\": record.levelname.lower(),\n            \"service\": \"checkout\",\n            \"version\": \"1.14.2\",\n            \"msg\": record.getMessage(),\n            # Join keys: every log, metric, and span must carry these.\n            \"trace_id\": getattr(record, \"trace_id\", \"-\"),\n            \"request_id\": getattr(record, \"request_id\", \"-\"),\n        }\n        if record.exc_info:\n            payload[\"error\"] = self.formatException(record.exc_info)\n        return json.dumps(payload)\n\nhandler = logging.StreamHandler()\nhandler.setFormatter(JsonFormatter())\nlogger = logging.getLogger(\"app\")\nlogger.addHandler(handler)\nlogger.setLevel(logging.INFO)\n\ndef handle_request(trace_id, request_id):\n    # Sample debug verbosely only for failures, not for success.\n    start = time.time()\n    try:\n        # ... business logic ...\n        logger.info(\"checkout ok\", extra={\"trace_id\": trace_id, \"request_id\": request_id})\n    except TimeoutError as e:\n        # Keep error sample at full fidelity; success stays thin.\n        logger.error(f\"dependency timeout op=charge err={e}\",\n                     extra={\"trace_id\": trace_id, \"request_id\": request_id},\n                     exc_info=True)\n    finally:\n        latency_ms = (time.time() - start) * 1000\n        # In real code this is a histogram observe(), not a log line.\n        record_histogram(\"request_latency_ms\", latency_ms,\n                         labels={\"service\": \"checkout\", \"route\": \"/pay\"})"
+    },
+    {
+      "type": "code",
+      "language": "yaml",
+      "filename": "alerting.yaml",
+      "code": "# Alert on burn rate, not spikes. Trade-off: 2m delay for 10x fewer pages.\n# SLO: 99.9% success over 30d. Page when 5% of budget burns in 1h.\n- alert: CheckoutHighBurnRate\n  expr: |\n    sum(rate(http_requests_failed_total{service=\"checkout\"}[1h]))\n    /\n    sum(rate(http_requests_total{service=\"checkout\"}[1h])) > 0.005\n  for: 10m\n  labels: { severity: page }\n  annotations:\n    runbook: \"check trace sample dashboard filtered by trace_id\"\n    query_hint: '{service=\"checkout\"} | json | trace_id != \"-\" | rate by (route, status)'"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this code matters: the JSON shape makes logs queryable without regex, the `trace_id` makes them joinable to metrics and traces, and the sampling comment encodes the cost policy. Structured logging costs ~10-30% more bytes per line than text, but saves orders of magnitude in parse CPU and query time — a trade-off worth paying once volume exceeds a single host. The alert rule shows the second half: ratio-based evaluation over a window absorbs normal variance and only pages when user-facing burn is real."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Scaling the storage and query side"
+    },
+    {
+      "type": "paragraph",
+      "text": "At scale you do not scale one store; you tier by query age and aggregate early. Keep 12-24 hours in a full index where engineers debug live incidents, 7-30 days in compressed columnar objects where scans are slower but 10-50x cheaper, and beyond that only aggregates and sampled exemplars. Roll up metrics from 10-second to 1-minute to 10-minute resolution as they age. Drop `DEBUG` logs from healthy requests at the collector, keep 100% of errors and 1% of successes with full context. This is deliberate information loss: you trade perfect recall for affordable retention and fast queries over the window that actually resolves incidents."
+    },
+    {
+      "type": "mermaid",
+      "title": "Retention tiers and alert path",
+      "caption": "Hot for debugging now, warm for investigating weeks, aggregates for trends. Alerts read metrics, then link to logs.",
+      "code": "flowchart TD\n  Q[\"Ingest: 100k events per sec\"] --> HOT[\"Hot: 24h full index\"]\n  Q --> WARM[\"Warm: 30d compressed objects\"]\n  Q --> AGG[\"Aggregates: metrics rollups + error exemplars\"]\n  HOT --> UI[\"Incident query: filter by trace_id\"]\n  WARM --> UI\n  AGG --> ALERT[\"SLO evaluator: burn rate\"]\n  ALERT --> PAGE[\"Page with runbook + sample query\"]\n  PAGE --> UI"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the incident, not the tools",
+          "text": "Say: for 50 services at 20k requests per second I need detection in under a minute and root cause in under ten. That forces metrics for alerts, correlated logs and traces for diagnosis, and a buffer so an incident does not blind me. Name the SLO first."
+        },
+        {
+          "title": "Draw the pipeline and defend the buffer",
+          "text": "Sketch app to agent to queue to processor to hot and warm stores. Explain why synchronous direct writes fail under backpressure and why you shed low-value telemetry first. Interviewers listen for bounded queues and drop policies."
+        },
+        {
+          "title": "Talk cardinality and sampling explicitly",
+          "text": "State your label budget, your head versus tail sampling rates, and what you keep versus drop. Say what you lose: you cannot list every user from metrics, you cannot replay every success from logs. That honesty scores."
+        },
+        {
+          "title": "Show correlation and time",
+          "text": "Describe propagation of trace and request IDs through HTTP and queues, clock discipline, and a single labeling schema. Then show an alert that links directly to a pre-filtered log and trace view — detection to explanation in one click."
+        },
+        {
+          "title": "Close with cost and operations",
+          "text": "Give retention numbers: hot hours, warm weeks, aggregate months. Explain rollups, compression, and per-team quotas. Mention who owns dashboards and who can mute what, because unowned monitoring rots into noise."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail interviews"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**More logs equals better visibility.** No — unfiltered volume raises cost and hides signal. Visibility comes from correlation and sampling, not byte count.",
+        "**Metrics and logs are interchangeable.** They have opposite cost models. Metrics are cheap detection; logs are expensive explanation. Swapping them gives you slow alerts and unaffordable dashboards.",
+        "**Tracing means capturing every request.** At fan-out of ten services, full capture multiplies storage by fan-out. You propagate context for all requests but retain full detail only for sampled and interesting ones.",
+        "**Alerting on CPU or log spikes is monitoring.** Those are causes or symptoms, not user impact. Alert on burn rate of success and latency SLOs; use infrastructure signals for diagnosis and autoscaling.",
+        "**Centralising solves debugging.** Centralising without a shared schema just moves the mess. If `service` has three spellings and half the logs lack `trace_id`, you built a data lake of confusion."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use what"
+    },
+    {
+      "type": "table",
+      "caption": "Match retention and fidelity to how the data will actually be queried.",
+      "headers": [
+        "Pattern",
+        "Use when",
+        "Avoid when",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Structured JSON logs + central index",
+          "3+ services, need cross-host search and audit",
+          "Single host monolith with low volume",
+          "Central index pays off only once SSH and grep stop working"
+        ],
+        [
+          "Metric-first SLO alerts",
+          "User-facing availability or latency guarantees exist",
+          "Exploratory debugging with unknown shape",
+          "Ratios over windows page correctly; raw spikes page constantly"
+        ],
+        [
+          "Distributed tracing with tail sampling",
+          "Requests fan out across queues and services",
+          "Monolith or strict overhead budget with no tailowitz",
+          "Causality across hops is worth the sampling complexity"
+        ],
+        [
+          "Hot-warm-cold tiering + rollups",
+          "Retention beyond days or bursty incident volume",
+          "Tiny scale where one store is simpler",
+          "Tiering trades recall for 10-50x cost reduction at scale"
+        ],
+        [
+          "Dynamic log levels per request",
+          "Need deep context for failures without flooding",
+          "No access controls or PII redaction in pipeline",
+          "Verbose capture is safe only with redaction and quotas"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **collect logs, metrics, and traces through buffered agents, join them on trace and request IDs, alert on SLO burn rate from metrics, and pay for full detail only on sampled and failing requests with tiered retention.** That one sentence proves you understand detection versus diagnosis and cost versus recall."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:16:21.309Z",
+    "problems": []
+  }
+}

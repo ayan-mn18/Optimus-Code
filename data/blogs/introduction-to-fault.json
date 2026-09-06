@@ -1,0 +1,312 @@
+{
+  "slug": "introduction-to-fault",
+  "title": "Introduction to Fault",
+  "summary": "Faults are inevitable component defects. Failures are visible outages. This concept page defines the difference, the propagation chain, and the fault models interviewers expect you to name.",
+  "kind": "HLD",
+  "problemSlug": "introduction-to-fault-97-189",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Easy",
+  "coverEmoji": "⚡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "fault-tolerance",
+    "distributed-consensus",
+    "reliability"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What is a fault and what are the different types?",
+      "url": "https://www.usgs.gov/faqs/what-a-fault-and-what-are-different-types",
+      "source": "usgs.gov",
+      "kind": "article"
+    },
+    {
+      "title": "Fault (geology)",
+      "url": "https://en.wikipedia.org/wiki/Fault_(geology)",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Introduction to Faults in Power Systems",
+      "url": "https://onlinelibrary.wiley.com/doi/10.1002/9781394359189.ch1",
+      "source": "onlinelibrary.wiley.com",
+      "kind": "article"
+    },
+    {
+      "title": "Fault detection - an overview | ScienceDirect Topics",
+      "url": "https://www.sciencedirect.com/topics/mathematics/fault-detection",
+      "source": "sciencedirect.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A **fault does not equal an outage**. A fault is a broken component. A failure is a broken promise to the user. Your entire job in high-level design is to decide **where that translation gets blocked** — and what you pay to block it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What a Fault Actually Is"
+    },
+    {
+      "type": "paragraph",
+      "text": "A **fault** is a defect in a component that *can* cause incorrect behavior: a crashed process, a lost packet, a flipped bit, a disk that stops acknowledging writes, a clock that drifts by 800ms. A fault is dormant until it is activated. An **error** is the activated internal consequence: corrupted in-memory state, a replica that missed three writes, a queue with a poison message at the head. A **failure** is what the user sees: increased latency, wrong answer, unavailable endpoint. That three-stage chain is the whole vocabulary. If you blur the terms, you cannot reason about masking. Masking means the system absorbs faults and errors so they never become failures — by redundancy, retry, failover, or quorum. Every tolerance mechanism is just a bet on which faults are likely and how much redundancy you are willing to pay to hide them."
+    },
+    {
+      "type": "paragraph",
+      "text": "For interview purposes, define faults by **behavior at the boundary**, not by root cause. Nobody cares if the disk failed because of firmware or heat. What matters is: did the node stop completely, did it drop some messages, did it respond slowly, or did it lie? That gives you the four models you must be able to recite cold: **crash**, **omission**, **timing / performance**, and **Byzantine**. Crash is clean — the process halts and stays halted. Omission is partial — some messages never arrive, but the node otherwise looks alive. Timing means correct value, wrong time — responses arrive after the caller gave up, so retries create duplicates. Byzantine means arbitrary behavior, including malicious or corrupted output that looks plausible. Choose the model explicitly. It dictates whether a primary-backup, a quorum, or full consensus is even sufficient. Under-design the model and your design is wrong on arrival."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Fault vs error vs failure"
+    },
+    {
+      "type": "table",
+      "caption": "The three terms interviewers expect you to separate.",
+      "headers": [
+        "Term",
+        "Meaning",
+        "Example"
+      ],
+      "rows": [
+        [
+          "Fault",
+          "Defective component or input that can cause trouble",
+          "Process crashes, packet lost, disk stalls, clock skews"
+        ],
+        [
+          "Error",
+          "Wrong internal state after fault is activated",
+          "Replica misses writes, leader thinks follower is dead, queue offset corrupts"
+        ],
+        [
+          "Failure",
+          "Externally visible violation of contract",
+          "500s spike, lost writes, 30s unavailability during failover"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The Mechanism: From Fault to Outage"
+    },
+    {
+      "type": "paragraph",
+      "text": "Faults become outages through a predictable pipeline: **activation, propagation, detection lag, and amplification**. A disk stalls. The thread holding the write blocks. The request queue fills. Health checks still pass because the HTTP port answers. The load balancer keeps sending traffic. One slow replica now slows every quorum read that includes it. That is the critical insight: in distributed systems the default is **propagation**, not containment. Timeouts, bulkheads, backpressure, and failure detectors exist to cut the edges in the propagation graph. Detection is always a trade-off between speed and accuracy. Declare death too fast and you cause flapping, duplicate leaders, and write conflicts. Declare it too slow and a single stalled node sets your p99. Design the detector before you design the recovery."
+    },
+    {
+      "type": "mermaid",
+      "title": "Fault propagation chain",
+      "caption": "Every outage follows this path unless something cuts it.",
+      "code": "flowchart TD\n  F[Fault: component breaks] --> E[Error: internal state wrong]\n  E --> W[Window: redundancy masks it]\n  W --> S[Masked: user sees nothing]\n  W --> O[Unmasked: user-visible failure]\n  O --> D[Detection: detector fires]\n  D --> R[Recovery: failover or repair]\n  R --> F2[New faults during recovery]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape matters: your tolerance budget is the width of that **masked window**. Single primary with async backup masks exactly one crash fault, and only if detection plus promotion is faster than the second fault. Three replicas with quorum read/write masks one crash and hides one slow node if you use hedged reads or `admit only 2 of 3` logic. Consensus across `2F+1` nodes masks `F` crash faults while staying available; it buys nothing against Byzantine lies — for that you need `3F+1` and signed messages. Name the `F` you tolerate. If you say “we replicate three ways” without saying “so we survive one crash while staying writable,” you have described cost without guarantee. Interviewers grade the guarantee, not the replica count."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs: Nothing About Tolerance Is Free"
+    },
+    {
+      "type": "table",
+      "caption": "Every masking technique buys safety by spending something else.",
+      "headers": [
+        "Technique",
+        "What it buys",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Timeout + bounded retry",
+          "Hides transient omission and slowness",
+          "Duplicate work, amplified load, needs idempotency or you corrupt state"
+        ],
+        [
+          "Primary-backup failover",
+          "Hides one crash cheaply",
+          "Seconds of write outage, risk of split brain if fencing is sloppy"
+        ],
+        [
+          "Quorum replication",
+          "Stays writable with one dead node, no leader election pause",
+          "Higher read/write latency, lower throughput, read repair complexity"
+        ],
+        [
+          "Consensus log",
+          "Single total order despite crashes and restarts",
+          "Extra round trips, throughput ceiling, operational pain to reconfigure"
+        ],
+        [
+          "Active-active + idempotent writes",
+          "No failover pause, survives zone loss",
+          "Conflict resolution, version vectors, application-level merge logic"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pattern across all five rows is the same: **latency, cost, and complexity buy independence from single components**. Retries trade tail latency for success rate — and the trade-off turns vicious without a budget, because retries during a real outage are just a self-inflicted DDoS. Quorums trade one network round trip for survival of a dead replica — worth it for control plane and payments, wasteful for thumbnails. Consensus trades throughput for agreement — correct for metadata, locks, and leader election, absurd for the data path of a high-write feed. Say the exchange rate out loud. A design that claims high availability, strong consistency, low latency, and low cost is not optimistic, it is incoherent."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How It Fails in Production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Real faults rarely look like a clean process exit. They look like **gray failure**: the node responds to pings, fails 2% of writes, takes 8 seconds to fsync once a minute, or serves stale reads after a partial network cut. The symptom you see is never “node down.” It is elevated p99 with flat p50, quorum reads that intermittently need a third replica, leader elections that flap every few minutes, or a backup that promotes with a 40-second gap in its log. The second classic production failure is **correlated faults**. You designed for one independent crash, but a bad deploy, a shared power domain, a single configuration push, or a thundering retry storm kills all replicas together. Independence is an operational property, not a diagram property. If three replicas run the same binary, same config, same zone, you do not have three independent failure domains — you have one fault with three copies."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Flapping detector:** health check too aggressive, node marked dead while still serving, two primaries accept writes, users see conflicting orders.",
+        "**Retry storm:** timeout set below p99, 20% of requests retry, load doubles during partial outage, queue never drains.",
+        "**Stalled failover:** backup is 90 seconds behind, promotion succeeds but recent writes vanish — durability failure disguised as availability win.",
+        "**Slow follower poisons quorum:** one replica at 5s latency included in every read set, p99 tracks the slowest node until you add hedging or exclude it.",
+        "**Split brain on partition:** both sides elect a leader because fencing tokens were skipped, merge requires manual repair and data loss."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Take the slow-follower case because it humbles everyone. You add a third replica to improve availability. Under normal conditions reads go to the two closest nodes. One disk starts degrading — not dead, just 40x slower on random reads. Your quorum logic waits for two responses, but the load balancer still routes one leg of every read to the sick node. Throughput looks fine. p50 looks fine. p99 climbs from 60ms to 4 seconds and alerts fire at 2am. The fix is not more replicas. It is **cutting the propagation edge**: hedged requests after the 95th percentile delay, deadline propagation so the sick node sheds load, and a detector that ejects a replica on latency, not just on crash. That is fault tolerance as practiced: less about surviving death, more about refusing to wait for the dying."
+    },
+    {
+      "type": "mermaid",
+      "title": "Failure detector states",
+      "caption": "Detection is a state machine, not a boolean.",
+      "code": "stateDiagram-v2\n  [*] --> Healthy\n  Healthy --> Suspected: missed heartbeat\n  Suspected --> Healthy: heartbeat returns\n  Suspected --> Dead: timeout expires\n  Dead --> Healthy: restart and rejoin\n  Dead --> [*]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code: Timeout Plus Bounded Retry"
+    },
+    {
+      "type": "paragraph",
+      "text": "You do not need a consensus implementation to prove you understand faults. You need to show **bounded waiting and safe repetition**. This snippet is the minimum credible answer for any remote call: deadline, capped retries with jitter, and an idempotency key so a retry cannot double-apply."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "fault_tolerant_call.py",
+      "code": "import random, time, uuid\n\nclass TransientError(Exception): pass\nclass TimeoutError_(Exception): pass\n\ndef rpc_call(payload, idempotency_key, deadline_ms=800):\n    # Simulated remote: replace with real client call.\n    raise TransientError(\"sick replica dropped message\")\n\ndef call_with_tolerance(payload, max_retries=2, base_ms=50):\n    key = str(uuid.uuid4())  # server dedups on this key\n    start = time.monotonic()\n    for attempt in range(max_retries + 1):\n        remaining = 800 - (time.monotonic() - start) * 1000\n        if remaining <= 0:\n            raise TimeoutError_(\"deadline exceeded, stop retrying\")\n        try:\n            return rpc_call(payload, key, deadline_ms=int(remaining))\n        except TransientError:\n            if attempt == max_retries:\n                raise\n            sleep = (base_ms * (2 ** attempt) + random.uniform(0, 20)) / 1000.0\n            time.sleep(sleep)  # backoff + jitter breaks retry synchrony\n    raise AssertionError(\"unreachable\")"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why each line earns its place: the **deadline** caps how long one logical operation can propagate slowness upstream — without it, a sick dependency owns your thread pool. The **retry cap of 2** plus exponential backoff with jitter bounds amplification; unbounded retry turns a 10% fault into a 3x load spike. The **idempotency key** is the correctness half — timeouts make at-least-once delivery unavoidable, so the server must deduplicate or the retry creates a second charge, second order, second write. Miss that key and you have built a fault amplifier, not fault tolerance. In an interview, point at the key and say it explicitly: retry without idempotency is a data-corruption mechanism."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How This Shows Up in Interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Define the vocabulary in 30 seconds",
+          "text": "State fault vs error vs failure and name your fault model: crash, omission, timing, or Byzantine. This signals you will reason, not hand-wave."
+        },
+        {
+          "title": "Ask what must survive",
+          "text": "How many simultaneous faults? Independent or correlated? Is stale or slow acceptable, or must every read be current? Your replication choice follows from these answers."
+        },
+        {
+          "title": "Place detection before recovery",
+          "text": "Describe heartbeats, timeouts, and fencing first. Then describe failover, quorum, or consensus. Designs that promote a backup without fencing get challenged immediately."
+        },
+        {
+          "title": "Budget the retries",
+          "text": "Give every remote call a timeout, a retry cap, and an idempotency story. Explain what happens when the budget is exhausted — shed load, degrade, return stale."
+        },
+        {
+          "title": "Name the cost of your F",
+          "text": "Close with: to survive F crashes we pay 2F+1 nodes, one extra round trip, and this behavior during a partition. If you cannot state the price, you have not designed it."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions That Fail You"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Redundancy equals tolerance.** Three copies in one rack with one deploy pipeline fail together. Tolerance requires independent failure domains plus a tested recovery path.",
+        "**TCP means the message arrived.** It means bytes reached the OS. The process may still have crashed before applying them. You still need acknowledgments and idempotency.",
+        "**A fast timeout fixes slowness.** Too-fast timeouts manufacture retries and duplicate work. Fix with deadlines, hedging, and ejection — not just a smaller number.",
+        "**Failover is instantaneous.** Election, log catch-up, and DNS or routing propagation take seconds. Someone must own that window: buffer, reject, or serve stale.",
+        "**Byzantine means hacker.** It also means bit rot, buggy serializer, or mismatched schema that emits well-formed but wrong data. Checksums and validation matter before cryptography.",
+        "**More replicas always help.** Each replica adds write latency, consistency work, and correlated-upgrade risk. Add replicas to raise F, not to feel safer."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to Assume What"
+    },
+    {
+      "type": "table",
+      "caption": "Match the fault model to the stakes, not to habit.",
+      "headers": [
+        "Situation",
+        "Assume this",
+        "Do not assume this"
+      ],
+      "rows": [
+        [
+          "Internal CRUD with single DB and standby",
+          "Single crash fault, fast failover acceptable",
+          "Byzantine behavior — checksums plus backups are enough"
+        ],
+        [
+          "Multi-zone serving path with quorum reads",
+          "Omission plus one slow node, need hedging",
+          "All replicas healthy — design for the straggler"
+        ],
+        [
+          "Control plane, locks, leader election",
+          "Crash + restart with stable log, use consensus",
+          "Best-effort agreement — split brain will corrupt state"
+        ],
+        [
+          "Money movement or cross-party settlement",
+          "Byzantine or corrupted writer, need auth and audit",
+          "Crash-only replication — a lying writer passes it"
+        ],
+        [
+          "Best-effort analytics or thumbnails",
+          "Drop or retry is fine, degrade openly",
+          "Expensive consensus — stale or missing is acceptable"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The judgment call is economic. Stronger models cost latency and engineering time every day, while faults happen some days. Spend Byzantine-grade machinery where a lie costs money or safety. Spend quorum-grade machinery where a minute of writes matters. Spend nothing where a missing thumbnail just retries on scroll. The senior answer is not the strongest guarantee — it is the cheapest guarantee that still covers the faults you actually fear, with an explicit story for what the user sees when the budget runs out."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "A **fault is a broken component, a failure is a broken user promise, and I block the path between them with bounded detection plus enough independent redundancy to mask F faults — paid for in latency, cost, and complexity**."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:53:24.134Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,328 @@
+{
+  "slug": "introduction-and-use-cases",
+  "title": "Introduction and Use cases",
+  "summary": "Easy-level intro to fault tolerance and consensus: what agreement really guarantees, how quorum replication works, where you must use it, and where it will hurt you.",
+  "kind": "HLD",
+  "problemSlug": "introduction-and-use-cases-97-218",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Easy",
+  "coverEmoji": "🛡️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "fault-tolerance",
+    "consensus"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Use case - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Use_case",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Defining use cases - IBM",
+      "url": "https://www.ibm.com/docs/en/product-master/12.0.0?topic=processes-defining-use-cases",
+      "source": "ibm.com",
+      "kind": "article"
+    },
+    {
+      "title": "Use Cases - The Ultimate Guide | Ivar Jacobson International",
+      "url": "https://www.ivarjacobson.com/publications/articles/use-cases-ultimate-guide",
+      "source": "ivarjacobson.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Fault tolerance is **not preventing crashes**. It is **agreeing on one truth while crashes are happening**. If three nodes cannot agree on the same order of operations, you do not have a distributed system — you have three diverging systems. Consensus is the mechanism that forces them to stay as one."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What fault tolerance actually means"
+    },
+    {
+      "type": "paragraph",
+      "text": "A **fault** is a broken component: a dead process, a lost disk, a cut network link, a slow clock. A **failure** is when the system as a whole stops honoring its contract: lost writes, stale reads, double-execution. Fault tolerance means the second does not follow from the first. You absorb *f* faulty nodes and still serve correct results. That is the whole definition, and interviewers want you to separate those two words. The **fault model** decides everything that follows. **Crash-stop** is easiest: a node halts and never lies. **Crash-recovery** adds amnesia: it comes back and must re-learn state. **Omission / timing** means messages are dropped or late. **Byzantine** means a node can lie, equivocate, or act maliciously. The trade-off is brutal: the more hostile the model you defend against, the more replicas, rounds, and latency you pay. Most practical systems assume crash faults only, because Byzantine agreement costs roughly 3f+1 nodes and far more messaging for a threat most internal systems do not have."
+    },
+    {
+      "type": "paragraph",
+      "text": "Distributed **consensus** is the narrow agreement problem underneath all of that. A set of nodes must agree on **one value** or **one order of values** despite faults. Formally it gives you three properties: **agreement** (no two correct nodes decide differently), **validity** (the decided value was actually proposed by someone, not invented), and **termination** (correct nodes eventually decide). That sounds abstract until you map it to replication: if every replica applies the *same log in the same order*, they stay identical state machines even though hardware fails independently. The trade-off here is why consensus exists at all: you pay coordination cost on every critical write so you can avoid the far higher cost of reconciling divergent replicas later. No coordination means fast writes and corrupt state; coordination means slower writes and survivable state."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why you cannot dodge agreement"
+    },
+    {
+      "type": "paragraph",
+      "text": "As soon as you keep two copies of anything mutable and the network can partition, you have a choice with no comfortable answer. Either you stop accepting writes on the minority side, or you accept them and diverge. There is no third option, and that is the practical face of the **CAP** tension between consistency and availability during partitions. Consensus picks the first option explicitly: only a **quorum** — typically a majority — can commit. That is why single-leader replication, membership views, fencing tokens, and configuration stores all bottom out at the same primitive. Without one agreed log, leader election elects two leaders, locks are held by two owners, and counters increment in two directions. The design is chosen because **independent failover without agreement is split-brain**, and split-brain corrupts data silently. The trade-off you are buying: you sacrifice availability of the minority partition to preserve correctness of the whole."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism, end to end"
+    },
+    {
+      "type": "paragraph",
+      "text": "Almost every production protocol — Paxos variants, Raft, Zab-style atomic broadcast — implements the same skeleton: **state-machine replication over a replicated log**. One node acts as leader or proposer, appends the client operation to its log, replicates it to followers, waits for a quorum to acknowledge durable storage, then marks it committed and applies it. Followers apply in identical order, so state stays identical. Leadership itself is also decided by quorum vote with terms or ballot numbers that monotonically increase, which is why an old leader cannot overwrite a newer committed entry: its term is stale and a quorum will reject it. The reason for leader-based design is understandability and read efficiency — one ordering point is simpler to reason about and to pipeline. The trade-off is a temporary availability dip during election and a throughput bottleneck at the leader, which is why you never put bulk data through this path, only metadata and ordering decisions."
+    },
+    {
+      "type": "mermaid",
+      "title": "Quorum replication flow",
+      "caption": "Client write commits only after a majority durably stores it.",
+      "code": "flowchart TD\n  C[Client request] --> L[Leader]\n  L --> A[Append to local log]\n  A --> R1[Replicate to Follower 1]\n  A --> R2[Replicate to Follower 2]\n  R1 --> Q{Quorum 2 of 3?}\n  R2 --> Q\n  Q -->|yes| CM[Mark committed]\n  CM --> AP[Apply to state machine]\n  AP --> RS[Reply success to client]\n  Q -->|no| RT[Retry or step down]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The math that does all the work is **quorum intersection**. With 2f+1 nodes you tolerate f crashes because any two majorities overlap in at least one correct node, so a committed entry cannot disappear. Commit means *stored on a majority*, not *stored everywhere*. A new leader must contact a majority to get elected, so it is guaranteed to see every committed entry and re-replicate it. Reads are where beginners get burned: reading from a single follower without a lease or quorum check can return stale data or, worse, data from a deposed leader. That is why correct systems do **quorum reads**, **leader leases**, or **read-index** checks where the leader confirms it is still leader with a quorum before serving a linearizable read. The trade-off is explicit: safe reads cost a network round trip; cheap reads risk staleness. Choose per operation, not per system."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Core consensus trade-offs you must state unprompted.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Majority quorum (2f+1 nodes)",
+          "Survives f crashes with proof of durability; simple reasoning",
+          "Minority partition goes unavailable; every write needs f+1 acks, so tail latency rises"
+        ],
+        [
+          "Larger cluster (5 vs 3)",
+          "Tolerates 2 failures instead of 1; better for maintenance without losing quorum",
+          "Higher write latency, more replication traffic, slower elections; does not increase throughput"
+        ],
+        [
+          "Synchronous replication before ack",
+          "No committed-write loss on failover; true durability",
+          "Every slow disk or distant replica sits on the write path; p99 suffers"
+        ],
+        [
+          "Asynchronous replication",
+          "Low latency, high throughput",
+          "Failover loses acknowledged writes; clients see rollback — unacceptable for locks, payments, config"
+        ],
+        [
+          "Leader-based ordering",
+          "Simple log, efficient pipelining, easy linearizable reads",
+          "Election pause on leader death; leader is write bottleneck and hotspot"
+        ],
+        [
+          "Leaderless quorum (read/write quorums)",
+          "No election pause; high availability for key-value access",
+          "Conflict resolution, read-repair, and weaker default consistency; harder to get fencing right"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The shape of the trade-off is always the same: **fewer faults tolerated or weaker guarantees equals lower latency and higher availability; stronger guarantees equals more round trips and more unavailability during partitions**. A 3-node group committing in one region can do it in milliseconds. Stretch those three nodes across continents and every commit pays intercontinental round trips, so throughput collapses — which is why geo-distributed consensus is either slow or deliberately scoped to rare control operations. Adding nodes from 3 to 5 does not make writes faster; it makes them slower while letting you lose one node *during* maintenance of another. Say that sentence in an interview. It signals you understand that replication for fault tolerance is not sharding for scale."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Where it is actually used"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Leader election and failover:** exactly one primary serves writes at a time. Without consensus you get two primaries after a partition and divergent writes. Consensus stores the current term and voted-for state so only a quorum-backed leader acts. Trade-off: brief write unavailability during election.",
+        "**Cluster membership and sharding map:** which nodes own which partitions. If nodes disagree, requests route to the wrong owner and data looks lost. Kept as a small versioned log entry agreed by quorum. Trade-off: membership changes are slow but never ambiguous.",
+        "**Configuration and feature flags:** rate limits, schema versions, routing weights. Reading stale config from different nodes causes inconsistent behavior fleet-wide. Consensus gives every node the same version in the same order. Trade-off: pushes are slower than gossip, but safe.",
+        "**Distributed locks and fencing tokens:** mutual exclusion across machines. A lock service must never grant the same lock to two holders. It issues monotonically increasing fencing tokens from an agreed log so storage can reject stale writers. Trade-off: lock service becomes a critical availability dependency.",
+        "**Exactly-once-ish commit and deduplication:** transaction coordinators, idempotency journals, queue offsets. Replicas must agree whether a transaction committed before exposing it. Consensus orders the commit/abort decision. Trade-off: two-phase style latency even when nothing fails.",
+        "**Naming, IDs, and sequencing:** block IDs, segment assignments, Snowflake-style ranges. Two nodes must never mint the same range. The allocator state is replicated by consensus and handed out in batches to keep the hot path fast. Trade-off: allocator outage stalls creation, by design.",
+        "**Control plane for data plane:** the pattern behind most storage systems. Consensus holds kilobytes of control state — shard map, leader, schema — while terabytes of data are replicated with cheaper pipelines that follow the control decisions. Trade-off: two replication mechanisms to operate, but only one needs to be strongly consistent."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Notice the pattern: consensus never holds the bulk data. It holds the **small, critical decisions that everything else depends on**. That placement is deliberate. Consensus throughput is measured in thousands of operations per second, not millions, and each operation is small. The design is chosen because losing user data blocks is recoverable with retries and repair, while losing agreement on *who is leader* or *who owns what* corrupts everything built on top. The trade-off you accept is operational: you run a small, slow, heavily tested consensus group alongside a large, fast data path, and you keep the two strictly separated so a data-plane hotspot cannot starve quorum heartbeats."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "table",
+      "caption": "Common failure modes mapped to observable symptoms.",
+      "headers": [
+        "Failure",
+        "What the user sees",
+        "What the dashboard shows"
+      ],
+      "rows": [
+        [
+          "Network partition, loss of quorum",
+          "Writes rejected or hanging; reads fall back to stale or fail",
+          "Leader steps down, no leader elected on minority side; commit latency spikes then errors climb"
+        ],
+        [
+          "Leader crash or slow disk",
+          "Short write outage, then recovery; occasional duplicate retries",
+          "Election counter increments, new term starts; p99 write latency has a cliff during election"
+        ],
+        [
+          "Clock jump breaking lease",
+          "Two nodes both believe they are leader for seconds",
+          "Lease expiry warnings, fencing token mismatches, duplicate-write rejections downstream"
+        ],
+        [
+          "Disk full on quorum member",
+          "Intermittent commit failures despite healthy network",
+          "One follower stops acknowledging; quorum degrades from 3 to 2; disk alerts precede write errors"
+        ],
+        [
+          "Asymmetric network / gray failure",
+          "Flapping leadership, tail latency explosion",
+          "Heartbeats succeed one way only; term churn; high election rate with no stable leader"
+        ],
+        [
+          "Buggy snapshot or log truncation",
+          "Node never catches up; restarts loop",
+          "Follower stuck in snapshot install; log index gap never closes; need manual wipe and rejoin"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The most dangerous failure is not a clean crash — it is a **slow or partitioned node that still serves**. A deposed leader that does not know it is deposed will keep answering reads and accepting writes if you let it, which is how you get lost updates that no monitor catches until customers compare results. Production systems defend with **leases, terms on every RPC, and fencing**: every request carries the leader term, followers reject stale terms, and downstream storage rejects writes with an old fencing token. The other classic is **quorum starvation by co-location**: all three consensus nodes placed on the same rack or zone to save latency, then one power event takes the whole quorum down together. The trade-off violated there is independence — replicas that share fate are not replicas. Spread quorum across failure domains even though it costs latency, because correlated failure turns fault tolerance into fiction."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Split-brain is silent corruption",
+      "text": "If your design allows two writers during a partition — two primaries, two lock holders, two offset committers — you have already lost, and no reconciliation script fixes ordering after the fact. **Quorum commit plus term-checked reads and writes** is the only cheap insurance. Say no to any failover design without it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "It in code: quorum is the whole trick"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "quorum.py",
+      "code": "class QuorumStore:\n    def __init__(self, peers, me):\n        self.peers = peers  # list of follower clients\n        self.me = me        # local durable log\n        self.commit_index = 0\n\n    def write(self, entry) -> bool:\n        # 1. Durably store locally first. Crash before this = never acked.\n        seq = self.me.append(entry)\n        acks = 1  # leader counts itself\n        # 2. Replicate in parallel; wait for majority, not all.\n        for p in self.peers:\n            try:\n                if p.replicate(entry, seq, timeout_ms=200):\n                    acks += 1\n            except TimeoutError:\n                continue  # slow follower does not block commit if majority reached\n        needed = (len(self.peers) + 1) // 2 + 1\n        # 3. Commit only on quorum. This is the durability line.\n        if acks >= needed:\n            self.commit_index = seq\n            self.me.mark_committed(seq)\n            return True\n        return False  # caller must retry; never expose as committed"
+    },
+    {
+      "type": "paragraph",
+      "text": "This toy omits elections, terms, and log repair, but it shows the line that matters: **return success only after a majority durably holds the entry**. Everything before that line can be lost on failover; everything after it must survive because a future leader will intersect that majority and recover it. The timeout handling encodes the core trade-off: wait for all and one straggler stalls every write; settle for a majority and stragglers catch up asynchronously via log repair. Production code adds term checks on every `replicate` call so a stale leader aborts instead of forking the log, plus persistent `voted-for` and `current-term` state flushed to disk before replying — because memory-only voting forgets promises after a restart and double-votes."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an Easy HLD interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Define fault vs failure in one breath",
+          "text": "Open with: fault is a component breaking, failure is the system breaking its promise. State your fault model — usually crash-recovery — and your tolerance target like 1 failure in a 3-node group. This takes 30 seconds and frames everything."
+        },
+        {
+          "title": "Name what needs agreement",
+          "text": "Point at the tiny control state: leader identity, shard ownership, lock issuance, commit decision. Say explicitly that user data does not go through consensus, only the ordering decisions. Interviewers promote candidates who scope consensus narrowly."
+        },
+        {
+          "title": "Draw the quorum write path",
+          "text": "Sketch client to leader to majority to commit to apply. Annotate where success is returned — after majority ack — and what happens on leader death before that point: the write is unknown and the client must retry idempotently."
+        },
+        {
+          "title": "State the availability cost",
+          "text": "Say what goes down when quorum is lost: minority-side writes stop, leader steps down, elections flap. Then give the mitigation: 5 nodes for maintenance tolerance, witnesses in a third zone, leases to avoid stale reads. Every mitigation gets its cost."
+        },
+        {
+          "title": "Answer the follow-up about scale",
+          "text": "Expect: why not put everything in consensus? Answer: throughput is bounded by the slowest quorum member and by log serialization, so you batch allocations, cache reads with leases, and shard data-plane replication separately. That one answer separates Easy from Medium."
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the interviewer is scoring",
+      "text": "They are not testing whether you can recite Paxos phases. They are testing whether you **refuse to design failover without quorum** and whether you can name the price: write latency, minority unavailability, and operational complexity. Say the guarantee, the quorum size, and the cost in the same sentence."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that make you look junior"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Retries plus timeouts equal fault tolerance.** No — retries without idempotency and without agreement create duplicates and divergence. Retry is a delivery tactic; quorum commit is a correctness guarantee. Trade-off: idempotency keys cost storage but make retries safe.",
+        "**Three replicas mean three times the throughput.** Consensus groups do not scale writes by adding voters. Every write still needs a quorum round, so 5 nodes are slower than 3 but survive more simultaneous faults. Scale reads with followers or leases; scale writes with sharding.",
+        "**Acknowledged means committed.** An ack from one replica or from memory is not durability. Committed means a quorum has it on stable storage and a future leader is forced to see it. The trade-off is latency: fsync on the quorum path hurts, skipping it loses data.",
+        "**Leader election alone fixes split-brain.** Election without terms, quorum, and fencing just elects two leaders faster. A new leader must probe a quorum, learn the full committed prefix, and fence the old one before serving. Otherwise failover is corruption with extra steps.",
+        "**Consensus solves Byzantine clients or bugs.** Crash-tolerant protocols assume nodes follow the protocol and storage is honest. Malicious behavior, bit corruption, or application-level logic errors need checksums, end-to-end validation, and Byzantine protocols — at far higher cost.",
+        "**Quorum must be in the same rack for speed.** Co-locating voters minimizes latency and maximizes correlated failure. You gain milliseconds and lose the entire premise. Spread voters across independent failure domains and accept the round-trip cost."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to reach for consensus, and when to run away"
+    },
+    {
+      "type": "table",
+      "caption": "Scope consensus to control decisions, not bulk data.",
+      "headers": [
+        "Use consensus when",
+        "Avoid consensus when"
+      ],
+      "rows": [
+        [
+          "Exactly one owner must exist: leader, lock holder, partition assigner",
+          "Bulk data replication where loss windows are acceptable — use pipelined primary-backup with repair"
+        ],
+        [
+          "All nodes must see the same order: config versions, schema, commit decisions",
+          "High-throughput event streams or caches where last-writer-wins or CRDT convergence is good enough"
+        ],
+        [
+          "Loss of an acked write is unacceptable: allocation, fencing, offsets",
+          "Ephemeral or reconstructible state: health checks, metrics, best-effort presence"
+        ],
+        [
+          "Cluster size is small and stable: 3 or 5 voters in separate zones",
+          "Membership churns constantly or spans edge devices — quorum elections will never stabilize"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The operating rule is simple: if disagreement causes **irreversible harm** — double spend, double execution, lost ownership — pay for consensus. If disagreement causes **temporary inconvenience** — stale recommendation, delayed counter, missed heartbeat — use gossip, read-repair, or eventual convergence and spend your latency budget elsewhere. Most strong systems are hybrids: a tiny consensus core hands out leases, ranges, and maps, and a fast eventually consistent fabric does the heavy lifting inside those guardrails. The trade-off you are managing is blast radius versus speed. Consensus narrows the blast radius of control mistakes to zero at the cost of speed on that narrow path, which is a bargain you should take every time for metadata and never for bulk bytes."
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "What to say in one sentence if asked",
+      "text": "**Fault tolerance means surviving f crashes by committing only on a quorum of 2f+1 nodes, so any future leader is forced to see every committed write — which keeps one agreed log at the cost of minority-side unavailability and extra latency.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:55:17.503Z",
+    "problems": []
+  }
+}

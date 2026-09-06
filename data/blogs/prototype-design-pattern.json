@@ -1,0 +1,274 @@
+{
+  "slug": "prototype-design-pattern",
+  "title": "Prototype Design Pattern",
+  "summary": "Prototype copies a configured object instead of rebuilding it — fast and decoupled, but only correct if you decide shallow vs deep copy deliberately.",
+  "kind": "LLD",
+  "problemSlug": "prototype-design-pattern-35-75",
+  "topic": "Creational Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "🧬",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Creational Patterns",
+    "Prototype"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Prototype - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/prototype",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Prototype Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/prototype-design-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Prototype · Design Patterns Revisited - Game Programming Patterns",
+      "url": "https://gameprogrammingpatterns.com/prototype.html",
+      "source": "gameprogrammingpatterns.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Prototype replaces **knowledge of a class** with **possession of an instance**. If you hold a configured object and it knows how to copy itself, you can create new variants without knowing its concrete type, without replaying expensive construction, and without branching on type codes. The trade-off: you trade construction complexity for **copy correctness** — whoever writes `clone()` now owns every aliasing bug."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Prototype is a creational pattern where the object itself is the factory. You define a common `clone()` operation, usually on an interface or abstract base, and each concrete class implements it by creating an instance of its own type and copying relevant state from the source. The client calls `clone()` on a pre-built, pre-configured exemplar and then mutates only what differs. No `new ConcreteX(...)` in client code, no giant conditional on a type enum, no re-running of heavy initialization just to get a starting point."
+    },
+    {
+      "type": "paragraph",
+      "text": "The reason this exists is coupling, not typing speed. Direct copying from outside fails for two structural reasons. First, you cannot see private state, so an external copier produces a shallow or incomplete duplicate. Second, you must name the concrete class to instantiate it, which means every place that duplicates objects depends on every duplicable type. Prototype inverts both: copying happens **inside** the class where private fields are visible, and polymorphism selects the right class at runtime. The trade-off is explicit — you remove compile-time dependency on concrete classes but you add a contract dependency: every prototype must keep its `clone()` honest as fields evolve."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are three roles and one optional but practically mandatory fourth. `Prototype` declares `clone()`. `ConcretePrototype` implements it. `Client` holds a reference typed as the abstraction and clones without downcasting. `Registry` holds named, pre-configured exemplars — for example `orcWarrior`, `eliteArcher`, `defaultInvoiceTemplate` — and hands out copies on demand. The registry is why the pattern scales in interviews: without it you just have a clever copy method; with it you have centralized control over which configurations are legal starting points. The trade-off: a registry centralizes exemplar management but becomes shared mutable state if you return the stored instance instead of a copy."
+    },
+    {
+      "type": "mermaid",
+      "title": "Prototype structure with registry",
+      "caption": "Client depends only on the abstraction; concrete type is selected by the prototype itself.",
+      "code": "classDiagram\n    class Prototype {\n        <<interface>>\n        +clone() Prototype\n    }\n    class ConcreteA {\n        -health : int\n        -inventory : List~Item~\n        +clone() Prototype\n    }\n    class ConcreteB {\n        -speed : int\n        -behavior : Behavior\n        +clone() Prototype\n    }\n    class Registry {\n        -prototypes : Map~String, Prototype~\n        +register(key : String, p : Prototype)\n        +create(key : String) Prototype\n    }\n    class Client {\n        +spawn(key : String) Prototype\n    }\n    Prototype <|.. ConcreteA\n    Prototype <|.. ConcreteB\n    Registry o--> Prototype\n    Client --> Registry"
+    },
+    {
+      "type": "paragraph",
+      "text": "The runtime flow matters more than the static diagram. At startup or configuration time you build a small set of expensive exemplars once — load meshes, parse templates, attach default skills, wire default collaborators. At request time the client asks the registry for a key, the registry calls `clone()` on the stored exemplar, and the client tweaks two or three fields. You pay full construction cost once per distinct configuration, then near-memcopy cost per use. The trade-off: startup pays more memory to hold exemplars, and every clone pays a correctness tax — you must decide per field whether the copy shares the reference or duplicates the subgraph."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Shallow vs deep: the only implementation decision that matters"
+    },
+    {
+      "type": "paragraph",
+      "text": "Shallow copy duplicates the top-level object and copies field references as-is. It is fast and cheap, and it is correct only when referenced state is immutable or intentionally shared. Deep copy duplicates the object **and** the reachable mutable subgraph it owns. It is safe for independent evolution, and it is expensive, harder to maintain, and dangerous around cycles and shared caches. Most production Prototype bugs are not about the pattern — they are someone picking shallow for speed and shipping aliasing, or picking deep for safety and shipping exponential copy time or stack overflow on a cyclic graph. State your policy per field: value types and immutables can be bitwise copied, owned mutable collections and owned aggregates must be duplicated, shared services and flyweights must stay shared. The trade-off is performance versus isolation, field by field, not pattern-wide."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of Prototype itself.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "No dependency on concrete classes",
+          "Every class must maintain correct `clone()`",
+          "Adding a type does not touch clients, but adding a field can silently break all clones"
+        ],
+        [
+          "Skip expensive construction and configuration",
+          "Hold exemplars in memory and keep them valid",
+          "Per-object creation gets faster; startup and memory footprint get heavier"
+        ],
+        [
+          "Clone pre-tuned configurations instead of subclassing",
+          "Configuration drift between exemplar and clones",
+          "You avoid a class explosion, but a stale prototype propagates stale defaults to everything cloned after the change"
+        ],
+        [
+          "Runtime composition of variants",
+          "Copy semantics are invisible at call site",
+          "Callers cannot tell from `clone()` whether they share mutable state — the interface lies by omission unless documented"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Prototype beats re-construction only when construction does real work: parsing, I/O, validation chains, assembling a large object graph, or applying dozens of interdependent defaults. If construction is `new Point(x, y)`, cloning is theater — you added a registry, a contract, and aliasing risk to save two assignments. Interviewers test exactly this judgment. Say it out loud: Prototype is justified when exemplar construction cost dominates, when the set of configurations is small but the number of instances is large, and when variants differ by a few fields. Otherwise a constructor or builder is simpler and the simpler thing wins. The trade-off: Prototype optimizes high construction cost and high instance count at the expense of conceptual overhead that is never free."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure one is shared mutable state from a shallow copy. The clone and the exemplar point at the same list, map, buff list, or stats object. One player picks up an item, edits a document section, or applies a discount, and every subsequently or previously cloned object changes too — because they were never separate objects. In logs you see cross-request contamination: user A edits a cloned template and user B sees the edit, or two game entities share hit points. The symptom is spooky action at a distance with no explicit assignment between the affected instances. The fix is not deeper everywhere; it is ownership discipline — clone what the new object owns, share what is explicitly a shared service."
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure two is uncontrolled deep copy. The `clone()` walks a graph with cycles — parent points to child, child points back to parent — and recurses forever, or it duplicates a shared cache so each clone carries its own multi-megabyte texture, connection pool, or compiled regex set. The symptom is latency spikes on clone, memory growth linear in clones times subgraph size, or `StackOverflowError` on cyclic references. A subtler variant is partial deep copy: you duplicated the list but not its elements, so the container is independent while the contents are still aliased. That passes unit tests with one element and fails in production with real graphs. The trade-off on display: safety wants full duplication, performance and identity want sharing, and only an explicit per-field policy with cycle tracking survives contact with real object graphs."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Symptom: edits to one clone appear in siblings → shallow-copied owned collection. Fix: deep-copy owned containers and their mutable elements.",
+        "Symptom: clone latency grows with graph size or exemplar age → deep copy walking too much. Fix: share immutable and heavy shared resources, copy only owned deltas.",
+        "Symptom: `StackOverflowError` or duplicate shared caches after clone → cycles or non-owned subgraphs cloned. Fix: visited-map during copy, and never clone a service, pool, or cache.",
+        "Symptom: newly added field is default in clones but set in exemplar → `clone()` not updated. Fix: code-review rule that every field addition updates `clone()`, plus a test that round-trips all fields.",
+        "Symptom: registry returns the exemplar itself under load → aliasing at scale. Fix: registry must always return `stored.clone()`, never the stored reference; make the stored instance unmodifiable if the language allows."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The registry aliasing trap",
+      "text": "The most common implementation bug is `return prototypes.get(key)` instead of `return prototypes.get(key).clone()`. It works in a single-threaded demo and corrupts everything under concurrency because every caller mutates the same exemplar. If you take one defensive rule from this page: **the registry never hands out its stored reference**. Clone on exit, every time, no exceptions."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that shows the difference"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "PrototypeRegistry.java",
+      "code": "import java.util.*;\n\ninterface GameEntity {\n    GameEntity cloneEntity(); // intentional: avoids Object.clone() semantics\n}\n\nfinal class Monster implements GameEntity {\n    private int health;\n    private final List<String> buffs; // owned mutable state\n    private final PathfindingService nav; // shared service: never cloned\n\n    Monster(int health, List<String> buffs, PathfindingService nav) {\n        this.health = health;\n        this.buffs = new ArrayList<>(buffs);\n        this.nav = nav;\n    }\n\n    private Monster(Monster src) {\n        this.health = src.health;\n        this.buffs = new ArrayList<>(src.buffs); // deep: owned list\n        this.nav = src.nav; // shared: service stays shared\n    }\n\n    @Override public Monster cloneEntity() { return new Monster(this); }\n\n    public void addBuff(String b) { buffs.add(b); }\n    public void setHealth(int h) { this.health = h; }\n}\n\nfinal class SpawnerRegistry {\n    private final Map<String, GameEntity> exemplars = new HashMap<>();\n\n    void register(String key, GameEntity e) { exemplars.put(key, e); }\n\n    GameEntity spawn(String key) {\n        GameEntity p = exemplars.get(key);\n        if (p == null) throw new IllegalArgumentException(\"unknown: \" + key);\n        return p.cloneEntity(); // never return p itself\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "prototype_policy.py",
+      "code": "import copy\nfrom dataclasses import dataclass, field\n\n@dataclass\nclass Character:\n    name: str\n    stats: dict              # owned mutable -> must be deep-copied\n    renderer: object         # shared heavy service -> must stay shared\n\n    def clone(self, *, deep_stats=True) -> \"Character\":\n        # Explicit policy beats default copy.copy() / copy.deepcopy().\n        # Trade-off: deepcopy(stats) costs time but buys isolation;\n        # sharing renderer saves memory but requires thread-safety.\n        stats = copy.deepcopy(self.stats) if deep_stats else self.stats\n        return Character(self.name, stats, self.renderer)\n\n# Registry holds exemplars, hands out copies only.\nREGISTRY = {}\nREGISTRY[\"orc\"] = Character(\"orc\", {\"hp\": 100, \"atk\": 12}, renderer=object())\n\ndef spawn(key: str, **overrides) -> Character:\n    base = REGISTRY[key].clone()\n    for k, v in overrides.items():\n        setattr(base, k, v)\n    return base"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read both listings as policy statements, not boilerplate. The Java copy constructor makes the per-field decision visible: `new ArrayList<>(src.buffs)` pays a small allocation per clone to buy independence of an owned collection, while `this.nav = src.nav` deliberately aliases a stateless shared service to avoid duplicating something expensive and identity-sensitive. The Python version says the same thing with `deepcopy` scoped to `stats` only. Either way the interview-worthy sentence is: shallow by default is a performance choice that must be justified per field, deep by default is a safety choice that must be budgeted per subgraph. If a candidate cannot point at each field and say shared or owned, they do not understand Prototype."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Model the spawner without a class explosion",
+          "text": "Prompt: many monster types, many spawners. Naive answer is a parallel hierarchy of `GhostSpawner`, `DemonSpawner`. Expected pivot: give `Monster` a `clone()` and let one generic spawner hold a prototype instance. What is graded: recognizing that behavior varies by instance state, not by spawner subclass."
+        },
+        {
+          "title": "Add a registry and defend its return contract",
+          "text": "Prompt: configure exemplars once, spawn thousands per second. Expected: `Map<String, Prototype>` with `spawn()` returning `stored.clone()`. What is graded: never leaking the exemplar reference, handling unknown keys explicitly, and saying why the registry is the seam for validation and metrics."
+        },
+        {
+          "title": "Decide shallow vs deep under questioning",
+          "text": "Prompt adds `inventory: List<Item>` where `Item` is mutable. Expected: deep-copy the list and each owned item, share the asset loader or texture cache. What is graded: per-field ownership reasoning and naming the trade-off — isolation costs allocations and time, sharing risks aliasing."
+        },
+        {
+          "title": "Handle cycles and shared subgraphs",
+          "text": "Follow-up: entities reference their squad, squad references members. Expected: visited-map during deep copy or explicit re-linking after clone, plus a rule against cloning services. What is graded: knowing that naive recursion diverges and that identity of shared nodes must be preserved, not duplicated."
+        },
+        {
+          "title": "Compare against Factory and Builder",
+          "text": "Closer: when would you not use Prototype? Expected: Factory when creation logic varies by type and cost is low; Builder when step-by-step construction with validation is the complexity; Prototype when a configured exemplar already exists and deltas are small. What is graded: choosing by cost structure, not by pattern fashion."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`Prototype is just Object.clone()` — No. Language-level shallow copy is a mechanism, not the pattern. The pattern is exemplar-plus-registry plus an explicit per-field copy policy. Default `clone()` gets aliasing wrong in exactly the cases that matter.",
+        "`Cloning is always faster` — Only when construction is expensive. If construction is cheap, cloning adds indirection and bug surface for zero gain. Measure construction cost before reaching for it.",
+        "`Deep copy is always safer` — Deep copy of shared services, caches, or thread pools creates duplicate pools, broken identity, and memory blowup. Safe means owned state duplicated and shared services shared, not everything duplicated.",
+        "`Prototype removes all dependencies` — It removes the dependency on concrete classes at the call site but introduces a dependency on the clone contract and on exemplar freshness. Stale or dishonest prototypes are a new failure mode.",
+        "`Prototype and Factory are interchangeable` — Factory decides *which class* to instantiate from parameters; Prototype decides *which instance* to copy from configuration. Use Factory for type selection, Prototype for configuration reuse. Conflating them produces registries that branch on type codes, which defeats the point."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use Prototype when copies dominate construction; otherwise build directly.",
+      "headers": [
+        "Use it when",
+        "Do not use it when",
+        "What to use instead"
+      ],
+      "rows": [
+        [
+          "Object setup is expensive: I/O, parsing, graph assembly, heavy defaults",
+          "Construction is two assignments and no validation",
+          "Plain constructor — less code, no aliasing risk"
+        ],
+        [
+          "Many instances share 90% of configuration, differ in a few fields",
+          "Every instance is structurally different with no common exemplar",
+          "Factory or Builder that constructs from parameters"
+        ],
+        [
+          "Client must not depend on concrete classes, types added frequently",
+          "Type set is fixed and small, dependencies are acceptable",
+          "Factory Method or simple conditional construction"
+        ],
+        [
+          "Runtime-tunable templates: documents, characters, invoices, test fixtures",
+          "Copies must be fully independent and graph has cycles you cannot map",
+          "Builder with explicit assembly, or persistent immutable structures with structural sharing"
+        ],
+        [
+          "Need to avoid subclass explosion for configured variants",
+          "Variants need different behavior, not just different state",
+          "Strategy or composition — cloning state does not create new behavior"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The judgment call fits in one paragraph. Count distinct configurations versus total instances. If configurations are few, instances are many, construction is costly, and deltas are small, Prototype wins and a registry is worth its weight. If instances are heterogeneous, construction is cheap, or correctness demands full independence of a cyclic graph you do not fully own, Prototype is the wrong optimization — you will spend more effort defending copy semantics than you ever saved on construction. Interviewers reward the candidate who volunteers this arithmetic before writing `clone()`. The trade-off to name: Prototype converts repeated construction cost into one-time exemplar cost plus per-clone copy risk, and that exchange is profitable only under the conditions above."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Prototype lets clients create configured objects by **copying an exemplar through a polymorphic `clone()`** instead of naming a concrete class — use it when construction is expensive and variants differ slightly, and make the per-field shallow-versus-deep policy explicit because that policy **is** the implementation."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:56:03.987Z",
+    "problems": []
+  }
+}

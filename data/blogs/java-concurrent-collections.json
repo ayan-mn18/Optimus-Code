@@ -1,0 +1,279 @@
+{
+  "slug": "java-concurrent-collections",
+  "title": "Java Concurrent Collections",
+  "summary": "Why Java concurrent collections beat global locks, how ConcurrentHashMap, CopyOnWriteArrayList, and BlockingQueue actually work, and where they break.",
+  "kind": "LLD",
+  "problemSlug": "java-concurrent-collections-43-83",
+  "topic": "Concurrency in Java",
+  "difficulty": "Medium",
+  "coverEmoji": "🧵",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Java",
+    "Concurrency",
+    "Thread-Safety"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Concurrent Collections in Java - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/java/need-concurrent-collections-java/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Concurrent Collection in JAVA - Medium",
+      "url": "https://medium.com/@rohitpatil3898/concurrent-collection-in-java-1c97ad28fed2",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "An Introduction to Synchronized Java Collections | Baeldung",
+      "url": "https://www.baeldung.com/java-synchronized-collections",
+      "source": "baeldung.com",
+      "kind": "article"
+    },
+    {
+      "title": "Java Concurrent Collections | codeWithAryan - Code With Aryan",
+      "url": "https://codewitharyan.com/tech-blogs/java-concurrent-collections",
+      "source": "codewitharyan.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Thread-safety is not **one lock around everything**. It is choosing the cheapest synchronization that still gives a usable guarantee. `ConcurrentHashMap` accepts stale `size()` to keep `get()` lock-free, `CopyOnWriteArrayList` accepts expensive writes to keep iteration snapshot-clean, `BlockingQueue` accepts blocking to give you backpressure for free. If you cannot name what each one gave up, you do not understand it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Concurrent collections are the `java.util.concurrent` implementations — primarily `ConcurrentHashMap`, `ConcurrentSkipListMap`, `CopyOnWriteArrayList`, `CopyOnWriteArraySet`, and the `BlockingQueue` family (`ArrayBlockingQueue`, `LinkedBlockingQueue`, `PriorityBlockingQueue`, `DelayQueue`, `SynchronousQueue`, `LinkedTransferQueue`) plus `ConcurrentLinkedQueue` and `ConcurrentLinkedDeque`. They are thread-safe by construction: multiple threads can call `get`, `put`, `add`, `poll`, and iterate without external `synchronized` and without corrupting internal structure. The reason they exist is that the two older answers were both bad. Plain `HashMap` and `ArrayList` are unsafe under concurrent mutation — you get lost updates, infinite loops during resize on old JDKs, and torn reads. The legacy fix — `Hashtable`, `Vector`, and `Collections.synchronizedMap()` / `synchronizedList()` — fixes corruption by putting one mutex around every method, which serializes all readers and writers and still fails iteration unless the caller holds the lock for the whole loop."
+    },
+    {
+      "type": "paragraph",
+      "text": "The contract difference is not just performance, it is semantics. Synchronized wrappers give you mutual exclusion per method plus fail-fast iterators: if another thread modifies the collection while you iterate, you get `ConcurrentModificationException`. Concurrent collections give you granular or lock-free coordination plus weakly consistent iterators: they never throw, they never take a global lock, but they only promise to reflect some state at or since iterator creation, and they may miss concurrent updates. `ConcurrentHashMap` goes further: it forbids `null` keys and values so that `map.get(k) == null` unambiguously means absent, which is what makes `putIfAbsent`, `computeIfAbsent`, and `merge` usable as atomic primitives. That is the whole point — move atomicity from your `synchronized` block into the data structure, at bin granularity, so readers almost never block."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: no global lock"
+    },
+    {
+      "type": "paragraph",
+      "text": "Take `ConcurrentHashMap` on modern JDKs, because that is what interviewers actually probe. There are no segments anymore. The table is a volatile array of bins. A `get()` is a volatile read followed by a chain or tree walk — no lock in the common path. That is why reads scale linearly with cores. A `put()` hashes the key, finds the bin, and takes one of three paths. If the bin is empty, it tries a single Compare-And-Swap to install the node — no locking at all. If the bin holds a `ForwardingNode`, a resize is in flight, so the thread does not wait — it helps move bins and then retries. Only if the bin is a real chain does the thread `synchronize` on the first node of that bin, then walk and insert or update inside that bin. The trade-off is explicit: contention is confined to keys that collide into the same bin, not spread across the map. Resizing uses the same logic — multiple threads each claim a stride of bins via CAS and move them, so a 64-thread `put` storm does not collapse on one resize lock. Size accounting avoids a hot counter by striping increments across `CounterCell`s and summing on demand, which is why `size()` is only an estimate under concurrency and `mappingCount()` returns `long`."
+    },
+    {
+      "type": "mermaid",
+      "title": "ConcurrentHashMap write path",
+      "caption": "Only colliding keys contend. Everyone else proceeds in parallel.",
+      "code": "flowchart TD\n  A[\"Thread calls put K V\"] --> B{\"Bin empty?\"}\n  B -->|\"Yes - CAS\"| C[\"CAS new node into table\"]\n  B -->|\"No\"| D{\"ForwardingNode?\"}\n  D -->|\"Yes\"| E[\"Help resize then retry\"]\n  D -->|\"No\"| F[\"synchronized on bin head\"]\n  F --> G[\"Walk chain or tree, insert or update\"]\n  G --> H[\"CAS update baseCount or CounterCell\"]\n  C --> H\n  E --> B"
+    },
+    {
+      "type": "paragraph",
+      "text": "The other two families buy different guarantees with different costs. `CopyOnWriteArrayList` holds a volatile array reference. Every mutating operation — `add`, `set`, `remove` — takes a single `ReentrantLock`, copies the entire backing array, mutates the copy, and publishes it with a volatile write. Readers just dereference the volatile array and iterate the snapshot they got; they never lock, never block, and never see a torn list. The trade-off is brutal and deliberate: reads are O(1) and wait-free, writes are O(n) plus allocation pressure. `BlockingQueue` implementations invert the choice. An `ArrayBlockingQueue` uses one lock plus two conditions — `notFull` and `notEmpty` — so `put()` on a full queue parks the producer and `take()` on an empty queue parks the consumer instead of busy-spinning or returning a sentinel. A `LinkedBlockingQueue` splits it into a put-lock and a take-lock with an `AtomicInteger` count so producers and consumers mostly do not contend. `ConcurrentLinkedQueue` goes fully non-blocking with CAS on head and tail. In each case the queue owns the coordination you would otherwise hand-roll with `wait` and `notify`, and that ownership is why you should prefer it."
+    },
+    {
+      "type": "mermaid",
+      "title": "BlockingQueue coordination",
+      "caption": "The queue parks threads instead of making you write wait-notify.",
+      "code": "graph LR\n  P[\"Producer thread\"] -->|\"put\"| Q[\"BlockingQueue bounded\"]\n  Q -->|\"take\"| C[\"Consumer thread\"]\n  Q -->|\"full\"| W[\"Producer parks on notFull\"]\n  Q -->|\"empty\"| V[\"Consumer parks on notEmpty\"]"
+    },
+    {
+      "type": "table",
+      "caption": "What each design buys, and what it charges you.",
+      "headers": [
+        "Design",
+        "What you gain",
+        "What you pay",
+        "Why it is worth it"
+      ],
+      "rows": [
+        [
+          "ConcurrentHashMap bin lock + CAS reads",
+          "Near lock-free reads, parallel writes on disjoint bins",
+          "Weak size, no cross-key atomicity, no nulls, higher memory for counter cells and tree bins",
+          "Read-heavy caches and dedup maps need throughput, not exact size or multi-key transactions"
+        ],
+        [
+          "Collections.synchronizedMap global mutex",
+          "Simple per-method exclusion, exact size when locked",
+          "One lock serializes every reader and writer; iteration needs manual locking or it throws",
+          "Almost never worth it in new code — you pay global contention for a guarantee iterators do not even keep"
+        ],
+        [
+          "CopyOnWriteArrayList snapshot array",
+          "Lock-free, never-throwing iteration over a stable snapshot",
+          "O(n) copy plus GC churn on every write; iterators see stale data",
+          "Worth it only when reads outnumber writes by orders of magnitude, e.g. listener lists"
+        ],
+        [
+          "Bounded BlockingQueue with conditions",
+          "Backpressure and handoff without custom wait-notify",
+          "Blocking semantics can deadlock or hide overload if capacity and timeout are wrong",
+          "Worth it for producer-consumer pipelines where unbounded growth would OOM anyway"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Concurrent collections do not make compound logic atomic, and that misunderstanding causes most outages. `if (!map.containsKey(k)) map.put(k, v)` is still a race even on `ConcurrentHashMap` — two threads can both pass the check and the last write wins. The symptom is duplicate expensive computation, double initialization, or lost increments that only appear under load and vanish in tests. The fix is to use the single atomic the map actually provides: `computeIfAbsent`, `putIfAbsent`, or `merge`. A second class of failure is treating estimates as exact. `size()`, `isEmpty()`, and iterators are weakly consistent during concurrent mutation. Code that branches on `size() == 0` then acts will misfire; metrics that assert exact counts will flap. A third class is capacity and cost blindness. An unbounded `LinkedBlockingQueue` or `ConcurrentLinkedQueue` fed by a fast producer will grow until the heap dies — the symptom is slow GC climbs followed by `OutOfMemoryError`, not an exception at the queue. A `CopyOnWriteArrayList` written hundreds of times per second will show the same shape: healthy latency, then allocation stalls and long young-GC pauses because every write copies the array."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Lost update from check-then-act:** two threads `get` null, both compute, both `put`. Symptom: cache hit rate looks fine but downstream sees duplicate work or inconsistent values. Use `computeIfAbsent` with a side-effect-free function.",
+        "**Stale `size` / `isEmpty` branch:** queue reports empty, consumer skips, item arrives a microsecond later and sits. Symptom: intermittent stalls or flaky assertions. Use `poll(timeout)` or `take()`, never `size()` then `poll()`.",
+        "**`CopyOnWriteArrayList` write storm:** symptom is GC churn and latency spikes with no lock contention in thread dumps. Replace with `ConcurrentHashMap.newKeySet()` or a read-write guarded `ArrayList` if writes are frequent.",
+        "**Unbounded queue OOM:** symptom is heap growth correlated with producer rate, consumers lagging. Fix with `ArrayBlockingQueue` plus explicit rejection or `offer` with timeout — backpressure must go somewhere.",
+        "**Blocking `computeIfAbsent` recursion:** mapping function calls back into the same map or blocks on a future that needs the map. Symptom: threads stuck inside `synchronized` bin lock, appearing as a hang. Keep mapping functions short, non-blocking, and never re-entrant.",
+        "**`null` surprise:** `ConcurrentHashMap` throws `NullPointerException` on null key or value where `HashMap` allowed them. Symptom: NPE after a blind migration from `synchronizedMap`. Decide the absent representation before you swap."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Atomic per key is not atomic across keys",
+      "text": "`putIfAbsent`, `merge`, and `computeIfAbsent` are atomic for **one key in one bin**. `map.size()`, iteration plus mutation, and any transfer involving two keys are not. If you need to move 100 units from A to B without a torn read, you need an external lock or a different design — the map will not give it to you."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that proves you understand it"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ConcurrentCache.java",
+      "code": "import java.util.concurrent.ConcurrentHashMap;\n\npublic class ConcurrentCache {\n    private final ConcurrentHashMap<String, Expensive> cache = new ConcurrentHashMap<>();\n\n    // WRONG: check-then-act races. Two threads can both miss and both build.\n    public Expensive broken(String k) {\n        Expensive v = cache.get(k);\n        if (v == null) {\n            v = build(k);          // expensive, possibly duplicated\n            cache.put(k, v);\n        }\n        return v;\n    }\n\n    // RIGHT: one atomic install per key. Mapping fn must be short and non-blocking.\n    public Expensive get(String k) {\n        return cache.computeIfAbsent(k, this::build);\n    }\n\n    // Atomic counter without external locking.\n    private final ConcurrentHashMap<String, Long> counts = new ConcurrentHashMap<>();\n    public void count(String k) {\n        counts.merge(k, 1L, Long::sum);\n    }\n\n    private Expensive build(String k) { return new Expensive(k); }\n    record Expensive(String k) {}\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Pipeline.java",
+      "code": "import java.util.concurrent.*;\nimport java.util.List;\nimport java.util.concurrent.CopyOnWriteArrayList;\n\npublic class Pipeline {\n    // Bounded queue: full queue blocks producer -> natural backpressure.\n    // Trade-off: you must decide timeout / rejection, or producers stall.\n    private final BlockingQueue<Task> queue = new ArrayBlockingQueue<>(1000);\n    // Reads >> writes: listeners are iterated constantly, mutated rarely.\n    private final List<Listener> listeners = new CopyOnWriteArrayList<>();\n\n    public void publish(Task t) throws InterruptedException {\n        // Never put() unbounded work blindly; offer with timeout surfaces overload.\n        boolean accepted = queue.offer(t, 100, TimeUnit.MILLISECONDS);\n        if (!accepted) throw new RejectedExecutionException(\"queue full\");\n    }\n\n    public void consumeLoop() throws InterruptedException {\n        while (!Thread.currentThread().isInterrupted()) {\n            Task t = queue.take(); // parks when empty, no spin, no size check\n            for (Listener l : listeners) l.onTask(t); // snapshot-safe, never throws\n        }\n    }\n\n    interface Listener { void onTask(Task t); }\n    record Task(String id) {}\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the two snippets as the interview answer. The first shows you know atomicity lives at key level and that `computeIfAbsent` and `merge` are the only safe way to do read-modify-write without a lock. The mapping function restriction matters: it runs while the bin is locked, so a slow or re-entrant function stalls every other key hashing to that bin. The second shows you know coordination belongs in the queue. No `while (queue.size() == 0) sleep()`, no `synchronized` around `poll`, no manual `wait` and `notify`. Bounded capacity plus `offer` with timeout turns silent OOM growth into an explicit, handleable rejection. And `CopyOnWriteArrayList` is justified with a ratio — iterated on every task, mutated only on registration — not used as a general concurrent list. If you cannot state the ratio, do not use it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design a concurrent cache or dedup map",
+          "text": "Start with `ConcurrentHashMap` plus `computeIfAbsent`. Say why: lock-free reads, bin-level writes, no external lock. Then state the limit: per-key atomicity only, mapping function must not block or recurse."
+        },
+        {
+          "title": "Producer-consumer or rate limiter",
+          "text": "Reach for `ArrayBlockingQueue` or `LinkedBlockingQueue`, not `Collections.synchronizedList` plus `wait`. Explain the trade-off: blocking gives backpressure but requires a capacity and an overflow policy — block, timeout, or reject."
+        },
+        {
+          "title": "Explain why iteration does not throw",
+          "text": "Contrast fail-fast versus weakly consistent iterators. Say the sentence: synchronized wrappers detect concurrent modification and fail; concurrent collections tolerate it and show a snapshot or in-flight view. That distinction passes the LLD round."
+        },
+        {
+          "title": "Break your own design",
+          "text": "Volunteer the failure: compound actions across keys, stale `size()`, unbounded growth, `CopyOnWrite` write cost. Interviewers promote candidates who name the cost without being asked."
+        },
+        {
+          "title": "Size the choice",
+          "text": "Close with numbers: read-to-write ratio, key cardinality, contention shape. High-read low-write listener set favours copy-on-write; high-write shared counter favours `LongAdder` plus `ConcurrentHashMap.merge`; bursty producers favour bounded queues with explicit rejection."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**`ConcurrentHashMap` is just a faster `synchronizedMap` — false.** It has different semantics: no nulls, weak `size`, weakly consistent iterators, and atomic per-key methods. Swapping one for the other without auditing nulls and compound actions introduces bugs.",
+        "**Wrapping a concurrent collection in `synchronized` makes it more correct — false.** It reintroduces the global contention you paid to remove and can deadlock with internal bin locks or blocking queue conditions. Use its atomic methods instead.",
+        "**`CopyOnWriteArrayList` is a general concurrent `ArrayList` — false.** It is a read-optimized snapshot store. Frequent writes make it slower and more memory-hungry than a plain list under a lock. Default to `ConcurrentHashMap.newKeySet()` or `Collections.synchronizedList` with care when writes matter.",
+        "**`size() == 0` means empty and will stay empty — false under concurrency.** By the time you act, another thread has mutated the structure. Branch on the result of `poll`, `take`, or `putIfAbsent`, not on a prior observation.",
+        "**`computeIfAbsent` mapping can do anything — false.** It must be short, non-blocking, and must not touch the same map. A blocking or recursive mapping holds the bin lock and stalls unrelated keys that collide into it.",
+        "**`volatile` or `AtomicReference` around a `HashMap` makes it concurrent — false.** You get safe publication of the reference, not safe concurrent mutation of the bins. Iteration and `put` still race. Reach for the structure designed for shared mutation."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Pick by access pattern, not by habit.",
+      "headers": [
+        "Situation",
+        "Use",
+        "Avoid",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Shared cache, dedup, per-key memoization, many readers",
+          "`ConcurrentHashMap` with `computeIfAbsent` / `merge`",
+          "`Hashtable`, `synchronizedMap`, external lock around `HashMap`",
+          "Bin-level locking keeps reads lock-free; atomic methods remove check-then-act races"
+        ],
+        [
+          "Listener list, config snapshot, iterated constantly, rarely changed",
+          "`CopyOnWriteArrayList` / `CopyOnWriteArraySet`",
+          "`Vector`, `synchronizedList` iterated without lock",
+          "Snapshot iteration never blocks or throws; write cost is irrelevant at this ratio"
+        ],
+        [
+          "Producer-consumer handoff, task pipeline, need backpressure",
+          "Bounded `ArrayBlockingQueue` or `LinkedBlockingQueue`",
+          "Unbounded `LinkedBlockingQueue`, busy-spin on `poll`, manual wait-notify",
+          "Blocking with capacity converts overload into explicit policy instead of OOM"
+        ],
+        [
+          "High-write set or bag with frequent adds",
+          "`ConcurrentHashMap.newKeySet()`, `ConcurrentLinkedQueue`",
+          "`CopyOnWriteArrayList` as a set",
+          "Copy cost dominates; hash-binned or CAS structures scale with writers"
+        ],
+        [
+          "Multi-key transaction, exact global size, ordered mutation + iteration",
+          "External lock, snapshot copy, or a real transactional store",
+          "Assuming `ConcurrentHashMap` gives cross-key atomicity",
+          "Concurrent collections deliberately give up global consistency for throughput"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Use `ConcurrentHashMap` for lock-free reads and per-key atomic writes, copy-on-write only when reads dwarf writes, and bounded blocking queues for handoff — and never mistake per-key atomicity for a transaction.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:06:22.139Z",
+    "problems": []
+  }
+}

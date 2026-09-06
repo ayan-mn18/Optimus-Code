@@ -1,0 +1,290 @@
+{
+  "slug": "creational-design-pattern-introduction",
+  "title": "Creational Design Pattern Introduction",
+  "summary": "Creational patterns are access control for `new`: what the five patterns share, how they differ, and what each one costs you.",
+  "kind": "LLD",
+  "problemSlug": "creational-design-pattern-introduction-35-75",
+  "topic": "Creational Design Patterns",
+  "difficulty": "Easy",
+  "coverEmoji": "🏭",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Creational-Patterns",
+    "OOD"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Creational Design Patterns - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/creational-patterns",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Creational Design Patterns - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/creational-design-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "All Creational Design Patterns ( Singleton, Builder, Factory, Abstract ...",
+      "url": "https://medium.com/@Lakshitha_Fernando/all-creational-design-patterns-singleton-builder-factory-abstract-factory-and-prototype-3fc75f6f53ac",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Introduction to Creational Design Patterns - Baeldung",
+      "url": "https://www.baeldung.com/creational-design-patterns",
+      "source": "baeldung.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Creational patterns are not about objects. They are about **removing `new` from business logic** so the decision of *which concrete class* and *how to assemble it* lives in exactly one place. Client code says *what it needs*, creation code decides *what it gets*. Every pattern below is just a different answer to *who decides, and when*. The trade-off is always the same: **you buy flexibility in what gets created by paying indirection on every read.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What \"creational\" actually means"
+    },
+    {
+      "type": "paragraph",
+      "text": "A creational pattern separates *use* from *construction*. The caller depends only on an interface or base type — `Notification`, `Parser`, `Connection` — and never names `EmailNotification`, `JsonParserV2`, or `PooledConnection` directly. Some other module owns that knowledge: a factory method, a factory object, a builder, a prototype registry, or a guarded accessor. That is the entire category. If your code still imports the concrete class to call `new` on it, you do not have a creational pattern, you have a naming convention. The reason this matters in low-level design is testability and change radius: when construction rules change — new subtype, new mandatory field, new pooling requirement — you want one file to change, not forty call sites scattered across the codebase."
+    },
+    {
+      "type": "paragraph",
+      "text": "There are exactly two things being hidden, and confusing them is why beginners pick the wrong pattern. First is **class identity**: the caller must not know which implementation it received, only that it satisfies the contract. Factory Method and Abstract Factory exist for this. Second is **assembly process**: the caller must not know the order of steps, defaults, validation, or resource acquisition required to get a valid object. Builder, Prototype, and Singleton exist mostly for this. Most real designs hide a little of both, which is why patterns compose — a Builder internally calling a Factory, a Prototype registry held behind a Singleton — but you should be able to name which hiding job is doing the work, because that tells you where the next bug will come from: wrong type means the factory is wrong, invalid state means the assembly is wrong."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: who decides, and when"
+    },
+    {
+      "type": "mermaid",
+      "title": "Picking the creational mechanism",
+      "caption": "Decision flow: start from what varies — type, family, assembly, cost, or cardinality.",
+      "code": "flowchart TD\n  Need[Client needs an object] --> Q1{What varies?}\n  Q1 -->|Subtype varies by context| FM[Factory Method: subclass overrides creator]\n  Q1 -->|Whole family must stay consistent| AF[Abstract Factory: one factory per family]\n  Q1 -->|Assembly has many valid combinations| B[Builder: stepwise assembly plus validation]\n  Q1 -->|Building from scratch is expensive| P[Prototype: clone registered exemplar plus tweak]\n  Q1 -->|Cardinality must be exactly one| S[Singleton: private constructor plus guarded access]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the diagram as a control-flow question, not a label-matching exercise. If the variation is *which subtype* and the caller cannot reasonably know it — parse input and return the right `Parser`, receive a request and return the right `Handler` — you want creation polymorphed behind a method, which is Factory Method. If the variation is *which consistent set* — you need a button plus a checkbox plus a scrollbar that all belong to the same theme, and mixing themes is a defect — a single method is insufficient, you need a factory object that vends the whole family together, which is Abstract Factory. If the object is valid under many field combinations but invalid if built in the wrong order or with missing invariants, you need to separate the step sequence from the representation, which is Builder. If construction is expensive or stateful — document template, game entity, pre-configured connection — and most new instances are near-copies of an existing one, you register an exemplar and clone it, which is Prototype. If the constraint is cardinality rather than variety, you guard the constructor, which is Singleton. WHY this framing: it forces you to justify the pattern from the axis of change instead of reciting definitions."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The five patterns in one glance"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Factory Method — defer the `new` to a subclass.** Define `create()` in the base, let each subclass return its own product. Buys you: open extension without touching callers. Costs you: one subclass per product, and creation logic smeared across an inheritance tree that is painful to configure at runtime.",
+        "**Abstract Factory — vend a consistent family.** Define `createButton()`, `createCheckbox()` as a unit; each concrete factory implements the whole set for one variant. Buys you: impossible to mix incompatible parts. Costs you: adding a new product type breaks every factory, so the interface rots fast when the family keeps growing.",
+        "**Builder — separate steps from representation.** Collect parameters incrementally, validate once in `build()`, return an immutable result. Buys you: readable construction for objects with 5+ fields, optionals, and invariants. Costs you: a second class to maintain plus mutable intermediate state that must not leak.",
+        "**Prototype — clone, do not construct.** Keep a registry of canonical instances, `clone()` then mutate the few fields that differ. Buys you: no knowledge of concrete class and no repeat of expensive setup. Costs you: deep-versus-shallow copy semantics, which is where every Prototype bug lives.",
+        "**Singleton — enforce single cardinality.** Private constructor, static accessor, one shared instance. Buys you: one obvious place for genuinely shared mutable coordination like a pool or registry. Costs you: global state, hidden coupling, and ordering pain at startup and in tests. Use it last, not first."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What each pattern buys and what it charges. There is no free hiding.",
+      "headers": [
+        "Pattern",
+        "What it buys you",
+        "What it charges you"
+      ],
+      "rows": [
+        [
+          "Factory Method",
+          "Callers stay closed when a new subtype appears; `new` lives in one overridable method",
+          "Inheritance coupling; cannot switch product at runtime without extra registry or parameter"
+        ],
+        [
+          "Abstract Factory",
+          "Family-level consistency guaranteed by construction; client never names concretes",
+          "Interface bloat: new product method forces edits to all factories; hard to debug which family is wired"
+        ],
+        [
+          "Builder",
+          "Telescoping constructors disappear; invariants checked once; immutable result",
+          "Duplicate surface: field added to target needs field plus setter plus validation in builder; temporary mutability"
+        ],
+        [
+          "Prototype",
+          "Zero dependency on concrete class at clone site; skips expensive init",
+          "Clone correctness: shared references, caches, listeners copied by accident; `clone()` contracts are subtle"
+        ],
+        [
+          "Singleton",
+          "Single coordination point; lazy init can defer heavy startup cost",
+          "Global mutable state; test isolation and thread-safety burden on every accessor; hides real dependencies"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The meta-trade-off across all five is **flexibility versus readability**. Each pattern inserts a layer between intent and allocation, which means a new reader cannot answer *what object did I just get?* by looking at the call site — they must chase the factory, the builder chain, or the prototype registration. That is acceptable when the set of types or the construction rules genuinely change often, because the alternative is shotgun edits across callers. It is pure cost when the type set is stable and the object has three fields. My rule, stated as an opinion: if you cannot name the change you are insulating against in one sentence — *new payment provider next quarter*, *five optional report filters* — do not apply the pattern. A direct constructor with clear parameters beats a speculative factory every time, because speculative flexibility is just indirection without a customer."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Creational bugs rarely throw at the creation line. They surface downstream as the wrong behavior, corrupt state, or contention, long after the bad decision was made. That delay is the signature: when you see a symptom far from its cause — mixed UI themes, half-configured clients, flaky tests that pass in isolation — suspect the creation path first. The factory or builder succeeded in returning *something*, so no exception fired, but it returned the wrong family member, an unvalidated intermediate, a shallow copy sharing mutable internals, or a globally shared instance absorbing concurrency it was never designed for. Debugging means working backward from the defective object to the single place that was supposed to guarantee its validity."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Mixed family (Abstract Factory miswired):** symptom is a correct-looking object composed of incompatible parts — e.g., a request signed for one region sent to another region's endpoint. Cause is usually dependency-injection wiring that binds factories from two variants. Fix by making the family a single injected unit, never individual products.",
+        "**Half-built object (Builder without terminal validation):** symptom is `NullPointerException` or rejected requests three layers away from construction. Cause is exposing `build()` before mandatory fields are set, or letting callers hold the builder's mutable collections by reference. Fix by validating all invariants in `build()` and defensively copying collections.",
+        "**Shared-mutable clone (Prototype shallow copy):** symptom is spooky action at a distance — editing one order line mutates another, or two game entities share the same inventory list. Cause is default field-wise copy of lists, maps, and caches. Fix by writing an explicit deep-copy policy per mutable field and testing clone independence directly.",
+        "**Singleton contention and stale state:** symptom is throughput collapse under load or tests that pass alone and fail together. Cause is unsynchronised lazy init (double instantiation) or conversely a coarse lock around `getInstance()` plus mutable state that every thread hammers. Fix by preferring eager init or enum-holder idiom, keeping the singleton stateless where possible, and injecting it as an interface so tests can substitute it.",
+        "**Factory sprawl:** symptom is a ten-branch `switch` on type codes inside the factory that every team edits weekly. The factory has become the coupling it was meant to remove. Fix by splitting into a registry — map from key to supplier — so new types register themselves instead of editing a central conditional."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Singleton is the default wrong answer",
+      "text": "If your justification for Singleton is *convenient access*, you have a global variable with a dress code. Reserve it for true single-cardinality coordination — a connection pool, an ID allocator, a registry — where two instances would be *incorrect*, not merely wasteful. Everything else should be an injected instance with a defined lifetime. Trade-off named: Singleton buys one less parameter passed around and charges you test isolation and hidden ordering dependencies forever."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes it concrete"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "FactoryMethod.java",
+      "code": "abstract class ReportExporter {\n  // Factory method: subclasses decide the concrete product.\n  abstract ReportWriter createWriter();\n\n  public void export(Report r) {\n    ReportWriter w = createWriter(); // caller never names PdfWriter/CsvWriter\n    w.write(r);\n  }\n}\nclass PdfExporter extends ReportExporter {\n  @Override ReportWriter createWriter() { return new PdfWriter(); }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Builder.java",
+      "code": "final class HttpClientConfig {\n  private final String host; private final int timeoutMs; private final boolean retry;\n  private HttpClientConfig(Builder b) {\n    this.host = b.host; this.timeoutMs = b.timeoutMs; this.retry = b.retry;\n  }\n  static final class Builder {\n    private String host; private int timeoutMs = 1000; private boolean retry;\n    Builder host(String h) { this.host = h; return this; }\n    Builder timeoutMs(int t) { this.timeoutMs = t; return this; }\n    Builder retry(boolean r) { this.retry = r; return this; }\n    HttpClientConfig build() {\n      if (host == null || host.isBlank()) throw new IllegalStateException(\"host required\");\n      if (timeoutMs <= 0) throw new IllegalStateException(\"timeout must be positive\");\n      return new HttpClientConfig(this); // single validation gate\n    }\n  }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Singleton.java",
+      "code": "enum ConnectionRegistry { INSTANCE; // enum idiom: serialization + reflection safe\n  private final Map<String, PooledConnection> pool = new ConcurrentHashMap<>();\n  PooledConnection get(String key, Supplier<PooledConnection> factory) {\n    return pool.computeIfAbsent(key, k -> factory.get());\n  }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "WHY these three snippets and not all five: they show the three distinct shapes of hiding. The factory method hides *type selection* behind polymorphism — adding `XlsxExporter` touches no caller, but you pay a new class per variant and you cannot pick the variant at runtime without extra plumbing. The builder hides *assembly order and validation* behind a terminal `build()` gate — callers get readability and an immutable result, but you pay duplicated field surface and must defend against leaking the builder's mutable state into the built object. The enum singleton hides *lifetime* — construction happens once, access is global — and the trade-off is total: you eliminate wiring cost and accept global coupling, which is why the example keeps the singleton as a narrow registry over an injected factory function rather than a bag of business logic. If you can explain those three WHY choices aloud, Abstract Factory (factory of factories) and Prototype (`clone()` plus registry) become one-sentence extensions rather than separate memorizations."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the axis of change",
+          "text": "Interviewers open with a vague builder-versus-factory prompt to see if you ask what varies. Say: are we varying the subtype, the family, the assembly steps, or the cardinality? Picking a pattern before naming the variation is scored as memorisation."
+        },
+        {
+          "title": "Write the client code first",
+          "text": "Show the caller depending only on the interface, then place the `new` behind your chosen seam. Evaluators check that the concrete import disappears from business logic. If it is still there, the pattern did nothing."
+        },
+        {
+          "title": "State the extension scenario",
+          "text": "Walk through adding one new variant — new notification channel, new report format — and count the files touched. Factory Method should need one new subclass; Abstract Factory should need one method across all factories, which is exactly why you must justify it with a consistency requirement."
+        },
+        {
+          "title": "Defend the validation and copy semantics",
+          "text": "For Builder, point at `build()` and list the invariants enforced there. For Prototype, state field-by-field what is deep-copied and what is shared, and why. Hand-waving here is the most common fail signal on an otherwise correct diagram."
+        },
+        {
+          "title": "Volunteer the cost and the simpler alternative",
+          "text": "Close by naming the trade-off unprompted: extra classes, interface churn, global state. Say when you would delete the pattern and use a constructor plus parameters instead. Interviewers promote candidates who de-apply patterns, not just apply them."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Factory Method and Abstract Factory are interchangeable.** No. One method vending one product versus one object vending a consistent family. If mixing parts is harmless, Abstract Factory is overkill; if mixing parts is a defect, Factory Method is insufficient.",
+        "**Builder is just setters with chaining.** No. Setters leave the object observable mid-construction. A real builder accumulates state privately and publishes an immutable, validated result exactly once at `build()`. Without the gate, it is a mutable struct.",
+        "**Prototype means implementing `clone()`.** No. The pattern is *registry of exemplars plus copy policy*. The interface is trivial; the design work is deciding per-field depth and documenting which references stay shared.",
+        "**Singleton is the easiest pattern, so reach for it first.** It is the easiest to write and the hardest to live with. Global access hides dependencies from signatures, which breaks test isolation and makes startup ordering implicit. Prefer injection; use Singleton only for true single-cardinality.",
+        "**More patterns means better design.** Each applied pattern is a bet that a specific kind of change will happen. Unhedged bets are just complexity. The senior move is showing the plain constructor version first, then adding the seam only when the variation is concrete."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Selection guide: match the pattern to the variation you actually have.",
+      "headers": [
+        "Situation",
+        "Use",
+        "Avoid"
+      ],
+      "rows": [
+        [
+          "Subtype chosen by runtime input; callers must not branch on type codes",
+          "Factory Method backed by registry (map key to supplier)",
+          "Factory Method when the type set is fixed at compile time — a plain `switch` or enum dispatch is clearer"
+        ],
+        [
+          "Multiple products must come from the same variant and never mix",
+          "Abstract Factory as one injected unit per family",
+          "Abstract Factory for independent products; you will pay interface churn every time a product is added"
+        ],
+        [
+          "Object has many optional fields, defaults, or cross-field invariants",
+          "Builder with private accumulation and single `build()` validation, immutable result",
+          "Builder for 2–3 mandatory fields; telescoping is not yet painful enough to justify the second class"
+        ],
+        [
+          "Construction repeats expensive setup and new instances resemble old ones",
+          "Prototype registry with explicit deep-copy policy and clone-independence tests",
+          "Prototype when construction is cheap; copy semantics bugs will outweigh the saved setup cost"
+        ],
+        [
+          "Exactly one coordinator may exist or the design breaks",
+          "Singleton in narrow scope (pool, registry, allocator), stateless if possible, injected as interface",
+          "Singleton for convenience access, configuration holders, or anything tests need to replace per case"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Creational patterns move `new` behind a seam so callers depend on contracts while one module owns which class gets picked and how it gets assembled — pick the seam by what varies: subtype, family, steps, similarity, or cardinality — and accept extra indirection as the price.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:54:25.124Z",
+    "problems": []
+  }
+}

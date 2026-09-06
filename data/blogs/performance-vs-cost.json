@@ -1,0 +1,296 @@
+{
+  "slug": "performance-vs-cost",
+  "title": "Performance vs Cost",
+  "summary": "Performance vs cost is the central HLD trade-off: every millisecond of latency and nine of availability is rented. This concept page names the levers, prices them, and shows when to pay.",
+  "kind": "HLD",
+  "problemSlug": "performance-vs-cost-91-201",
+  "topic": "System Design Tradeoffs",
+  "difficulty": "Medium",
+  "coverEmoji": "💸",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "System Design Tradeoffs",
+    "Performance vs Cost"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Cost Vs Performance - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/cost-vs-performance/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Performance Versus Cost - Lean Enterprise Institute",
+      "url": "https://www.lean.org/the-lean-post/articles/performance-versus-cost/",
+      "source": "lean.org",
+      "kind": "article"
+    },
+    {
+      "title": "What Is Performance-based Pricing? - NetSuite",
+      "url": "https://www.netsuite.com/portal/resource/articles/business-strategy/performance-based-pricing.shtml",
+      "source": "netsuite.com",
+      "kind": "article"
+    },
+    {
+      "title": "Costs vs Expenses: What Are the Differences? | Indeed.com",
+      "url": "https://www.indeed.com/career-advice/career-development/costs-vs-expenses",
+      "source": "indeed.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Performance is rented, not bought. Every millisecond you cut from **p99** and every nine you add to availability shows up on a bill — in servers, in operations, or in complexity you will pay for later. The job is not to maximize performance. It is to **name the price per unit of performance and stop paying the moment the user stops noticing**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What performance vs cost actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Cost is everything you burn to keep the system running and changeable: compute, memory, storage, network egress, managed services, on-call load, deployment risk, and the cognitive cost of a design nobody dares to touch. Performance is how well the system does its job under load: median and tail latency, sustained throughput, behavior under burst and failure, and how gracefully it degrades. The trade-off is brutal because the two sides are measured in different units. Cost is linear and immediate — you see it this month. Performance value is non-linear and conditional — the first 200ms you save can double conversion, the next 10ms does nothing except make a dashboard greener."
+    },
+    {
+      "type": "paragraph",
+      "text": "The curve is almost always a knee. From a bad baseline, small spend buys huge wins: add a cache, add an index, stop doing N+1 calls, move static bytes to the edge. Past the knee, you pay exponentially for linearly smaller gains: halving p99 from 800ms to 400ms might cost one replica; halving it again from 80ms to 40ms can cost a rewrite to async, regional replication, and a team to operate it. Senior engineers feel this knee. Juniors argue for absolute speed or absolute cheapness. The interview signal is whether you can locate the knee for the workload you were given and defend why you stopped there."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Cost side, make it concrete:** `$/hour` for compute, `$/GB-month` for storage, `$/GB` for egress, `$/M-requests` for managed services, plus utilization. A fleet at 12% CPU is not reliable, it is wasteful.",
+        "**Performance side, make it concrete:** p50, p99, p99.9 latency at a stated load, sustained writes per second, read fan-out, time-to-recover. Never say fast. Say `p99 < 250ms at 5k RPS with 20% burst headroom`.",
+        "**Budget is a requirement:** throughput without a cost ceiling is not a design. Ask for it: monthly infra budget, cost per 1M requests target, acceptable overprovisioning factor.",
+        "**Utilization is the bridge:** cost without utilization lies. Two designs with identical p99 can differ 5x in cost because one idles 80% of its capacity waiting for a peak that never comes.",
+        "**Complexity is deferred cost:** a clever tiered cache that saves $2k/month but pages twice a week is more expensive than the bill. Count operational cost or your math is fiction."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: how dollars become milliseconds"
+    },
+    {
+      "type": "paragraph",
+      "text": "You convert money into performance through only four mechanisms, and each one works for a different reason. **Overprovisioning** buys headroom so queues never form — you pay for idle to avoid waiting. **Caching and locality** buy avoidance of work — you pay for memory and invalidation to skip compute and I/O. **Parallelism and replication** buy division of work and failure isolation — you pay for coordination overhead and consistency work. **Faster substrate** buys raw speed — you pay premium unit price for NVMe, bigger instances, provisioned IOPS, or edge PoPs. Why this matters: if you cannot say which mechanism your proposal uses, you cannot predict its scaling law. Caches stop helping past their hit-rate ceiling. Replicas stop helping when the bottleneck is the database write leader. Faster disks do nothing for a service blocked on downstream calls."
+    },
+    {
+      "type": "mermaid",
+      "title": "Deciding whether to spend",
+      "caption": "Every performance spend should pass a per-dollar improvement check or be reverted.",
+      "code": "flowchart LR\n  Traffic[Requests per second] --> Decision{Meet SLO without new spend?}\n  Decision -->|Yes| Hold[Hold: tune pools, compress, fix queries]\n  Decision -->|No| Spend[Spend: pick one lever]\n  Spend --> Cache[Cache and locality]\n  Spend --> Scale[Scale out replicas]\n  Spend --> FasterHW[Faster substrate]\n  Spend --> Edge[Move work to edge]\n  Cache --> Bill[Bill rises]\n  Scale --> Bill\n  FasterHW --> Bill\n  Edge --> Bill\n  Bill --> Review{p99 improved per dollar?}\n  Review -->|Yes| Keep[Keep change]\n  Review -->|No| Revert[Revert and rethink]"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Where you actually pay"
+    },
+    {
+      "type": "table",
+      "caption": "Common levers: what they buy and what they charge.",
+      "headers": [
+        "Lever",
+        "What you gain",
+        "What you pay",
+        "The trade-off"
+      ],
+      "rows": [
+        [
+          "Overprovision + autoscale",
+          "Absorbs bursts, protects p99 during peaks",
+          "Idle capacity, scaling lag, cold starts",
+          "Cheap to reason about, expensive to run. Pays only if peaks are short and scaling is fast."
+        ],
+        [
+          "Cache (app, CDN, memoize)",
+          "10-100x cut in tail latency and DB load",
+          "Memory, invalidation bugs, stale reads",
+          "Best dollars-per-ms until hit rate plateaus. Then you are paying for a second source of truth."
+        ],
+        [
+          "Multi-AZ / multi-region replication",
+          "Availability and nearby reads",
+          "Cross-zone transfer, write coordination, ops load",
+          "Reads get faster, writes get slower and pricier. Buy it for survival, not speed."
+        ],
+        [
+          "Provisioned I/O: NVMe, PIOPS, bigger instances",
+          "Lower I/O wait, higher single-node throughput",
+          "3-8x unit price vs baseline",
+          "Only pays when profiling proves I/O is the bottleneck. Otherwise you gilded the wrong layer."
+        ],
+        [
+          "Async + queue + batch",
+          "Smooths spikes, raises sustained throughput",
+          "End-to-end latency rises, exactly-once gets hard",
+          "Trades freshness for cheap throughput. Correct for pipelines, wrong for synchronous user waits."
+        ],
+        [
+          "Denormalize / precompute / materialize",
+          "Reads become O(1) lookups",
+          "Write amplification, backfill jobs, drift",
+          "You move cost from read time to write time. Wins when read:write ratio is >100:1, loses otherwise."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Read that table as a warning: no row is free, and no row scales forever. Caching looks like pure win until your hit rate sticks at 82% and the remaining 18% is thundering-herd database traffic that still violates SLO — at which point more memory buys nothing. Replication looks like reliability until you realize cross-region writes tripled your write bill and your p99 got worse because every write now waits for a quorum. The opinionated rule: **spend first where utilization is low and contention is high** — connection pools, missing indexes, oversized payloads, chatty fan-out. Only when tuning stops moving p99 per dollar do you buy hardware or topology."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure mode one is gilded idleness. The team feared an outage, so they run 40 replicas at 11% CPU, provisioned IOPS at 8% use, and a Redis cluster that holds three days of data nobody re-requests. Symptom: the latency dashboard is beautiful and the finance dashboard is on fire — cost per 1M requests climbs every month while traffic is flat, autoscaler never triggers, and nobody can answer what load would actually break the system. You diagnose it with utilization, not latency: CPU, memory, cache hit rate by key age, disk IOPS consumed vs provisioned. The fix is almost always downsize plus a real load test to prove headroom still exists."
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure mode two is starved performance that collapses under its own retries. The team saved money with a single undersized database, tight timeouts, and no bulkheads. At normal load p50 looks fine. At p99 a slow query holds connections, upstream timeouts fire, clients retry, and retries double the load on the already saturated tier — a retry storm. Symptom: a cliff, not a slope. p50 stays flat while p99 spikes 10x, queue depth explodes, CPU saturates, error rate follows, and adding one more client makes everything worse. The bill looked low right up until the outage cost more than a year of proper headroom. Why it happens: queuing theory is unforgiving past ~70% sustained utilization on a synchronous path. If you run hot with no shedding, backpressure, or caching, you did not save money — you borrowed it at outage interest rates."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Bill up, latency flat:** you overprovisioned or cached too much. Check `cost per request` and `CPU / memory utilization` before adding anything.",
+        "**p99 cliff with p50 stable:** saturation + retries. Check queue depth, connection wait time, timeout vs retry counts. You need shedding, not just scale.",
+        "**Egress or cross-zone fees dominate:** your topology is chatty. Check bytes per request and zone-affinity. Compress, batch, or keep traffic local.",
+        "**Cache spend up, DB load unchanged:** low hit rate or non-reusable keys. Check hit rate by endpoint and TTL effectiveness. Shrink or partition before growing.",
+        "**p99 fine in one region, terrible elsewhere:** physics, not capacity. You need edge caching or regional reads — but price the write coordination first."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Make it concrete: cost per request"
+    },
+    {
+      "type": "paragraph",
+      "text": "In an interview and in production, force the trade-off into one number: **cost per 1M served requests at SLO**. It kills hand-waving because it ties spend to useful work, not to fleet size. Estimate sustained RPS, multiply unit prices, divide by served load at the required p99. Then compare two designs on that number. The cheaper design that still meets SLO wins — not the faster one, not the cleverer one."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cost_model.py",
+      "code": "def cost_per_1m_requests(num_nodes: int, dollars_per_node_hour: float, rps_sustained: float) -> float:\n    # Why this model: ties spend to useful throughput at SLO, not fleet size.\n    # Trade-off it exposes: idle headroom looks free until you divide by real RPS.\n    if rps_sustained <= 0:\n        raise ValueError(\"rps_sustained must be > 0 at stated p99\")\n    hourly = num_nodes * dollars_per_node_hour\n    req_per_hour = rps_sustained * 3600\n    return hourly / req_per_hour * 1_000_000\n\n# Example: 12 nodes x $0.34/hr serving 4000 RPS at p99 < 250ms\n# -> ~$0.31 per 1M requests. Doubling nodes for 20ms gain doubles that.\nprint(cost_per_1m_requests(12, 0.34, 4000))\n\ndef knee_check(options: list[tuple[str, float, float]]):\n    # options: (name, p99_ms, cost_per_1m)\n    # Sort by cost, flag where extra spend buys <10% latency improvement.\n    options = sorted(options, key=lambda o: o[2])\n    for (n0, p0, c0), (n1, p1, c1) in zip(options, options[1:]):\n        gain = (p0 - p1) / p0 if p0 else 0\n        extra = (c1 - c0) / c0 if c0 else float(\"inf\")\n        verdict = \"STOP\" if gain < 0.10 and extra > 0.2 else \"consider\"\n        print(f\"{n0} -> {n1}: {gain:.1%} faster for {extra:.1%} more cost [{verdict}]\")"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They give you SLO + scale, you ask for budget",
+          "text": "Do not start drawing boxes. Ask: what p99 at what RPS, what availability, what monthly budget or cost-per-request ceiling? Interviewers deliberately omit cost to see if you treat it as a requirement. Say it explicitly: I will optimize to SLO, not beyond, and I will price each step."
+        },
+        {
+          "title": "Do back-of-envelope with dollars attached",
+          "text": "Estimate RPS, payload size, storage growth, and cache size — then translate to instance counts and spend. Example: 10k RPS x 4KB = 40MB/s; three replicas plus cache headroom is N nodes. State utilization target (50-60% for sync paths) and why running hotter trades outage risk for savings."
+        },
+        {
+          "title": "Propose two designs: cheap-then-fast",
+          "text": "Start with the boring baseline that meets SLO at lowest cost: stateless app tier, managed database, single-region, TTL cache. Then offer one paid upgrade path — read replicas, edge cache, provisioned I/O — with its delta in p99 and delta in dollars. This forces the trade-off into the open where you can defend it."
+        },
+        {
+          "title": "Defend the knee",
+          "text": "Expect: why not multi-region? why not keep everything in memory? Answer with diminishing returns and operational cost, not vibes. I stop here because the next 30ms costs 2x and only helps 0.1% of requests, while adding failover complexity the team must operate. Name who pays and who benefits."
+        },
+        {
+          "title": "Close with scaling economics",
+          "text": "Show what happens at 10x: which tier saturates first, how autoscaling and tiering (hot vs cold storage, cache vs origin) keep cost per request flat. Mention levers you deferred: spot capacity, request coalescing, compression, shedding low-value traffic. That proves you can stay cheap while growing, not just on day one."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Faster always means more expensive — or cheaper means slower.** Both are false past the knee. Fixing a missing index or a 2MB response payload is faster *and* cheaper. Spend only after tuning stops working.",
+        "**Cloud auto-scales away the trade-off.** Autoscaling rents flexibility at a premium and reacts in minutes. A sharp burst still queues or cold-starts. If burst p99 matters, you pre-warm or overprovision — and you pay for it.",
+        "**Caching fixes any database bottleneck.** It fixes read-heavy, reusable workloads. It does nothing for write throughput, and low-hit-rate caches add cost plus a consistency problem. Check read:write ratio and key reuse first.",
+        "**More replicas always raise throughput.** Only if the bottleneck is stateless compute. If the write leader, a shared lock, or a downstream dependency saturates first, extra replicas raise cost and coordination while p99 gets worse.",
+        "**Cost optimization means picking the cheapest instance.** Unit price without utilization and performance at SLO is meaningless. A larger instance at 60% use can be cheaper per request than two small ones at 20%, once you count network hops and ops overhead."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to pay and when to refuse"
+    },
+    {
+      "type": "table",
+      "caption": "Pay for performance only where the user or the survival of the system feels it.",
+      "headers": [
+        "Situation",
+        "Pay for performance",
+        "Hold the line",
+        "Why"
+      ],
+      "rows": [
+        [
+          "User-facing synchronous path (search, checkout, feed)",
+          "Yes — cache, edge, headroom to protect p99",
+          "Do not defer with queues",
+          "Users abandon slow sync paths. Latency here is revenue, not vanity."
+        ],
+        [
+          "Background pipeline (ingest, ETL, thumbnails)",
+          "No — use cheap batch, spot, async",
+          "Do not buy provisioned speed",
+          "Throughput matters, freshness does not. Trade latency for 5-10x lower cost."
+        ],
+        [
+          "Spiky, unpredictable traffic",
+          "Pay for fast scale + shedding, not static fleet",
+          "Do not statically overprovision 3x",
+          "Idle is the most expensive performance. Autoscale plus load-shedding buys the same p99 cheaper."
+        ],
+        [
+          "Strict availability need (payments, auth)",
+          "Pay for multi-AZ, rehearsed failover",
+          "Do not go multi-region on day one",
+          "AZ failure is common and cheap to survive. Cross-region doubles write cost and ops for a rarer event."
+        ],
+        [
+          "Cold / archival data",
+          "Never — tier to cheap object storage",
+          "Do not keep on NVMe or in memory",
+          "Nobody feels cold-read latency often enough to justify hot prices. Tiering is pure savings."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The mature pattern is tiering, not uniform speed. Keep hot keys in memory, warm data on cheap disks, cold data in archival storage; serve synchronous users from the fast tier and push everything else to batch. Combine that with autoscaling on the right signal — queue depth or latency, not just CPU — plus compression and connection reuse to cut bytes before you buy bandwidth. Why it wins: you pay premium prices only for the small fraction of traffic where performance changes outcomes, and commodity prices for the rest. Uniform performance is how bills explode."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "I meet the stated **p99 and availability at the lowest cost per million requests**, prove headroom with utilization and load tests, and only spend past that point when I can show **dollars per millisecond gained** — because past the knee, performance is bought with complexity as well as cash."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:30:55.177Z",
+    "problems": []
+  }
+}

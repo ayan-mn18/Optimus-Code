@@ -1,0 +1,447 @@
+{
+  "slug": "design-car-rental-system",
+  "title": "Design Car Rental System",
+  "summary": "Design a multi-store car rental system: inventory, search, reservations with no double-booking, and pluggable pricing. Inventory and booking are separate concerns.",
+  "kind": "LLD",
+  "problemSlug": "design-car-rental-system-42-82",
+  "topic": "LLD Interview Problems",
+  "difficulty": "Medium",
+  "coverEmoji": "🚗",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "lld",
+    "car-rental",
+    "concurrency",
+    "design-patterns"
+  ],
+  "evidence": [
+    {
+      "url": "https://leetcode.com/discuss/interview-question/1144881/Flipkart-or-Machine-Coding-Round-or-Design-Car-Rental-System/",
+      "title": "Flipkart | Machine Coding Round | Design Car Rental System - Discuss",
+      "source": "leetcode.com",
+      "kind": "report",
+      "companies": [
+        {
+          "name": "Phonepe",
+          "role": "machine coding round",
+          "date": "Sep 10, 2021",
+          "quote": "I was asked this question in Phonepe machine coding round with an added feature of time slot,"
+        }
+      ]
+    },
+    {
+      "url": "https://www.tryexponent.com/questions/7156/design-car-rental-system",
+      "title": "Design a car rental system. - Exponent",
+      "source": "tryexponent.com",
+      "kind": "aggregate",
+      "companies": [
+        {
+          "name": "Uber",
+          "role": "Software Engineer",
+          "date": "2 months ago",
+          "quote": "Companies Uber"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "Cracking the Machine Coding Round - Abhishek Deb - Medium",
+      "url": "https://abhishekdeb48.medium.com/all-about-machine-coding-round-8e56c866fe87",
+      "source": "abhishekdeb48.medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "LLD & HLD Topics to be covered for Interview - YouTube",
+      "url": "https://www.youtube.com/watch?v=rliSgjoOFTs",
+      "source": "youtube.com",
+      "kind": "article"
+    },
+    {
+      "title": "Do you know what's a “Machine Coding Round” | Navyaa Sharma",
+      "url": "https://www.linkedin.com/posts/navyaa-sharma-here_jobinterviews-softwareengineering-coding-activity-7407034570363162625-RNWT",
+      "source": "linkedin.com",
+      "kind": "article"
+    },
+    {
+      "title": "How to Approach Machine Coding Interviews - LLD - AlgoMaster.io",
+      "url": "https://algomaster.io/learn/lld/machine-coding-approach",
+      "source": "algomaster.io",
+      "kind": "article"
+    },
+    {
+      "title": "How does machine coding round works. Please help for interview.",
+      "url": "https://www.reddit.com/r/developersIndia/comments/1u67nlu/how_does_machine_coding_round_works_please_help/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "How to prepare for Machine Coding Rounds? | Tips from Ex-‪@Google‬",
+      "url": "https://www.youtube.com/watch?v=f5-7f8G9OuM",
+      "source": "youtube.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What the interviewer is really testing",
+      "text": "This is not a CRUD exercise. The hidden test is **can you separate inventory from time-bound allocation**. Anyone can store cars in a map. The strong candidate models that a `Vehicle` exists once per store, but its *availability* is a function of overlapping `Reservation` intervals, and builds the locking and pricing seams so neither leaks into the other. If you merge those two ideas into one class, every follow-up will hurt."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Design a car rental system for multiple stores. Each store stocks vehicles of different types — sedan, SUV, hatchback, van — with attributes like make, model, year, mileage, and daily rate. Users search for available vehicles by vehicle type, store, and date range, then reserve, pick up, and return them. The system must prevent double-booking the same physical car for overlapping dates, support cancellation, compute a bill with taxes, fines, and discounts, and handle concurrent reservation attempts correctly. You will write working, in-memory code with clean extension points."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`List<Vehicle> search(storeId, vehicleType, startDate, endDate)` — only vehicles with zero overlapping confirmed reservations in `[start, end)`.",
+        "`Reservation reserve(userId, vehicleId, startDate, endDate)` — atomically holds the vehicle if still free, else fails fast. Returns a pending reservation awaiting payment.",
+        "`boolean pay(reservationId, paymentDetails)` — confirms the hold. Unpaid holds expire.",
+        "`boolean pickup(reservationId)` and `Invoice returnVehicle(reservationId, odometer, condition)` — enforce the state machine and compute the final bill.",
+        "`boolean cancel(reservationId)` — releases the hold with policy-driven refund."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Read the contract twice",
+      "text": "Three traps decide pass or fail: **availability is per-vehicle per-interval, not a boolean flag** — a car returned tomorrow is bookable next week; **search-then-book is a race** unless reserve is atomic; and **`return` is not the inverse of `pickup`** — it triggers inspection, extra-day charges, damage fines, and invoice generation. If your `Vehicle` has an `isAvailable` field, you have already lost."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not start with classes. Start with scope. This problem balloons in five directions — fleet management, dynamic pricing, payments, loyalty, damage handling — and you have 45 minutes. The questions below lock the scope fast and signal to the interviewer that you have built systems where requirements change after launch. Ask them in order, write the answers down, and design to exactly that contract."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "One store or many?",
+          "text": "Assume multiple stores with independent inventory. A vehicle belongs to exactly one home store for this round. One-way rentals where pickup and drop stores differ are a follow-up — they force a transfer model and break the per-store availability index, so defer them explicitly."
+        },
+        {
+          "title": "What identifies inventory?",
+          "text": "Is booking by *type* (any SUV will do) or by *exact vehicle* (this license plate)? Choose exact-vehicle reservation. It is harder and therefore the point: type-level booking hides the double-booking problem. State that type search returns candidates, but the reservation pins a specific `vehicleId`."
+        },
+        {
+          "title": "Date granularity and time zones?",
+          "text": "Agree on day-granularity with half-open intervals `[start, end)` in store-local time. Hourly rentals and late-return grace periods change overlap math and billing. Pick days, note the seam where an hourly policy would plug in."
+        },
+        {
+          "title": "Payment in scope?",
+          "text": "Model payment as an external gateway behind an interface with success, failure, and timeout. You do not implement card processing. What matters is the state transition: unpaid holds expire, paid holds become confirmed, and `pay` must be idempotent."
+        },
+        {
+          "title": "Who can do what concurrently?",
+          "text": "Assume many users reserving concurrently and store agents doing pickup and return. Reads dominate. Confirm that double-booking is never acceptable even under race, while slight staleness in search results is acceptable — that trade-off justifies optimistic search plus pessimistic reserve."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Scope agreed with the interviewer before writing any code.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Add, remove, and list vehicles per store",
+          "Fleet admin path; tests Store-Vehicle ownership"
+        ],
+        [
+          "Functional",
+          "Search by store + type + date range",
+          "Core read path; must filter on interval overlap"
+        ],
+        [
+          "Functional",
+          "Atomic reserve + pay + cancel + pickup + return",
+          "Full lifecycle; state machine is the grading rubric"
+        ],
+        [
+          "Functional",
+          "Bill = base days x rate + tax + extras - discount + fines",
+          "Pricing must be extensible, not hardcoded"
+        ],
+        [
+          "Non-functional",
+          "No overlapping confirmed reservations for one vehicle",
+          "Correctness invariant; everything else is secondary"
+        ],
+        [
+          "Non-functional",
+          "Reserve is O(log n) per vehicle; search scales with fleet",
+          "Prevents full-table scan designs"
+        ],
+        [
+          "Non-functional",
+          "Safe under concurrent reserve on same vehicle",
+          "Standard concurrency follow-up; decide lock granularity now"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — the flat hash map"
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive answer is one `RentalService` with `Map<String, Vehicle>` and a boolean `isBooked` on each vehicle, plus `Map<String, Reservation>`. Search loops over all vehicles and checks the flag. Reserve sets the flag to true. It passes a single-threaded demo with one reservation at a time, which is why so many candidates write it first. It looks productive for ten minutes and then collapses the moment dates enter the picture."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "NaiveRental.java",
+      "code": "class NaiveRental {\n  Map<String, Vehicle> vehicles = new HashMap<>();\n  public List<Vehicle> search(String type) {\n    List<Vehicle> out = new ArrayList<>();\n    for (Vehicle v : vehicles.values())\n      if (v.type.equals(type) && !v.isBooked) out.add(v);\n    return out;\n  }\n  public void reserve(String vehicleId) {\n    vehicles.get(vehicleId).isBooked = true; // no dates, no atomicity\n  }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This fails for four structural reasons, not edge cases. First, a boolean cannot represent time: a car booked this weekend appears unavailable next month. Second, search is `O(N)` over the whole fleet with no index by store or type. Third, check-then-set is not atomic, so two threads both see `isBooked == false` and both book — the classic lost-update. Fourth, pricing, payment, and fines end up as `if` branches inside one god class, so adding hourly pricing or a coupon means editing tested code. The trade-off was speed of writing versus survival of the first follow-up, and it is a bad trade. Keep the maps, but split the model."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design"
+    },
+    {
+      "type": "paragraph",
+      "text": "Separate three concerns that the naive design fuses: **catalog** (what cars exist and where), **allocation** (what time intervals are already promised), and **lifecycle plus money** (what state a booking is in and what it costs). `Store` owns `Vehicle` instances. A separate `ReservationService` owns the interval index per vehicle. `Reservation` is a state machine — `PENDING -> CONFIRMED -> ACTIVE -> COMPLETED`, with `CANCELLED` and `EXPIRED` as terminal side exits. Pricing is a `Strategy` chain, not a method. The reason is change velocity: fleet attributes change rarely, booking rules change constantly, and pricing changes every quarter. They must not share a class."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Catalog by store and type:** `Store` holds `Map<vehicleId, Vehicle>`. Add a secondary index `Map<VehicleType, Set<Vehicle>>` per store. Trade-off: small write overhead on add and remove for O(candidates) search instead of O(fleet).",
+        "**Allocation by interval:** per vehicle keep a sorted set of confirmed `[start, end)` intervals. Overlap test is interval math, not a flag. Trade-off: per-vehicle structure costs memory but makes reserve O(log k) and makes double-booking impossible to express.",
+        "**Reserve is pessimistic, search is optimistic:** search may return slightly stale results under race; reserve takes the per-vehicle lock and rechecks. Trade-off: you accept a rare disappointed user on reserve to keep search lock-free and fast.",
+        "**Pricing as composition:** `BaseRate + Tax + Addons - Discount + Fine` each implement `PriceComponent`. Trade-off: more classes up front for zero edits when marketing invents a weekend coupon."
+      ]
+    },
+    {
+      "type": "mermaid",
+      "title": "Reservation lifecycle",
+      "caption": "State machine and request flow. Reserve-then-pay is the seam that makes expiry and idempotency tractable.",
+      "code": "flowchart TD\n  S[search store type dates] --> C[candidates]\n  C --> R{reserve vehicleId dates}\n  R -- freeheld --> P[PENDING hold with expiry]\n  R -- overlap --> F[fail fast]\n  P --> PAY{pay}\n  PAY -- success --> CF[CONFIRMED]\n  PAY -- fail timeout --> EX[EXPIRED released]\n  CF --> PU[pickup ACTIVE]\n  PU --> RT[return COMPLETED + invoice]\n  CF --> CX[CANCELLED refund per policy]"
+    },
+    {
+      "type": "mermaid",
+      "title": "Class structure",
+      "caption": "Catalog, allocation, and money are separate hierarchies. ReservationService is the only writer of intervals.",
+      "code": "classDiagram\n  class Store {\n    +String storeId\n    +addVehicle()\n    +removeVehicle()\n    +findByType()\n  }\n  class Vehicle {\n    +String vehicleId\n    +String plateNumber\n    +VehicleType type\n    +VehicleStatus status\n    +int dailyRate\n  }\n  class VehicleType {\n    <<enumeration>>\n    SEDAN\n    SUV\n    HATCHBACK\n    VAN\n  }\n  class User {\n    +String userId\n    +String licenseNumber\n  }\n  class Reservation {\n    +String reservationId\n    +String vehicleId\n    +long startDay\n    +long endDay\n    +ReservationStatus status\n    +reserve()\n    +confirm()\n    +cancel()\n    +pickup()\n    +complete()\n  }\n  class ReservationService {\n    +search()\n    +reserve()\n    +pay()\n    +pickup()\n    +returnVehicle()\n  }\n  class PriceComponent {\n    +compute()\n  }\n  class PaymentGateway {\n    +charge()\n  }\n  Store \"1\" --> \"*\" Vehicle : stocks\n  Vehicle \"1\" --> \"*\" Reservation : booked by\n  ReservationService --> Store : reads catalog\n  ReservationService --> Reservation : manages\n  ReservationService --> PriceComponent : bills via\n  ReservationService --> PaymentGateway : confirms via"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code"
+    },
+    {
+      "type": "paragraph",
+      "text": "The code below is the minimum that survives grading. Notice what is deliberately absent: no database, no REST layer, no date library cleverness — days are longs so overlap logic is testable in seconds. The `ReservationService` is the only class allowed to mutate allocation state, and it does so under a per-vehicle `ReentrantLock`. Pricing is injected, not inherited. Write this shape on the board and you can answer every follow-up by pointing at the seam instead of rewriting."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "CarRental.java",
+      "code": "import java.util.*;\nimport java.util.concurrent.*;\nimport java.util.concurrent.locks.*;\n\nenum VehicleType { SEDAN, SUV, HATCHBACK, VAN }\nenum VehicleStatus { AVAILABLE, UNDER_MAINTENANCE, RETIRED }\nenum ReservationStatus { PENDING, CONFIRMED, ACTIVE, COMPLETED, CANCELLED, EXPIRED }\n\nclass Vehicle {\n  final String vehicleId; final String storeId;\n  final VehicleType type; final int dailyRate;\n  volatile VehicleStatus status = VehicleStatus.AVAILABLE;\n  Vehicle(String vehicleId, String storeId, VehicleType type, int dailyRate) {\n    this.vehicleId = vehicleId; this.storeId = storeId;\n    this.type = type; this.dailyRate = dailyRate;\n  }\n}\n\nclass Store {\n  final String storeId;\n  final Map<String, Vehicle> byId = new ConcurrentHashMap<>();\n  final Map<VehicleType, Set<Vehicle>> byType = new ConcurrentHashMap<>();\n  Store(String storeId) { this.storeId = storeId; }\n  void addVehicle(Vehicle v) {\n    byId.put(v.vehicleId, v);\n    byType.computeIfAbsent(v.type, k -> ConcurrentHashMap.newKeySet()).add(v);\n  }\n}\n\nclass Reservation {\n  final String reservationId; final String vehicleId; final String userId;\n  final long startDay; final long endDay; // half-open [start, end)\n  volatile ReservationStatus status;\n  Reservation(String rid, String vid, String uid, long s, long e) {\n    this.reservationId = rid; this.vehicleId = vid; this.userId = uid;\n    this.startDay = s; this.endDay = e; this.status = ReservationStatus.PENDING;\n  }\n  boolean overlaps(long s, long e) { return startDay < e && s < endDay; }\n}\n\ninterface PriceComponent { int compute(Reservation r, Vehicle v, int base); }\nclass BaseRate implements PriceComponent {\n  public int compute(Reservation r, Vehicle v, int base) {\n    return (int)(r.endDay - r.startDay) * v.dailyRate;\n  }\n}\nclass Tax implements PriceComponent {\n  public int compute(Reservation r, Vehicle v, int base) { return base * 12 / 100; }\n}\n\ninterface PaymentGateway { boolean charge(String reservationId, int amount); }\n\nclass ReservationService {\n  final Map<String, Store> stores = new ConcurrentHashMap<>();\n  final Map<String, Reservation> reservations = new ConcurrentHashMap<>();\n  // Per-vehicle confirmed intervals + locks. Only this class writes them.\n  final Map<String, List<Reservation>> confirmedByVehicle = new ConcurrentHashMap<>();\n  final Map<String, ReentrantLock> locks = new ConcurrentHashMap<>();\n  final List<PriceComponent> pricing = List.of(new BaseRate(), new Tax());\n  final PaymentGateway gateway;\n  ReservationService(PaymentGateway g) { this.gateway = g; }\n\n  private ReentrantLock lockFor(String vehicleId) {\n    return locks.computeIfAbsent(vehicleId, k -> new ReentrantLock());\n  }\n\n  List<Vehicle> search(String storeId, VehicleType type, long s, long e) {\n    Store st = stores.get(storeId);\n    if (st == null) return List.of();\n    List<Vehicle> out = new ArrayList<>();\n    for (Vehicle v : st.byType.getOrDefault(type, Set.of())) {\n      if (v.status != VehicleStatus.AVAILABLE) continue;\n      if (isFree(v.vehicleId, s, e)) out.add(v);\n    }\n    return out;\n  }\n\n  private boolean isFree(String vehicleId, long s, long e) {\n    for (Reservation r : confirmedByVehicle.getOrDefault(vehicleId, List.of()))\n      if (r.overlaps(s, e)) return false;\n    return true;\n  }\n\n  Reservation reserve(String userId, String vehicleId, long s, long e) {\n    if (s >= e) throw new IllegalArgumentException(\"empty interval\");\n    ReentrantLock lock = lockFor(vehicleId);\n    lock.lock();\n    try {\n      if (!isFree(vehicleId, s, e)) return null; // caller maps to failure\n      Reservation r = new Reservation(UUID.randomUUID().toString(), vehicleId, userId, s, e);\n      reservations.put(r.reservationId, r);\n      // Hold is PENDING; confirmed index updated only on pay. Prevents unpaid squatting.\n      return r;\n    } finally { lock.unlock(); }\n  }\n\n  boolean pay(String reservationId) {\n    Reservation r = reservations.get(reservationId);\n    if (r == null || r.status != ReservationStatus.PENDING) return false; // idempotent guard\n    ReentrantLock lock = lockFor(r.vehicleId);\n    lock.lock();\n    try {\n      if (r.status != ReservationStatus.PENDING) return r.status == ReservationStatus.CONFIRMED;\n      if (!isFree(r.vehicleId, r.startDay, r.endDay)) { r.status = ReservationStatus.EXPIRED; return false; }\n      Vehicle v = findVehicle(r.vehicleId);\n      int base = 0; int total = 0;\n      for (PriceComponent p : pricing) { int c = p.compute(r, v, base == 0 ? total : base); if (p instanceof BaseRate) base = c; total = (p instanceof BaseRate) ? c : total + c; }\n      if (!gateway.charge(reservationId, total)) return false;\n      r.status = ReservationStatus.CONFIRMED;\n      confirmedByVehicle.computeIfAbsent(r.vehicleId, k -> new ArrayList<>()).add(r);\n      return true;\n    } finally { lock.unlock(); }\n  }\n\n  private Vehicle findVehicle(String vehicleId) {\n    for (Store s : stores.values()) { Vehicle v = s.byId.get(vehicleId); if (v != null) return v; }\n    throw new NoSuchElementException(vehicleId);\n  }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Lifecycle.java",
+      "code": "// Pickup, return, cancel — the state machine that interviewers probe.\nclass Lifecycle {\n  final ReservationService svc;\n  Lifecycle(ReservationService svc) { this.svc = svc; }\n\n  boolean pickup(String reservationId) {\n    Reservation r = svc.reservations.get(reservationId);\n    if (r == null || r.status != ReservationStatus.CONFIRMED) return false;\n    r.status = ReservationStatus.ACTIVE;\n    return true;\n  }\n\n  int returnVehicle(String reservationId, long actualEndDay, int damageFine) {\n    Reservation r = svc.reservations.get(reservationId);\n    if (r == null || r.status != ReservationStatus.ACTIVE) throw new IllegalStateException(\"not active\");\n    Vehicle v = svc.findVehicle(r.vehicleId);\n    long billedDays = Math.max(r.endDay - r.startDay, actualEndDay - r.startDay);\n    // Late days billed at 1.5x: WHY — lateness destroys the next reservation, price it punitively.\n    long lateDays = Math.max(0, actualEndDay - r.endDay);\n    int total = (int)(billedDays * v.dailyRate + lateDays * v.dailyRate / 2 + damageFine);\n    total += total * 12 / 100; // tax computed once on final, not per component\n    r.status = ReservationStatus.COMPLETED;\n    return total;\n  }\n\n  boolean cancel(String reservationId, long today) {\n    Reservation r = svc.reservations.get(reservationId);\n    if (r == null) return false;\n    if (r.status == ReservationStatus.PENDING) { r.status = ReservationStatus.CANCELLED; return true; }\n    if (r.status == ReservationStatus.CONFIRMED && today < r.startDay) {\n      r.status = ReservationStatus.CANCELLED;\n      svc.confirmedByVehicle.getOrDefault(r.vehicleId, new ArrayList<>()).remove(r);\n      return true;\n    }\n    return false; // active or already started: no silent cancel, needs agent override\n  }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "availability.py",
+      "code": "def is_free(existing: list[tuple[int, int]], s: int, e: int) -> bool:\n    \"\"\"Half-open overlap: [s,e). Adjacent bookings (e == s) do NOT overlap.\n    WHY half-open: it makes back-to-back bookings trivially correct.\"\"\"\n    assert s < e, \"empty interval\"\n    return all(es >= e or s >= ee for es, ee in existing)"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Cost model to state out loud. Interviewers want the per-vehicle bound, not hand-waving.",
+      "headers": [
+        "Operation",
+        "Time",
+        "Space",
+        "Note"
+      ],
+      "rows": [
+        [
+          "Search (store + type)",
+          "O(C x K) candidates x intervals",
+          "O(C) result",
+          "C is vehicles of that type in store; K intervals per vehicle. Add date-index if asked to scale."
+        ],
+        [
+          "Reserve",
+          "O(K) overlap scan + O(1) lock",
+          "O(1) per hold",
+          "K is small per car. Sorted intervals or interval tree drops this to O(log K)."
+        ],
+        [
+          "Pay / confirm",
+          "O(K) recheck + gateway",
+          "O(1)",
+          "Recheck under lock is mandatory; the gateway call stays outside the hot path where possible."
+        ],
+        [
+          "Pickup / return / cancel",
+          "O(1) + O(K) on cancel-remove",
+          "O(1)",
+          "Cancel removal is linear in that vehicle's list; fine until a car has thousands of bookings."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency — the hardest follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "The interviewer will run two threads reserving the same SUV for the same weekend and watch for double-booking. The answer is **per-vehicle locking with recheck under lock**, not a global `synchronized` method. A global lock serialises every store and kills throughput to prove correctness you do not need — two users booking different cars should never contend. A per-vehicle `ReentrantLock` (or striped locks if vehicle count explodes) gives you mutual exclusion exactly where the invariant lives: the interval list of that one car. Search stays lock-free and may be briefly stale; `reserve` and `pay` both recheck overlap while holding the lock, so staleness never becomes a wrong booking. Make `pay` idempotent by keying on `reservationId`: repeated gateway callbacks return the current status instead of double-charging. Holds expire via a scheduler that transitions `PENDING` to `EXPIRED`, which also runs under the same per-vehicle lock. The trade-off is lock-map memory and the discipline that every mutation of `confirmedByVehicle` happens inside this service and nowhere else."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "IdempotentPay.java",
+      "code": "// Pattern to recite: lock per vehicle, recheck, then mutate. Never reverse the order.\nboolean paySafe(String reservationId) {\n  Reservation r = reservations.get(reservationId);\n  if (r == null) return false;\n  ReentrantLock lock = locks.computeIfAbsent(r.vehicleId, k -> new ReentrantLock());\n  lock.lock();\n  try {\n    if (r.status == ReservationStatus.CONFIRMED) return true;  // retry safe\n    if (r.status != ReservationStatus.PENDING) return false;   // cancelled or expired\n    if (!isFree(r.vehicleId, r.startDay, r.endDay)) {\n      r.status = ReservationStatus.EXPIRED;\n      return false;\n    }\n    // charge outside lock in production with pending-charge record; simplified here\n    return pay(reservationId);\n  } finally { lock.unlock(); }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Do not put payment inside the lock naively",
+      "text": "Holding a per-vehicle lock across a network call to a payment gateway blocks every other user eyeing that car for seconds. In production, record a `CHARGE_IN_FLIGHT` state, release the lock during the call, and reconcile on callback — with the recheck repeated on callback. For the interview, name the trade-off: **correctness wants the lock held, latency wants it released**. Your two-line acknowledgement is worth more than the implementation."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Hourly rentals and late returns?",
+          "text": "Switch day-longs to timestamps; keep half-open intervals so the overlap code does not change. Add a grace window (e.g. 59 minutes) and a `LateFee` price component at 1.5x. The Strategy seam absorbs it with no edits to reservation logic."
+        },
+        {
+          "title": "Waitlist when fully booked?",
+          "text": "Apply Observer: per vehicle-type and date-range topic, users subscribe, cancellation publishes. Bound the waitlist and expire entries or you build a memory leak dressed as a feature."
+        },
+        {
+          "title": "One-way rental, drop at another store?",
+          "text": "Add `dropoffStoreId` to Reservation and a transfer task on return. Availability must then account for cars in transit — the hardest variant, so scope it out of the base design and sketch the transfer table only if pushed."
+        },
+        {
+          "title": "Coupons, loyalty, surge?",
+          "text": "New `PriceComponent` implementations — `WeekendSurge`, `LoyaltyDiscount`, `CouponDiscount` — chained in priority order. Show Open-Closed Principle: new pricing means a new class, never an `if` in `pay`."
+        },
+        {
+          "title": "Nearby-store search?",
+          "text": "Index stores by location (geohash or city map) and fan out search to N nearest stores, merging by price or distance. Trade-off: fan-out latency versus result quality; cap the radius and say so."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Adjacent intervals `[1,3)` and `[3,5)` must NOT count as overlap — test this explicitly or back-to-back weekend bookings break.",
+        "Zero-length or inverted range `start >= end` rejected at the boundary, not deep in the service.",
+        "Reserve on a vehicle under maintenance or retired fails even if intervals are free — status check comes before overlap check.",
+        "Cancel after `startDay` or after `pickup` is not a silent state change; require agent override or no-show fee policy.",
+        "Same `reservationId` paid twice charges once — idempotency key on the gateway call.",
+        "Unpaid `PENDING` holds expire via scheduler; expiry must also hold the per-vehicle lock or it races with `pay`.",
+        "Return with `actualEndDay` before `startDay` or odometer rollback is corrupt input — reject and flag, never bill negative days.",
+        "Removing a vehicle with future confirmed reservations is forbidden; retire it instead so history stays queryable."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How you are graded"
+    },
+    {
+      "type": "table",
+      "caption": "Weak versus strong signals for this problem.",
+      "headers": [
+        "Axis",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Modeling",
+          "Boolean `isAvailable` on Vehicle; god service",
+          "Catalog vs allocation vs pricing split; Reservation state machine"
+        ],
+        [
+          "Overlap",
+          "No interval logic; breaks on second booking",
+          "Half-open `[start,end)` math with adjacent-booking test"
+        ],
+        [
+          "Concurrency",
+          "`synchronized` everything or nothing",
+          "Per-vehicle locks, recheck under lock, idempotent pay"
+        ],
+        [
+          "Extensibility",
+          "Pricing as nested ifs; type checks with instanceof",
+          "Strategy for pricing, interface for gateway, index seams for search"
+        ],
+        [
+          "Code hygiene",
+          "No expiry, no cancel policy, silent failures",
+          "Expiry, cancel rules, explicit failures, driver demo end to end"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Your 45-minute plan",
+      "text": "Minutes 0-7: clarify and write the requirements table — pin multi-store, exact-vehicle booking, day granularity, payment-as-interface. Minutes 7-12: draw the state machine and class seams on the board before any code. Minutes 12-30: code `Store`, `Vehicle`, `Reservation`, and `ReservationService.search, reserve, pay` with per-vehicle locks. Minutes 30-38: add `pickup, return, cancel` plus one `PriceComponent`. Minutes 38-45: drive it — two overlapping reserves on one car from two threads, one must fail — then narrate one follow-up (waitlist or surge pricing) by pointing at the seam. If search is slow, say what index you would add; do not build it."
+    },
+    {
+      "type": "paragraph",
+      "text": "Close the interview by restating the three decisions and their prices: per-vehicle interval lists cost memory but buy provable no-double-booking; per-vehicle locks cost lock-map discipline but buy throughput that a global lock destroys; pricing as composed strategies costs extra classes but buys quarters of painless marketing changes. That is the whole answer. The code is just the receipt."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:33:32.424Z",
+    "problems": []
+  }
+}

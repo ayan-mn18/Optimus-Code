@@ -1,0 +1,444 @@
+{
+  "slug": "multithreaded-web-crawler",
+  "title": "Multithreaded Web Crawler",
+  "summary": "Design a thread-safe BFS web crawler: level-parallel workers, concurrent visited set, and correct termination without busy-waiting.",
+  "kind": "LLD",
+  "problemSlug": "multithreaded-web-crawler-44-84",
+  "topic": "Concurrency Interview Problems",
+  "difficulty": "Hard",
+  "coverEmoji": "🕷️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Multithreading",
+    "BFS"
+  ],
+  "evidence": [
+    {
+      "url": "https://www.linkjob.ai/interview-questions/anthropic-concurrency-interview/",
+      "title": "I Compiled Anthropic Concurrency Interview Questions in 2026",
+      "source": "linkjob.ai",
+      "kind": "report",
+      "companies": [
+        {
+          "name": "Anthropic",
+          "quote": "The Anthropic web crawler interview question asks you to implement a multithreaded crawler that collects all URLs under a given root domain."
+        }
+      ]
+    },
+    {
+      "url": "https://www.jointaro.com/interviews/companies/anthropic/experiences/software-engineer-united-states-march-1-2025-no-offer-positive-2797d104/",
+      "title": "Anthropic Software Engineer Interview Experience - United States",
+      "source": "jointaro.com",
+      "kind": "roundup",
+      "companies": [
+        {
+          "name": "Anthropic",
+          "quote": "Anthropic Interview Questions Web Crawler Multithreaded"
+        }
+      ]
+    },
+    {
+      "url": "https://www.hellointerview.com/community/questions/multithreaded-web-crawler/cmbsl2nhd005107adsfu8ohme",
+      "title": "Multithreaded Web Crawler - Hello Interview",
+      "source": "hellointerview.com",
+      "kind": "aggregate",
+      "companies": [
+        {
+          "name": "Anthropic",
+          "role": "Staff",
+          "date": "Late March, 2026",
+          "quote": "Asked at: Anthropic Monzo O Opendoor OpenAI"
+        },
+        {
+          "name": "Monzo",
+          "role": "Staff",
+          "date": "Late July, 2026",
+          "quote": "Asked at: Anthropic Monzo O Opendoor OpenAI"
+        },
+        {
+          "name": "Opendoor",
+          "role": "Mid-level",
+          "date": "Late June, 2026",
+          "quote": "Asked at: Anthropic Monzo O Opendoor OpenAI"
+        },
+        {
+          "name": "OpenAI",
+          "quote": "Asked at: Anthropic Monzo O Opendoor OpenAI"
+        }
+      ]
+    }
+  ],
+  "refs": [
+    {
+      "title": "I Compiled Anthropic Concurrency Interview Questions in 2026",
+      "url": "https://www.linkjob.ai/interview-questions/anthropic-concurrency-interview/",
+      "source": "linkjob.ai",
+      "kind": "article"
+    },
+    {
+      "title": "Anthropic Software Engineer Interview Experience - United States",
+      "url": "https://www.jointaro.com/interviews/companies/anthropic/experiences/software-engineer-united-states-march-1-2025-no-offer-positive-2797d104/",
+      "source": "jointaro.com",
+      "kind": "article"
+    },
+    {
+      "title": "Multithreaded Web Crawler - Hello Interview",
+      "url": "https://www.hellointerview.com/community/questions/multithreaded-web-crawler/cmbsl2nhd005107adsfu8ohme",
+      "source": "hellointerview.com",
+      "kind": "article"
+    },
+    {
+      "title": "Web Crawler Multithreaded Interview Question - Join Taro Premium",
+      "url": "https://www.jointaro.com/interviews/questions/web-crawler-multithreaded/",
+      "source": "jointaro.com",
+      "kind": "article"
+    },
+    {
+      "title": "1242. Web Crawler Multithreaded - In-Depth Explanation - AlgoMonster",
+      "url": "https://algo.monster/liteproblems/1242",
+      "source": "algo.monster",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "What the interviewer is really testing",
+      "text": "This is not a graph problem. BFS is trivial. The interview is: **can you share mutable state across threads without races, duplicates, or a hung pool?** The crawler exposes every classic failure — check-then-act on `visited`, lost wakeups on an empty queue, and termination when work generates more work. Solve sequential BFS in two minutes, then prove you can parallelize the fetch without breaking correctness."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The problem"
+    },
+    {
+      "type": "paragraph",
+      "text": "Build a crawler that starts from `startUrl` and returns every URL reachable from it that shares the same host. You are given a blocking parser interface with `List<String> getUrls(String url)` that fetches the page and extracts its outbound links. Fetching dominates cost — network latency is orders of magnitude larger than queue or set operations — so you must fetch concurrently with a bounded pool of workers. The traversal must behave like BFS level-by-level, must never crawl a URL twice, must never crawl a foreign host, and must terminate and return once the reachable same-host frontier is exhausted."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`List<String> crawl(String startUrl)` — returns all crawled same-host URLs, including `startUrl` itself.",
+        "`getUrls(url)` is **blocking and expensive**. It is the only operation worth parallelizing. Assume it is thread-safe.",
+        "Host check is exact: `http://example.com/a` and `http://example.com:80/a` are a decision you must force the interviewer to make. Default to exact `host` equality after parsing.",
+        "Duplicate links are the norm: `A -> B`, `C -> B`, self-loops, and cycles must all collapse to one fetch.",
+        "The result order for strict BFS is level order. Under concurrency you must decide whether you guarantee level order or just eventual completeness — state it explicitly."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Clarify before you code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not start with threads. Nail the contract first, because half the concurrency bugs in this problem are actually specification bugs: what counts as the same site, who deduplicates, and what termination means. Interviewers promote candidates who ask these before touching an executor."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "How do I extract and compare hosts?",
+          "text": "Is `https://example.com` vs `https://sub.example.com` vs `https://example.com:8080` the same? Agree on a `getHost()` helper using URI parsing, lowercased, no port unless specified. This decides your filter function."
+        },
+        {
+          "title": "Is BFS order observable or best-effort?",
+          "text": "True parallel BFS cannot preserve intra-level completion order without a barrier. Ask: must the returned list be in BFS order, or is any order containing exactly the reachable set acceptable? Your design hinges on the answer."
+        },
+        {
+          "title": "What are the parser's failure semantics?",
+          "text": "Does `getUrls` throw on 404, timeout, or rate limit? Do we skip-and-continue, retry with backoff, or abort? Agree that one bad page never kills the crawl."
+        },
+        {
+          "title": "What are the scale and thread bounds?",
+          "text": "How many URLs (hundreds vs millions), max threads, max depth, politeness delay per host? This justifies a fixed pool rather than unbounded thread-per-URL."
+        },
+        {
+          "title": "Who owns termination and cancellation?",
+          "text": "Do we block until done, support timeout or `cancel()`, and should `crawl` be re-entrant? This forces you to design shutdown, not bolt it on."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Requirements"
+    },
+    {
+      "type": "table",
+      "caption": "Agreed scope before design. Lock this in writing.",
+      "headers": [
+        "Type",
+        "Requirement",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Functional",
+          "Crawl transitive same-host closure from startUrl",
+          "Defines correctness; everything else is optimization"
+        ],
+        [
+          "Functional",
+          "Fetch each distinct URL at most once",
+          "Fetching is expensive and may have side effects on the server"
+        ],
+        [
+          "Functional",
+          "BFS discovery semantics, level-by-level",
+          "Prevents DFS blow-up down one deep chain"
+        ],
+        [
+          "Functional",
+          "Skip foreign hosts without fetching them",
+          "Filter before enqueue, not after fetch"
+        ],
+        [
+          "Non-functional",
+          "Parallelize blocking fetches over N workers",
+          "Latency hiding is the only reason for threads here"
+        ],
+        [
+          "Non-functional",
+          "Thread-safe queue + visited with no lost updates",
+          "The core graded property"
+        ],
+        [
+          "Non-functional",
+          "Clean termination with executor shutdown",
+          "Most failures hang instead of returning"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Approach 1 — sequential BFS and why it fails"
+    },
+    {
+      "type": "paragraph",
+      "text": "The correct sequential baseline is a queue plus a visited set. Dequeue a URL, fetch its links, filter by host, enqueue unseen ones. It is obviously correct, gives perfect BFS order, and needs no synchronization. Its trade-off is brutal and is the entire motivation for the problem: total time is the **sum** of all fetch latencies. If each `getUrls` blocks 200ms and there are 5,000 pages, you wait ~16 minutes on one thread doing nothing but sleeping on I/O. CPU utilization sits near zero while wall-clock time explodes. That is why the interviewer demands threads — not to show you know the `Thread` API, but to show you know where the bottleneck lives. Parallelism here buys latency hiding, not compute throughput, so any design that serializes fetches behind a single lock has missed the point entirely."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "SequentialCrawler.java",
+      "code": "class SequentialCrawler {\n    private final HtmlParser parser;\n    SequentialCrawler(HtmlParser parser) { this.parser = parser; }\n\n    public List<String> crawl(String startUrl) {\n        String host = getHost(startUrl);\n        Set<String> visited = new HashSet<>();\n        Queue<String> queue = new ArrayDeque<>();\n        visited.add(startUrl);\n        queue.offer(startUrl);\n        while (!queue.isEmpty()) {\n            String url = queue.poll();\n            for (String next : parser.getUrls(url)) {\n                if (!getHost(next).equals(host)) continue;\n                if (visited.add(next)) queue.offer(next);\n            }\n        }\n        return new ArrayList<>(visited);\n    }\n\n    private String getHost(String url) {\n        try { return new java.net.URI(url).getHost().toLowerCase(); }\n        catch (Exception e) { return \"\"; }\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "The naive parallelization most candidates jump to is worse than sequential: spawn a thread per URL or share an `ArrayDeque` plus `HashSet` without locking. Thread-per-URL exhausts file descriptors and threads on any real site — trade-off: unbounded concurrency for a guaranteed crash. Unsynchronized sharing corrupts the queue and lets two threads both pass the `contains` check and fetch the same URL twice — trade-off: speed for incorrectness. And polling `queue.isEmpty()` to decide termination is broken by design: the queue can be momentarily empty while a worker is still fetching a page that will produce ten new URLs. The thread that observes empty and returns causes lost work; threads that block forever on an empty queue cause a hang. You need a design where submission, deduplication, and completion counting are atomic with respect to termination."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The real design — level-parallel BFS on a fixed pool"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep the data structure of sequential BFS but parallelize **within a level** and barrier between levels. The main thread holds the current frontier. It submits one task per URL in the frontier to a fixed `ExecutorService`, each task does only the blocking `getUrls` call and returns links, and the main thread merges results serially. Deduplication happens in one place with a concurrent set's atomic `add`, filtering happens before enqueue, and termination is trivial: when a level produces no new URLs, you are done. The trade-off you are explicitly choosing: you sacrifice a little throughput at the barrier — fast workers idle while the slowest fetch in the level completes — in exchange for bulletproof termination, deterministic BFS levels, and no custom idle-detection protocol. For an interview this is the right trade every time, because a fully asynchronous work-stealing crawler is faster but requires an in-flight counter plus wait/notify that most candidates get wrong under pressure. Level-parallel is parallel where it matters (the network wait) and serial where races live (the merge)."
+    },
+    {
+      "type": "mermaid",
+      "title": "Parallel crawl data flow",
+      "caption": "Workers only fetch; the main thread owns dedup and frontier advance.",
+      "code": "flowchart TD\n  M[Main thread holds frontier] --> S[Submit one task per URL to fixed pool]\n  S --> W1[Worker 1 fetch]\n  S --> W2[Worker 2 fetch]\n  S --> W3[Worker N fetch]\n  W1 --> J[Join all futures of level]\n  W2 --> J\n  W3 --> J\n  J --> F{Same host and visited add succeeds}\n  F -->|yes| N[Next frontier]\n  F -->|no| D[Discard]\n  N --> M"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why a fixed pool and not virtual threads, cached pool, or one-thread-per-fetch? Fetch latency is unbounded and link fan-out is unpredictable, so an unbounded pool turns a large site into thread starvation and connection refusal — trade-off: elasticity for collapse. A fixed pool of, say, 4-32 workers bounds sockets, memory, and context-switch overhead while still hiding latency, because 16 concurrent 200ms fetches complete 16x faster than serial. `visited` must be a `ConcurrentHashMap.newKeySet()` so `add` is the atomic claim operation: whoever wins the `add` owns the fetch-or-enqueue right. Never do `if (!contains) add` — that check-then-act is the race the interviewer is waiting to see. The queue itself does not even need to be shared between workers in this design; each level's next frontier is built locally by the merger and swapped in, which removes an entire class of queue-races by construction."
+    },
+    {
+      "type": "mermaid",
+      "title": "Crawler class structure",
+      "caption": "Parser is injected; crawler owns pool, host, and visited set.",
+      "code": "classDiagram\n  class HtmlParser {\n    +getUrls(url) List\n  }\n  class WebCrawler {\n    -parser HtmlParser\n    -executor ExecutorService\n    -host String\n    -visited Set\n    +crawl(startUrl) List\n    +shutdown() void\n  }\n  class CrawlTask {\n    -url String\n    +call() List\n  }\n  WebCrawler --> HtmlParser\n  WebCrawler --> CrawlTask"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Working code"
+    },
+    {
+      "type": "paragraph",
+      "text": "Below is the version to write on the board. It is level-synchronous, handles parser exceptions per-URL so one dead page never poisons the level, shuts the pool down, and parses hosts defensively. Note the two details graders check first: `visited.add(next)` as the single atomic gate, and `future.get()` collated outside the workers so no worker ever blocks holding a pool thread while waiting for another pool thread — that self-deadlock kills fixed pools when tasks submit subtasks."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "WebCrawler.java",
+      "code": "import java.net.URI;\nimport java.util.*;\nimport java.util.concurrent.*;\n\ninterface HtmlParser {\n    List<String> getUrls(String url);\n}\n\npublic class WebCrawler {\n    private final HtmlParser parser;\n    private final ExecutorService executor;\n\n    public WebCrawler(HtmlParser parser, int maxThreads) {\n        this.parser = parser;\n        this.executor = Executors.newFixedThreadPool(maxThreads);\n    }\n\n    public List<String> crawl(String startUrl) {\n        String host = getHost(startUrl);\n        Set<String> visited = ConcurrentHashMap.newKeySet();\n        visited.add(startUrl);\n\n        List<String> frontier = List.of(startUrl);\n\n        while (!frontier.isEmpty()) {\n            List<Future<List<String>>> futures = new ArrayList<>(frontier.size());\n            for (String url : frontier) {\n                futures.add(executor.submit(() -> safeFetch(url)));\n            }\n            List<String> nextFrontier = new ArrayList<>();\n            for (Future<List<String>> f : futures) {\n                List<String> links;\n                try { links = f.get(); }\n                catch (InterruptedException e) {\n                    Thread.currentThread().interrupt();\n                    break;\n                } catch (ExecutionException e) { continue; }\n                for (String next : links) {\n                    if (!getHost(next).equals(host)) continue; // filter before claim\n                    if (visited.add(next)) nextFrontier.add(next); // atomic claim\n                }\n            }\n            frontier = nextFrontier;\n        }\n        return new ArrayList<>(visited);\n    }\n\n    private List<String> safeFetch(String url) {\n        try { return parser.getUrls(url); }\n        catch (Exception e) { return List.of(); } // one bad page != failed crawl\n    }\n\n    private String getHost(String url) {\n        try {\n            String h = new URI(url).getHost();\n            return h == null ? \"\" : h.toLowerCase();\n        } catch (Exception e) { return \"\"; }\n    }\n\n    public void shutdown() { executor.shutdown(); }\n}"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "web_crawler.py",
+      "code": "from concurrent.futures import ThreadPoolExecutor, as_completed\nfrom urllib.parse import urlparse\n\ndef get_host(url: str) -> str:\n    try:\n        return (urlparse(url).hostname or \"\").lower()\n    except Exception:\n        return \"\"\n\ndef crawl(start_url: str, parser, max_threads: int = 8):\n    host = get_host(start_url)\n    visited = {start_url}\n    frontier = [start_url]\n    with ThreadPoolExecutor(max_workers=max_threads) as pool:\n        while frontier:\n            # One task per URL in the level: latency hiding without\n            # sharing the queue across threads.\n            future_to_url = {pool.submit(parser.get_urls, u): u for u in frontier}\n            next_frontier = []\n            for fut in as_completed(future_to_url):\n                try:\n                    links = fut.result() or []\n                except Exception:\n                    continue  # skip failed page, keep crawling\n                for nxt in links:\n                    if get_host(nxt) != host:\n                        continue\n                    if nxt not in visited:\n                        visited.add(nxt)\n                        next_frontier.append(nxt)\n            frontier = next_frontier\n    return list(visited)"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Complexity"
+    },
+    {
+      "type": "table",
+      "caption": "Cost model: work is fetches, depth is latency.",
+      "headers": [
+        "Metric",
+        "Value",
+        "Note"
+      ],
+      "rows": [
+        [
+          "Total fetches",
+          "O(V) where V = same-host reachable pages",
+          "Each URL fetched at most once by visited gate"
+        ],
+        [
+          "Wall-clock time",
+          "O(D * max-latency-in-level) with N workers",
+          "D = BFS depth; ideal speedup ~N until fetch-bound"
+        ],
+        [
+          "CPU / merge work",
+          "O(V + E) link inspections",
+          "E = total outbound links examined"
+        ],
+        [
+          "Memory",
+          "O(V + frontier width)",
+          "Visited dominates; frontier bounded by widest level"
+        ],
+        [
+          "Synchronization",
+          "O(1) contended ops per link",
+          "Only the concurrent-set add; no queue lock on hot path"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Say this out loud: threads do not reduce total work, they reduce stalled time. If `getUrls` is CPU-bound parsing, threads in CPython buy almost nothing because of the GIL — trade-off you must name — and you would want processes or async I/O instead. For network-bound crawling, the pool converts summed latencies into overlapped latencies, so doubling workers roughly halves wall-clock until you hit connection limits, DNS, or the target server's rate limit. Memory grows with distinct URLs, not with threads, which is why interning or normalizing URLs (trailing slash, fragment, query order) matters more than pool tuning at scale."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Concurrency — the hardest follow-up"
+    },
+    {
+      "type": "paragraph",
+      "text": "The fully async alternative — workers pulling from a shared `BlockingQueue` with no level barrier — is the expected senior follow-up, and its termination protocol is where offers are won or lost. The naive `while (!queue.isEmpty()) poll()` fails because empty does not mean finished: a worker may be mid-fetch about to enqueue more work. The correct mechanism is an in-flight counter: an `AtomicInteger pending` incremented atomically when a new URL is claimed and decremented when its fetch completes, plus a `wait/notify` or `CountDownLatch`-style signal when `pending` hits zero and the queue is empty. Every `poll` must use a timeout so a worker rechecks the termination predicate instead of blocking forever, and `visited.add` and `pending.increment` must be ordered so no decrement-to-zero fires while a claim is in flight — otherwise you shut down early and lose a subtree. Its trade-off versus level-parallel: higher utilization with no barrier idle time, paid for with subtle shutdown logic, loss of strict BFS level boundaries, and harder backpressure. Name that trade-off before writing it; interviewers would rather hear the judgment than watch you debug `wait()` for ten minutes."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Three race traps to call out unprompted",
+      "text": "**Check-then-act on visited:** `contains` + `add` across two statements lets two threads fetch the same URL. Fix: use the boolean return of a concurrent `add` as the claim. **Filtering after enqueue:** enqueueing foreign URLs and filtering at fetch time wastes threads and leaks cross-host fetches. Fix: filter by host before the `add`. **Blocking take with no poison:** workers stuck on `queue.take()` never exit. Fix: level barriers, poll-with-timeout plus pending counter, or poison pills — pick one and justify it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Follow-ups to have ready"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Politeness, rate limiting, and robots.txt",
+          "text": "Add per-host token bucket + delay queue and a robots cache. Trade-off: throughput for good citizenship; without it you get IP-banned, which ends the crawl faster than any lock."
+        },
+        {
+          "title": "URL normalization and dedup",
+          "text": "Strip fragments, lowercase host, sort query params, resolve relative links. Trade-off: CPU per link for avoiding exponential re-fetch of the same logical page."
+        },
+        {
+          "title": "Bounded memory and persistence",
+          "text": "Spill visited to disk (Bloom filter + store) and cap frontier with backpressure. Trade-off: exact dedup for probabilistic memory savings; name the false-positive risk."
+        },
+        {
+          "title": "Retries, timeouts, cancellation",
+          "text": "Per-fetch timeout, bounded retries with jittered backoff, and a cancel flag checked per level. Trade-off: completeness for bounded tail latency."
+        },
+        {
+          "title": "Async I/O instead of threads",
+          "text": "Replace pool with non-blocking HTTP + event loop for 10k+ concurrent fetches. Trade-off: massive concurrency for callback complexity; threads win under ~100-way parallelism on clarity alone."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Edge cases to state unprompted"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Self-loop and 2-cycle (`A -> A`, `A -> B -> A`) — visited gate must prevent re-fetch, not just re-return.",
+        "Diamond (`A -> B, A -> C, B -> D, C -> D`) — two workers race to claim `D`; exactly one must win.",
+        "Empty page, page with zero links, and `startUrl` with no outlinks — return singleton, do not hang.",
+        "Malformed or relative URLs from parser — normalize or drop, never throw out of the worker.",
+        "Parser throws / times out mid-level — skip that URL, complete the level, keep the pool alive.",
+        "Foreign host that links back (`evil.com -> example.com/secret`) — never fetch foreign, but do follow same-host links discovered from allowed pages.",
+        "Duplicate URLs differing only by trailing slash, fragment, or case — decide normalization up front or visited explodes.",
+        "Interrupt / shutdown while blocked in `future.get()` — restore interrupt flag and shut down the executor; never leak threads."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How you are graded — weak vs strong"
+    },
+    {
+      "type": "table",
+      "caption": "What separates a pass from a hire signal.",
+      "headers": [
+        "Signal",
+        "Weak",
+        "Strong"
+      ],
+      "rows": [
+        [
+          "Correctness",
+          "Shared HashSet / ArrayDeque with no locking",
+          "Atomic visited-claim + single-threaded merge; exactly-once fetch"
+        ],
+        [
+          "BFS",
+          "DFS recursion or no ordering argument",
+          "Level frontier with explicit barrier vs throughput trade-off"
+        ],
+        [
+          "Termination",
+          "`isEmpty()` check or infinite poll loop",
+          "Level exhaustion; can derive pending-counter protocol for async variant"
+        ],
+        [
+          "Failure handling",
+          "One exception aborts crawl; pool never shut down",
+          "Per-URL try/catch, timeouts, executor shutdown, interrupt restore"
+        ],
+        [
+          "Scale judgment",
+          "\"More threads is faster\"",
+          "Fixed pool sized to latency + limits; names GIL / async / backpressure trade-offs"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "45-minute plan",
+      "text": "Minutes 0-5: lock host equality, BFS strictness, failure and shutdown semantics. 5-10: write sequential BFS baseline and name its summed-latency flaw. 10-30: build level-parallel pool version with atomic `visited.add` gate and per-URL error isolation. 30-40: handle the async follow-up verbally — pending counter, poll-timeout, poison pills — and argue barrier vs utilization. 40-45: close with edge cases (cycles, diamonds, malformed URLs, interrupt) and one scale trade-off (normalization, politeness, or async I/O). Leave the board with a pool that always terminates."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:35:35.298Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,340 @@
+{
+  "slug": "failure-techniques",
+  "title": "Failure Techniques",
+  "summary": "Failure techniques are the detect-isolate-recover loop that turns inevitable component faults into bounded degradation. This guide covers the mechanism, trade-offs, and interview moves.",
+  "kind": "HLD",
+  "problemSlug": "failure-techniques-97-217",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Medium",
+  "coverEmoji": "⚠️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "fault-tolerance",
+    "reliability",
+    "distributed-systems"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "8 Failure Analysis Techniques to Master in 2026 - Capgo",
+      "url": "https://capgo.app/blog/failure-analysis-techniques/",
+      "source": "capgo.app",
+      "kind": "article"
+    },
+    {
+      "title": "Product life trade-offs: what if products fail early?",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/23343618/",
+      "source": "pubmed.ncbi.nlm.nih.gov",
+      "kind": "article"
+    },
+    {
+      "title": "Product Life Trade-Offs: What If Products Fail Early?",
+      "url": "https://pubs.acs.org/esthag/article/47/3/1719/782134/Product-Life-Trade-Offs-What-If-Products-Fail",
+      "source": "pubs.acs.org",
+      "kind": "article"
+    },
+    {
+      "title": "Chapter 1: Techniques of Failure Analysis [1] - ASM Digital Library",
+      "url": "https://dl.asminternational.org/technical-books/monograph/98/chapter/2111229/Techniques-of-Failure-Analysis-1",
+      "source": "dl.asminternational.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**You do not prevent failure. You bound three numbers: time to detect, blast radius, and time to recover.** If your design cannot state all three, you do not have fault tolerance — you have hope. Every technique below exists to shrink one of those numbers, and every one makes another number worse."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What failure techniques actually are"
+    },
+    {
+      "type": "paragraph",
+      "text": "Failure techniques are the **detection, containment, and recovery** mechanisms that keep a component **fault** from becoming a user-visible **failure**. A fault is a broken piece: a crashed process, a lost packet, a disk that stops acknowledging writes, a clock that drifts 30 seconds. A failure is the system breaking its contract: returning an error, losing acknowledged data, or stalling past its latency budget. An outage is just a failure with a large blast radius. The job of high-level design is to insert boundaries between those three stages so one dead host degrades one availability zone instead of taking the whole service with it."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this distinction runs the interview: beginners design for the happy path and bolt on “retries” at the end. Strong candidates start from a **failure model** and pick techniques that match it. A crash fault is easy — the node stops and you fail over. A timing fault is harder — the node is alive but slow, so every caller queues behind it. An omission fault drops messages silently. A Byzantine fault lies. **You cannot choose timeouts, quorums, or circuit breakers sensibly until you state which of these you are defending against**, because each one defeats a different detector."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Crash-stop:** process halts and stays down. Solved with heartbeats, failover, and durable log replay. Trade-off: you pay for idle standby and cold-start time.",
+        "**Omission / network partition:** messages vanish in one or both directions. Solved with timeouts, retries with idempotency, and quorum reads/writes. Trade-off: you pay in extra latency and duplicate work.",
+        "**Timing / slow-node:** node responds but too late, poisoning tail latency. Solved with deadlines, hedged requests, load shedding, and bulkheads. Trade-off: you pay by doing redundant work or rejecting good traffic.",
+        "**Byzantine / corrupt:** node responds with wrong data or conflicting orderings. Solved only with checksums, end-to-end validation, and consensus across independent replicas. Trade-off: you pay 3f+1 replicas and an expensive agreement protocol to tolerate `f` liars."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: detect, isolate, recover"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every production-worthy design runs the same loop, in this order, because the order is the correctness argument. **First detect** that something is unhealthy — you cannot act on a fault you cannot see. **Then isolate** it so it cannot consume shared resources or spread bad state — this is what stops cascades. **Then recover** by shifting work to healthy capacity and reconciling state. Skip detection and you fail over on rumor. Skip isolation and your retry logic becomes the outage. Skip recovery and you run degraded forever until the next fault finishes you. The loop has to be closed: recovery must feed back into detection, or a flapping node will rejoin, poison the pool, and trigger the loop again."
+    },
+    {
+      "type": "mermaid",
+      "title": "Failure handling loop",
+      "caption": "Detect, then isolate, then recover. Isolation sits before retry on purpose.",
+      "code": "flowchart TD\n  A[Client Request] --> B{Timeout or Health Signal?}\n  B -->|Healthy| C[Serve Normally]\n  B -->|Suspected Fault| D[Circuit Breaker Open?]\n  D -->|No| E[Retry with Backoff and Jitter]\n  D -->|Yes| F[Shed Load or Fallback]\n  E --> G{Quorum or Failover Success?}\n  G -->|Yes| C\n  G -->|No| F\n  F --> H[Recover: Elect Leader and Resync Replica]\n  H --> B"
+    },
+    {
+      "type": "paragraph",
+      "text": "Walk it with a concrete path: a stateless API fronting a primary database. The API sets a **500ms deadline** on every storage call — that is detection. If the primary misses three deadlines in a row, the connection pool’s **circuit breaker opens** for 10 seconds and fast-fails new calls to a read replica or cached fallback — that is isolation. A background prober keeps pinging the primary; when it passes health checks, the breaker half-opens, admits one probe, then closes — that is recovery. Note what the design chose: it traded **freshness for availability** by serving stale reads during the open window, and traded **extra p99 latency in the good case** for a bounded worst case. Say both trade-offs out loud or the interviewer will assume you do not see them."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "1. Detection has to be explicit"
+    },
+    {
+      "type": "paragraph",
+      "text": "In an asynchronous network there is no perfect failure detector — a slow node and a dead node look identical until you stop waiting. So every detector is a bet on a timeout, and every timeout is a trade-off between **false positives and slow reaction**. Aggressive 50ms timeouts detect crashes fast but amputate healthy-but-slow nodes and cause flapping. Generous 5s timeouts avoid false alarms but let one stalled dependency hold thousands of threads and blow up your tail latency. That is why mature systems layer detectors: passive **deadlines on the request path** for speed, active **heartbeats and health probes** for confirmation, and **leases** when wrong suspicion is dangerous, as in leader election. A lease says: you are leader only until timestamp `T` unless renewed. It trades clock dependence for safety — if clocks drift, the guarantee weakens, which is exactly the trade-off to name."
+    },
+    {
+      "type": "table",
+      "caption": "Detection options and what each one costs you.",
+      "headers": [
+        "Technique",
+        "How it detects",
+        "Cost you pay"
+      ],
+      "rows": [
+        [
+          "Deadline + timeout",
+          "Caller gives up after N ms with no response",
+          "False positives under GC pauses or tail latency; needs jitter and per-dependency budgets"
+        ],
+        [
+          "Active health probe",
+          "Load balancer or prober polls `/health` or TCP port",
+          "Probe traffic, delayed reaction, and the probe passing while real traffic fails"
+        ],
+        [
+          "Heartbeat + phi-accrual",
+          "Suspicion level grows with missed heartbeats and network variance",
+          "More state and tuning; still probabilistic, not certain"
+        ],
+        [
+          "Lease",
+          "Holder must renew before expiry or loses authority",
+          "Depends on bounded clock drift; expiry pauses write availability"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "2. Containment stops the spread"
+    },
+    {
+      "type": "paragraph",
+      "text": "Most outages are not the first fault — they are the **cascade** the first fault triggered. One slow dependency holds all worker threads, queues fill, retries multiply the load, and suddenly every service is down because one downstream was slow. Containment breaks that chain with four tools that all do the same thing in different places: refuse work early to protect what still works. A **bulkhead** partitions thread pools and connection pools per dependency so `payments-slow` cannot starve `search-fast`. A **circuit breaker** remembers recent failures and fast-fails without calling the sick dependency at all. **Load shedding** drops low-priority traffic at the edge when queues exceed a threshold. **Backpressure** pushes the signal upstream so producers slow down instead of burying consumers. Each one trades **rejected requests now for survival of the core path** — that is a deliberate, defensible loss."
+    },
+    {
+      "type": "paragraph",
+      "text": "The circuit breaker deserves precision because candidates hand-wave it. It has three states and the transitions are the design. **Closed** means traffic flows and failures are counted in a sliding window. **Open** means the threshold tripped, calls fail immediately to a fallback for a sleep interval, and no threads block on the sick dependency. **Half-open** means after the sleep, exactly one probe is admitted — if it succeeds the breaker closes, if not it re-opens with backoff. Get the window and threshold wrong and you either never trip during a real brown-out or you flap open on a single bad host. That is why breakers sit **per host or per dependency**, never one global breaker, and why the fallback must be cheap and pre-tested — an untested fallback is a second outage waiting for the first one."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "breaker.py",
+      "code": "class Breaker:\n    def __init__(self, fail_threshold=20, window=100, sleep_s=10):\n        self.fail_threshold = fail_threshold  # trip if 20 fails in last 100 calls\n        self.window = window\n        self.sleep_s = sleep_s\n        self.state = \"CLOSED\"\n        self.recent = []  # ring buffer of 0/1\n        self.opened_at = 0\n\n    def allow(self, now):\n        if self.state == \"CLOSED\":\n            return True\n        if self.state == \"OPEN\" and now - self.opened_at >= self.sleep_s:\n            self.state = \"HALF_OPEN\"  # admit exactly one probe\n            return True\n        return False  # fast-fail to fallback, no thread blocked\n\n    def record(self, ok, now):\n        self.recent.append(0 if ok else 1)\n        self.recent = self.recent[-self.window:]\n        if self.state == \"HALF_OPEN\":\n            self.state = \"CLOSED\" if ok else \"OPEN\"\n            self.opened_at = now\n        elif sum(self.recent) >= self.fail_threshold:\n            self.state = \"OPEN\"  # isolate before retry storm builds\n            self.opened_at = now"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "3. Recovery restores capacity"
+    },
+    {
+      "type": "paragraph",
+      "text": "Recovery answers: where does the work go, and how does state catch up without corrupting it. For stateless work the answer is cheap — **retry with exponential backoff and jitter, then fail over** to another host or zone. The jitter is not decoration; without it, a thousand clients retrying on the same 1s timer create a thundering herd that kills the recovering node twice. For stateful work the answer is replication plus a rule for who wins. **Primary-backup** is simple and fast for reads from the primary, but failover needs promotion and log replay and risks losing unreplicated writes — trade durability for simplicity. **Quorum replication** (`W + R > N`) keeps working through minority loss and avoids split-brain, but every write pays cross-replica latency. **Consensus-backed election** picks a single leader safely under partitions, but you pay an extra round trip and an availability pause during elections. Pick by write-loss tolerance, not fashion."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "retry.py",
+      "code": "import random, time\n\ndef call_with_retry(fn, idempotency_key, max_attempts=4, base_ms=100):\n    # Idempotency key lets the server dedupe redeliveries.\n    # Without it, retry turns an omission fault into a double-charge.\n    for attempt in range(max_attempts):\n        try:\n            return fn(idempotency_key=idempotency_key, timeout_ms=500)\n        except TransientError:\n            if attempt == max_attempts - 1:\n                raise  # stop: fall back or shed, do not loop forever\n            backoff = base_ms * (2 ** attempt)\n            jitter = random.uniform(0, backoff)  # decorrelates herd\n            time.sleep((backoff + jitter) / 1000.0)\n        except PermanentError:\n            raise  # never retry 4xx-style errors: pure waste + load"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly on both sides"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every row here is a bet. Say what you gain *and* what you bleed, or you will sound like a catalog instead of an engineer. The common error is stacking all the techniques — retries *plus* hedged requests *plus* aggressive failover — and multiplying load by 4x during the exact moment capacity is lowest. Fault tolerance without a load budget is just a slower cascade."
+    },
+    {
+      "type": "table",
+      "caption": "Core failure techniques: benefit, price, and when the price is worth it.",
+      "headers": [
+        "Technique",
+        "What it buys",
+        "What it costs"
+      ],
+      "rows": [
+        [
+          "Timeout + retry with jitter",
+          "Hides transient blips without operator action",
+          "Duplicate work and amplified load; requires idempotency or it corrupts state"
+        ],
+        [
+          "Circuit breaker + fallback",
+          "Bounds latency and isolates sick dependency",
+          "Serves degraded or stale answers; fallback code must be maintained and tested"
+        ],
+        [
+          "Bulkhead per dependency",
+          "One slow downstream cannot exhaust all threads",
+          "Lower utilisation in the good case; more pools to tune and observe"
+        ],
+        [
+          "Hedged requests",
+          "Cuts p99 by racing two copies after a delay",
+          "2x load on the slowest path; only safe for idempotent reads"
+        ],
+        [
+          "Load shedding + backpressure",
+          "Keeps core writes alive under overload",
+          "Deliberately rejects traffic; needs priority tiers or you drop the wrong requests"
+        ],
+        [
+          "Quorum / consensus failover",
+          "No split-brain, no lost acknowledged writes",
+          "Higher write latency and election pauses; operational complexity"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The same mechanisms that save you will kill you if untuned. **Retry storms** are the classic: a downstream slows to 2s, every caller retries three times with no jitter, load triples, queues explode, and dashboards show CPU flat but latency vertical and error rate climbing across *all* endpoints, not just the sick one. The fix is not more retries — it is bounded retries plus an open breaker plus shedding. **Flapping failover** looks different: leader election thrashes every 10 seconds, logs show repeated `became leader` / `stepped down`, and clients see intermittent `stale leader` errors. Cause is almost always a timeout shorter than p99 GC pause or a lease shorter than clock skew. Lengthen the suspicion threshold and require consecutive failures before promotion."
+    },
+    {
+      "type": "paragraph",
+      "text": "Two more singleton killers. **Split-brain writes** happen when two nodes both believe they are primary during a partition — symptom is divergent histories that cannot merge and customers seeing their write vanish after recovery. Prevention is quorum or fencing tokens, not hope: the old primary must be fenced before the new one serves. **Poison-pill fallback** happens when the fallback path was never load-tested — symptom is the breaker opens correctly and then the cache or static fallback itself times out, converting a partial degradation into a full outage. Drill the fallback under load or delete it. Analysis methods map here directly: build a timeline first, score failure modes by severity × likelihood before launch, and treat every deploy as a change set to bisect — but none of that replaces the runtime guards above."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Retry storm: `5xx` spreads from one dependency to all routes, queue depth and retry count spike together.",
+        "Breaker misfire: fallback traffic jumps 10x while origin looks healthy — threshold too tight or window too small.",
+        "Split-brain: conflicting write versions after partition heals; needs manual reconciliation.",
+        "Bulkhead exhaustion: one pool saturated, others idle — pool sizing or timeout mismatch.",
+        "Silent data loss: failover succeeded but last 2s of writes missing — async replication without quorum or fencing."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the failure model first",
+          "text": "Say: I assume crash + partition, not Byzantine, unless payments or ordering demand it. That one sentence constrains every later choice and earns trust."
+        },
+        {
+          "title": "Draw the loop on the architecture",
+          "text": "Point at each arrow and label detector, isolator, recovery. Example: deadline on the edge, breaker per downstream, quorum writes to three replicas, async replay to a distant region."
+        },
+        {
+          "title": "Put numbers on the trade-off",
+          "text": "Propose: 500ms per-attempt timeout, 3 attempts max with jitter, breaker trips at 20% failures over 100 calls, half-open after 10s. Then defend why tighter would flap and looser would cascade."
+        },
+        {
+          "title": "Handle the follow-up: what if the fallback fails",
+          "text": "Answer with priorities: shed non-critical traffic first, serve stale reads second, fail writes with a clear error rather than accepting writes you cannot durably store."
+        },
+        {
+          "title": "Close with verification",
+          "text": "State how you would prove it: chaos test for zone loss, latency injection for slow-node, partition test for split-brain, and dashboards for breaker state, retry rate, and quorum lag."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**More retries equal more reliability.** No — unbounded retries turn a blip into a storm. Bound attempts, add jitter, and require idempotency keys.",
+        "**A load balancer health check is enough detection.** It is slow and shallow. You still need per-request deadlines and per-host breakers, or one slow host poisons the pool.",
+        "**Replication equals durability.** Only if writes are acknowledged by a quorum or synced to a log. Async replicas lose whatever was not yet copied when the primary dies.",
+        "**Active-passive failover is free.** It costs idle capacity, promotion time, DNS or routing propagation, and replay lag — during which writes stall or drop.",
+        "**Fallbacks always help.** Only if they are cheap, pre-warmed, and load-tested. An untested fallback doubles the blast radius.",
+        "**Consensus fixes everything.** It fixes leader safety under partitions at the price of write latency and complexity. Do not pay it for data that tolerates staleness."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Match the weight of the technique to the cost of the failure.",
+      "headers": [
+        "Situation",
+        "Use",
+        "Avoid"
+      ],
+      "rows": [
+        [
+          "Idempotent reads with transient blips",
+          "Timeout + bounded retry with jitter, hedged request after p95",
+          "Circuit breaker as first resort; it adds nothing for single blips"
+        ],
+        [
+          "Critical downstream that browns out",
+          "Per-host breaker + bulkhead + tested fallback",
+          "Blind retry; it multiplies load on a drowning service"
+        ],
+        [
+          "Overload / traffic spike",
+          "Load shedding at edge + backpressure upstream",
+          "Queuing without bound; queues just convert overload into timeout"
+        ],
+        [
+          "Money, inventory, exactly-once effects",
+          "Idempotency keys + quorum or consensus + fencing",
+          "At-least-once retry alone; duplicates become double charges"
+        ],
+        [
+          "Cacheable or delay-tolerant work",
+          "Async queue + replay, serve stale on failure",
+          "Synchronous consensus; you pay ordering cost for data that does not need it"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Assume faults are normal, detect with deadlines, isolate with breakers and bulkheads, and recover with bounded, idempotent retries plus quorum or failover — trading some freshness and extra good-case work for bounded blast radius and recovery time.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:54:49.372Z",
+    "problems": []
+  }
+}

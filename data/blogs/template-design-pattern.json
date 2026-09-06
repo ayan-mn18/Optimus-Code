@@ -1,0 +1,301 @@
+{
+  "slug": "template-design-pattern",
+  "title": "Template Design Pattern",
+  "summary": "Template Method locks the order of an algorithm in a base class and lets subclasses fill in only the variable steps — reuse at the cost of inheritance coupling.",
+  "kind": "LLD",
+  "problemSlug": "template-design-pattern-36-76",
+  "topic": "Behavioral Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "📋",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Behavioral-Patterns",
+    "Template-Method"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Template Method - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/template-method",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Template method pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Template_method_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Template Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/template-method-design-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Template Design Pattern in Java - Medium",
+      "url": "https://medium.com/@akshatsharma0610/template-design-pattern-in-java-453da50185a8",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Template Method is **order enforcement**. The base class owns *when* steps run; subclasses own only *how* one step runs. If you do not need to guarantee the sequence, you do not need this pattern — use composition instead. Every use is a trade: you buy **duplicate-code removal and invariant safety** and you pay with **inheritance coupling**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Template Method defines a multi-step algorithm once, in a superclass, as a single non-overridable method — the template method — that calls a fixed sequence of smaller methods. Some of those smaller methods are abstract and *must* be supplied by each subclass. Some have a default implementation in the base class and *may* be overridden. Some are hooks: empty or boolean guards that let a subclass tweak behavior without rewriting the flow. The critical constraint is direction of control: the subclass never calls the sequence, the sequence calls the subclass. That inversion is the whole point. It means a `DataMiner.mine()` or `OrderProcessor.checkout()` or `RequestHandler.handle()` runs identically for every variant, even though PDF parsing versus CSV parsing, or online payment versus store payment, differ completely inside one step."
+    },
+    {
+      "type": "paragraph",
+      "text": "This is not generic “code reuse through inheritance.” Plain inheritance lets a child change anything, including the order, which destroys the guarantee. Template Method deliberately removes that freedom: the template method itself is `final`, and the base class documents which methods are extension points and which are closed. Compare it to Strategy, the pattern it is most often confused with. Strategy varies the *entire algorithm* by injecting a different object at runtime. Template Method varies *parts of one algorithm* by subclassing at compile time. Choose Strategy when callers should pick behavior dynamically and combine behaviors freely. Choose Template when the steps are stable, the order is load-bearing — open before read before analyze before close — and letting a caller reorder or skip a step would produce corrupt output or a resource leak."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "You build it in three decisions. First, factor the algorithm into named steps at the right granularity: too fine and the base class becomes a procedural script nobody can follow; too coarse and subclasses duplicate logic again. Second, classify each step: abstract for genuinely variant work with no sane default, concrete-with-default for shared work most subclasses want, hook for optional influence such as `shouldGenerateReport()` or `preProcess()`. Third, write the template method as a short, readable sequence of those calls plus fixed cross-cutting logic — timing, exception handling, open/close pairing — and forbid overriding it. WHY `final` matters: without it, a hurried subclass overrides the template to “fix” one case and silently forks the algorithm. You then have two skeletons to maintain, which is exactly the duplication you set out to kill."
+    },
+    {
+      "type": "mermaid",
+      "title": "Template structure",
+      "caption": "Base class owns the sequence, subclasses supply variant steps.",
+      "code": "classDiagram\n  class DataMiner {\n    +mine()*\n    +openFile()*\n    +extractData()*\n    +analyzeData()\n    +sendReport()\n    +closeFile()\n  }\n  class PdfMiner {\n    +openFile()\n    +extractData()\n  }\n  class CsvMiner {\n    +openFile()\n    +extractData()\n  }\n  DataMiner <|-- PdfMiner\n  DataMiner <|-- CsvMiner"
+    },
+    {
+      "type": "mermaid",
+      "title": "Execution flow",
+      "caption": "Same order every time, polymorphic steps in the middle.",
+      "code": "flowchart TD\n  A[Client calls mine on concrete subclass] --> B[DataMiner.mine template runs]\n  B --> C[openFile - subclass]\n  C --> D[extractData - subclass]\n  D --> E[analyzeData - base default]\n  E --> F{hook sendReport?}\n  F -->|yes| G[sendReport - base or override]\n  F -->|no| H[closeFile - base]\n  G --> H"
+    },
+    {
+      "type": "paragraph",
+      "text": "At runtime the dispatch is ordinary virtual dispatch, but the *caller* is the base class, not client code. Client code holds a `DataMiner` reference and calls `mine()`. The base `mine()` executes, and when it reaches `extractData()` the JVM dispatches down to `PdfMiner` or `CsvMiner`. This is the so-called Hollywood Principle — don’t call us, we’ll call you — applied at method granularity. WHY it is valuable: conditionals in the client disappear. No `if pdf else if csv` chain, no switch on type tags. Adding a `DocMiner` means adding a class, not editing every call site. The trade-off is that control flow is now implicit: to understand what `mine()` does for PDFs you must read two files and mentally inline the overrides. Tooling and stack traces get harder to follow, which is why keeping the template short and the step names honest is not style — it is maintainability."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What Template Method gives you and what it charges.",
+      "headers": [
+        "Aspect",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Duplication",
+          "Variant-independent steps live once in the base class",
+          "All subclasses depend on base internals; a base edit can break everyone"
+        ],
+        [
+          "Correctness",
+          "Order, resource pairing, and validation cannot be skipped",
+          "Subclasses cannot reorder even when a variant legitimately needs it"
+        ],
+        [
+          "Client code",
+          "Polymorphic call; no type-switching conditionals",
+          "Behavior fixed by class choice at construction; hard to rewire at runtime"
+        ],
+        [
+          "Extensibility",
+          "New variant = new subclass, open for extension",
+          "Hierarchy grows; deep trees become rigid and hard to test in isolation"
+        ],
+        [
+          "Readability",
+          "Algorithm reads as one numbered sequence",
+          "Real logic scattered across base + subclass; requires jumping files"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The central tension is **reuse versus coupling**. Template Method gets reuse through inheritance, the strongest coupling in object-oriented design. That is justified only when the skeleton is genuinely stable. If the steps churn every sprint — today five steps, tomorrow seven, next week optional retries — the base class becomes a change magnet and every subclass recompiles, retests, and sometimes breaks. Senior engineers reject Template in that situation not because they dislike patterns, but because composition plus injected steps would localize the change. Use inheritance when the *abstraction* is stable; use composition when the *variation* is unstable. Most misuse comes from getting that judgment backwards."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is the fragile base class. Someone adds logging, retry, or a new abstract step `validate()` to the template to fix one subclass, and three other subclasses that assumed the old sequence now throw, skip cleanup, or double-close resources. You see it as a deploy where an unrelated feature breaks document ingestion, order checkout, or ETL jobs with `AbstractMethodError`, `NullPointerException` in a hook that was never initialized, or files left open because an override threw before `closeFile()`. The root cause is that the base class made an implicit contract explicit too late: subclasses had already baked in assumptions about call order, exception behavior, and which methods call which."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure is hook proliferation. What starts as one clean hook — `isReportEnabled()` — grows into six boolean guards, protected fields, and conditional skips inside the template to accommodate edge-case subclasses. The template that was supposed to read as a five-line recipe becomes a nested conditional mess, and subclasses override hooks in combinations nobody tested. Symptom in production: behavior that depends on subclass construction flags in non-obvious ways, flaky reports that appear for CSV but not PDF, and unit tests that must subclass the abstract just to test the base. At that point the pattern has inverted on itself: instead of the base constraining the children, the children are constraining the base. That is the signal to split the algorithm, extract a Strategy for the variable chunk, or replace hooks with injected policies."
+    },
+    {
+      "type": "paragraph",
+      "text": "The third failure is around lifecycle and concurrency. Template methods often hold state in protected fields — `rawData`, `parsedRows` — shared between steps. Under a singleton bean or a reused handler, two threads interleave steps and corrupt each other’s intermediate state. Symptom: intermittent wrong results under load, passing single-threaded tests, failing soak tests. Fix is structural, not a lock: keep step state in locals passed as parameters, or make the template object short-lived per execution. If you see `protected List<Row> buffer` on the abstract class, treat it as a defect until proven thread-confined."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`AbstractMethodError` or `UnsupportedOperationException` after a base-class deploy — a new abstract step was added without a default.",
+        "Resource leak / locked file / uncommitted transaction — an overridden step threw and the template lacked `try-finally` around pairing.",
+        "Unrelated subclass breaks when base changes — fragile-base coupling, missing contract tests on the template sequence.",
+        "Reports or steps silently skipped for one variant — misconfigured hook return value, combinational hook logic.",
+        "Flaky data corruption only under concurrency — mutable protected state shared across steps."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes it concrete"
+    },
+    {
+      "type": "paragraph",
+      "text": "Take the document-mining case: open, extract, analyze, report, close. Opening and extraction differ per format and have no meaningful default, so they are abstract. Analysis and reporting are nearly identical across formats, so they live in the base with an override escape hatch. The hook `shouldSendReport()` lets a subclass suppress reporting without duplicating the sequence. Note the structure: the template is `final`, the pairing of open/close is guarded by `try-finally` in one place, and no subclass can forget it. WHY this placement matters: correctness logic — resource safety, ordering, error wrapping — belongs in the template because it must hold for *every* variant; domain logic — how bytes become rows — belongs in subclasses because it differs per variant."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "DataMiner.java",
+      "code": "public abstract class DataMiner {\n    // Template method: the skeleton. Final on purpose.\n    public final void mine(String path) {\n        openFile(path);\n        try {\n            String raw = extractData();\n            String analysis = analyzeData(raw);\n            if (shouldSendReport()) {\n                sendReport(analysis);\n            }\n        } finally {\n            closeFile();\n        }\n    }\n\n    protected abstract void openFile(String path);\n    protected abstract String extractData();\n\n    // Concrete default: shared, overridable only with reason.\n    protected String analyzeData(String raw) {\n        return raw.trim().toUpperCase();\n    }\n\n    protected void sendReport(String analysis) {\n        System.out.println(\"REPORT: \" + analysis);\n    }\n\n    // Hook: empty default, subclass opts in.\n    protected boolean shouldSendReport() {\n        return true;\n    }\n\n    protected void closeFile() {\n        System.out.println(\"closing handle\");\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "Miners.java",
+      "code": "public final class PdfMiner extends DataMiner {\n    private String handle;\n    @Override protected void openFile(String path) {\n        handle = \"pdf:\" + path;\n    }\n    @Override protected String extractData() {\n        return \"rows from \" + handle;\n    }\n}\n\npublic final class CsvMiner extends DataMiner {\n    private String handle;\n    @Override protected void openFile(String path) {\n        handle = \"csv:\" + path;\n    }\n    @Override protected String extractData() {\n        return \"cells from \" + handle;\n    }\n    @Override protected boolean shouldSendReport() {\n        return false; // bulk ingest, no per-file report\n    }\n}"
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Make the template final or do not use the pattern",
+      "text": "If the template method is overridable, you have plain inheritance with suggestions, not Template Method. Mark it `final` in Java, non-virtual in C++, and document which steps are abstract, which have defaults, and which are hooks. Reviewers should be able to answer in ten seconds: what can a subclass change, and what can it never change?"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in interviews"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers rarely ask “implement Template Method.” They describe duplication across variants with a fixed workflow and watch whether you extract the skeleton or reach for copy-paste, flags, or a giant switch. Your job is to name the invariant sequence, factor it once, and defend the inheritance cost out loud."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Spot the skeleton",
+          "text": "Paraphrase the workflow back: “Every path does A then B then C; only B differs.” If you cannot state the fixed order in one sentence, you do not have a template yet — clarify before coding."
+        },
+        {
+          "title": "Classify each step on the board",
+          "text": "Label methods as abstract, default, or hook as you write them, and say why. “`open` is abstract because no default makes sense; `analyze` has a default because two of three variants share it; `shouldNotify` is a hook because most callers want it.” That labeling is what is graded."
+        },
+        {
+          "title": "Lock the template",
+          "text": "Write the template method first, mark it final, wrap paired resources in try-finally. Narrate the trade: “I am centralizing ordering and cleanup here so subclasses cannot forget it, at the cost that all variants now depend on this class.”"
+        },
+        {
+          "title": "Handle the follow-up",
+          "text": "Expect “what if a variant needs a different order?” or “what if steps grow to ten?” Answer with a migration, not defensiveness: extract the variable chunk as a Strategy, replace boolean hooks with injected policy, or split the template. Showing the exit earns the senior signal."
+        },
+        {
+          "title": "Test it without hand-waving",
+          "text": "Propose a contract test on the template — verify order via a recording subclass, verify close runs on exception — plus one unit test per concrete step. Mention thread-confinement: no shared protected mutable state if instances are reused."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "“Template Method means any base class with inheritance.” No — it requires a fixed multi-step sequence owned by the base. A bag of helper methods is just inheritance.",
+        "“Hooks and abstract methods are the same.” Abstract forces an implementation; a hook has a harmless default and is optional. Confusing them either breaks existing subclasses or forces empty overrides everywhere.",
+        "“The template method should be overridden for special cases.” Overriding it forks the algorithm and defeats the pattern. Specialize a step or a hook; never the template.",
+        "“It is a cheaper Strategy.” The mechanics overlap but the binding differs: Template binds variation by subclass at construction time; Strategy injects variation by object at runtime. Pick by when you need to change behavior.",
+        "“More hooks means more flexible.” Each hook doubles the behavioral combinations. Three boolean hooks is eight paths through one template. Prefer one injected policy over four interacting hooks.",
+        "“Protected fields are fine for passing data between steps.” They create hidden coupling and thread hazards. Prefer return values and parameters; keep the template reentrant."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use it for stable sequences, avoid it for volatile or highly divergent flows.",
+      "headers": [
+        "Situation",
+        "Use Template?",
+        "Reason"
+      ],
+      "rows": [
+        [
+          "Fixed ETL / parse-analyze-report / checkout pipelines with 1–3 variant steps",
+          "Yes",
+          "Order and cleanup invariants outweigh inheritance cost"
+        ],
+        [
+          "Framework lifecycle callbacks (request handling, test setup/teardown)",
+          "Yes",
+          "Framework must guarantee pairing; subclasses fill domain detail"
+        ],
+        [
+          "2–4 variants sharing >50% of steps",
+          "Yes",
+          "Duplication removal pays for the coupling"
+        ],
+        [
+          "Steps reorder per variant or variants skip core steps",
+          "No — use Strategy / Composition",
+          "Template would need conditionals; sequence is not actually invariant"
+        ],
+        [
+          "Many boolean flags altering the flow",
+          "No — inject policies",
+          "Hook explosion; test matrix becomes unmanageable"
+        ],
+        [
+          "Behavior must change at runtime per request",
+          "No — use Strategy / Decorator",
+          "Subclass binding is compile-time; injection is runtime"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "A practical rule: if you can delete the base class and replace each subclass with a function that takes two lambdas, and nothing is lost except a little ceremony, you never needed inheritance — do that instead. Template earns its place only when the base contributes something subclasses cannot be trusted to replicate: ordering, resource pairing, transaction boundaries, metrics, or security checks. That is WHY frameworks use it for request lifecycles and test runners, and WHY application code often outgrows it after three variants. Start with Template for a genuinely stable skeleton, and have a named exit — extract Strategy for the volatile step — ready when the fourth variant arrives with a different order."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "“Template Method puts the **invariant sequence** in a `final` base method and lets subclasses supply only the **variant steps** via abstract methods and hooks — so I use it when order and cleanup must be guaranteed, and accept inheritance coupling as the price.”"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:59:11.061Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,294 @@
+{
+  "slug": "read-committed",
+  "title": "Read Committed",
+  "summary": "Read Committed means no dirty reads or dirty writes, nothing more. Each statement sees only committed data, but re-reads can change. The default for a reason — and a trap if you assume repeatability.",
+  "kind": "HLD",
+  "problemSlug": "read-committed-96-216",
+  "topic": "Data consistency in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": " f441",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "consistency",
+    "transactions",
+    "isolation"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Read Committed - Jepsen",
+      "url": "https://jepsen.io/consistency/models/read-committed",
+      "source": "jepsen.io",
+      "kind": "article"
+    },
+    {
+      "title": "Read Committed transaction isolation in PostgreSQL - DEV Community",
+      "url": "https://dev.to/olegelantsev/read-committed-transaction-isolation-in-postgresql-3c4d",
+      "source": "dev.to",
+      "kind": "article"
+    },
+    {
+      "title": "Difference between \"read commited\" and \"repeatable read\" in SQL Server",
+      "url": "https://stackoverflow.com/questions/4034976/difference-between-read-commited-and-repeatable-read-in-sql-server",
+      "source": "stackoverflow.com",
+      "kind": "article"
+    },
+    {
+      "title": "Documentation: 18: 13.2. Transaction Isolation - PostgreSQL",
+      "url": "https://www.postgresql.org/docs/current/transaction-iso.html",
+      "source": "postgresql.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Read Committed guarantees you never read data that never committed — and guarantees almost nothing else.** Every statement sees a fresh slice of committed truth. If you re-run the same `SELECT`, the answer is allowed to change. Design around that, or pick a stronger level."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read Committed is a transactional, multi-object isolation level with exactly two hard promises. First, you never observe an uncommitted write from another transaction — no dirty reads. Second, you never overwrite an uncommitted write from another transaction — no dirty writes. That is the entire contract. There is no promise that two reads in the same transaction return the same rows, no promise that a range query is stable, no promise that what you read is the latest write in real time, and no promise that transactions appear to execute in some serial order. Most engineers over-read the name. They hear-committed and assume-consistent. It is not. It is a minimum bar for sanity: committed data only, per statement, with everything else explicitly allowed to shift under you. The trade-off is deliberate: you buy cheap concurrency and full availability by refusing to promise repeatability."
+    },
+    {
+      "type": "paragraph",
+      "text": "In Adya's preventative framing, which is the only definition worth using in an interview, Read Committed forbids P0 and P1 and permits everything else. P0 is dirty write: `w1(x) ... w2(x)` where two uncommitted transactions touch the same object interleaved. P1 is dirty read: `w1(x) ... r2(x)` where a reader sees a value before the writer commits or aborts. Both are banned. P2 — fuzzy or non-repeatable read: `r1(x) ... w2(x)` where a value you already read gets changed and committed by someone else — is allowed. P3 — phantom: `r1(P) ... w2(y in P)` where a predicate match gains or loses rows — is allowed. Write skew, lost update, and read-then-write races built on stale reads are all allowed. If you need any of those banned, you are not asking for Read Committed anymore. Say which phenomenon you actually fear, then pick the level that bans it. That is why naming P0/P1/P2 by name in an interview signals seniority: it replaces vibes with a testable contract."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: how engines actually enforce it"
+    },
+    {
+      "type": "paragraph",
+      "text": "There are two classical implementations, and they explain why the guarantee is per-statement rather than per-transaction. The old row-locking approach takes short-duration read locks: acquire a shared lock on the row, read the committed value, release immediately after the statement. Write locks are long-duration, held until commit or abort to block both dirty reads and dirty writes. This works but reads block on active writers, which is miserable under contention. The trade-off is simplicity for throughput: easy to reason about, painful at scale because every read pays locking and blocking cost. Almost no modern system does pure short-read-lock Read Committed for hot rows — it serializes readers behind a single writer for no stronger guarantee."
+    },
+    {
+      "type": "mermaid",
+      "title": "Read Committed read path",
+      "caption": "Each statement gets a fresh view; writers never expose uncommitted versions.",
+      "code": "flowchart TD\n  B[BEGIN transaction] --> S[Start new statement]\n  S --> V[Acquire fresh committed view]\n  V --> R[Read row]\n  R --> C{Latest version committed?}\n  C -->|Yes| OK[Return it]\n  C -->|No| OLD[Return older committed version or wait]\n  OLD --> OK\n  OK --> N{More statements?}\n  N -->|Yes| S\n  N -->|No| E[COMMIT release write locks]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The modern implementation is multi-version concurrency control with a per-statement snapshot, which is what PostgreSQL does and what you should describe by default. On every `UPDATE`, the engine does not overwrite in place. It creates a new row version stamped with the writer's transaction id (`xmin`), and marks the old version as superseded (`xmax`, new `ctid`). Uncommitted versions are invisible to everyone else. At the start of **each statement**, a Read Committed transaction takes a fresh snapshot of which transactions were committed at that instant, then for each row walks the version chain and returns the newest version committed as of that snapshot. Because the snapshot is retaken per statement, a second `SELECT` in the same transaction sees newly committed data the first `SELECT` did not. That is not a bug. That is the definition, implemented as a feature. The trade-off you bought: readers never block writers and writers never block readers, at the price of storing multiple versions, paying vacuum or GC cost, and surrendering repeatability inside the transaction."
+    },
+    {
+      "type": "table",
+      "caption": "Read Committed trade-offs, no sugar-coating.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why the trade is usually worth it"
+      ],
+      "rows": [
+        [
+          "Readers never block writers, writers never block readers (MVCC)",
+          "Version storage + vacuum / GC + snapshot overhead per statement",
+          "Throughput dominates; blocking reads on every hot row does not scale"
+        ],
+        [
+          "No dirty reads, no dirty writes",
+          "Still allows lost update, skew, phantoms, non-repeatable reads",
+          "You get sanity without paying serializability coordination"
+        ],
+        [
+          "Totally available: every replica can make progress during a partition",
+          "No recency: a read that starts after a write commits may still miss it",
+          "Availability beats recency for most OLTP; if you need recency, say so explicitly"
+        ],
+        [
+          "Low abort rate, simple deadlock profile",
+          "Application must handle read-then-write races with explicit locks or retries",
+          "Database stays fast; correctness burden moves to the few critical transactions"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read Committed does not fail by returning uncommitted data. It fails by letting committed data move underneath a running transaction, and your application acts on a view that was true statement-by-statement but never true as a whole. The classic shape is read-modify-write on a stale read: two transactions both read `balance = 100`, both validate `balance > 50`, both subtract `60`, both commit. No dirty read occurred, yet the balance goes negative. Another shape is inconsistent reporting: a long transaction counts rows, then sums them, and the two statements see different snapshots so the report does not add up. A third is write skew across two objects: two doctors both see one on-call slot open on different shards and both claim it. In logs you will not see corruption errors. You will see business invariant violations — negative inventory, double booking, overspend — with perfectly clean database logs. That mismatch is the tell. The trade-off surfacing here is raw throughput versus whole-transaction consistency: you kept the system fast by letting each statement see a different world."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Lost update:** two concurrent `read balance → write balance - X` sequences both succeed. Symptom: balance drift, inventory oversell. No error, just wrong math. Fix is `SELECT ... FOR UPDATE` or atomic `UPDATE ... WHERE` or a stronger level.",
+        "**Non-repeatable read in a report:** `SELECT` the same row twice in one transaction, get two values. Symptom: QA diff shows totals that do not reconcile, flaky integration tests that pass solo and fail under load.",
+        "**Phantom in pagination or counts:** `SELECT ... WHERE status = 'pending'` returns 10 rows, then 12 rows on re-run. Symptom: duplicate processing, missed rows when workers page with `OFFSET` under concurrent inserts.",
+        "**Skew across statements:** check constraint in statement 1, enforce in statement 3, data changed in between. Symptom: invariant that application code swears it checked is violated in production.",
+        "**Writer wait, not failure:** under row-locking engines a reader or second writer blocks behind an uncommitted write. Symptom: p99 latency spikes and lock timeouts during hot-key updates, not wrong answers. Switch mental model from correctness bug to contention cost."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The production trap",
+      "text": "Read Committed makes **read-then-write in application code unsafe by default**. If correctness depends on what you just read — balance checks, uniqueness checks, capacity checks — you must re-assert it at write time with a row lock, a conditional write, or a constraint. Otherwise you shipped a race and called it an isolation level."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it looks like in SQL"
+    },
+    {
+      "type": "code",
+      "language": "sql",
+      "filename": "read-committed-demo.sql",
+      "code": "-- T1 writes but has NOT committed. T2 must not see it.\n-- T1: BEGIN; UPDATE accounts SET balance = 0 WHERE id = 1;\n-- T2: BEGIN; SELECT balance FROM accounts WHERE id = 1; -- still 100\n-- T1: COMMIT;\n-- T2: SELECT balance FROM accounts WHERE id = 1; -- now 0 (new snapshot)\n\n-- Non-repeatable read is LEGAL here:\n-- T2: BEGIN;\n-- T2: SELECT balance FROM accounts WHERE id = 1; -- 100\n-- T1: BEGIN; UPDATE accounts SET balance = 0 WHERE id = 1; COMMIT;\n-- T2: SELECT balance FROM accounts WHERE id = 1; -- 0, same txn, new value\n-- T2: COMMIT;\n\n-- Safe write pattern under Read Committed:\n-- BEGIN;\n-- SELECT balance FROM accounts WHERE id = 1 FOR UPDATE; -- lock it\n-- UPDATE accounts SET balance = balance - 60 WHERE id = 1 AND balance >= 60;\n-- COMMIT;"
+    },
+    {
+      "type": "paragraph",
+      "text": "The `xmin / xmax / ctid` inspection people run on PostgreSQL is just MVCC made visible. After an `UPDATE` and `COMMIT`, `xmin` advances to the writer's transaction id and `ctid` points at the new physical version, because you are looking at a new row version, not a mutated cell. An uncommitted new version has an `xmin` no other statement's snapshot considers committed, so concurrent Read Committed statements walk past it to the older version. After commit, the next statement's fresh snapshot includes that `xmin`, so it resolves to the new version. That per-statement snapshot refresh is the entire difference from Repeatable Read, where the snapshot is taken once at transaction start and frozen. The trade-off between the two is one line: refresh per statement and see new commits but lose stability, or freeze at start and keep stability but see increasingly stale data and risk serialization aborts."
+    },
+    {
+      "type": "table",
+      "caption": "Where Read Committed sits in the standard ladder.",
+      "headers": [
+        "Level",
+        "Dirty read",
+        "Non-repeatable read",
+        "Phantom",
+        "Snapshot scope"
+      ],
+      "rows": [
+        [
+          "Read Uncommitted",
+          "Allowed (not in Postgres — mapped to RC)",
+          "Possible",
+          "Possible",
+          "None"
+        ],
+        [
+          "Read Committed",
+          "Not possible",
+          "Possible",
+          "Possible",
+          "Fresh snapshot per statement"
+        ],
+        [
+          "Repeatable Read",
+          "Not possible",
+          "Not possible",
+          "Allowed by spec, banned in Postgres",
+          "One snapshot per transaction"
+        ],
+        [
+          "Serializable",
+          "Not possible",
+          "Not possible",
+          "Not possible",
+          "Serializable ordering + aborts"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why distributed systems default to it"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read Committed is the only isolation level that is totally available in the CAP sense without heroics: a partition cannot force you to block reads, because any node can answer from its last committed versions without coordinating. Stronger levels need cross-node agreement on ordering or predicate stability, which means waiting, aborting, or giving up availability during partitions. Read Committed also imposes zero real-time or per-process ordering. A process can commit a write in transaction one and not see it in transaction two if the second transaction routes to a lagging replica — allowed, and routinely surprising. A read can legally return the empty state by executing at logical time zero, and a write-only transaction can be ordered after all reads. Real engines do not exploit those pathologies, but the model permits them, which tells you how weak the promise is. The trade-off is explicit: choose Read Committed when you want every node to keep serving committed data through failures, and accept that-freshness and cross-statement stability are application problems, not database problems. If you need monotonic reads or read-your-writes across transactions, you need session guarantees or a stronger level on top — name it, do not assume Read Committed provides it. For performance extremists, relaxing further to Read Uncommitted buys speed by permitting dirty reads; almost nobody should take that deal outside analytics scratch paths."
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "State the contract in one breath",
+          "text": "No dirty reads, no dirty writes. Non-repeatable reads and phantoms allowed. Per-statement snapshot. That sentence buys you credibility before any diagram."
+        },
+        {
+          "title": "Draw the version chain",
+          "text": "Sketch writer creating v2 uncommitted, reader skipping to v1, then after commit the next statement resolving to v2. Interviewers promote candidates who show the mechanism, not just the phenomena table."
+        },
+        {
+          "title": "Give the lost-update example",
+          "text": "Two transactions read 100, both subtract 60, both commit. Ask: what isolation bans this? Answer: not Read Committed. Then offer the fix: FOR UPDATE, conditional UPDATE, or Repeatable Read / Serializable for that transaction only."
+        },
+        {
+          "title": "Name the cost of going stronger",
+          "text": "Repeatable Read freezes the snapshot and can abort; Serializable adds predicate tracking and abort/retry burden. Do not recommend upgrading the global default — isolate the critical transaction. That scoping judgment is what separates mid from senior."
+        },
+        {
+          "title": "Close with the availability point",
+          "text": "Read Committed stays available during partitions and keeps reader-writer concurrency high. If the system needs total availability plus whole-transaction atomic visibility, name Monotonic Atomic View as the stronger-but-still-available step up."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail interviews"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**“Committed means latest.”** No. It means committed as of this statement's snapshot. A write that committed a millisecond ago on another node may be invisible. Recency is a different property — strict serializability — and Read Committed never promised it.",
+        "**“Same transaction means same view.”** That is Repeatable Read. Under Read Committed each statement re-snapshots. Re-running a query can return different rows by design.",
+        "**“No dirty reads means my read-modify-write is safe.”** The reads were clean; the write still raced. Safety needs a lock or a predicate at write time. Isolation level alone does not serialize your application logic.",
+        "**“Read Committed orders my transactions.”** It does not even order one client's transactions. You can observe a write then miss it next transaction. If you need read-your-writes or monotonic reads, you need explicit session guarantees.",
+        "**“Postgres Read Uncommitted is weaker.”** In Postgres it is an alias for Read Committed. Saying you will drop to Read Uncommitted for speed in Postgres reveals you have not read the docs."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Default to Read Committed; escalate surgically.",
+      "headers": [
+        "Use Read Committed when",
+        "Do NOT use it alone when",
+        "What to do instead"
+      ],
+      "rows": [
+        [
+          "High-concurrency OLTP with mostly independent row writes",
+          "Balance, inventory, quota, or ledger updates driven by prior reads",
+          "Keep RC default + `FOR UPDATE` or atomic conditional write on the hot path"
+        ],
+        [
+          "Read-heavy services where slightly stale per-statement data is fine",
+          "Reports that must reconcile across multiple queries",
+          "Single snapshot transaction (Repeatable Read) or single-statement aggregate"
+        ],
+        [
+          "Partition-tolerant services that must keep serving reads",
+          "Two keys must change atomically from the reader's view",
+          "Monotonic Atomic View or transaction with atomic visibility"
+        ],
+        [
+          "99% of application transactions; escalate only the risky few",
+          "Correctness proof assumes serial execution",
+          "Serializable for that transaction + retry loop; never globally without load testing"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Read Committed means every statement sees only committed data as of that statement — so dirty reads are impossible but re-reads can change — which is why it is fast and available, and why any check-then-act logic needs an explicit lock or a stronger level for that transaction.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:33:06.346Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,323 @@
+{
+  "slug": "general-way-ask-for-a-batch-bunch-of-ids",
+  "title": "General Way (Ask for a Batch(bunch) of Ids)",
+  "summary": "Batch-get by IDs is a failure-containment pattern: one bounded request for many keys with per-item results, chunked on the client and scatter-gathered on the server.",
+  "kind": "HLD",
+  "problemSlug": "general-way-ask-for-a-batchbunch-of-ids-97-321",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Medium",
+  "coverEmoji": "📦",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Fault Tolerance",
+    "Bulk Fetch",
+    "Distributed Systems"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "How would you design an API endpoint to fetch multiple resources ...",
+      "url": "https://www.reddit.com/r/webdev/comments/kx71zx/how_would_you_design_an_api_endpoint_to_fetch/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "most efficient way to bulk fetch by known IDS - Stack Overflow",
+      "url": "https://stackoverflow.com/questions/41878136/most-efficient-way-to-bulk-fetch-by-known-ids",
+      "source": "stackoverflow.com",
+      "kind": "article"
+    },
+    {
+      "title": "Best way to batch identify - General - iNaturalist Community Forum",
+      "url": "https://forum.inaturalist.org/t/best-way-to-batch-identify/58771",
+      "source": "forum.inaturalist.org",
+      "kind": "article"
+    },
+    {
+      "title": "How to batch up multiple id requests to maximize economy and still ...",
+      "url": "https://stackapps.com/questions/889/how-to-batch-up-multiple-id-requests-to-maximize-economy-and-still-avoid-400-b",
+      "source": "stackapps.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Fetching IDs one-by-one turns one user action into **N network failures waiting to happen**. A batch-get collapses that fan-out into one bounded request with **per-item success or failure**. If you remember nothing else: **never let one slow or missing ID fail the other 99**. Trade-off: you buy fewer round trips by accepting a more complex response contract."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What “ask for a bunch of IDs” actually means"
+    },
+    {
+      "type": "paragraph",
+      "text": "A batch-get is a single read operation of the form `getMany(ids: Set<ID>, options) -> Map<ID, Value | Error>`. The input is an unordered, deduplicated set of keys, explicitly bounded — say 20, 50, or 100 per call. The output is not a list. It is a map from each requested ID to either its value or a typed per-item error such as `NOT_FOUND`, `FORBIDDEN`, or `TIMEOUT`. Order of the response does not imply anything unless you promise it. Missing IDs are reported, not silently dropped. Duplicate input IDs are collapsed. Oversized inputs are rejected fast with `413` or truncated by explicit pagination, never processed hopefully. That contract is the whole pattern. Without per-item status and an enforced size cap, you do not have a batch API — you have a distributed denial-of-service endpoint with nice documentation."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why one-by-one breaks distributed systems"
+    },
+    {
+      "type": "paragraph",
+      "text": "A detail page that needs 40 bundles, profiles, or documents looks innocent until you draw the network. Forty sequential `GET /bundle/{id}` calls mean 40x connection setup, TLS, load-balancer queuing, auth checks, and tail-latency rolls. If p99 for one fetch is 80ms, p99 for 40 sequential fetches is seconds, and p99 for 40 parallel fetches is still dominated by the single slowest shard plus client thread exhaustion. Worse, retries multiply: one flaky partition turns one user retry into 40 origin retries. That is retry amplification, and it is how a single slow dependency takes down an edge fleet. Batching fixes the math. One request pays auth, routing, and serialization once. The server can parallelize storage lookups internally where it has locality and bounded concurrency. Trade-off: you shift queueing from the network and client into the server’s scatter-gather layer, so the server must now enforce timeouts and isolation per partition."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The working design has three stages, and you need all three. First, the client buffers, deduplicates, sorts for cache locality, and **chunks** the ID set into fixed-size batches — 25 to 100 is the sane default. It never sends 5,000 IDs because the URL or body allows it. Second, the transport carries the batch as one call: `POST /bundles:batchGet` with a JSON body for large or sensitive ID sets, or repeated query parameters for small, cacheable sets. The server validates size, splits by owning partition or shard, and issues bounded parallel lookups with a short per-shard deadline. Third, it gathers: fast shards return values, slow shards return per-item timeouts, missing keys return `NOT_FOUND`. The response always includes an explicit `found`, `missing`, and `failed` partition so the client can retry only what needs retrying. Trade-off: scatter-gather lowers median latency but couples tail latency to the slowest partition touched — which is why per-shard deadlines are non-negotiable."
+    },
+    {
+      "type": "mermaid",
+      "title": "Batch-get scatter-gather",
+      "caption": "Client chunks, server scatters to partitions and gathers per-ID results.",
+      "code": "flowchart TD\n  A[Client collects IDs] --> B[Deduplicate and chunk]\n  B --> C[One batch RPC]\n  C --> D[Validate size limit]\n  D --> E[Scatter to partitions]\n  E --> F[Bounded parallel lookup]\n  F --> G[Gather per-ID result or error]\n  G --> H[Return found plus missing plus failed]"
+    },
+    {
+      "type": "table",
+      "caption": "Batch-get versus per-ID fetch, with the real costs.",
+      "headers": [
+        "Approach",
+        "What you gain",
+        "What you pay",
+        "When it hurts"
+      ],
+      "rows": [
+        [
+          "Single batch RPC",
+          "1 round trip, 1 auth check, shared compression",
+          "Complex response with partial failures",
+          "Slowest shard dictates batch tail latency"
+        ],
+        [
+          "N parallel single gets",
+          "Simple contract, cacheable per ID",
+          "N connections, N auth checks, client thread explosion",
+          "Thundering herd on retry; edge runs out of sockets"
+        ],
+        [
+          "N sequential single gets",
+          "Trivial to implement and debug",
+          "Latency sums; total equals sum of all tails",
+          "Any page needing more than 5 objects times out"
+        ],
+        [
+          "Unbounded batch (1000+ IDs)",
+          "Fewest round trips",
+          "Huge response, GC pauses, gateway timeouts",
+          "One hot batch saturates a storage node"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Design choices that actually matter"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Cap the batch hard. 20–100 IDs.** Pick 50 if you have no data. Enforce it in code and reject over-limit fast. Trade-off: more round trips for huge lists in exchange for predictable memory and no 30-second gateway timeouts.",
+        "**Use `POST` with a body once IDs are many, sensitive, or non-cacheable.** Repeated query keys work for under ~20 short IDs and stay CDN-friendly. Past that, URL length limits, logging of IDs, and cache fragmentation kill you. Trade-off: you lose HTTP caching to gain reliability and privacy.",
+        "**Return a map, not an ordered list.** Order tempts clients to rely on position. Return `results: {id: value}` plus `errors: {id: code}`. Trade-off: slightly larger payload for unambiguous retries — the client knows exactly which IDs to refetch.",
+        "**Deduplicate and set a server-side fan-out limit.** Collapse duplicate IDs before lookup, then limit parallel partition calls with a semaphore. Trade-off: a little CPU to dedupe saves duplicated hot-key reads that would otherwise amplify a cache miss.",
+        "**Give every item its own deadline via the batch deadline.** If the batch budget is 300ms, give shards 200ms and reserve 100ms to assemble. Return `TIMEOUT` per unfinished ID. Trade-off: you return partial data deliberately to protect the caller’s latency SLO."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Default numbers that survive review",
+      "text": "Max 50 IDs per batch, 300ms batch timeout, 200ms per-partition timeout, max 10 concurrent partition fetches per batch, retry only `TIMEOUT` and `UNAVAILABLE` IDs with jittered backoff. Say these numbers and justify them — interviewers grade concrete bounds over vague scale talk."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Batch endpoints fail in four characteristic ways. First, **poison batches**: one caller sends 2,000 IDs or a handful of ice-cold keys that miss every cache and hit disk. Symptom: p99 spikes only on batch routes while single-get stays flat, plus storage queue depth climbing on one node. Second, **straggler coupling**: the batch waits for every partition, so one slow replica makes every batch that touches it slow. Symptom: latency histogram shows a bimodal tail correlated with a specific shard in traces. Third, **all-or-nothing handlers**: the server throws on the first missing or forbidden ID and returns `500` for the whole batch. Symptom: client dashboards show full-page errors when only one embedded object was deleted or made private. Fourth, **retry storms**: the client retries the entire batch on partial timeout, re-requesting 49 successes to recover 1 failure. Symptom: origin QPS doubles or triples during a minor blip and turns it into an outage. Fix all four with the same trio: hard size cap, per-shard deadline with per-item fallback, and retry-only-missing semantics. Trade-off: you accept partial responses as normal, which forces callers to render degraded UI — that is correct, not a weakness."
+    },
+    {
+      "type": "table",
+      "caption": "Production failures mapped to observable symptoms and fixes.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Fix"
+      ],
+      "rows": [
+        [
+          "Oversized batch",
+          "Gateway 504, large response, GC pause on server",
+          "Enforce max IDs, paginate, require POST body"
+        ],
+        [
+          "Hot or cold keys in batch",
+          "One storage node saturated, cache hit ratio drops",
+          "Dedupe, split hot keys, per-key circuit breaker"
+        ],
+        [
+          "Straggler partition",
+          "Batch p99 >> single-get p99, trace points at one shard",
+          "Per-shard deadline, hedged request or early per-item timeout"
+        ],
+        [
+          "All-or-nothing error handling",
+          "Whole page fails for one deleted ID",
+          "Per-item status codes, never fail batch for NOT_FOUND"
+        ],
+        [
+          "Blind full-batch retry",
+          "QPS amplification during partial outage",
+          "Return retryable ID list, exponential backoff with jitter"
+        ]
+      ]
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "batch_client.py",
+      "code": "MAX_IDS = 50\nBATCH_TIMEOUT_MS = 300\n\ndef fetch_all(ids, batch_get_fn):\n    ids = list(dict.fromkeys(ids))  # dedupe, keep order\n    results = {}\n    errors = {}\n    for i in range(0, len(ids), MAX_IDS):\n        chunk = ids[i:i + MAX_IDS]\n        resp = batch_get_fn(chunk, timeout_ms=BATCH_TIMEOUT_MS)\n        # resp: {\"found\": {id: val}, \"retryable\": {id: err}, \"fatal\": {id: err}}\n        results.update(resp[\"found\"])\n        # retry ONLY retryable IDs, with backoff, not the whole chunk\n        if resp[\"retryable\"]:\n            time.sleep(random.uniform(0.02, 0.1))\n            retry = batch_get_fn(list(resp[\"retryable\"]), timeout_ms=BATCH_TIMEOUT_MS)\n            results.update(retry[\"found\"])\n            errors.update(retry[\"retryable\"])\n        errors.update(resp[\"fatal\"])\n    return results, errors"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "BatchController.java",
+      "code": "// POST /bundles:batchGet { \"ids\": [...] }\n// Never fail the batch for one bad ID. Trade-off: bigger contract, safe retries.\npublic BatchResponse batchGet(BatchRequest req) {\n    if (req.ids().size() > 50) throw status(413, \"max 50 ids per batch\");\n    Map<String, Bundle> found = new HashMap<>();\n    Map<String, String> retryable = new HashMap<>();\n    Map<String, String> fatal = new HashMap<>();\n    Map<String, List<String>> byShard = partition(req.ids());\n    byShard.values().parallelStream().limit(10).forEach(shardIds -> {\n        try {\n            lookupWithDeadline(shardIds, 200, found, retryable, fatal);\n        } catch (TimeoutException e) {\n            shardIds.forEach(id -> retryable.put(id, \"TIMEOUT\"));\n        }\n    });\n    return new BatchResponse(found, retryable, fatal);\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Fault tolerance: partial success is the contract"
+    },
+    {
+      "type": "paragraph",
+      "text": "Reads by ID are naturally idempotent, so exploit it. Make batch-get safe to retry by guaranteeing no side effects and stable per-item errors: `NOT_FOUND` and `FORBIDDEN` are final and must not be retried; `TIMEOUT` and `UNAVAILABLE` are retryable and the server should tell the client exactly which IDs fall in that bucket. Do not offer atomic all-or-nothing semantics unless you are building a transaction — it forces distributed coordination for no benefit and turns a single deleted row into a user-visible outage. On writes, the rule flips: batch-writes need per-item idempotency keys if retried, otherwise a retried batch double-applies. Keep a server-side request budget: if 8 of 10 partitions answered and the deadline fires, return those 8 and mark 2 as retryable. Trade-off: callers do more work — they must merge maps and render partial state — but the system sheds load gracefully instead of collapsing together."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The batch-get sin",
+      "text": "Returning `500` or `404` for the whole batch because one ID is missing or slow. That couples unrelated keys and guarantees cascading UI failures. **Per-item status or do not ship the endpoint.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Consensus angle: why batches interact with quorums"
+    },
+    {
+      "type": "paragraph",
+      "text": "In a replicated or consensus-backed store, one batch fans out across many leaders and quorum groups. A batch of 50 IDs may touch 50 different Raft leaders or 50 partitions each needing a quorum read. That is 50x the consensus work of a single read, packed into one user-facing deadline. If you demand linearizable reads for every ID, latency becomes the slowest quorum round plus lease checks, and availability drops to the intersection of all groups touched. The pragmatic answer is to tier consistency: serve batch-get from local replicas or follower reads with version vectors by default, and require quorum or linearizable reads only for the IDs that need it via a `consistency: eventual | strong` flag per request — or better, per ID. Trade-off: you admit that not all IDs in one screen deserve the same consistency, which complicates the API but prevents one strongly-consistent key from dragging 49 cacheable keys through consensus."
+    },
+    {
+      "type": "mermaid",
+      "title": "Batch fan-out over consensus groups",
+      "caption": "One batch touches many quorum groups; tier consistency to survive.",
+      "code": "flowchart LR\n  B[Batch coordinator] --> G1[Group A quorum read]\n  B --> G2[Group B follower read]\n  B --> G3[Group C follower read]\n  G1 --> R[Gather with deadline]\n  G2 --> R\n  G3 --> R\n  R --> P[Partial result plus retryable]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the N+1 trace.",
+          "text": "Draw the page load: gateway calls profile, bundles, comments. Show 40 sequential arrows. Say the number: 40 times 60ms median is 2.4s. That justifies the batch before any API bikeshedding."
+        },
+        {
+          "title": "Fix the contract, not the URL.",
+          "text": "State method, limit, and response shape: POST body with max 50 IDs, response with found plus retryable plus fatal maps. Explicitly reject unbounded comma-separated query strings — cite URL limits, logging leaks, and cache busting."
+        },
+        {
+          "title": "Draw scatter-gather with budgets.",
+          "text": "Sketch client chunking, server partition split, bounded parallelism of 8–10, per-shard deadline inside the batch deadline. Name the trade-off: lower median latency for tail coupling to the slowest shard."
+        },
+        {
+          "title": "Answer the failure question before asked.",
+          "text": "Volunteer partial success, retry-only-missing, dedupe, and per-shard timeouts. Say what you return when 2 of 10 shards time out. Interviewers promote candidates who design the error path first."
+        },
+        {
+          "title": "Close with consistency tiering.",
+          "text": "If the store is replicated, say which IDs get follower reads and which demand quorum. That one sentence separates a medium answer from a senior one."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Bigger batches are always faster.** False past ~50–100. Payload serialization, GC, and the slowest shard dominate. Throughput plateaus, then p99 explodes.",
+        "**Batch-get should be atomic.** Almost never. Atomicity across partitions needs coordination or 2PC. You want independent per-item results, not a distributed transaction for a read.",
+        "**GET with comma-separated IDs is the standard.** It is one option for tiny sets. There is no standard; repeated params, path segments, and POST bodies all exist. Choose by size and cacheability, not fashion.",
+        "**Missing IDs should be omitted silently.** That breaks retry logic. The client cannot distinguish lost-in-transit from not-found unless you say so explicitly.",
+        "**Batching fixes a hot key.** It hides it. Fifty requests for the same viral ID in one batch still hammer one partition. You need dedupe plus caching plus per-key admission control."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use batch-get for correlated reads; keep single-get for the rest.",
+      "headers": [
+        "Use batch-get when",
+        "Stick to single-get when",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Page needs 5–100 related objects by known IDs",
+          "Only 1–2 objects needed",
+          "Batch overhead is not worth it for one key"
+        ],
+        [
+          "IDs span services but share a deadline",
+          "IDs need independent caching with long TTLs",
+          "CDN per-object caching beats one uncacheable batch"
+        ],
+        [
+          "Clients fan out and cause retry amplification",
+          "Each ID needs different auth or consistency",
+          "Forcing one contract couples unrelated policies"
+        ],
+        [
+          "Storage supports parallel point lookups",
+          "Lookup is a scan, join, or search predicate",
+          "Batch-by-ID cannot express queries — use search API"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Expose a bounded `batchGet` that takes up to ~50 IDs and returns per-ID values or typed errors via scatter-gather with per-shard deadlines, so clients retry only timeouts and render partial success."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:00:39.414Z",
+    "problems": []
+  }
+}

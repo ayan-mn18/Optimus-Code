@@ -1,0 +1,304 @@
+{
+  "slug": "future-and-completablefuture",
+  "title": "Future and CompletableFuture",
+  "summary": "Future is a blocking read-handle; CompletableFuture is a composable, manually-completable pipeline. Know when to chain, which executor runs each stage, and where exceptions go.",
+  "kind": "LLD",
+  "problemSlug": "future-and-completablefuture-43-83",
+  "topic": "Concurrency in Java",
+  "difficulty": "Medium",
+  "coverEmoji": "⚡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Java"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Java's CompletableFuture vs. Future - Concurrency Deep Dives",
+      "url": "https://concurrencydeepdives.com/java-future-vs-completablefuture/",
+      "source": "concurrencydeepdives.com",
+      "kind": "article"
+    },
+    {
+      "title": "Difference Between CompletableFuture And Future In ...",
+      "url": "https://medium.com/@reetesh043/difference-between-completablefuture-and-future-in-java-4f7e00bcdb56",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "CompletableFuture vs. Future in Java - Java Code Geeks",
+      "url": "https://www.javacodegeeks.com/2024/12/completablefuture-vs-future-in-java.html",
+      "source": "javacodegeeks.com",
+      "kind": "article"
+    },
+    {
+      "title": "Difference Between Future, CompletableFuture, and Rxjava's ...",
+      "url": "https://www.baeldung.com/java-future-completablefuture-rxjavas-observable",
+      "source": "baeldung.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**`Future` is a ticket you block on. `CompletableFuture` is a pipeline you compose.** If your code calls `get()` in the middle of a request path, you kept the old bottleneck and just renamed the class. Use `CompletableFuture` only when you chain with `thenApply` / `thenCompose` / `thenCombine`, handle failure in the chain with `exceptionally` / `handle`, and control *where* each stage runs. The trade-off every time: composition buys throughput and expressiveness, but forces you to reason about executors, exception propagation, and who completes the future."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "`Future<V>` — since Java 5 — is a minimal read-only handle for a computation owned by someone else. The interface is five methods and nothing more: `get()`, `get(timeout, unit)`, `isDone()`, `isCancelled()`, and `cancel(mayInterruptIfRunning)`. You get one from `ExecutorService.submit(Callable)`. You cannot complete it yourself, you cannot attach a callback to it, and you cannot combine two of them except by blocking on both. That limitation is intentional: it models delegation to a thread pool, not a dataflow graph. If you need the result, you park the calling thread until it arrives."
+    },
+    {
+      "type": "paragraph",
+      "text": "`CompletableFuture<V>` — since Java 8 — implements both `Future<V>` and `CompletionStage<V>`. That second interface is the whole point: ~50 methods for building dependent computations without blocking. It is writable from any thread via `complete(value)`, `completeExceptionally(ex)`, `cancel()`, and `obtrudeValue()`, and readable via chained stages like `thenApply`, `thenAccept`, `thenRun`, `thenCompose`, `thenCombine`, `allOf`, `anyOf`, `orTimeout`, plus explicit error stages `exceptionally`, `handle`, and `whenComplete`. You create one either implicitly with `supplyAsync` / `runAsync`, or explicitly with `new CompletableFuture()` and complete it later — for example when a callback, NIO completion handler, or message listener fires. That is why it is both a future *and* a promise: the consumer chains, the producer completes."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Why Future was not enough"
+    },
+    {
+      "type": "paragraph",
+      "text": "`Future` forces three bad habits at scale. First, result retrieval is blocking-only: there is no `onComplete` hook, so fan-out code becomes `future1.get(); future2.get();` in sequence and latency adds instead of overlapping. Second, there is no composition: you cannot say *fetch user, then fetch orders for that user* without waking a thread just to submit the next task. Third, errors are invisible until `get()` throws `ExecutionException`, so timeout, fallback, and retry logic lives outside the computation as nested `try/catch` around blocking calls. The design choice was to keep `Future` dumb and leave orchestration to the caller. The trade-off: simple contract and easy cancellation, in exchange for one thread parked per in-flight dependency and no declarative pipeline. That is exactly what `CompletableFuture` was added to fix — at the cost of a far larger API surface and subtler threading semantics."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "Think of `Future` as polling a mailbox and `CompletableFuture` as wiring callbacks to that mailbox. With `ExecutorService.submit`, the pool wraps your `Callable` in a `FutureTask`, runs it, stores the outcome, and unparks any thread stuck in `get()`. Nothing else happens automatically. With `CompletableFuture`, completion is an event: when the upstream stage finishes, the runtime schedules each dependent stage according to its variant. The non-`Async` variant (`thenApply`) runs in the thread that completed the parent — cheap, but it hijacks that thread. The `Async` variant (`thenApplyAsync(fn, executor)`) hands off to the supplied executor — safer for blocking or slow stages, but adds a queue hop. No executor argument means `ForkJoinPool.commonPool`, which is the source of half the production incidents with this API. The mechanism to internalise: completion triggers scheduling, and scheduling needs an explicit executor decision every time."
+    },
+    {
+      "type": "mermaid",
+      "title": "Blocking handle vs completion pipeline",
+      "caption": "Future parks the caller; CompletableFuture schedules dependents on completion.",
+      "code": "flowchart TD\n    C1[\"Client submits Callable\"] --> P[\"ExecutorService runs FutureTask\"]\n    P --> F[\"Future result box\"]\n    F --> G[\"get blocks caller\"]\n    C2[\"supplyAsync on Executor\"] --> CF[\"CompletableFuture incomplete\"]\n    CF --> T1[\"thenApply parse\"]\n    CF --> T2[\"thenCompose fetch orders\"]\n    T1 --> J[\"thenCombine merge\"]\n    T2 --> J\n    J --> E[\"handle or exceptionally\"]\n    E --> R[\"join only at edge\"]"
+    },
+    {
+      "type": "paragraph",
+      "text": "The sync-vs-async suffix is the control knob interviewers probe. `thenApply` inherits the completer thread: good for pure CPU transforms under a microsecond, dangerous if the function blocks on I/O or takes 200ms, because you stall the I/O thread or the common pool worker that just finished the parent. `thenApplyAsync(fn, myPool)` isolates that cost to `myPool` — which is why you should pass an explicit executor for anything that touches sockets, disks, or locks. Trade-off stated plainly: same-thread chaining minimises latency and context switches; executor-hopped chaining preserves isolation and prevents pool starvation. Defaulting to the two-argument `Async` overload with a named pool is the only defensible default in server code."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs between the two APIs.",
+      "headers": [
+        "Dimension",
+        "Future",
+        "CompletableFuture"
+      ],
+      "rows": [
+        [
+          "Completion",
+          "Only the executor completes it. Simple ownership, no manual completion.",
+          "Anyone can complete it. Flexible for callbacks and adapters, but ownership is unclear — leaks and double-completion are your bug."
+        ],
+        [
+          "Composition",
+          "None. Sequence with blocking get(). Easy to read, wastes threads.",
+          "thenApply / thenCompose / thenCombine / allOf / anyOf. No parked threads, but pipeline ordering and executor choice must be reasoned about."
+        ],
+        [
+          "Error handling",
+          "ExecutionException on get(). Explicit but far from the failure site.",
+          "exceptionally / handle / whenComplete in-chain. Localises recovery, but silently swallowing exceptions is one typo away."
+        ],
+        [
+          "Threading",
+          "Caller blocks; worker runs. Predictable, low surprise.",
+          "Dependent may run on completer thread, commonPool, or custom pool. Fast when correct, pool-exhaustion when wrong."
+        ],
+        [
+          "Cancellation",
+          "cancel(true) interrupts the worker if running. Well understood.",
+          "cancel() completes exceptionally with CancellationException and cascades to dependents. Interruption of running stages is not guaranteed — must check cooperative cancellation."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "`CompletableFuture` failures rarely throw in your face; they stall, default silently, or complete the wrong branch. The signature in dashboards is thread starvation with low CPU: request latency p99 spikes while worker pools look idle, because threads are parked in `get()` / `join()` or the common pool is saturated by blocking stages. The second signature is wrong data, not errors: an `exceptionally` that returns a default poisons downstream stages that cannot tell fallback from real. The third is lost work: a future nobody joins and whose exception nobody observes fails silently until a customer reports missing side effects. Always name the executor, always bound waits with `orTimeout`, and always log in `whenComplete` before you recover."
+    },
+    {
+      "type": "table",
+      "caption": "Failure modes you must be able to diagnose from symptoms.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Root cause / fix"
+      ],
+      "rows": [
+        [
+          "Common-pool saturation",
+          "Sudden latency cliff across unrelated endpoints, ForkJoinPool threads BLOCKED on socket read",
+          "Blocking I/O inside thenApply or supplyAsync without executor. Fix: dedicated pools for blocking vs CPU; use Async overload with explicit executor."
+        ],
+        [
+          "Blocking get() in event loop",
+          "Throughput collapses under load, thread dump shows request threads parked in Future.get",
+          "Sequential get() defeats async overlap. Fix: compose with thenCombine / allOf and block once at the edge, or return the future upstream."
+        ],
+        [
+          "Swallowed exception via exceptionally",
+          "200 OK with empty or stale payload, no error logs",
+          "exceptionally returning default for all throwables including bugs. Fix: handle only expected types, log and rethrow the rest via completeExceptionally."
+        ],
+        [
+          "Nested futures from thenApply",
+          "Type is CompletableFuture of CompletableFuture, join returns inner future object not value",
+          "Used thenApply where thenCompose was needed for dependent async call. Fix: thenCompose for future-returning functions; thenApply for pure mappings."
+        ],
+        [
+          "Unobserved failure / no join",
+          "Missing writes, metrics gaps, no stack trace",
+          "Fire-and-forget chain with no terminal join and no whenComplete. Fix: always terminate with join at edge and attach logging stage; consider orTimeout."
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The default-executor trap",
+      "text": "`supplyAsync(task)` and `thenApplyAsync(fn)` with no executor use `ForkJoinPool.commonPool()`, sized to CPUs minus one and shared with parallel streams. Put a 50ms downstream HTTP call there and 32 concurrent requests exhaust it. Interviewers expect you to say: **never rely on the default in server code — inject a named ThreadPoolExecutor for I/O and keep CPU transforms inline or on a CPU pool.** Name the trade-off: one extra constructor parameter buys isolation and debuggability."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that makes the difference visible"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "FutureBlocking.java",
+      "code": "ExecutorService pool = Executors.newFixedThreadPool(8);\nFuture<User> userF = pool.submit(() -> userDao.findById(id));\nFuture<List<Order>> ordersF = pool.submit(() -> orderDao.findByUser(id));\n// Both run, but the caller parks twice and pays sum of latencies on this thread.\n// Timeout avoids parking forever; cancellation is explicit.\ntry {\n  User user = userF.get(800, TimeUnit.MILLISECONDS);\n  List<Order> orders = ordersF.get(800, TimeUnit.MILLISECONDS);\n  return new Profile(user, orders);\n} catch (TimeoutException | ExecutionException e) {\n  userF.cancel(true); ordersF.cancel(true);\n  throw new RuntimeException(e);\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This is the baseline you must be able to write cold. It is correct for two parallel calls, and that is its ceiling. The `get(timeout)` is non-negotiable — unbounded `get()` is how one slow dependency wedges every request thread. The trade-off is explicit: you get per-task cancellation and a readable sequence, but the calling thread contributes zero work while parked. With ten downstream calls the thread-park cost dominates, and error handling is disconnected from the stage that failed. That is the cue to switch APIs, not to add more threads."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "CompletablePipeline.java",
+      "code": "Executor ioPool = Executors.newFixedThreadPool(32, r -> {\n  Thread t = new Thread(r, \"io-\" + r.hashCode());\n  t.setDaemon(true); return t;\n});\nCompletableFuture<User> userF =\n    CompletableFuture.supplyAsync(() -> userDao.findById(id), ioPool)\n      .orTimeout(800, TimeUnit.MILLISECONDS);\nCompletableFuture<List<Order>> ordersF =\n    userF.thenComposeAsync(u ->\n      CompletableFuture.supplyAsync(() -> orderDao.findByUser(u.id()), ioPool),\n      ioPool);\nCompletableFuture<Profile> profileF =\n    userF.thenCombine(ordersF, Profile::new)\n      .whenComplete((v, ex) -> { if (ex != null) log.warn(\"profile failed\", ex); })\n      .exceptionally(ex -> Profile.fallback(id));\n// Block exactly once, at the edge:\nreturn profileF.join();"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape wins: `supplyAsync` with `ioPool` isolates blocking DAO calls off the common pool — isolation over brevity. `thenComposeAsync` is chosen because the second fetch *depends* on the first and itself returns a future; `thenApply` here would nest futures instead of flattening them. `thenCombine` overlaps independent work without manual thread juggling. `orTimeout` bounds each leg so one slow shard cannot hold the merge forever. `whenComplete` logs the real cause *before* `exceptionally` substitutes a fallback, which prevents silent data corruption. The single `join()` at the edge is deliberate: unchecked, but safe here because failure was already mapped to a fallback. Trade-off: you eliminated thread parking in the middle at the cost of having to justify every executor and every error-mapping decision."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Write the Future baseline first",
+          "text": "Submit two Callables, get with timeout, cancel on failure, shutdown the pool. They check timeout handling and interrupt propagation before anything fancy."
+        },
+        {
+          "title": "Convert to a non-blocking chain",
+          "text": "Replace sequential get() with supplyAsync plus thenApply for pure transforms and thenCompose for dependent async calls. Say aloud why thenCompose flattens and thenApply maps — mixing them up is an instant fail."
+        },
+        {
+          "title": "Fan-out and merge",
+          "text": "Combine independent futures with thenCombine for two, allOf plus join for N. Explain that allOf does not give you values — you still join each constituent after it completes — and that anyOf is for hedged or fastest-wins reads."
+        },
+        {
+          "title": "Design the error and time policy",
+          "text": "Add orTimeout per stage, handle vs exceptionally with justification, and a whenComplete log tap. State what is retried, what falls back, and what propagates. Vague exceptionally(return null) answers lose points."
+        },
+        {
+          "title": "Defend the executor topology",
+          "text": "Propose one bounded pool for blocking I/O, keep CPU maps inline, size queues and set RejectedExecutionHandler explicitly. Explain why commonPool is rejected for I/O and how you would prove starvation from a thread dump."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`CompletableFuture` is automatically faster — it is not. Without overlap or isolation it adds scheduling overhead to the same blocking work.",
+        "Non-Async stages run on a background thread — no, they run on the completing thread. Only `Async` variants schedule elsewhere.",
+        "The no-arg `Async` overload is safe — it hits the shared common pool. In a service, always pass an explicit executor.",
+        "`allOf` returns combined values — it returns `Void`. You must `join()` each original future after `allOf` completes.",
+        "`exceptionally` and `handle` are interchangeable — `exceptionally` only sees failures; `handle` sees value or failure and can transform both.",
+        "`cancel(true)` reliably stops a chained pipeline — it completes the future exceptionally but does not guarantee interruption of an already-running stage."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use which"
+    },
+    {
+      "type": "table",
+      "caption": "Selection guide: optimise for thread parking vs orchestration cost.",
+      "headers": [
+        "Situation",
+        "Use",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Single background task, result needed inline",
+          "Future with get(timeout)",
+          "No pipeline to build; blocking once is simpler and easier to cancel."
+        ],
+        [
+          "Parallel fan-out merged at request edge",
+          "CompletableFuture + thenCombine / allOf",
+          "Overlaps latency without parking one thread per dependency."
+        ],
+        [
+          "Dependent async steps (id -> orders -> profile)",
+          "thenCompose chain",
+          "Flattens future-of-future and keeps error context in one pipeline."
+        ],
+        [
+          "Callback or NIO completion must drive logic",
+          "Manually completed CompletableFuture",
+          "Future cannot be completed externally; CompletableFuture bridges callback and chain worlds."
+        ],
+        [
+          "Bulk CPU transforms with structured lifetime",
+          "ExecutorService + Future or virtual threads",
+          "Pipeline machinery adds nothing; prefer simple submit/join or scoped concurrency."
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "`Future` is a blocking ticket for one task; `CompletableFuture` is a manually-completable pipeline with `thenApply` for maps, `thenCompose` for dependent async calls, `thenCombine` / `allOf` for fan-out, in-chain error handling, and — critically — an explicit executor per blocking stage so you never starve the common pool."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:06:21.917Z",
+    "problems": []
+  }
+}

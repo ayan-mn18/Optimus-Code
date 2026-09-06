@@ -1,0 +1,324 @@
+{
+  "slug": "thread-pool-and-thread-lifecycle",
+  "title": "Thread pool and Thread lifecycle",
+  "summary": "Thread states are the JVM's scheduling contract; a thread pool is admission control on top of it. Master the transitions, the core-queue-max rule, and the failure modes.",
+  "kind": "LLD",
+  "problemSlug": "thread-pool-and-thread-lifecycle-43-83",
+  "topic": "Concurrency in Java",
+  "difficulty": "Medium",
+  "coverEmoji": "🧵",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Concurrency",
+    "Java"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Lifecycle and States of a Thread in Java - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/java/lifecycle-and-states-of-a-thread-in-java/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Life Cycle of a Thread in Java - Baeldung",
+      "url": "https://www.baeldung.com/java-thread-lifecycle",
+      "source": "baeldung.com",
+      "kind": "article"
+    },
+    {
+      "title": "Thread Lifecycle in Java - Medium",
+      "url": "https://medium.com/towardsdev/thread-lifecycle-in-java-2b5e7e810e5f",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Thread Lifecycle and States | Concurrency Interview | AlgoMaster.io",
+      "url": "https://algomaster.io/learn/concurrency-interview/thread-lifecycle-and-states",
+      "source": "algomaster.io",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A thread pool does not make your task faster. It makes overload survivable. The lifecycle — `NEW`, `RUNNABLE`, `BLOCKED`, `WAITING`, `TIMED_WAITING`, `TERMINATED` — tells you *where* a task is stuck. The pool — workers plus bounded queue plus rejection policy — decides *what happens when there is more work than threads*. If you cannot read the first, you cannot tune the second. Every pool bug is a lifecycle bug with a queue in front of it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What thread lifecycle and thread pool actually are"
+    },
+    {
+      "type": "paragraph",
+      "text": "A Java thread has exactly six observable states exposed by `Thread.State`. That enum is not documentation, it is a contract between the JVM scheduler and the operating system scheduler about why a thread is not making progress right now. `NEW` means the `Thread` object exists but no OS thread has been allocated. `RUNNABLE` means the thread is eligible to run — it may be running on a core or waiting in the OS run queue, Java cannot distinguish the two. `BLOCKED` means it wants a monitor lock held by someone else. `WAITING` means it voluntarily parked itself until another thread signals it. `TIMED_WAITING` means the same but with a deadline. `TERMINATED` means the stack has unwound and the native thread is gone; the transition is one-way and `start()` can never be called again on that object. That is the whole lifecycle. Everything else is a method that moves you between those boxes."
+    },
+    {
+      "type": "list",
+      "items": [
+        "`NEW` — object allocated, `start()` not yet called. Holds no OS resources. Calling `run()` here does nothing concurrent; it just executes in the caller thread.",
+        "`RUNNABLE` — after `start()`, before death. Includes actually-running plus ready-to-run. A thread spinning in a tight loop and a thread preempted by the OS both report `RUNNABLE`.",
+        "`BLOCKED` — stuck at a `synchronized` entry or `Object.wait` re-entry because another thread owns the monitor. Holds no monitor while blocked; it is purely contended.",
+        "`WAITING` — parked indefinitely via `Object.wait()` with no timeout, `Thread.join()` with no timeout, or `LockSupport.park()`. Releases the monitor if entered via `wait()`, keeps it if parked via other primitives. Needs an explicit signal.",
+        "`TIMED_WAITING` — parked with a deadline via `Thread.sleep()`, `wait(timeout)`, `join(timeout)`, `parkNanos()`, or blocking-queue poll with timeout. Wakes on signal *or* expiry. `sleep()` never releases any lock, which is why sleeping while holding a lock is a design smell.",
+        "`TERMINATED` — `run()` returned normally or threw. Native resources released. `isAlive()` is false. The object remains as a tombstone for `join()` callers and retained state."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "A thread pool is a deliberate refusal to map one task to one thread. Creating a thread costs a native thread plus a commit of stack memory — typically hundreds of kilobytes to a megabyte — plus scheduler registration and GC-root scanning. Destroying it costs syscalls and churn. Under burst load that cost dominates. So a pool keeps `N` long-lived workers alive in a loop of take-task, run-task, repeat, and feeds them from a queue. The queue absorbs burst. The bound on workers caps context switching and memory. The rejection policy defines overload behavior explicitly instead of collapsing the host. Why this shape wins: reuse amortizes creation cost and bounds concurrency to what the CPU, memory, and downstream dependencies can actually sustain. Trade-off: you add queueing delay and the risk of deadlock-by-pool, where tasks waiting in the queue depend on tasks already occupying every worker."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Mechanism: lifecycle transitions"
+    },
+    {
+      "type": "paragraph",
+      "text": "Only a few methods move a thread, and each has precise lock semantics you must memorize. `start()` moves `NEW` to `RUNNABLE` once; a second call throws. Entering a contended `synchronized` block moves `RUNNABLE` to `BLOCKED`; acquiring the monitor moves it back. That is the only path into `BLOCKED`, which is why `BLOCKED` always means lock contention and never means I/O or sleep. `Object.wait()` atomically releases the monitor and moves to `WAITING` or `TIMED_WAITING`; `notify()` or `notifyAll()` plus re-acquiring the lock moves it back to `RUNNABLE`. `Thread.sleep()` and `LockSupport.park()` do not release anything — the thread keeps every lock it holds while parked, which is why holding a lock across `sleep()` serializes the whole pool. `Thread.join()` parks the *caller*, not the target. `interrupt()` does not kill anything; it only sets a flag and wakes sleepers and waiters with an exception. The thread must cooperate by checking the flag or propagating the exception. Misunderstanding this is the source of most hung-shutdown bugs."
+    },
+    {
+      "type": "mermaid",
+      "title": "Thread lifecycle transitions",
+      "caption": "The six Thread.State values and the calls that move between them.",
+      "code": "stateDiagram-v2\n  [*] --> NEW\n  NEW --> RUNNABLE : start\n  RUNNABLE --> BLOCKED : contended sync entry\n  BLOCKED --> RUNNABLE : monitor acquired\n  RUNNABLE --> WAITING : wait join park\n  WAITING --> RUNNABLE : notify unpark join done\n  RUNNABLE --> TIMED_WAITING : sleep wait timeout\n  TIMED_WAITING --> RUNNABLE : timeout interrupt signal\n  RUNNABLE --> TERMINATED : run returns\n  BLOCKED --> RUNNABLE : interrupt still waits for lock\n  WAITING --> RUNNABLE : interrupt with exception"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Mechanism: how ThreadPoolExecutor actually works"
+    },
+    {
+      "type": "paragraph",
+      "text": "`ThreadPoolExecutor` is not magic; it is a counter, a queue, and a worker loop with a strict offer order. On `execute()`, if fewer than `corePoolSize` workers exist, it spawns a new worker immediately even if the queue is empty. Otherwise it tries `queue.offer()`. Only if the queue is full *and* fewer than `maximumPoolSize` workers exist does it spawn an extra worker. Only if the queue is full *and* max workers exist does it invoke the rejection handler. Read that twice: by default the pool prefers queueing over growing. That is why a pool constructed with an unbounded `LinkedBlockingQueue` never grows past core size — the queue never reports full, so max is dead config. The worker loop itself is `while (running) { task = getTask(); task.run(); }` where `getTask()` is a blocking poll with `keepAliveTime` timeout for non-core threads. Shutdown is cooperative: `shutdown()` stops accepting and drains, `shutdownNow()` interrupts workers and returns the drained list, but neither forcibly kills a thread ignoring interrupts. Why this design: it optimizes for stable throughput under sustained load at the cost of added latency under burst. Trade-off: you must size all four knobs together — core, max, queue capacity, and rejection — or one of them silently disables the others."
+    },
+    {
+      "type": "mermaid",
+      "title": "Thread pool admission path",
+      "caption": "Every submit follows core, then queue, then max, then reject. No exceptions.",
+      "code": "flowchart LR\n    S[submit execute] --> D{workers LT core}\n    D -->|yes| C[create core worker]\n    D -->|no| Q{queue offer ok}\n    Q -->|yes| B[enqueue wait]\n    Q -->|no| M{workers LT max}\n    M -->|yes| E[create extra worker]\n    M -->|no| R[RejectedExecutionHandler]\n    C --> W[worker run loop]\n    E --> W\n    B --> W"
+    },
+    {
+      "type": "paragraph",
+      "text": "Sizing is admission control, not performance tuning. `corePoolSize` is the steady-state concurrency you will pay for even when idle. `maximumPoolSize` is the burst concurrency you are willing to pay for under pressure. Queue capacity is how much latency you will accept before you start paying for burst or shedding load. `keepAliveTime` is how fast you release burst capacity afterward. A small core with a large queue minimizes thread churn and protects downstream systems but lets tail latency grow linearly with queue depth. A large max with a `SynchronousQueue` — effectively zero capacity — minimizes queueing delay but spawns threads aggressively and thrashes on bursty I/O. Direct handoff only makes sense when tasks are short and independent. There is no universal size. The correct bound comes from the bottleneck: CPU, lock, or downstream socket. Trade-off stated plainly: every slot you add for throughput is a slot that can pile onto a saturated dependency and make the outage worse."
+    },
+    {
+      "type": "table",
+      "caption": "Pool shapes and what each one costs you.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Fixed pool + bounded queue + CallerRuns or Abort",
+          "Predictable memory, backpressure, no silent growth",
+          "Caller blocks or fails fast; must handle rejection at call site"
+        ],
+        [
+          "Cached pool / unbounded max",
+          "Low latency for short bursty tasks",
+          "Unbounded thread creation under load; OOM and context-switch collapse"
+        ],
+        [
+          "Unbounded LinkedBlockingQueue with large max",
+          "Never rejects; simple mental model",
+          "Max is dead code; queue grows until heap dies; latency hides overload"
+        ],
+        [
+          "SynchronousQueue + large max",
+          "No queue delay; true elasticity for fast tasks",
+          "Thread explosion if tasks block on I/O or locks"
+        ],
+        [
+          "Single-thread executor",
+          "Total ordering, no races, trivial reasoning",
+          "Zero parallelism; one stuck task halts the pipeline"
+        ],
+        [
+          "ForkJoinPool / work-stealing",
+          "Good for divisible recursive CPU work",
+          "Terrible for blocking I/O; steals hide starvation and complicate dumps"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Pool failures never announce themselves as pool failures. They show up as rising p99, stuck shutdowns, or a host that stops responding while CPU sits idle. The pattern to internalize: threads are not work, they are slots. When every slot is parked waiting for something that itself needs a slot, the system is deadlocked regardless of CPU headroom. When the queue is unbounded, the symptom is not rejection but a slow memory leak that looks like a GC problem until you dump the queue depth. When tasks swallow interrupts, `shutdownNow()` returns but workers never die and deploys hang. Learn to distinguish `BLOCKED` — many threads blocked on the same monitor address means a hot lock — from `WAITING` on a pool queue — idle workers are healthy — from `WAITING` on a future inside a pool task — that is pool-induced deadlock in progress. The thread dump is the only ground truth; metrics only tell you where to look."
+    },
+    {
+      "type": "table",
+      "caption": "Failure to symptom to fix. Memorize the middle column.",
+      "headers": [
+        "Failure",
+        "Symptom you see",
+        "Fix that actually works"
+      ],
+      "rows": [
+        [
+          "Pool deadlock: task submits and joins on same pool",
+          "All workers `WAITING` on `Future.get`, queue full, CPU idle, p99 infinite",
+          "Never block on a child from same pool; use separate pool or CompletableFuture chain"
+        ],
+        [
+          "Unbounded queue overload",
+          "Heap grows, GC pauses climb, latency climbs for hours then OOM",
+          "Bound the queue; add Abort or CallerRuns; alert on queue depth, not just threads"
+        ],
+        [
+          "Hot monitor / synchronized bottleneck",
+          "Many threads `BLOCKED` on identical lock address in dump",
+          "Shrink critical section, split lock, or switch contended path to ReentrantLock or concurrent structure"
+        ],
+        [
+          "Interrupt-swallowing tasks",
+          "`shutdownNow` returns but JVM never exits; threads stuck `TIMED_WAITING` in sleep",
+          "Propagate InterruptedException, restore flag with `Thread.currentThread().interrupt()`, check flag in loops"
+        ],
+        [
+          "Thread leak: new pool per request",
+          "Thread count climbs monotonically; native OOM despite free heap",
+          "Share one injected executor; name threads; meter created vs destroyed workers"
+        ],
+        [
+          "CallerRuns under sustained overload",
+          "Latency propagates to front-end threads; entire server slows coherently",
+          "That is backpressure working; add timeout + bulkhead, do not just raise max"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Diagnosis in practice is thirty seconds with a dump. Capture two `jstack` outputs five seconds apart. Ignore threads in `RUNNABLE` inside socket read — those are I/O bound, not CPU bound. Focus on identical stacks: twenty workers `BLOCKED` on the same `locked <0xabc>` line is a contended lock, fix the lock holder first. Twenty workers `WAITING` at `LinkedBlockingQueue.take` is a healthy idle pool, not a leak. Twenty workers `TIMED_WAITING` at `Future.get` with tasks queued behind them is the pool waiting on itself — the classic self-deadlock. Why dumps beat logging here: state plus stack shows *why* progress stopped, while throughput metrics only show that it did. Trade-off: dumps are a point sample; always take two to separate transient parking from a stuck set."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "PooledServer.java",
+      "code": "import java.util.concurrent.*;\nimport java.util.concurrent.atomic.AtomicInteger;\n\nfinal class PooledServer {\n    private final ThreadPoolExecutor pool;\n\n    PooledServer(int core, int max, int queueCap) {\n        BlockingQueue<Runnable> queue = new ArrayBlockingQueue<>(queueCap);\n        ThreadFactory named = new ThreadFactory() {\n            private final AtomicInteger n = new AtomicInteger();\n            public Thread newThread(Runnable r) {\n                Thread t = new Thread(r, \"worker-\" + n.incrementAndGet());\n                t.setDaemon(false);\n                return t;\n            }\n        };\n        // CallerRuns is backpressure: overload slows the submitter instead of OOMing.\n        this.pool = new ThreadPoolExecutor(\n            core, max, 30L, TimeUnit.SECONDS,\n            queue, named,\n            new ThreadPoolExecutor.CallerRunsPolicy());\n    }\n\n    void serve(Runnable task) {\n        pool.execute(task); // throws only if shutdown; CallerRuns never silently drops\n    }\n\n    void stop() throws InterruptedException {\n        pool.shutdown(); // stop accepting, drain queue\n        if (!pool.awaitTermination(10, TimeUnit.SECONDS)) {\n            pool.shutdownNow(); // interrupt workers; tasks must honor interrupt\n            pool.awaitTermination(10, TimeUnit.SECONDS);\n        }\n    }\n}"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "LifecycleDemo.java",
+      "code": "// WAITING releases the monitor, TIMED_WAITING via sleep does not.\n// getState() is for debugging and tests, never for control flow.\nfinal class LifecycleDemo {\n    private final Object lock = new Object();\n    private boolean ready;\n\n    void awaitReady() throws InterruptedException {\n        synchronized (lock) {\n            while (!ready) {\n                lock.wait(); // WAITING + releases lock; must loop: spurious wakeups exist\n            }\n        }\n    }\n\n    void signalReady() {\n        synchronized (lock) {\n            ready = true;\n            lock.notifyAll(); // WAITING -> RUNNABLE once they reacquire lock\n        }\n    }\n\n    void interruptibleWork() {\n        try {\n            Thread.sleep(5000); // TIMED_WAITING, keeps any held lock\n        } catch (InterruptedException e) {\n            Thread.currentThread().interrupt(); // restore flag: caller must see it\n            return;\n        }\n        if (Thread.currentThread().isInterrupted()) return;\n    }\n}"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Sizing: the only formula that survives contact"
+    },
+    {
+      "type": "paragraph",
+      "text": "Start from the bottleneck, not from core count. If tasks are CPU-bound with no blocking, `cores + 1` is the ceiling — more threads only add context switches and cache misses. If tasks block on I/O, apply Little's law: threads needed roughly equals throughput times average blocking time plus cores. A service doing 200 requests per second each blocking 100ms on a downstream socket needs about 20 slots just to stay even, before headroom. That formula assumes tasks are independent. The moment tasks share a lock, contend on a connection pool, or submit to each other, the math collapses and the real limit is the scarcest shared resource. So size the pool to protect that resource: connection pool of 20 means worker max near 20, not 200. Always bound the queue to a multiple of throughput times your latency budget — if you cannot drain within your p99 SLO, you should reject, not enqueue. Trade-off: precise sizing buys efficiency but couples you to one workload; slightly over-provisioned core with aggressive timeouts buys robustness across workloads at the cost of idle memory."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Draw the six states without notes",
+          "text": "Expected in under two minutes. Say what holds a lock in each state. Interviewers fail candidates who conflate BLOCKED with WAITING. State the rule: BLOCKED is only monitor entry, WAITING is explicit parking, TIMED_WAITING adds a deadline."
+        },
+        {
+          "title": "Explain wait vs sleep vs park vs join",
+          "text": "They want lock semantics, not definitions. Answer: wait releases, sleep never releases, park is permit-based and needs no monitor, join parks the caller. Mention spurious wakeups and the while-loop guard."
+        },
+        {
+          "title": "Design a fixed pool from scratch",
+          "text": "Sketch BlockingQueue plus N workers looping on take and running tasks. Handle poison pill or interrupt for shutdown, rejection when bounded and full, and exception containment so one bad task does not kill a worker. Do not reach for raw Thread per request."
+        },
+        {
+          "title": "Defend core, max, queue, and rejection",
+          "text": "Walk the execute path in order: core first, then queue, then max, then reject. Explain why unbounded queue disables max and why CallerRuns is backpressure while Abort forces the caller to handle overload. Pick values for a CPU-bound vs IO-bound example."
+        },
+        {
+          "title": "Debug a stuck pool live",
+          "text": "Given a dump with all workers WAITING on Future.get, diagnose self-deadlock. Propose the fix: separate pools for parent and child, timeout on get, or async chaining. Mention interrupt cooperation for clean shutdown."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you instantly"
+    },
+    {
+      "type": "list",
+      "items": [
+        "`RUNNABLE` means running on a CPU. It does not. It means eligible. A thread descheduled by the OS still reports `RUNNABLE`. Only profiling plus dumps separate spinning from starved.",
+        "`Calling run() starts a thread.` It does not. It executes synchronously in the caller. Only `start()` allocates a new call stack and moves `NEW` to `RUNNABLE`.",
+        "`BLOCKED` and `WAITING` are interchangeable words for stuck. They are not. `BLOCKED` always implicates a `synchronized` monitor; `WAITING` implicates coordination. Different cause, different fix.",
+        "`interrupt()` stops a thread. It only requests. If code catches `InterruptedException` and continues, or never checks the flag, the thread ignores you and shutdown hangs.",
+        "`sleep()` releases locks like `wait()` does. Opposite. `sleep()` keeps every monitor. Sleeping while holding a lock serializes all contenders for the duration.",
+        "`More threads means more throughput.` Past the bottleneck it means more contention, more memory, and worse tail latency. Throughput is capped by the scarcest shared resource, not by worker count.",
+        "`An unbounded queue is safer because it never rejects.` It is the least safe choice. It converts overload into unbounded heap growth and hides the signal until GC collapse. Bounded plus explicit rejection fails fast and visibly."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "When a pool helps and when it hurts.",
+      "headers": [
+        "Use a pool when",
+        "Avoid a pool, do this instead"
+      ],
+      "rows": [
+        [
+          "Many short independent tasks share a host: request handling, background jobs",
+          "One long-lived ordered stream: use a single thread to guarantee ordering"
+        ],
+        [
+          "You need to bound concurrency to protect CPU or downstream sockets",
+          "Tasks are strictly sequential and dependent: use async chaining, not blocking get on same pool"
+        ],
+        [
+          "Tasks are homogeneous enough to share sizing and timeout policy",
+          "Tasks have wildly different SLAs: split into separate pools so slow tasks cannot starve fast ones"
+        ],
+        [
+          "Overload must shed or slow callers explicitly via rejection",
+          "Burst is rare and tiny: direct handoff or virtual threads may be simpler than tuning core-max-queue"
+        ],
+        [
+          "Lifecycle must be managed: graceful drain, naming, metrics, saturation alerts",
+          "Lifetime is the whole process: a dedicated long-lived thread with a clear ownership model beats a pool"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Thread lifecycle is six states describing why a thread is not progressing; a pool reuses a bounded set of workers over a bounded queue so overload becomes explicit rejection instead of collapse — size core for steady load, max for burst, queue for latency budget, and never block a pool task on the same pool.**"
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Shutdown is part of the design",
+      "text": "A pool you cannot stop is a leak. Always expose `shutdown()` plus `awaitTermination()` with a timeout, propagate interrupts, name threads so dumps are readable, and meter queue depth and active count. If the interviewer does not ask about shutdown, bring it up yourself — it signals production experience."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:04:21.518Z",
+    "problems": []
+  }
+}

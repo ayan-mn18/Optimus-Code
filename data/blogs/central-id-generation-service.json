@@ -1,0 +1,301 @@
+{
+  "slug": "central-id-generation-service",
+  "title": "Central ID generation Service",
+  "summary": "Central ID service trades a single hardened failure domain for ordered, compact IDs — how it survives node death, clock jumps, and partitions is the whole design.",
+  "kind": "HLD",
+  "problemSlug": "central-id-generation-service-97-321",
+  "topic": "Fault and Failure Tolerance + Distributed Consensus",
+  "difficulty": "Medium",
+  "coverEmoji": "🆔",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "ID Generation",
+    "Fault Tolerance",
+    "Consensus"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Design a Unique ID Generator in Distributed Systems (2026)",
+      "url": "https://www.systemdesignhandbook.com/guides/design-a-unique-id-generator-in-distributed-systems/",
+      "source": "systemdesignhandbook.com",
+      "kind": "article"
+    },
+    {
+      "title": "Design Unique Id Generator | System Design Interview | AlgoMaster.io",
+      "url": "https://algomaster.io/learn/system-design-interviews/design-unique-id-generator",
+      "source": "algomaster.io",
+      "kind": "article"
+    },
+    {
+      "title": "Designing Distributed ID Generators: The Architecture Behind Unique ...",
+      "url": "https://medium.com/@abhi.venkata54/designing-distributed-id-generators-the-architecture-behind-unique-scalable-and-time-ordered-4b6f758a5467",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Why UUIDv7 Beats Centralized ID Services - Authgear",
+      "url": "https://www.authgear.com/post/uuidv7-vs-centralized-id-services/",
+      "source": "authgear.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A central ID service buys you **ordered, compact, join-friendly IDs** by concentrating risk. Every duplicate, stall, or jump traces back to that bargain: you removed coordination from the write path of a thousand services and piled it into one tiny cluster that must never lie. If you cannot explain exactly what happens when that cluster loses its leader, loses its clock, or loses its disk, you do not have a design — you have a single point of corruption."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A central ID generation service is a small, dedicated cluster whose only job is to hand out 64-bit integers that are globally unique and roughly time-ordered. Clients do not coordinate with each other; they ask the center (or hold a leased block from the center) and embed the returned value as the primary key for orders, payments, posts, or events. The canonical layout is Snowflake-style: high bits are milliseconds since a custom epoch, middle bits are a worker or shard identifier, low bits are a per-millisecond sequence. That layout is the reason the IDs sort by creation time, fit in a `BIGINT`, and index well in B-trees. The trade-off is explicit: you get locality and debuggability that random 128-bit values cannot give you, but correctness now depends on two fragile invariants — **clocks never go backwards** and **no two live nodes ever believe they own the same worker bits**."
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not confuse this with a database `AUTO_INCREMENT`. A single database counter serialises every insert through one row lock and one write-ahead log — it dies at a few thousand inserts per second and takes the whole product down with it. A central ID service separates ID allocation from row storage. It hands out numbers from memory at hundreds of thousands per second per node, persists only high-water marks or leased ranges, and lets the actual databases scale horizontally. The reason to centralise is control: one place to enforce monotonicity, one place to monitor clock skew, one place to change the epoch or expand the sequence width. The reason to fear centralising is blast radius: if that place stalls, every stateful write behind it stalls. That is why this topic lives under fault tolerance and consensus, not under clever bit-packing."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: leased ranges over a consensus core"
+    },
+    {
+      "type": "paragraph",
+      "text": "The production shape that actually survives is not one fat server. It is three to five identical ID nodes fronted by a load balancer, backed by a consensus group that agrees on two things: **who is leader** and **who owns which block of IDs or which worker ID**. There are two viable cores. Option A is in-memory Snowflake generation with worker IDs assigned by Raft: each node generates locally from its clock + worker ID + sequence, and consensus is only used for membership and worker assignment. Option B is range allocation: the consensus log hands out disjoint intervals like `[1_000_000, 2_000_000)` to each node, nodes drain them from memory, and they re-request before exhaustion. Range allocation tolerates clock failure better because ranges are just counters, but it sacrifices tight time-ordering and wastes IDs on crash. Most serious designs combine them: Raft-assigned worker IDs plus local timestamp generation, with the Raft log as the arbiter when clocks disagree. The trade-off you are naming here is **coordination frequency versus ordering strictness** — per-ID coordination is unusable, per-range or per-membership coordination is the sweet spot."
+    },
+    {
+      "type": "mermaid",
+      "title": "Central ID service request path",
+      "caption": "Clients never touch consensus directly; only allocation and leadership go through Raft.",
+      "code": "flowchart TD\n    A[App Server A] --> LB[Load Balancer]\n    B[App Server B] --> LB\n    C[App Server C] --> LB\n    LB --> N1[ID Node 1]\n    LB --> N2[ID Node 2]\n    LB --> N3[ID Node 3]\n    N1 <--> N2\n    N2 <--> N3\n    N1 <--> N3\n    N1 --> RS[(Range Store)]\n    N2 --> RS\n    N3 --> RS\n    N1 --> CLK[Clock Monitor]\n    N2 --> CLK\n    N3 --> CLK"
+    },
+    {
+      "type": "paragraph",
+      "text": "The request path explains why this stays fast despite being central. The hot path never touches disk or the quorum. An app server holds a persistent connection to an ID node, the node increments an in-memory sequence, stamps the current millisecond, shifts the three fields into a 64-bit word, and returns — typically under a millisecond at p99. Disk and quorum sit one level removed: the node periodically fsyncs its high-water mark and renews its worker lease, and the Raft group only steps in on leader change, worker conflict, or suspected clock regression. That separation is deliberate. You pay consensus cost at membership-change frequency, not at ID-generation frequency. If you put a quorum round-trip on every ID, you have rebuilt a distributed counter and capped yourself at the speed of your slowest replica. Say that trade-off out loud in the interview."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The 64-bit layout and why each field exists"
+    },
+    {
+      "type": "paragraph",
+      "text": "A typical split is 41 bits of timestamp, 10 bits of worker ID, 12 bits of sequence. 41 bits of millis is ~69 years — enough if you pick a recent epoch, fatal if you use Unix epoch and forget to plan rollover. 10 bits gives 1024 workers; that caps your simultaneous generators unless you shrink timestamp or sequence to widen it. 12 bits gives 4096 IDs per worker per millisecond, or ~4M per second per node before you must wait for the next tick. Every resize is a zero-sum fight: more workers means fewer IDs per millisecond, longer lifetime means coarser time resolution. There is no universally right split. An order-creation service with 200 workers wants wide worker bits; a single-region logging pipeline wants wide sequence bits. The interview signal is whether you can recompute capacity from the bit widths on the whiteboard instead of reciting defaults."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "snowflake.py",
+      "code": "import time\nEPOCH = 1704067200000  # custom epoch, not unix epoch\nWORKER_BITS = 10\nSEQ_BITS = 12\nMAX_SEQ = (1 << SEQ_BITS) - 1\n\nclass SnowflakeNode:\n    def __init__(self, worker_id: int):\n        assert 0 <= worker_id < (1 << WORKER_BITS)\n        self.worker_id = worker_id\n        self.last_ms = -1\n        self.seq = 0\n\n    def _now_ms(self) -> int:\n        return int(time.time() * 1000) - EPOCH\n\n    def next_id(self) -> int:\n        now = self._now_ms()\n        if now < self.last_ms:\n            # Clock went backwards: refuse rather than duplicate.\n            # Trade-off: availability loss beats silent collision.\n            raise ClockRegression(self.last_ms - now)\n        if now == self.last_ms:\n            self.seq = (self.seq + 1) & MAX_SEQ\n            if self.seq == 0:\n                # Sequence exhausted in this ms: spin to next tick.\n                while now <= self.last_ms:\n                    now = self._now_ms()\n        else:\n            self.seq = 0\n        self.last_ms = now\n        return (now << (WORKER_BITS + SEQ_BITS)) | (self.worker_id << SEQ_BITS) | self.seq\n\nclass ClockRegression(Exception):\n    pass"
+    },
+    {
+      "type": "paragraph",
+      "text": "The code above encodes the only sane clock policy: **fail fast on regression**. When `now < last_ms`, generating would reuse a timestamp plus sequence combination you already emitted, which means duplicates. Throwing (and letting the load balancer shed that node) converts a correctness catastrophe into a brief availability dip. The alternative — waiting out the skew — preserves availability but stalls that worker for the full skew duration, which can be seconds after an NTP step. Either way you are choosing which pain to take, and NTP smoothing plus a clock-monitor sidecar that ejects nodes drifting beyond ~100ms is what keeps the choice rare. Never silently mask regression by overriding the timestamp with `last_ms`; that just burns sequence space and still collides under high throughput."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Four ways to hand out IDs and what each one costs you.",
+      "headers": [
+        "Approach",
+        "What you gain",
+        "What you pay",
+        "Verdict"
+      ],
+      "rows": [
+        [
+          "Single DB auto-increment",
+          "Strictly monotonic, trivial to reason about",
+          "One write lock and one WAL for all inserts; ~single-digit k TPS ceiling; cross-region latency on every write",
+          "Only for prototypes or single-AZ systems"
+        ],
+        [
+          "Central Snowflake cluster (Raft-assigned worker IDs)",
+          "Time-ordered 64-bit IDs, 100k+ TPS per node, sortable and index-friendly",
+          "Must run consensus for membership; clock regression handling; worker-ID exhaustion at 1024 by default",
+          "Default answer for order/payment/social IDs"
+        ],
+        [
+          "Range allocator over consensus log",
+          "No clock dependence, gap-tolerant, trivial failover by abandoning open range",
+          "IDs are only roughly ordered; gaps after crash waste keyspace; range-exhaustion stall if quorum unavailable",
+          "Use when clocks are untrustworthy or strict ordering is unnecessary"
+        ],
+        [
+          "Decentralised UUIDv7 (no center)",
+          "No single point of failure, zero operational burden, works during partitions",
+          "128-bit storage, larger indexes, weaker ordering guarantees, harder to debug hot shards from IDs alone",
+          "Use when availability beats compactness and sortability"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The honest summary is that central generation wins on **read and storage efficiency** and loses on **operational load**. A 64-bit time-ordered key keeps B-tree page splits low, makes `ORDER BY id` match insertion order, and lets an on-call engineer eyeball creation time from the key. A 128-bit random key forces bigger indexes, fragments pages, and scatters writes — but it never pages you at 3am because a leader election wedged. Choose the center when downstream systems (sharding, ledger reconciliation, pagination by ID) materially benefit from ordering. That benefit has to outweigh running a Raft group forever, because the group needs monitoring, chaos testing, and a runbook just like any other stateful core."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every central ID outage I would take seriously falls into one of four buckets, and each has a distinct smell. Leader loss during a deploy or AZ failure shows up as a 2–5 second flatline in ID issuance followed by recovery — clients see timeouts, not duplicates, because no two nodes will generate without a confirmed worker lease. That is Raft working as intended, and the fix is client-side retry withhedged requests, not faster elections. Clock regression after NTP correction or VM live-migration shows up as one node throwing errors or stalling while its peers stay green — the dashboard looks like a single hot, failing host, and the naive fix of restarting it can actually reintroduce an old timestamp. Disk loss of the high-water mark shows up later and worse: after a simultaneous restart, two nodes reissue the same range and you discover duplicate primary keys in downstream tables hours afterward. Network partition shows up as the split-brain test: the minority side must refuse to mint, or you get divergent ID streams that collide on heal."
+    },
+    {
+      "type": "table",
+      "caption": "Failure mode to symptom to mitigation — memorise this table.",
+      "headers": [
+        "Failure",
+        "Symptom in metrics / DB",
+        "Mitigation that actually works"
+      ],
+      "rows": [
+        [
+          "Leader election / AZ loss",
+          "p99 latency spike + `no_leader` errors for seconds; zero duplicates",
+          "3 or 5 nodes across AZs; client retry with jitter + failover to another ID node"
+        ],
+        [
+          "Clock moves backwards",
+          "One node error rate 100%, others healthy; `clock_regression_ms` gauge jumps",
+          "Eject node from LB; never reuse timestamp; bound skew with chrony + fence at >150ms"
+        ],
+        [
+          "Sequence exhaustion (hot ms)",
+          "`sequence_wait_ms` rises; throughput flatlines at 4096 per ms per worker",
+          "Spin to next millisecond; widen sequence bits or add workers; shed non-critical callers"
+        ],
+        [
+          "Worker-ID collision after partition",
+          "Duplicate keys appear downstream after heal; two nodes log same worker ID",
+          "Worker leases via Raft with fencing tokens; minority partition refuses to generate"
+        ],
+        [
+          "Range-store loss / double issue",
+          "Duplicate IDs hours after full-cluster restart",
+          "fsync high-water mark per range; on recovery skip to max persisted + guard band"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The duplicate that bankrupts you",
+      "text": "Duplicates do not crash the ID service — they crash **someone else's table** six hours later as a primary-key violation or, worse, a silent ledger merge. That is why monitoring belongs downstream too: alert on `duplicate_key_errors` in order and payment tables, not just on ID-service latency. If your design review has no answer for how a duplicate would be detected after the fact, the design is incomplete."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Capacity math you should do live"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers promote candidates who quantify. State your assumptions, then multiply: 41-10-12 gives 4096 IDs per millisecond per worker, so one node sustains ~4M IDs per second burst and ~400k sustained once you account for GC pauses and network. Ten such nodes give ~4M sustained, which covers a large marketplace peak with headroom. Storage is trivial — the service itself stores almost nothing except leases — but downstream impact is not: 100M IDs per day as 64-bit integers is 800MB of key material per replica per day before overhead, versus 1.6GB for 128-bit UUIDs, and the B-tree fan-out difference compounds on every secondary index. Latency budget is the tighter constraint: keep p99 generation under 2ms within an AZ, and if callers are cross-region, push allocation to regional ID pools rather than hairpinning every write to one region. The trade-off to name is **key size versus operational complexity** — smaller keys save real disk and cache across every downstream replica, which is what justifies running the extra cluster."
+    },
+    {
+      "type": "list",
+      "items": [
+        "10 nodes × 400k sustained = **4M IDs/sec** with 12-bit sequence — enough for flash-sale peaks without per-ID quorum.",
+        "69-year lifetime from 41-bit millis only holds with a **custom epoch**; Unix-epoch millis exhausts the same width decades sooner.",
+        "1024 worker IDs sounds large until Kubernetes autoscaling plus blue-green deploys churns through them — **lease expiry and reuse** must be designed, not assumed.",
+        "Range size of 1M per lease at 100k TPS means a **re-request every 10 seconds**; size ranges so renewal traffic stays under 1% of generation traffic."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Scope to ordering and scale",
+          "text": "Ask whether IDs must be strictly monotonic, roughly time-ordered, or merely unique, and pin the rate: 10k/sec versus 1M/sec changes the answer. Also ask ID size constraints and whether clients can tolerate gaps. Examiners leak the expected solution here."
+        },
+        {
+          "title": "Propose the center, then attack it",
+          "text": "Draw clients → LB → 3–5 ID nodes → Raft membership + range store. State immediately that the hot path is memory-only and consensus is off-path. Interviewers grade whether you separate steady-state from failure-state traffic."
+        },
+        {
+          "title": "Derive the bit layout on the board",
+          "text": "Do the arithmetic live: timestamp width versus lifetime, worker width versus fleet size, sequence width versus per-ms burst. Show one resize example. This is where medium becomes senior."
+        },
+        {
+          "title": "Design the failure contract",
+          "text": "Walk through leader death, clock regression, partition, and full restart. For each, say: does the service stall or degrade, and can it ever duplicate? The required answer is stall-beats-duplicate, with fencing on the minority side."
+        },
+        {
+          "title": "Close with operations",
+          "text": "Name the three dashboards — generation rate, clock skew per node, lease/range exhaustion — and the downstream duplicate-key alarm. Mention chaos tests: kill leader, skew clock by 500ms, partition an AZ. That finish signals production experience."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail candidates"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**“Raft makes generation consistent.”** No — Raft makes *membership and allocation* consistent. Generation itself is local and lock-free; putting consensus on every ID would collapse throughput.",
+        "**“Monotonic means gapless.”** Time-ordered Snowflake IDs have gaps by design after crashes, clock waits, and abandoned ranges. If the business needs gapless sequence numbers for invoices, you need a separate sequencer, not an ID generator.",
+        "**“More nodes means more throughput without limit.”** Throughput scales with workers only until worker-ID bits, range-renewal load, and load-balancer health checking become the bottleneck. 1024 workers is a hard ceiling unless you re-lay the bits.",
+        "**“NTP means clocks are safe.”** NTP corrects by stepping backwards. Without a regression policy plus fencing, every correction is a duplicate-ID incident waiting to happen.",
+        "**“UUIDs are always worse.”** UUIDv7 is time-ordered and partition-proof. It loses on size and debuggability, not on correctness — prefer it when you cannot afford to operate a stateful core."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "Use the center when ordering pays for its pager burden.",
+      "headers": [
+        "Use a central service when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "IDs are primary keys in sharded MySQL/Postgres and you need B-tree locality",
+          "You run multi-region active-active writes and cannot tolerate cross-region stalls"
+        ],
+        [
+          "Product needs `sort by ID == sort by time` for feeds, orders, pagination",
+          "Gaps are unacceptable (e.g., regulated invoice numbering) — build a gapless sequencer instead"
+        ],
+        [
+          "Throughput is 100k–10M/sec and 128-bit indexes would blow up memory",
+          "Team cannot operate Raft/etcd/ZooKeeper — the operational cost exceeds the storage saving"
+        ],
+        [
+          "Debuggability from ID (time + shard embedded) matters to on-call",
+          "Clients must mint IDs fully offline or during partitions — use UUIDv7/KSUID at the edge"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "“Give me a **3-to-5-node central Snowflake cluster with Raft-assigned worker IDs, memory-only generation, fail-fast on clock regression, and minority-partition refusal** — because **stalling beats duplicating**, and consensus belongs on membership, not on every ID.”"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:59:24.708Z",
+    "problems": []
+  }
+}

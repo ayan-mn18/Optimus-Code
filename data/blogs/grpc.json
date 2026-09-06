@@ -1,0 +1,352 @@
+{
+  "slug": "grpc",
+  "title": "GRPC",
+  "summary": "gRPC as contract-first RPC over HTTP/2 and Protobuf: how it works, what it costs, and when it beats REST.",
+  "kind": "HLD",
+  "problemSlug": "grpc-93-206",
+  "topic": "Application Programming Interface (API)",
+  "difficulty": "Medium",
+  "coverEmoji": "🔌",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "API",
+    "gRPC"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "gRPC Protocol. Easy Explained.. What is gRPC? | by Tejas Mane - Medium",
+      "url": "https://medium.com/@tejasmane485/grpc-protocol-easy-explained-5140d34d892a",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Introduction to gRPC",
+      "url": "https://grpc.io/docs/what-is-grpc/introduction/",
+      "source": "grpc.io",
+      "kind": "article"
+    },
+    {
+      "title": "What Is gRPC? | IBM",
+      "url": "https://www.ibm.com/think/topics/grpc",
+      "source": "ibm.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "gRPC is not **faster REST**. It is **contract-first RPC**: you lock the interface in a `.proto` file, generate type-safe clients and servers from it, and run the calls over multiplexed HTTP/2. You trade debuggability and browser reach for strict schemas, cheap polyglot stubs, and streaming as a primitive."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What gRPC actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "gRPC is a remote-procedure-call framework with three coupled choices: **Protocol Buffers as the interface definition language**, **generated stubs as the only sane way to call**, and **HTTP/2 as the transport**. You define `service Payment { rpc Charge(ChargeReq) returns (ChargeResp); }` once, compile it for Go, Java, Python, or whatever else, and both sides get functions that look local but execute remote. The wire format is binary Protobuf by default, framed inside HTTP/2 DATA frames, with call status delivered in trailers. That coupling is the whole point. Protobuf gives you versioned, typed fields without hand-written JSON parsers. Code generation gives you compile-time breakage instead of runtime `undefined field` surprises. HTTP/2 gives you many concurrent logical streams over one long-lived TCP connection with header compression. If you remove any one of the three, you no longer have the system interviewers mean by gRPC."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this shape and not plain JSON over HTTP/1.1? Because internal service-to-service traffic has different constraints than public APIs. You control both ends, you deploy them independently, you care about tail latency at thousands of requests per second, and you want breaking changes to fail the build, not page you at 2am. A strict schema costs you flexibility — adding a field requires discipline around field numbers and defaults, and humans cannot `curl` binary payloads easily — but it buys you smaller payloads, faster encode/decode with no field-name repetition, and a single source of truth that prevents client/server drift. **Trade-off named: evolvability through process versus freedom to change JSON shape ad hoc.** Pick gRPC when you value the former."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism, end to end"
+    },
+    {
+      "type": "paragraph",
+      "text": "Start from the `.proto` file. `protoc` plus the gRPC plugin emits a server interface and a client stub per language. The server implements the handler; the client opens a **channel** — a pooled, persistent HTTP/2 connection to the server or load balancer — and invokes the stub method. The stub marshals the request message to Protobuf bytes, assigns it to a new HTTP/2 stream ID, compresses headers with HPACK, and writes HEADERS + DATA frames. The server routes by `:path` of the form `/package.Service/Method`, unmarshals, runs your handler, then returns response DATA plus trailers carrying `grpc-status` and `grpc-message`. Deadlines, cancellation, and per-call metadata ride the same path as headers and RST_STREAM. There is no separate discovery or serialization layer to design. The contract *is* the API."
+    },
+    {
+      "type": "mermaid",
+      "title": "gRPC call path",
+      "caption": "Unary call from stub to handler over a shared HTTP/2 connection.",
+      "code": "flowchart LR\n  Stub[Client stub] --> Marshal[Marshal Protobuf]\n  Marshal --> Stream[HTTP2 stream ID N]\n  Stream --> Conn[Shared TCP connection]\n  Conn --> ServerH[Server HTTP2 handler]\n  ServerH --> Route[Route by path Service Method]\n  Route --> Impl[Service implementation]\n  Impl --> Resp[Response DATA + trailers]"
+    },
+    {
+      "type": "paragraph",
+      "text": "HTTP/2 is doing heavy lifting you must name explicitly. **Multiplexing** means 100 in-flight RPCs share one connection without head-of-line blocking at the HTTP layer — unlike HTTP/1.1 pipelining — which is why gRPC holds far fewer sockets open per client. **HPACK** means repeated `:authority`, `grpc-timeout`, and auth tokens compress to a few bytes after the first call. **Bidirectional streams** mean the same connection supports server push without polling or upgrading to WebSockets. **Trailers** mean status and error codes arrive after the body, so intermediaries that strip trailers silently break gRPC. The cost: everything assumes HTTP/2 end to end. Any proxy, ingress, or sidecar that downgrades to HTTP/1.1, buffers the full body, or ignores trailers will corrupt streaming, add latency, or mask errors. **Trade-off named: connection efficiency versus dependence on a correctly configured HTTP/2 path.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The four call shapes"
+    },
+    {
+      "type": "table",
+      "caption": "Choose the shape by who produces a sequence, not by hype.",
+      "headers": [
+        "Shape",
+        "Pattern",
+        "Use it for",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Unary",
+          "one request → one response",
+          "CRUD inside the mesh, auth checks, price lookup",
+          "No streaming benefit; plain request-response semantics"
+        ],
+        [
+          "Server streaming",
+          "one request → N responses",
+          "Fan-out, search results, market ticks, log tail",
+          "Client must handle backpressure; LB must not buffer"
+        ],
+        [
+          "Client streaming",
+          "N requests → one response",
+          "Ingest, upload, sensor batching, aggregation",
+          "Server must bound memory while accumulating stream"
+        ],
+        [
+          "Bidirectional streaming",
+          "N requests ↔ M responses, interleaved",
+          "Chat, collaborative editing, device command channel, live ML inference",
+          "Full-duplex state, flow control, and reconnect logic are now yours"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Default to **unary** unless you can state why a stream is better in one sentence. Streams save round trips and keep a conversation open, but they turn a stateless handler into a stateful one that must track stream lifetime, ordering, and partial failure. Server streaming is the cheapest streaming to operate because only one side holds iteration state. Bidirectional is the most expensive because both sides can send at any time, so you need explicit flow control, keepalives, and a resume protocol on disconnect. Interviewers probe this: if you propose bidi for a request that could be unary plus polling, they will mark you down for unpaid complexity. **Trade-off named: fewer round trips versus holding stream state and failure modes.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every gRPC win has an invoice.",
+      "headers": [
+        "What you gain",
+        "What you lose",
+        "Why it matters in design"
+      ],
+      "rows": [
+        [
+          "Binary Protobuf payloads, 3-10x smaller than verbose JSON",
+          "Opaque on the wire; cannot curl or read in proxy logs",
+          "Debugging needs grpcurl, reflection, or transcoding gateway"
+        ],
+        [
+          "Strict typed contract breaks builds on mismatch",
+          "Schema evolution requires rules for field numbers, defaults, enums",
+          "Renaming or reusing a field number corrupts old clients silently"
+        ],
+        [
+          "Codegen in 10+ languages from one proto",
+          "Generated code and toolchain lock-in; version skew between protoc and runtime",
+          "Pin protoc, lint protos in CI, or upgrades break one language silently"
+        ],
+        [
+          "Multiplexed streams over few connections",
+          "Load balancers see one TCP flow, not per-RPC balanceability",
+          "Need L7-aware LB or client-side balancing; L4 round-robin pins hot"
+        ],
+        [
+          "Built-in deadlines, cancellation, metadata, compression",
+          "New concepts to misconfigure: timeouts, trailers, max message size",
+          "Wrong deadline propagates a cascade; missing trailer strips status"
+        ],
+        [
+          "Streaming as first-class primitive",
+          "Proxies must support long-lived HTTP/2 streams without timeouts",
+          "Default ingress idle timeout kills streams at 60s unless tuned"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The sharpest trade is **type safety versus operational visibility**. REST with JSON is wasteful on bytes and CPU but trivially inspectable: any engineer can replay a request from a gateway log. gRPC eliminates an entire class of shape-mismatch bugs at compile time, but when it fails you get `UNKNOWN` or `UNAVAILABLE` with a binary blob unless you planned for observability. That is why mature gRPC setups add server reflection in non-production, a JSON transcoding gateway at the edge, and interceptors that log `grpc-status`, deadline, and peer. If you propose gRPC without those three, you designed for the demo, not for on-call."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "gRPC failures look different from REST failures. You will not see a helpful JSON body and a status code in access logs. You will see timeouts, resets, and a client that thinks the server is down while the server thinks it is idle. Learn the mapping from symptom to cause or you will chase the wrong layer."
+    },
+    {
+      "type": "table",
+      "caption": "Symptoms you will actually page on.",
+      "headers": [
+        "Symptom you see",
+        "Likely cause",
+        "Fix that sticks"
+      ],
+      "rows": [
+        [
+          "P99 spikes, `DEADLINE_EXCEEDED` cascading across services",
+          "Timeout set at edge but not budgeted per hop; retries amplify load",
+          "Set per-hop deadlines smaller than caller, add jittered retry budget, enforce hedging limits"
+        ],
+        [
+          "All traffic pins to one backend while others idle",
+          "L4 balancer hashes long-lived HTTP/2 connection to one pod",
+          "Use L7 gRPC-aware LB, or client-side round-robin via service config"
+        ],
+        [
+          "Streams die at exactly 60s with `UNAVAILABLE`",
+          "Ingress or sidecar idle timeout closes HTTP/2 stream",
+          "Raise stream idle timeout, enable HTTP/2 keepalive pings on both sides"
+        ],
+        [
+          "`RESOURCE_EXHAUSTED: message larger than max`",
+          "Default 4MB inbound limit hit by one large response",
+          "Raise `max_receive_message_length` deliberately, or paginate; never set to unlimited"
+        ],
+        [
+          "Old mobile client crashes after proto change",
+          "Reused field number or changed field type/semantics",
+          "Never reuse numbers; only add optional fields; run buf breaking-change check in CI"
+        ],
+        [
+          "`UNIMPLEMENTED` after deploy that looks healthy",
+          "Client stub version ahead of server, or wrong `:path` routing through gateway",
+          "Version protos explicitly; gate rollout; validate path routing in gateway config"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The trailer trap",
+      "text": "gRPC delivers its status in HTTP/2 **trailers**, not headers. Any middleware that proxies as HTTP/1.1, buffers and re-emits, or strips trailers turns every error into a generic transport failure. If your diagram has an edge proxy, say out loud: *it must terminate and originate HTTP/2 with trailer passthrough, or we terminate gRPC at the edge and transcode to JSON inside.* That one sentence saves the design."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that clarifies"
+    },
+    {
+      "type": "code",
+      "language": "proto",
+      "filename": "order.proto",
+      "code": "syntax = \"proto3\";\npackage orders.v1;\n\nservice OrderService {\n  rpc GetOrder(GetOrderRequest) returns (GetOrderResponse);\n  rpc WatchOrders(WatchOrdersRequest) returns (stream OrderEvent);\n  rpc ReportTelemetry(stream TelemetryPoint) returns (ReportSummary);\n}\n\nmessage GetOrderRequest { string order_id = 1; }\nmessage GetOrderResponse { string order_id = 1; int64 total_cents = 2; }\nmessage WatchOrdersRequest { string customer_id = 1; }\nmessage OrderEvent { string order_id = 1; string status = 2; }\nmessage TelemetryPoint { string device_id = 1; double temp_c = 2; }\nmessage ReportSummary { int64 accepted = 1; }"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "server.py",
+      "code": "import grpc\nfrom concurrent import futures\nimport orders_pb2, orders_pb2_grpc\n\nclass Orders(orders_pb2_grpc.OrderServiceServicer):\n    def GetOrder(self, request, context):\n        # Deadline and metadata are first-class: read them, enforce them.\n        md = dict(context.invocation_metadata())\n        if context.is_active() is False:\n            context.set_code(grpc.StatusCode.CANCELLED)\n            return orders_pb2.GetOrderResponse()\n        return orders_pb2.GetOrderResponse(order_id=request.order_id, total_cents=999)\n\n    def WatchOrders(self, request, context):\n        # Server streaming: respect cancellation or you leak a goroutine/thread per watcher.\n        for i in range(1000):\n            if not context.is_active():\n                break\n            yield orders_pb2.OrderEvent(order_id=str(i), status=\"SHIPPED\")\n\nserver = grpc.server(futures.ThreadPoolExecutor(max_workers=32),\n    options=[(\"grpc.max_receive_message_length\", 8 * 1024 * 1024)])\norders_pb2_grpc.add_OrderServiceServicer_to_server(Orders(), server)\nserver.add_insecure_port(\"[::]:50051\")\nserver.start()\nserver.wait_for_termination()"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two details in that server matter more than the boilerplate. First, `context.is_active()` and deadlines: gRPC propagates cancellation over RST_STREAM, so a client that goes away should stop your loop immediately, otherwise every abandoned watcher leaks work. Second, `grpc.max_receive_message_length`: the default cap exists to stop one oversized message from OOMing the server, and raising it is a capacity decision, not a convenience. Pair this with client interceptors that attach `authorization` metadata, set `grpc-timeout` per method, and map `grpc-status` codes to retries only for idempotent methods. **Trade-off named: automatic propagation versus you must still write the handling.** gRPC delivers the signal; it does not act on it for you."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Compare gRPC versus REST for internal traffic",
+          "text": "Do not recite benchmarks. State the decision rule: control both ends plus need for typed evolution plus high fan-in equals gRPC; need for browser reach, caching, and human debugging equals REST. Mention transcoding at the edge as the hybrid."
+        },
+        {
+          "title": "Design streaming for a concrete workload",
+          "text": "They will give you live location, chat, or metrics ingest. Pick server, client, or bidi and defend it. Draw stream lifetime, reconnect with resume token, and where backpressure lives. Bidi without a resume story fails."
+        },
+        {
+          "title": "Fix load balancing over persistent connections",
+          "text": "Expected answer: L4 round-robin does not spread multiplexed streams. Propose L7-aware proxy, client-side balancing with service config, or connection draining on scale-down. Name the trade-off in added control-plane complexity."
+        },
+        {
+          "title": "Handle versioning and breaking changes",
+          "text": "Explain field-number discipline, never reuse or change types, additive-only evolution, and CI checks. Show how an old client reading a new message uses defaults safely, and where that assumption breaks for enums."
+        },
+        {
+          "title": "Reason about deadlines, retries, and errors",
+          "text": "Map business failures to `grpc-status` codes, set per-hop timeouts that sum under the edge budget, retry only idempotent unary calls with backoff and a global budget. Unbounded retry on streaming is an outage amplifier."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions to kill"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**gRPC is always faster than REST** — only if payloads are large or QPS is high enough for multiplexing and binary encoding to matter. For small, infrequent calls the difference is noise next to business logic and TLS handshake.",
+        "**Protobuf is the only difference** — the transport matters as much. HTTP/2 multiplexing, HPACK, and trailers change connection count, LB behavior, and error visibility independently of encoding.",
+        "**HTTP/2 removes all head-of-line blocking** — it removes HTTP-level blocking, not TCP-level blocking. One lost packet still stalls all streams on that connection; that is why tuning keepalives and connection count matters.",
+        "**gRPC works in the browser like REST** — browsers do not expose raw HTTP/2 trailers to JavaScript, so native gRPC needs gRPC-Web via a proxy or JSON transcoding. Do not draw browser-to-gRPC without that hop.",
+        "**Streaming means no backpressure needed** — streams shift flow control to you. Without `FLOW_CONTROL` handling, bounded buffers, and client cancellation checks, a fast producer OOMs a slow consumer.",
+        "**Status codes map 1:1 to HTTP** — `grpc-status` is its own domain (`NOT_FOUND`, `UNAVAILABLE`, `DEADLINE_EXCEEDED`). Gateways that translate blindly to HTTP lose retry semantics; define the mapping deliberately."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, when to avoid it"
+    },
+    {
+      "type": "table",
+      "caption": "Use gRPC where contracts and streams pay rent.",
+      "headers": [
+        "Use gRPC when",
+        "Avoid gRPC when",
+        "What to do instead"
+      ],
+      "rows": [
+        [
+          "Polyglot microservices you control, with frequent deploys",
+          "Public third-party API with unknown clients",
+          "Expose REST or GraphQL; transcode from gRPC at edge"
+        ],
+        [
+          "High-throughput, low-latency internal calls or ingest",
+          "Cacheable, CDN-friendly reads",
+          "Use REST with GET, ETags, and HTTP caching"
+        ],
+        [
+          "Native streaming: ticks, chat, telemetry, watch APIs",
+          "Simple CRUD with no streaming need",
+          "Unary gRPC adds toolchain cost for no gain; use REST"
+        ],
+        [
+          "Strict evolution and break-build-on-mismatch matters",
+          "Rapid prototyping with unstable shapes",
+          "Start with JSON, freeze schema, then migrate to proto"
+        ],
+        [
+          "Browser or webhook consumers dominate",
+          "Direct browser-to-gRPC without proxy",
+          "Serve gRPC-Web or JSON via gateway; keep gRPC inside"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "Choose gRPC when **you control both ends and need typed evolution plus efficient streaming**, and pay for it with HTTP/2-aware load balancing, trailer-preserving proxies, and strict proto discipline."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:50:54.566Z",
+    "problems": []
+  }
+}

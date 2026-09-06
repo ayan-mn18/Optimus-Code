@@ -1,0 +1,301 @@
+{
+  "slug": "delegation-kafka-essentials-sqs-kafka",
+  "title": "Delegation & Kafka Essentials (SQS & Kafka)",
+  "summary": "SQS is a destructive queue for delegating work; Kafka is a replayable log for distributing facts. Pick wrong and you pay in ordering, replay, or ops.",
+  "kind": "HLD",
+  "problemSlug": "delegation--kafka-essentials-sqs--kafka-90-301",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "📨",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Kafka",
+    "SQS",
+    "Messaging"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "SQS vs Kafka Comparison for Modern Developers | by Data Engineer",
+      "url": "https://medium.com/@rshcorporate8/sqs-vs-kafka-comparison-for-modern-developers-ca64073f1078",
+      "source": "medium.com",
+      "kind": "article"
+    },
+    {
+      "title": "Apache Kafka vs Amazon SQS - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/big-data/apache-kafka-vs-amazon-sqs/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Kafka vs SQS | Svix Resources",
+      "url": "https://www.svix.com/resources/faq/kafka-vs-sqs/",
+      "source": "svix.com",
+      "kind": "article"
+    },
+    {
+      "title": "SNS/SQS vs Kafka : r/dataengineering - Reddit",
+      "url": "https://www.reddit.com/r/dataengineering/comments/11r01xo/snssqs_vs_kafka/",
+      "source": "reddit.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Delegation is not streaming.** SQS says: take this task and delete it when done. Kafka says: here is a fact, re-read it as many times as you need. If you mix those two contracts you will build a system that either cannot recover or cannot scale. Every HLD answer starts by naming which contract you need."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Delegation in a distributed system means a producer hands off work so it does not wait for the worker. The queue absorbs bursts, the workers drain at their own rate, and the producer moves on. That is the whole point: time decoupling plus load leveling. The trade-off is you now have invisible state — messages in flight, retries, duplicates — and you must design for it explicitly, not hope it goes away."
+    },
+    {
+      "type": "paragraph",
+      "text": "Amazon SQS is a fully managed, pull-based queue with destructive reads. A consumer polls, receives a message with a **visibility timeout**, processes it, then deletes it. Fail to delete in time and it reappears for someone else. Standard queues give you effectively unlimited throughput with at-least-once delivery and no ordering. FIFO queues give you ordering per message group and exactly-once de-duplication inside a 5-minute window, but cap you at roughly 300 to 3000 transactions per second per queue unless you batch aggressively. The trade-off is brutal and honest: you trade ordering and throughput for zero ops."
+    },
+    {
+      "type": "paragraph",
+      "text": "Apache Kafka is not a queue. It is a partitioned, replicated, append-only log with retention. Producers append to a **topic**, the topic is split into **partitions**, each partition is an ordered log replicated across brokers. Consumers track their own offset and never delete on read. Multiple consumer groups can each replay the same data independently, days later if retention allows. Throughput scales by adding partitions and brokers — millions of events per second is routine — but you now own partition design, keying, rebalances, retention, and cluster operations. The trade-off is inverted from SQS: you gain replay and fan-out, you pay with complexity."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: destructive queue vs replayable log"
+    },
+    {
+      "type": "mermaid",
+      "title": "SQS delegation flow",
+      "caption": "Poll, lease with visibility timeout, delete on success.",
+      "code": "flowchart LR\n    P[Producer] --> Q[SQS Queue]\n    Q --> W1[Worker 1]\n    Q --> W2[Worker 2]\n    W1 -->|delete on success| Q\n    W1 -->|timeout redelivers| Q\n    W2 -->|delete on success| Q"
+    },
+    {
+      "type": "paragraph",
+      "text": "SQS works on a lease, not a lock. There is no assignment of message to worker. Any worker can poll any message, gets a lease for `VisibilityTimeout` seconds, and must call delete before the lease expires. Crash before delete and the message becomes visible again — that is your fault tolerance, and also your duplicate source. Poison messages are handled by counting receives and shunting to a **dead-letter queue** after `maxReceiveCount`. Why this design? Because it lets AWS scale the queue invisibly and lets you scale workers independently. The cost: no cursor, no replay, no fan-out. Once deleted, the message is gone. If two different services need the same event, you need fan-out at publish or two queues, not one read twice."
+    },
+    {
+      "type": "mermaid",
+      "title": "Kafka partitioned log",
+      "caption": "Append to partitions, consumers hold offsets per group.",
+      "code": "flowchart LR\n    Prod[Producer] --> T[Topic Orders]\n    T --> P0[Partition 0]\n    T --> P1[Partition 1]\n    T --> P2[Partition 2]\n    P0 --> A[Consumer A]\n    P1 --> A\n    P2 --> B[Consumer B]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka works on offsets, not deletes. A producer picks a partition — by key hash or round-robin — and appends. The broker persists the batch to disk and replicates it to followers. A consumer group divides partitions among its members: one partition goes to exactly one member at a time, which is how Kafka preserves per-partition order while parallelising. The consumer commits its offset when done. Crash and another member resumes from the last commit. Why partitions? Because a single ordered log cannot scale writes. Shard the log and you scale writes linearly, but you lose global ordering. That is the central trade-off of Kafka: **order lives only inside a partition**, and throughput lives in the number of partitions. Choose your key wrong and you get neither."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "SQS vs Kafka on the axes interviewers actually probe.",
+      "headers": [
+        "Axis",
+        "SQS",
+        "Kafka"
+      ],
+      "rows": [
+        [
+          "Messaging model",
+          "Point-to-point task queue. One message, one logical consumer. Delete equals done.",
+          "Publish-subscribe log. One event, many independent consumer groups. Read never deletes."
+        ],
+        [
+          "Ordering",
+          "Standard: none. FIFO: order per group ID, at lower throughput.",
+          "Order per partition only. Same key goes to same partition or ordering breaks."
+        ],
+        [
+          "Delivery",
+          "At-least-once by default. FIFO de-duplicates on ID for 5 minutes.",
+          "At-least-once by default. Idempotent producer plus transactions needed for effectively-once."
+        ],
+        [
+          "Retention and replay",
+          "Short retention, typically days. No replay after delete. You lost it.",
+          "Configurable retention by time or size, days to forever. Any group can rewind and replay."
+        ],
+        [
+          "Fan-out",
+          "Poor. One queue feeds one purpose. Need extra publish layer for multiple subscribers.",
+          "Native. Add a consumer group, replay history, zero impact on existing readers."
+        ],
+        [
+          "Ops burden",
+          "Near zero. No brokers, no partitions, autoscaled by provider.",
+          "High. Brokers, replication, partition count, rebalances, disk, monitoring. Managed services reduce but do not remove it."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not let anyone tell you one is strictly better. SQS wins when each message is a command to do once — send email, resize image, charge card — and you want the cheapest path to elastic workers. Kafka wins when each record is a fact multiple systems will interpret differently over time — order placed, payment settled, sensor reading — and you need replay, audit, and stream joins. Pick SQS for facts and you will rebuild replay with S3 dumps and regret it. Pick Kafka for simple background jobs and you will pay for partitions, schemas, and on-call for no benefit."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How scaling actually behaves"
+    },
+    {
+      "type": "paragraph",
+      "text": "SQS Standard scales without you. There is no partition count to tune, no hot key to avoid. Push 100 messages per second or 100,000, the service absorbs it and workers poll harder. Scaling is on the consumer side: add Lambda concurrency or pollers and throughput follows, roughly linearly until your downstream database falls over. The limit you hit first is never SQS, it is the thing doing the work. FIFO is the exception. Because it enforces order per group and de-duplication, throughput is bounded. Batching and high-throughput mode raise the ceiling, but if you need 200k ordered events per second in one group, SQS FIFO is the wrong tool. That bound is the price of global order."
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka scales only if you sharded correctly on day one. Throughput equals partitions times per-partition write speed, divided by replication overhead. More partitions means more parallelism for producers and more consumers in a group — a group cannot have more active members than partitions. So 3 partitions means at most 3 parallel consumers per group, no matter how many machines you add. The fix is over-partition early: 24, 48, 96 partitions for a hot topic. The trade-off: each extra partition adds open file handles, leader election surface, rebalance time, and end-to-end latency variance. Under-partition and you stall. Over-partition by 1000x and rebalances take minutes. Experienced designers pick partition count from target throughput plus headroom, then never change the keying scheme."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you see"
+    },
+    {
+      "type": "paragraph",
+      "text": "SQS failure mode one: **poison message loop plus visibility storm.** One malformed payload crashes every worker in 2 seconds. Each worker fails to delete, visibility expires, message reappears, another worker grabs it, crashes again. Symptom in dashboards: `ApproximateNumberOfMessagesNotVisible` spikes while `NumberOfMessagesDeleted` flatlines, Lambda throttles, downstream latency explodes, and your bill explodes with polls. Fix is not faster workers, it is a redrive policy: `maxReceiveCount 3 to 5` into a dead-letter queue plus an alarm on DLQ depth. Without a DLQ, one bad message can wedge your entire fleet. With one, you isolate the blast radius."
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka failure mode one: **hot partition.** You keyed by `customer_id` and one tenant produces 80% of traffic. One partition grows to gigabytes while others sit idle. One consumer lags, end-to-end lag for that key goes from milliseconds to minutes, but average lag looks fine. Symptom: lag skewed to one partition, one consumer at 100% CPU, others idle, key-ordered consumers timing out. Fix is key redesign — salt the key, split the tenant, or separate hot-key topic — not adding brokers. Adding brokers without fixing the key just gives you more idle hardware."
+    },
+    {
+      "type": "paragraph",
+      "text": "Kafka failure mode two: **rebalance churn and retention loss.** Deploy too often, set `session.timeout` too tight, or run a long garbage-collection pause, and the group thinks members died. Partitions flap between consumers, no one makes progress, duplicates surge because offsets are recommitted. Symptom: consumer lag sawtooth, duplicate processing downstream, `rebalance rate` alert firing. The quieter killer is retention: you assumed 7 days of replay, traffic tripled, disk filled, broker deleted segments after 2 days. When you try to rebuild a projection from scratch, the history is gone. Fix is static group membership, incremental cooperative rebalancing, right-sized timeouts, and retention monitored as `log retention bytes vs disk headroom`, not as a config you set once."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Duplicates are not optional",
+      "text": "Both systems are at-least-once unless you do real work. SQS redelivers on timeout. Kafka redelivers on crash before commit. If your handler is not **idempotent** — keyed de-dupe table, conditional write, exactly-once sink — you will double-charge, double-send, or double-count. Interviewers reject designs that claim FIFO or idempotent producer alone solves this end to end."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "sqs_worker.py",
+      "code": "import boto3\nsqs = boto3.client('sqs')\nQUEUE_URL = 'https://queue/orders.fifo'\nDLQ_URL = 'https://queue/orders-dlq'\n\n# Redrive: after 4 failed leases, isolate. Alarm on DLQ depth.\n# Visibility must exceed worst-case processing time + margin.\nwhile True:\n    resp = sqs.receive_message(\n        QueueUrl=QUEUE_URL,\n        MaxNumberOfMessages=10,\n        WaitTimeSeconds=20,  # long poll: fewer empty calls, lower cost\n        VisibilityTimeout=90,  # lease: must be > handler p99\n        AttributeNames=['ApproximateReceiveCount']\n    )\n    for m in resp.get('Messages', []):\n        try:\n            handle(m['Body'])  # must be idempotent on MessageDeduplicationId\n            sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=m['ReceiptHandle'])\n        except TransientError:\n            # do nothing: let visibility expire for retry\n            pass\n        except PermanentError:\n            # fail fast to DLQ, do not burn 4 leases\n            sqs.send_message(QueueUrl=DLQ_URL, MessageBody=m['Body'])"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "kafka_producer_consumer.py",
+      "code": "# Producer: key pins order to partition. Same key -> same partition.\nproducer.send('orders', key=order.customer_id, value=order.to_json(),\n              enable_idempotence=True,  # de-dupe retries per partition\n              acks='all', retries=5)\n\n# Consumer: one partition -> one member. Groups replay independently.\nconsumer = KafkaConsumer('orders',\n    group_id='fraud-check-v2',\n    enable_auto_commit=False,  # commit AFTER side effects\n    max_poll_interval_ms=300000,  # must exceed worst-case batch handle\n    partition_assignment_strategy=[CooperativeStickyAssignor])\n\nfor batch in consumer.poll(timeout_ms=1000).values():\n    for msg in batch:\n        upsert_with_idempotency_key(msg.key, msg.value)  # exactly-once effect\n    consumer.commit_sync()  # at-least-once delivery, once-only effect"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How interviewers test this"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the contract first",
+          "text": "Say out loud: is this a task to do once or a fact to read many times? Tasks point to SQS. Facts with replay, audit, or multiple readers point to Kafka. Interviewers decide in the first 60 seconds if you see the distinction."
+        },
+        {
+          "title": "Draw the scaling bottleneck",
+          "text": "For SQS, show producers, queue depth, workers, and the downstream database — the DB is the bottleneck, not the queue. For Kafka, show topic, partition count, key function, and consumer groups — the key and partition count are the bottleneck. Put numbers: messages per second, payload size, retention days."
+        },
+        {
+          "title": "State delivery and ordering explicitly",
+          "text": "Say at-least-once plus idempotent handler, or FIFO per group with throughput cap, or per-partition order with key pinning. Never promise global exactly-once ordering across partitions — that claim fails you instantly."
+        },
+        {
+          "title": "Add the failure handling",
+          "text": "SQS needs visibility timeout math, redrive to DLQ, and alarm on DLQ depth. Kafka needs replication factor 3, min in-sync replicas 2, retention sizing, lag alerts per partition, and rebalance strategy. Missing these signals you have never operated either."
+        },
+        {
+          "title": "Justify ops cost",
+          "text": "Close with the trade: SQS costs per API call and saves engineering time. Kafka costs engineering time and saves per-message cost at scale plus unlocks replay. If scale is modest, choosing Kafka for resume value is a negative signal."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "FIFO means global exactly-once — no, it means ordered per group with de-dupe on ID for a short window; your handler still needs idempotency.",
+        "More Kafka partitions is always better — no, each partition adds rebalance cost, file handles, and tail latency; size from throughput, not optimism.",
+        "Kafka deletes when consumed — no, retention deletes by time or size; consumers just move offsets, which is why replay works.",
+        "SQS pushes to workers — no, workers poll; if you need push fan-out to many subscribers, you need a publish layer in front of the queue.",
+        "One queue or topic can serve every use case — no, mixing latency-sensitive commands with bulk analytics on the same partitions or FIFO group couples their fate and breaks both.",
+        "Managed Kafka removes ops — no, it removes broker patching, not key design, partition sizing, schema evolution, or lag debugging."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use which"
+    },
+    {
+      "type": "table",
+      "caption": "Decision rule: match the durability and read pattern, not the hype.",
+      "headers": [
+        "Scenario",
+        "Use this",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Background jobs, email, image resize, webhook delivery",
+          "SQS Standard + DLQ",
+          "Unbounded burst absorption, elastic workers, zero cluster to run"
+        ],
+        [
+          "Order checkout where sequence per user matters",
+          "SQS FIFO per user group, or Kafka keyed by user",
+          "FIFO if single consumer and modest rate; Kafka if multiple services need same ordered history"
+        ],
+        [
+          "Event sourcing, audit log, rebuildable projections",
+          "Kafka with days to months retention",
+          "Replay is a requirement, not a nice-to-have; queue delete destroys it"
+        ],
+        [
+          "Fan-out to search, fraud, analytics from one event",
+          "Kafka with one group per reader",
+          "Independent offsets per group; SQS would need N queues and N publishes"
+        ],
+        [
+          "Serverless microservice decoupling at low volume",
+          "SQS triggered workers",
+          "Pay per call, autoscale, no partition planning for 100 messages per second"
+        ],
+        [
+          "High-throughput telemetry, clickstream, CDC",
+          "Kafka with many partitions",
+          "Sustained hundreds of thousands of writes per second needs a partitioned log, not a single queue"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Use SQS when each message is a task to delete once, use Kafka when each record is a fact to replay many times — and whichever you pick, make the handler idempotent because both redeliver.**"
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:21:18.037Z",
+    "problems": []
+  }
+}

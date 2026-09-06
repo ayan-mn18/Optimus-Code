@@ -1,0 +1,314 @@
+{
+  "slug": "cqrs-pattern",
+  "title": "CQRS Pattern",
+  "summary": "CQRS splits writes and reads into separate models so each can scale and evolve independently — at the cost of eventual consistency you must design for.",
+  "kind": "HLD",
+  "problemSlug": "cqrs-pattern-90-199",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "🔀",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "CQRS",
+    "Distributed Systems"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Command Query Responsibility Segregation (CQRS) - Confluent",
+      "url": "https://www.confluent.io/learn/cqrs/",
+      "source": "confluent.io",
+      "kind": "article"
+    },
+    {
+      "title": "What is Command Query Responsibility Segregation (CQRS)?",
+      "url": "https://www.reddit.com/r/programming/comments/1j127f9/what_is_command_query_responsibility_segregation/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "CQRS Pattern - Azure Architecture Center | Microsoft Learn",
+      "url": "https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs",
+      "source": "learn.microsoft.com",
+      "kind": "article"
+    },
+    {
+      "title": "CQRS pattern - AWS Prescriptive Guidance",
+      "url": "https://docs.aws.amazon.com/prescriptive-guidance/latest/modernization-data-persistence/cqrs-pattern.html",
+      "source": "docs.aws.amazon.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "CQRS is not faster by default. It is a bet that **your reads and writes want different shapes, different databases, and different scale** — and forcing them through one model is what is actually slow. You pay for that freedom with **stale reads and a sync pipeline you now own**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Command Query Responsibility Segregation means you maintain **two logical models**: a command side that owns validation, invariants, and state transitions, and a query side that owns serving reads in whatever denormalized shape makes those reads cheap. They may share a database in the trivial form, but the pattern only earns its keep when they diverge — different schemas, different storage engines, different replica counts, different consistency guarantees. The command side is write-optimized: normalized, constraint-heavy, low QPS, high correctness burden. The query side is read-optimized: pre-joined, pre-aggregated, heavily indexed or cached, high QPS, tolerant of lag. The critical distinction from plain read replicas: replicas copy the *same* schema. CQRS lets the read schema be **structurally different** from the write schema, because it is built by projecting write-time facts into read-time views, not by replaying storage pages."
+    },
+    {
+      "type": "paragraph",
+      "text": "This is not the old object-level Command-Query Separation idea of `getters should not mutate`. That is a method discipline. CQRS is an architectural split of path, storage, and scaling. Commands express intent — `place order`, `change seat` — and can be rejected for business reasons. Queries express need — `order summary for checkout page`, `search results sorted by departure` — and should never be rejected for business reasons, only served fast or degraded gracefully. Why separate intent from need? Because they contend on almost nothing in common: writes need serializability around a small set of entities; reads need fan-out across a huge set of entities with joins, sorting, and filtering. Put them on one normalized relational schema and you get the classic pathology: you add indexes for reads that slow down writes, you add locks for writes that block reads, and every new screen forces a migration that risks the write path. The trade-off you are accepting: you eliminate read/write contention and schema coupling, but you introduce **dual models, dual evolution, and a consistency gap** between the moment a command commits and the moment every read view reflects it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The request path forks at the edge. Commands go to handlers that load aggregates, enforce invariants, and persist to the write store. That persist produces a durable fact — an event, a changelog entry, an outbox row. Projectors consume that fact and upsert into one or more read models. Queries never touch the write store; they hit the read models only. There are two sync disciplines and the choice defines the system. Synchronous projection (write transaction also updates the read tables, or blocks until the projector acknowledges) gives you tight freshness but couples availability: a slow read index now fails your writes. Asynchronous projection via log or queue decouples them: writes stay fast when reads are sick, but reads lag by milliseconds to seconds and clients can observe time travel. Most production CQRS is asynchronous with an outbox, precisely because the point was independent scaling and failure isolation — synchronous projection throws both away. The trade-off is explicit: **freshness versus isolation**. Pick one per read model, not globally."
+    },
+    {
+      "type": "mermaid",
+      "title": "CQRS request flow",
+      "caption": "Commands and queries take disjoint paths; projectors bridge them.",
+      "code": "flowchart TD\n  Client[Client] --> Router[API Router]\n  Router --> CH[Command Handler]\n  Router --> QH[Query Handler]\n  CH --> WD[Write Store]\n  WD --> LOG[Event Log]\n  LOG --> P1[Projector Search]\n  LOG --> P2[Projector Detail]\n  P1 --> R1[Read Model Search]\n  P2 --> R2[Read Model Detail]\n  QH --> R1\n  QH --> R2"
+    },
+    {
+      "type": "paragraph",
+      "text": "The write store is the source of truth; the read stores are disposable caches with durable backing. That framing dictates operations: you can drop and rebuild any read model from the log, which is why the log must be ordered, replayable, and retained longer than your slowest rebuild. Projectors must be **idempotent and versioned** because delivery is at-least-once and code changes mid-stream. A projector handling `OrderPlaced v2` must still correctly skip or upgrade `v1` events already in the log, or your rebuild produces a mixed-schema view that serves corrupt results with 200 OK. Scaling works because each leg scales on its own axis: add command partitions by entity key to raise write throughput, add read replicas or separate view clusters per access pattern to raise read throughput, add projector parallelism per shard to shrink lag. Why this works: writes are key-affine and small, reads are pattern-affine and large, projections are shard-parallel and replayable. No single tier is asked to be good at all three. The trade-off: you now operate three scaling policies, three monitors, and three failure modes instead of one database with one dashboard."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What CQRS buys and what it bills you.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Reads and writes scale and fail independently",
+          "You run 2+ stores plus a projection pipeline",
+          "A hot product page no longer contends with checkout writes, but a projector outage now pages you separately"
+        ],
+        [
+          "Read models shaped exactly for screens and APIs",
+          "Same fact stored N times in N shapes",
+          "No more 7-table joins on the hot path; storage cost and schema drift grow linearly with views"
+        ],
+        [
+          "Commands model intent with real validation",
+          "Simple CRUD becomes ceremony",
+          "Rejecting `book room` for business reasons is clean; forcing every trivial update through handlers and events is overhead"
+        ],
+        [
+          "Polyglot persistence per side",
+          "Two operational skill sets and backup stories",
+          "Relational for invariants plus search index for queries is powerful until only one side has runbooks"
+        ],
+        [
+          "Natural fit for audit and replay",
+          "Eventual consistency everywhere by default",
+          "Rebuilding views and debugging from history is excellent; every client must handle read-your-write gaps"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The performance story is frequently misstated. CQRS does not make any single query intrinsically faster — a well-indexed monolith beats a poorly built projection. It makes the *system* faster under skew, because you stop paying the joint-optimization tax. Example: a write-heavy ledger that also serves a complex dashboard. On one schema you either starve the dashboard of indexes or slow the ledger with them. With CQRS you keep the ledger narrow and heavily constrained, and you precompute the dashboard view on write-stream arrival so the dashboard read is a single key lookup. You traded write amplification (one commit fans out to several view writes) for read simplification (one view read replaces a join). That trade wins when read QPS dwarfs write QPS or when reads need a different engine — full-text, geospatial, graph traversal — that would be pathological as a secondary index on the write database. It loses when the workload is balanced CRUD with no divergent access patterns; then you paid duplication cost for no skew benefit."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every CQRS outage I have seen is a projection problem, not a database problem. The write side keeps accepting money while the read side quietly goes stale, and because reads still return 200 with old data, no alarm fires until users or support notice. Lag is the core failure mode, and it compounds: a slow downstream view backs up the consumer group, which increases end-to-end staleness for *all* views on that group, which triggers retries that make it slower. The second killer is non-idempotent projectors. A duplicate delivery double-counts inventory, double-credits a balance, or inserts duplicate search documents, and the corruption looks like business-logic bugs, not infrastructure bugs. The third is unbounded rebuilds: someone adds a new view and replays six months of history through projectors that were never load-tested, saturating the write store or the event bus and degrading live traffic. Design rule: treat projectors as first-class services with lag SLOs, dead-letter queues, and backpressure — not as background scripts."
+    },
+    {
+      "type": "table",
+      "caption": "Failure, symptom, and what to watch.",
+      "headers": [
+        "Failure",
+        "Symptom you would see",
+        "Fix that actually works"
+      ],
+      "rows": [
+        [
+          "Projector lag or stall",
+          "User creates then cannot see it; `GET` returns old version minutes after `POST` succeeded; support ticket spike, no 5xx",
+          "Expose per-view lag in seconds as SLO; autoscale projectors by consumer lag; serve `Retry-After` or version token on just-written entities"
+        ],
+        [
+          "Duplicate or out-of-order delivery",
+          "Double charges, phantom inventory, search duplicates; counts drift from write-side truth",
+          "Idempotency key on event ID in every view upsert; conditional writes; routine reconciler comparing write truth to view counts"
+        ],
+        [
+          "Schema evolution break",
+          "New projector version crashes on old events; rebuild produces half-migrated view serving mixed shapes",
+          "Version every event; projectors handle N and N-1; canary rebuild on shadow view before cutover"
+        ],
+        [
+          "Poison event",
+          "One malformed event blocks a partition; lag grows linearly while everything else looks healthy",
+          "Dead-letter queue with alert; skip-and-flag semantics; never infinite blocking retry"
+        ],
+        [
+          "Read model loss",
+          "One view empty after node loss while writes fine; queries for that pattern fail, others fine",
+          "Rebuild from retained log to fresh tables, then atomic alias swap; never mutate live view in place during rebuild"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Read-your-write is the interview trap",
+      "text": "If a user updates their profile and refreshes, they *will* see the old profile under async CQRS. Handle it explicitly: return the new version or version token from the command, let the client poll or fuse it into the next read, or route just-written keys to the write side for a short window. Saying **clients tolerate staleness** without naming which clients and for how long is a rejected answer."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Where code clarifies"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cqrs_core.py",
+      "code": "from dataclasses import dataclass\n\n# ---- Write side: owns invariants ----\n@dataclass(frozen=True)\nclass PlaceOrder:\n    order_id: str\n    customer_id: str\n    amount_cents: int\n    idempotency_key: str\n\nclass OrderAggregate:\n    def __init__(self):\n        self.placed = False\n        self.version = 0\n\n    def handle(self, cmd: PlaceOrder):\n        # Business rule lives HERE, not in the read model.\n        if self.placed:\n            raise ValueError(\"duplicate order\")\n        if cmd.amount_cents <= 0:\n            raise ValueError(\"invalid amount\")\n        self.placed = True\n        self.version += 1\n        # Durable fact. Write store + outbox commit atomically.\n        return {\n            \"event_id\": cmd.idempotency_key,  # dedupe key downstream\n            \"type\": \"OrderPlaced.v2\",\n            \"order_id\": cmd.order_id,\n            \"customer_id\": cmd.customer_id,\n            \"amount_cents\": cmd.amount_cents,\n            \"version\": self.version,\n        }\n\n# ---- Projection: must be idempotent + version-aware ----\nclass OrderSummaryProjector:\n    def __init__(self, views):\n        self.views = views  # e.g. search index + detail store\n        self.seen = set()   # in reality: unique constraint on event_id\n\n    def apply(self, event):\n        if event[\"event_id\"] in self.seen:\n            return  # at-least-once delivery: duplicates are normal\n        if event[\"type\"] == \"OrderPlaced.v1\":\n            event = self._upgrade_v1(event)\n        assert event[\"type\"] == \"OrderPlaced.v2\"\n        # Upsert, never blind insert. Replays must converge.\n        self.views[\"detail\"].upsert(event[\"order_id\"], event)\n        self.views[\"by_customer\"].upsert(event[\"customer_id\"], event)\n        self.seen.add(event[\"event_id\"])\n\n    def _upgrade_v1(self, e):\n        e = dict(e); e[\"type\"] = \"OrderPlaced.v2\"\n        e.setdefault(\"amount_cents\", 0)\n        return e"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cqrs_read.py",
+      "code": "# ---- Read side: shaped for screens, never validates ----\nclass OrderQueries:\n    def __init__(self, views, write_fallback):\n        self.views = views\n        self.write_fallback = write_fallback\n\n    def get_order(self, order_id, min_version=None):\n        doc = self.views[\"detail\"].get(order_id)\n        # Close the read-your-write gap for just-written keys.\n        # Trade-off: one narrow bypass, not general read-from-write.\n        if doc is None or (min_version and doc[\"version\"] < min_version):\n            doc = self.write_fallback.get(order_id)\n        return doc\n\n    def orders_for_customer(self, customer_id):\n        # Single-key lookup. No joins at request time because the\n        # projector already denormalized. Stale by lag SLA, e.g. <2s p99.\n        return self.views[\"by_customer\"].query(customer_id)"
+    },
+    {
+      "type": "paragraph",
+      "text": "The code shows the three non-negotiables. First, the aggregate returns a versioned event with a stable `event_id` derived from the command idempotency key — that is what makes retries safe and what lets every projector deduplicate without coordination. The write commit must persist state change and outbox row atomically; without that you get ghosts (view updated, write rolled back) or orphans (write committed, view never notified). Second, the projector branches on event version and upserts rather than inserts, so replays converge instead of duplicating. This is why CQRS forces schema discipline: every event type is a public contract with a retention horizon, not an internal DTO you can rename freely. Third, the query path takes a `min_version` hint returned by the command — typically the aggregate version — and bypasses the view only when the view is behind for that specific key. Why narrow bypass instead of reading from the write side generally? Because general bypass reintroduces the contention you built CQRS to escape. You pay a small complexity cost on the just-written path to preserve isolation on the hot read path. The trade-off is contained staleness: everyone else sees lagged-but-fast views, the writer sees their own write."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Consistency tuning is the real design work"
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not present CQRS as eventually consistent and stop. Name the bound and the mechanism per view. A search index might tolerate 30 seconds of lag with no user impact; an order-detail page after checkout tolerates roughly zero. So you give them different projectors, different parallelism, and different freshness SLOs rather than one global lag number. Techniques that actually hold up: version tokens on commands so clients can request `wait until view >= vN` with a deadline; short-TTL fusion where the edge merges the just-written object into the stale view response; and per-key routing of recently mutated keys to the write store for a few seconds. Each weakens pure separation in exchange for perceived correctness. Say that plainly: **every read-your-write fix re-couples reads and writes a little**. The skill is keeping the coupling narrow — one key, one short window, one fallback path — instead of collapsing back to direct reads on the write database. Also decide ordering guarantees upfront: per-aggregate ordering is usually required (no one wants `OrderCancelled` applied before `OrderPlaced`), global ordering almost never is and would serialize your entire projector fleet. Partition the log by aggregate ID, keep projectors ordered within a partition and parallel across partitions, and document that cross-aggregate views are convergent, not linearizable."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the skew first",
+          "text": "Open with read/write asymmetry: QPS ratio, shape divergence, engine divergence. Example: 100:1 read-heavy catalog with text search versus transactional inventory writes. If you cannot name the skew, you cannot justify CQRS."
+        },
+        {
+          "title": "Draw the fork",
+          "text": "Sketch command handlers to write store to log to projectors to read models. Label what is source of truth and what is rebuildable. Interviewers fail candidates who let queries touch the write store casually."
+        },
+        {
+          "title": "Choose the sync discipline",
+          "text": "State async via outbox plus log as default, sync only where freshness is contractual. Justify with failure isolation: view outage must not block checkout."
+        },
+        {
+          "title": "Solve read-your-write on the whiteboard",
+          "text": "Propose version token returned from command and conditional fallback for just-written keys. This is the expected answer; hand-waving about eventual consistency is not."
+        },
+        {
+          "title": "Talk rebuilds and versions",
+          "text": "Explain how you add a new view without downtime: replay from retained log into shadow tables, version events, swap alias. Mention idempotency and dead-letter handling unprompted."
+        },
+        {
+          "title": "Close with cost",
+          "text": "Volunteer when you would not use it: balanced CRUD, small team, no divergent queries. Suggest the stepping stone: single store with separate command/query services, then physical split only on measured contention."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions"
+    },
+    {
+      "type": "list",
+      "items": [
+        "CQRS means separate databases. It means separate *models*. Separate databases are one deployment choice, and often the right one, but you can start with separate schemas or even separate services on one store — the trade-off is you keep operational simplicity but keep shared failure fate.",
+        "CQRS requires event sourcing. It pairs well with it, but the write side can be plain state plus an outbox. Event sourcing adds full history and replay power at the cost of versioning and snapshot complexity you may not need.",
+        "CQRS makes reads strongly consistent. It does the opposite by default. Freshness becomes a per-view SLO you engineer with tokens, fusion, or bypass — not a property you inherit.",
+        "More read models are always better. Each view multiplies storage, projection load, and schema-change blast radius. Two well-chosen views beat six speculative ones.",
+        "Projectors are just background jobs. They are part of the serving path with lag SLOs. Treat them as such: dashboards, autoscaling, poison-message handling, and rehearsed rebuilds.",
+        "You can evolve commands and events freely. Commands are mutable APIs; events are immutable history. Renaming an event field without versioning corrupts replays months later."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use CQRS for skew and divergence, not for fashion.",
+      "headers": [
+        "Use it when",
+        "Do not use it when",
+        "What to do instead"
+      ],
+      "rows": [
+        [
+          "Read QPS dwarfs write QPS and reads need precomputed shapes",
+          "CRUD with similar read/write volume and shape",
+          "One normalized store with indexes; split services, not stores"
+        ],
+        [
+          "Reads need a different engine: search, graph, time-series, OLAP",
+          "Team cannot operate a pipeline with lag SLOs and replays",
+          "Read replicas or materialized views inside one database"
+        ],
+        [
+          "Commands carry real invariants and rejection logic distinct from display logic",
+          "Domain is simple forms-over-data with no contention",
+          "Modular monolith with clear handler/query separation in code"
+        ],
+        [
+          "You need independent scaling and failure isolation per side",
+          "Strong global consistency is required on every read",
+          "Keep single write-through model or synchronous transaction; accept coupled scaling"
+        ],
+        [
+          "Audit trail and view rebuilds have business value",
+          "Event retention and versioning cost exceeds debugging value",
+          "Outbox for integration only, without full CQRS projection fleet"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Split commands from queries when reads and writes need different shapes and scale, project write facts into disposable read views, and buy that independence with versioned, idempotent projections plus explicit handling of stale reads.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:18:37.359Z",
+    "problems": []
+  }
+}

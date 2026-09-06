@@ -1,0 +1,339 @@
+{
+  "slug": "tcp",
+  "title": "TCP",
+  "summary": "TCP as a reliable ordered byte-stream over IP: handshake, sequence/ACK reliability, flow vs congestion control, failure modes, and when to avoid it.",
+  "kind": "HLD",
+  "problemSlug": "tcp-94-211",
+  "topic": "Networking",
+  "difficulty": "Medium",
+  "coverEmoji": "🔌",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Networking",
+    "TCP",
+    "System Design"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Transmission Control Protocol (TCP) - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/computer-networks/what-is-transmission-control-protocol-tcp/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Transmission Control Protocol (TCP) (article) | Khan Academy",
+      "url": "https://www.khanacademy.org/computing/computers-and-internet/xcae6f4a7ff015e7d:the-internet/xcae6f4a7ff015e7d:transporting-packets/a/transmission-control-protocol--tcp",
+      "source": "khanacademy.org",
+      "kind": "article"
+    },
+    {
+      "title": "Transmission Control Protocol - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Transmission_Control_Protocol",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "How Does TCP Work? | Kevin Sookocheff",
+      "url": "https://sookocheff.com/post/networking/how-does-tcp-work/",
+      "source": "sookocheff.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "TCP turns lossy, reordered, duplicated IP packets into an **ordered, reliable, byte-stream abstraction**. You pay for that lie with **latency, head-of-line blocking, and connection state**. Every design question about TCP is really: is that price worth paying here?"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What TCP actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "TCP is a Layer 4, connection-oriented, full-duplex, byte-stream protocol. It runs on top of IP, which gives you nothing: no delivery guarantee, no order, no duplicate suppression, no rate matching. TCP adds all four, plus liveness detection via the connection itself. The key phrase is **byte-stream**: the sender writes bytes, the network chops them into segments, and the receiver reads bytes. There are no message boundaries. If you needed framing, you built it yourself with length prefixes or delimiters. That single fact explains half of all application bugs over TCP — people assume one `send` equals one `receive`, and it never does. Trade-off: you get portability and in-order delivery without thinking about packets, but you lose message semantics and you inherit variable delay because reliability takes time."
+    },
+    {
+      "type": "paragraph",
+      "text": "A TCP connection is identified by a four-tuple: `source IP, source port, destination IP, destination port`. That tuple is the connection. Both sides hold state: next sequence number to send, highest contiguous byte acknowledged, receive window, congestion window, round-trip estimate, retransmission timer. This is why TCP does not scale for free. Each idle connection costs memory and file descriptors, and each active one costs timers and buffer space. UDP holds none of this. Trade-off: **stateful reliability versus stateless scalability**. Choose state when correctness depends on every byte arriving once and in order; drop it when you can tolerate loss or rebuild reliability cheaper at the application layer."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: handshake, sequence, acknowledgement"
+    },
+    {
+      "type": "paragraph",
+      "text": "You cannot do reliability without agreeing on where byte zero is. That is what the three-way handshake is for. Client sends `SYN` with initial sequence `x`. Server replies `SYN-ACK` with its own initial sequence `y` and acknowledgement `x+1`. Client replies `ACK y+1`. Three messages is the minimum that lets both sides confirm liveness in both directions and synchronize sequence spaces while rejecting stale duplicates from old connections. Two messages would leave one side unsure the other heard it. Four would be wasteful. Trade-off: **one extra round trip at setup to avoid data corruption and phantom connections later**. That round trip is why short RPCs and high-churn edge traffic hate TCP."
+    },
+    {
+      "type": "mermaid",
+      "title": "Handshake then ACK-clocked transfer",
+      "caption": "Setup costs 1 RTT, then every byte is sequence-tracked and cumulatively acknowledged.",
+      "code": "flowchart TD\n    CLOSED_C[Client CLOSED] --> SYN1[Send SYN seq=x]\n    SYN1 --> SYNRCVD[Server receives SYN]\n    SYNRCVD --> SYNACK[Send SYN-ACK seq=y ack=x+1]\n    SYNACK --> EST_C[Client ESTABLISHED]\n    EST_C --> ACK1[Send ACK ack=y+1]\n    ACK1 --> EST_S[Both ESTABLISHED]\n    EST_S --> DATA1[Send DATA seq=a len=n]\n    DATA1 --> ACK2[Receiver ACK ack=a+n]\n    ACK2 --> DATA1"
+    },
+    {
+      "type": "paragraph",
+      "text": "After establishment, every data byte has a 32-bit sequence number and every ACK says **the next byte I expect**. If you send bytes `1000-1999`, a correct ACK is `2000`. Data can be split, coalesced, or retransmitted with different segmentation — the receiver reassembles by sequence number, delivers contiguous bytes to the application, and buffers out-of-order segments for gap fill. Retransmission is driven by two signals: timeout when no ACK arrives within the estimated round trip, and triple duplicate ACKs which mean the pipe is still flowing but one segment vanished. That second path is fast retransmit: do not wait for the timer, resend now. Trade-off: **timeout is safe but slow, duplicate-ACK is fast but only works when later packets survived**. Modern stacks use both, plus selective acknowledgements to name exactly which blocks arrived."
+    },
+    {
+      "type": "mermaid",
+      "title": "TCP connection lifecycle",
+      "caption": "Full-duplex close means two FINs; the side that closes first pays the TIME_WAIT tax.",
+      "code": "stateDiagram-v2\n    [*] --> CLOSED\n    CLOSED --> SYN_SENT: active open SYN\n    CLOSED --> LISTEN: passive open\n    LISTEN --> SYN_RCVD: SYN received\n    SYN_SENT --> ESTABLISHED: SYN-ACK plus ACK\n    SYN_RCVD --> ESTABLISHED: ACK received\n    ESTABLISHED --> FIN_WAIT_1: close FIN\n    ESTABLISHED --> CLOSE_WAIT: peer FIN\n    FIN_WAIT_1 --> TIME_WAIT: final ACK\n    CLOSE_WAIT --> LAST_ACK: close FIN\n    LAST_ACK --> CLOSED: ACK received\n    TIME_WAIT --> CLOSED: 2MSL expires"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Reliability engine: what actually gets sent again"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Sequence numbers on bytes, not packets.** Loss is detected as a gap in the byte sequence. This is why resegmentation is legal — only bytes matter. Trade-off: flexible retransmission versus more receiver bookkeeping.",
+        "**Cumulative ACKs by default.** `ACK 5000` means every byte below 5000 is received. Simple, but one hole stalls everything behind it. Trade-off: small header and simple logic versus head-of-line blocking.",
+        "**Selective Acknowledgement (SACK) as the fix.** Receiver reports non-contiguous blocks received, so sender resends only holes. Turn it on unless you have a reason not to. Trade-off: slightly larger options field for far fewer needless resends.",
+        "**RTO from measured RTT, not a constant.** Stack tracks smoothed RTT and variance, then sets retransmission timeout above it. Spurious timeouts cause duplicate injection; too-long timeouts stall recovery. Trade-off: aggressive timers cut tail latency but risk congestion collapse from duplicates.",
+        "**Checksum plus ordered delivery.** Checksum catches corruption, sequence numbers catch reorder and duplication. Together they let TCP promise at-most-once, in-order delivery to the socket. Trade-off: per-segment compute and buffering delay for correctness the app would otherwise reimplement badly."
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Understand cumulative versus selective ACK or you will misdiagnose every loss event. Without SACK, a single dropped segment in a large window forces go-back-N behavior: the sender learns nothing about later arrivals and may resend bytes the receiver already holds. On a lossy transcontinental link that multiplies goodput collapse. With SACK, the sender sees `ACK 1000, SACK 2000-3000, 4000-5000` and knows exactly to resend `1000-1999` and `3000-3999`. That is the difference between one RTT of recovery and many. Trade-off: **SACK adds option-parsing complexity to save bandwidth and time**, and it is almost always the right trade."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Flow control versus congestion control: two windows, two masters"
+    },
+    {
+      "type": "paragraph",
+      "text": "TCP throttles the sender with the minimum of two windows. The **receive window (`rwnd`)** is flow control: the receiver advertising how many bytes of buffer remain. Zero window means stop, and the sender probes periodically until it opens. The **congestion window (`cwnd`)** is congestion control: the sender's estimate of what the network path can absorb without dropping. It starts small with slow start, doubles per RTT until loss or a threshold, then grows additively and cuts multiplicatively on loss. One protects the receiver, the other protects the network. Effective flight size is `min(rwnd, cwnd)`. Confuse them and your tuning does nothing. If throughput is flat while RTT is stable and no loss is visible, you are `rwnd`-limited — grow socket buffers. If throughput collapses under load with retransmits, you are `cwnd`-limited — the path is saturated. Trade-off: **small buffers save memory but cap throughput on high bandwidth-delay paths; large buffers raise throughput but inflate memory and bufferbloat delay**."
+    },
+    {
+      "type": "table",
+      "caption": "TCP trade-offs with no sugar-coating.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why it matters in design"
+      ],
+      "rows": [
+        [
+          "Reliable in-order bytes",
+          "Retransmission delay + jitter",
+          "Tail latency is unpredictable; do not use TCP for hard real-time media"
+        ],
+        [
+          "Duplicate and reorder hiding",
+          "Receive buffering + head-of-line blocking",
+          "One lost segment stalls all later bytes even if they arrived"
+        ],
+        [
+          "Flow control via rwnd",
+          "Receiver must provision buffers; zero-window stalls",
+          "Slow consumers backpressure fast producers — intentional, but can deadlock pipelines"
+        ],
+        [
+          "Congestion control via cwnd",
+          "Slow start + sawtooth throughput",
+          "Short flows never reach full rate; long flows oscillate"
+        ],
+        [
+          "Connection semantics",
+          "Handshake RTT + TIME_WAIT state",
+          "High-churn, tiny-request workloads waste most time in setup/teardown"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Segment anatomy that actually matters"
+    },
+    {
+      "type": "paragraph",
+      "text": "You do not need to memorize the full 20-byte header for a design interview, but you need five fields cold: **sequence number** for ordering, **acknowledgement number** for what comes next, **flags** (`SYN`, `ACK`, `FIN`, `RST`, `PSH`) for lifecycle, **window** for flow control, and **options** for `MSS`, `SACK`, window scaling, and timestamps. `MSS` is negotiated once — the largest segment payload each side will accept — and it determines how many round trips a transfer needs. Window scaling matters because the original 16-bit window caps throughput at ~64KB in flight, which starves any modern high-bandwidth, high-RTT path. Timestamps matter because they disambiguate wrapped sequence numbers and sharpen RTT measurement. Trade-off: **options consume header bytes to buy correctness and speed at scale**. A SYN without window scaling and SACK is a self-inflicted cap."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "tcp_socket_defaults.py",
+      "code": "import socket\n\n# TCP is a byte-stream: one send != one recv. Frame it yourself.\ns = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n# Disable Nagle when you send small, latency-sensitive messages.\n# Trade-off: lower latency for more, smaller packets.\ns.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)\n# Grow buffers when BDP is large, or rwnd caps you.\n# Trade-off: throughput for memory per connection.\ns.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)\ns.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)\n# Application framing over the byte-stream: length-prefix\nimport struct\ndef send_msg(sock, payload: bytes):\n    sock.sendall(struct.pack('!I', len(payload)) + payload)\n\ndef recv_exact(sock, n: int) -> bytes:\n    buf = b''\n    while len(buf) < n:\n        chunk = sock.recv(n - len(buf))\n        if not chunk:\n            raise ConnectionError('peer closed mid-frame')\n        buf += chunk\n    return buf"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "TCP failures look like slowness, not errors, which is why teams blame the application. The transport hides loss by delaying delivery, so dashboards show flat throughput and rising p99 while error rates stay zero. Learn the mapping from transport cause to observable symptom or you will tune the wrong layer. Retransmits, zero windows, handshake stalls, and port exhaustion each have a distinct signature in packet captures and kernel counters. Trade-off in debugging: **TCP's hiding of faults makes apps simpler but observability harder** — you must export `retransmits`, `RTT`, `cwnd`, and `rwnd` or you are flying blind."
+    },
+    {
+      "type": "table",
+      "caption": "Failure, user-visible symptom, and first check.",
+      "headers": [
+        "Failure",
+        "Symptom",
+        "First check"
+      ],
+      "rows": [
+        [
+          "Congestion loss + cwnd collapse",
+          "Goodput drops, p99 spikes, duplicate ACKs and RTOs in capture",
+          "Retransmit rate, RTT variance, SACK enabled, bottleneck link utilization"
+        ],
+        [
+          "Receiver too slow / tiny buffers",
+          "Sender stalls, zero-window probes, throughput flat below link rate",
+          "Advertised window, socket buffer sizes, consumer lag"
+        ],
+        [
+          "TIME_WAIT / ephemeral port exhaustion",
+          "New connects fail with timeouts under high churn, many sockets in TIME_WAIT",
+          "Connection reuse, keep-alive, 4-tuple churn rate, local port range"
+        ],
+        [
+          "Half-open / idle timeout by middlebox",
+          "Long-idle connections reset on first write after silence",
+          "Keep-alive interval, NAT/firewall idle timeout, app heartbeat"
+        ],
+        [
+          "SYN backlog overflow / SYN flood",
+          "SYNs dropped, handshake latency spikes, `SYN cookies` engage",
+          "Listen backlog, SYN queue drops, accept-queue latency"
+        ],
+        [
+          "Head-of-line blocking on lossy path",
+          "All multiplexed requests stall on one loss; low loss rate but high stall time",
+          "Move bulk multiplexing off single TCP flow; consider per-stream recovery"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic self-inflicted outage is **TIME_WAIT exhaustion on the dialing side**. TCP requires the side that sends the first `FIN` to hold `TIME_WAIT` for `2*MSL` so late duplicates do not corrupt the next connection reusing the same four-tuple. At thousands of short connections per second from one client IP, you run out of ephemeral ports even though CPU and bandwidth are idle. Symptom: `connect() timeout`, not `refused`. Fix is architectural, not sysctl magic: reuse connections with pooling and keep-alive, reduce churn, or spread load across source IPs. Enlarging the port range or enabling reuse helps at the margin but does not fix a design that opens a new TCP connection per tiny request. Trade-off: **safe four-tuple reuse costs port space and time; connection reuse trades a little multiplexing complexity for orders of magnitude fewer handshakes**."
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "Head-of-line blocking is the tax",
+      "text": "TCP guarantees order, so **one missing byte blocks every byte after it**, even if those later bytes already arrived. On clean datacenter links you never notice. On lossy or high-RTT paths with multiplexed streams, one flow's loss stalls everyone. That is why bulk multiplexing over a single TCP connection is a design smell."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Performance math interviewers expect"
+    },
+    {
+      "type": "paragraph",
+      "text": "Throughput over TCP is bounded by `min(link rate, window / RTT)`. Window means `min(rwnd, cwnd)`. If RTT is 100ms and in-flight window is 64KB, you cannot exceed ~5 Mbps no matter how fat the pipe is. That is the bandwidth-delay product: to fill a 1 Gbps path at 100ms RTT you need ~12.5MB in flight, which requires window scaling and megabyte socket buffers. Slow start makes this worse for short flows: a 30KB response finishes before `cwnd` ever opens, so handshake plus slow start dominates. This is why connection reuse, larger initial windows, and fewer round trips matter more than raw bandwidth for web-like workloads. Trade-off: **bigger windows and buffers buy throughput with memory and worse burst loss**; smaller ones keep the network calm but leave capacity unused."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "bdp.py",
+      "code": "# Bandwidth-delay product: bytes that must be in flight to fill the pipe.\n# Throughput <= window / RTT. If window < BDP, window is the cap.\ndef max_throughput_mbps(window_bytes: int, rtt_ms: float) -> float:\n    return (window_bytes * 8 / (rtt_ms / 1000.0)) / 1e6\n\ndef bdp_bytes(bandwidth_mbps: float, rtt_ms: float) -> int:\n    return int(bandwidth_mbps * 1e6 * (rtt_ms / 1000.0) / 8)\n\n# 64KB window, 100ms RTT -> ~5.2 Mbps cap regardless of link\nprint(max_throughput_mbps(64 * 1024, 100))\n# 1 Gbps at 100ms RTT needs ~12.5 MB in flight\nprint(bdp_bytes(1000, 100))"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Draw setup then steady state",
+          "text": "Sketch SYN → SYN-ACK → ACK, then DATA with seq/ack numbers. Label who picks each initial sequence and what each ACK acknowledges. Interviewers fail candidates who hand-wave the third ACK."
+        },
+        {
+          "title": "Explain loss recovery in one minute",
+          "text": "Cover cumulative ACK, timeout versus triple-duplicate-ACK, and what SACK adds. State the trade-off: waiting is safe, fast retransmit is quick but needs later packets to survive."
+        },
+        {
+          "title": "Separate rwnd from cwnd on the whiteboard",
+          "text": "Write `flight = min(rwnd, cwnd)`. Give one symptom for each limit and one fix. This single line proves you can debug throughput."
+        },
+        {
+          "title": "Quantify with BDP",
+          "text": "Pick numbers: link rate and RTT, compute required window. Show why default 64KB starves a WAN path and why keep-alive plus pooling beats per-request connects."
+        },
+        {
+          "title": "Argue TCP versus alternatives",
+          "text": "Close with when you would reject TCP: sub-RTT gaming state, live media where late is useless, or massively multiplexed lossy paths. Name the replacement logic, not just the acronym."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**TCP preserves message boundaries.** It does not. It is a byte-stream. If your parser assumes one read equals one write, it will corrupt under coalescing or splitting.",
+        "**ACK means the application processed it.** It means the kernel's TCP stack received it. Durability needs an application-level acknowledgement.",
+        "**A closed socket means all data was delivered.** `close()` plus `RST` can discard buffered data. Use orderly shutdown and application confirmation for exactly-once effects.",
+        "**More connections means more speed.** Beyond the path capacity it means more contention, more loss, and cwnd collapse. Pool and multiplex deliberately.",
+        "**Loss always means congestion.** Not on wireless or policed paths. Blind cwnd halving on random loss wastes capacity — one reason modern congestion schemes measure delay and delivery rate, not just loss.",
+        "**Teardown is symmetric and instant.** It is two independent FINs with TIME_WAIT on the first closer. High-churn designs that ignore this exhaust ports."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use TCP when order and completeness beat delay; otherwise pick a narrower tool.",
+      "headers": [
+        "Use TCP when",
+        "Avoid TCP when",
+        "Prefer instead"
+      ],
+      "rows": [
+        [
+          "File transfer, RPC, DB wire protocol — every byte matters in order",
+          "Live voice/video where late packet is worse than lost packet",
+          "Unreliable datagrams with codec-level concealment"
+        ],
+        [
+          "Request/response over stable paths with reuse",
+          "Millions of tiny, short-lived requests from one source",
+          "Persistent pooled connections or multiplexed session layer"
+        ],
+        [
+          "You want kernel-managed congestion and flow control",
+          "You need per-message deadlines or independent streams on lossy path",
+          "Per-stream recovery and user-space congestion control"
+        ],
+        [
+          "Middlebox traversal matters — TCP passes firewalls/NAT widely",
+          "Head-of-line blocking dominates tail latency",
+          "Isolated streams so one loss stalls one stream, not all"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**TCP buys a reliable ordered byte-stream with sequence numbers, cumulative plus selective ACKs, and `min(rwnd, cwnd)` throttling — paid for in handshake delay, retransmission jitter, and head-of-line blocking.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:13:03.231Z",
+    "problems": []
+  }
+}

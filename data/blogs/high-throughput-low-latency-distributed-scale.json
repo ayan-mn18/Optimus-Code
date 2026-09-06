@@ -1,0 +1,276 @@
+{
+  "slug": "high-throughput-low-latency-distributed-scale",
+  "title": "High Throughput, low latency, distributed + Scale",
+  "summary": "Caching for high-throughput, low-latency distributed systems: layered read/write paths, invalidation trade-offs, failure modes, and what to say in an HLD interview.",
+  "kind": "HLD",
+  "problemSlug": "high-throughput-low-latency-distributed--scale-95-307",
+  "topic": "Caching Mechanisms",
+  "difficulty": "Medium",
+  "coverEmoji": "⚡",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Caching",
+    "Throughput",
+    "Latency",
+    "Distributed-Systems"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "How to Build High Throughput Systems",
+      "url": "https://blog.bytebytego.com/p/how-to-build-high-throughput-systems",
+      "source": "blog.bytebytego.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Distributed Tracing Solves in Low Latency Systems - Aerospike",
+      "url": "https://aerospike.com/blog/distributed-tracing-low-latency-architectures/",
+      "source": "aerospike.com",
+      "kind": "article"
+    },
+    {
+      "title": "(PDF) A Novel Architecture for Scaling Distributed Data Systems: Analysis ...",
+      "url": "https://www.researchgate.net/publication/391658584_A_Novel_Architecture_for_Scaling_Distributed_Data_Systems_Analysis_of_High-Throughput_Low-Latency_Transaction_Processing",
+      "source": "researchgate.net",
+      "kind": "article"
+    },
+    {
+      "title": "System Design Fundamentals - Latency, Throughput, Availability ...",
+      "url": "https://dev.to/imsushant12/system-design-fundamentals-latency-throughput-availability-consistency-redundancy-18np",
+      "source": "dev.to",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Caching never makes work faster. It **avoids repeating work you already paid for**. Every design decision is therefore about one ratio: `hit_rate`. If your `hit_rate` is 0.97 and a hit costs 1ms while a miss costs 120ms, your average is ~4.5ms. If `hit_rate` drops to 0.80, your average jumps to ~25ms and your database falls over. **Throughput scales with hits; latency and outages scale with misses.**"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What caching is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A cache is a **lossy, explicitly invalidated copy** of a deterministic computation: a DB row, a rendered feed, an auth decision, a search result. Lossy means it is allowed to drop anything at any time to reclaim memory. Explicitly invalidated means correctness depends on a *separate* mechanism — TTL, version, or delete event — not on the copy itself. If you cannot name the invalidation mechanism, you do not have a cache, you have a second source of truth that will diverge. That is why cache design starts from invalidation and eviction, not from `put` and `get`."
+    },
+    {
+      "type": "paragraph",
+      "text": "In a distributed system the cache exists for two distinct reasons, and confusing them produces bad sizing. **Reason 1 is latency:** serve hot keys from memory within 0.5-2ms instead of paying 20-150ms for disk, cross-AZ RPC, or downstream fan-out. **Reason 2 is throughput:** shield a store that does 5K queries per second from a frontend that needs 200K reads per second. Latency wants the copy *close* to the caller — in-process or edge. Throughput wants the copy *shared* so one fill serves thousands of readers. The trade-off: close copies are small and diverge fast; shared copies add a network hop and a shared failure domain. Production systems use both, in layers, for exactly this reason."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: layered read and write paths"
+    },
+    {
+      "type": "mermaid",
+      "title": "Layered cache read path",
+      "caption": "L1 optimises latency, L2 optimises throughput. Misses fall through; fills flow back up.",
+      "code": "flowchart TD\n    C[Client] --> E[Edge Cache]\n    E --> LB[Load Balancer]\n    LB --> A[App Server]\n    A --> L1[L1 In-Process]\n    L1 --> L2[L2 Distributed Cache]\n    L2 --> DB[(Primary Store)]\n    DB --> L2\n    L2 --> L1\n    L1 --> A"
+    },
+    {
+      "type": "paragraph",
+      "text": "A read checks from cheapest to most expensive and fills backwards. Client or edge handles static and per-URL content with second-to-minute TTLs. The app's in-process map — typically 100MB to 2GB, LRU — handles per-instance hot keys in nanoseconds to microseconds with **zero network**. The shared distributed cache — hash-slot sharded memory cluster — handles hot keys across the fleet in ~0.5-1.5ms. Only a full miss reaches the primary store. The trade-off is explicit: each layer cuts tail latency and backend QPS, but each layer adds another copy that can go stale and another place to debug. Add a layer only when you can quantify the backend QPS or p99 it removes."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Write paths: who fills, who invalidates"
+    },
+    {
+      "type": "table",
+      "caption": "Pick the write pattern by tolerance for staleness vs tolerance for backend load.",
+      "headers": [
+        "Pattern",
+        "How it works",
+        "Why choose it",
+        "Price you pay"
+      ],
+      "rows": [
+        [
+          "Cache-aside (lazy load)",
+          "App reads cache; on miss reads DB then writes cache. Writes go to DB then delete cache key.",
+          "Simplest to reason about. Cache holds only what is actually read. Best default for read-heavy workloads.",
+          "First miss per key is slow. Delete-then-race can leave stale data without versioning or transactional outbox."
+        ],
+        [
+          "Read-through",
+          "App reads only cache; cache node loads from DB on miss.",
+          "Centralises load logic and stampede protection in one place.",
+          "Cache tier becomes coupled to DB availability and schema. Harder to customise per use case."
+        ],
+        [
+          "Write-through",
+          "App writes to cache, cache synchronously writes DB before ack.",
+          "Cache never has a miss-after-write. Good for read-after-write consistency.",
+          "Every write pays cache + DB latency. Write throughput capped by slower store. No help for write-heavy traffic."
+        ],
+        [
+          "Write-behind (write-back)",
+          "App writes to cache, ack immediately, cache flushes to DB async in batches.",
+          "Highest write throughput. Absorbs bursts and batches I/O. Only choice when DB cannot keep up with peak writes.",
+          "Durability risk: loss of cache node before flush loses acknowledged writes. Complex recovery and ordering."
+        ],
+        [
+          "Refresh-ahead / probabilistic refresh",
+          "Hot keys refreshed asynchronously before TTL expiry, or with stale-while-revalidate.",
+          "Eliminates expiry stampedes on celebrity keys. Keeps p99 flat.",
+          "Serves knowingly stale data during refresh window. Extra background load even for keys going cold."
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Eviction is the second half of correctness. `LRU` keeps recently touched keys and is the right default for Zipfian traffic where 10% of keys get 90% of reads — which is almost all user-facing traffic. `LFU` / `TinyLFU` protects against scans that would flush LRU, at the cost of slower adaptation when hot keys shift. `TTL` is not eviction, it is a **staleness bound**: short TTLs of 5-60s bound inconsistency but multiply fill load; long TTLs of hours cut load but require explicit invalidation on write. The opinionated rule: use **short TTL + explicit delete on write + versioned keys for immutable blobs**. If the value never mutates — image thumbnail `v42`, compiled config hash — embed the version in the key and set TTL to days. You get a near-100% hit rate with no invalidation logic. Only mutable data deserves delete-based invalidation, and that is where all the bugs live."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Caches fail in four repeatable ways, each with a distinct signature on your dashboards. Learn to distinguish them because the fixes are opposite. An expiration stampede shows as a vertical wall of DB connections the second a celebrity TTL expires. A cold start shows as elevated p99 and DB CPU for 10-30 minutes after every deploy or cache-cluster restart. Inconsistent hashes or hot slots show as one cache node at 95% CPU while peers sit at 20%, plus rising evictions on that node only. And stale-read incidents show as *no* latency change at all — just user-visible wrongness, support tickets that say update did not stick, followed by a manual purge that magically fixes it."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Thundering herd on hot miss:** symptom is DB `connections exhausted` + p99 spike from 10ms to seconds, correlated exactly with TTL expiry of top 10 keys. Cause: 5,000 threads all miss and all query DB. Fix with singleflight request coalescing + probabilistic early refresh, not by adding DB capacity.",
+        "**Cache avalanche after restart / deploy:** symptom is every app host missing simultaneously, DB QPS 10-50x baseline. Cause: empty L1 + L2, no warming. Trade-off: warming restores hit rate faster but prolongs deploy and can warm garbage. Prefer rolling restarts, persistent cache snapshots, and stale-while-revalidate.",
+        "**Hot key skew:** symptom is one shard saturated, tail latency climbs while average looks fine. A 1MB celebrity profile or counter breaks the assumption that load spreads evenly. Fix by replicating the hot key to all nodes, splitting counters into shards, or pushing that key down to L1 / edge.",
+        "**Stale write race:** symptom is `GET` returns old value for minutes after successful `PUT`. Cause: write updated DB but delete arrived before a concurrent fill re-inserted the old value. Fix with version increment on write, delete-after-commit plus delayed double-delete, or change feed driven invalidation.",
+        "**Negative-cache poisoning / penetration:** symptom is DB hammered by keys that do not exist — bot scans of `/user/999999`. Without caching misses, every garbage key is a DB query. Fix with short-TTL negative cache plus Bloom filter at the edge. Trade-off: you now cache absence, so legitimate creates must invalidate negatives."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The classic trap: TTL as correctness",
+      "text": "A TTL of 5 minutes does **not** mean data is at most 5 minutes stale if you also do background refresh, L1 copying, and edge caching. Staleness adds per layer. A 60s L1 over a 300s L2 over a 600s edge can serve 11 minutes of staleness. Sum the layers when you promise freshness, or version the key."
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "Consistency has a price tag",
+      "text": "Strong read-after-write through a distributed cache requires **delete + version check + DB read on miss**, which costs an extra round trip and halves write throughput. If the product tolerates 30s of staleness — feeds, recommendations, counts — take eventual consistency and spend the budget on hit rate. Only payments, inventory decrement, and auth revocation earn synchronous invalidation."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code that clarifies: cache-aside with stampede protection"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cache_aside.py",
+      "code": "import time, random\nfrom concurrent.futures import Future\n_inflight: dict[str, Future] = {}\n\ndef get_profile(user_id: str, cache, db):\n    key = f\"profile:v2:{user_id}\"  # versioned: bump v2->v3 on schema change\n    val, ttl_left = cache.get_with_ttl(key)\n    if val is not None:\n        # Probabilistic early refresh: refresh hot keys before expiry.\n        # Trade-off: extra background load to avoid a herd at t=0.\n        if ttl_left < 2.0 and _try_claim_refresh(key):\n            _refresh_async(key, db, cache)\n        return val\n    # Singleflight: coalesce concurrent misses into one DB load.\n    return _load_once(key, db, cache)\n\ndef _load_once(key, db, cache):\n    fut = Future()\n    first = _register_inflight(key, fut)\n    if not first:\n        return _wait_inflight(key)  # followers block, DB sees 1 QPS\n    try:\n        row = db.get(key)  # the only thread that hits the DB\n        # Cache negatives briefly: stops penetration, bounds staleness of creates.\n        cache.set(key, row, ttl=30 if row is None else 300, jx=0.1)\n        fut.set_result(row)\n        return row\n    except Exception as e:\n        fut.set_exception(e)\n        raise\n    finally:\n        _unregister_inflight(key)\n\ndef write_profile(user_id: str, row, cache, db, outbox):\n    db.put(f\"profile:{user_id}\", row)\n    # Delete, not update: forces next read to rebuild canonical value.\n    # Outbox/change-feed replays the delete to every region.\n    outbox.publish(\"invalidate\", f\"profile:v2:{user_id}\")\n    cache.delete(f\"profile:v2:{user_id}\")\n    time.sleep(0.2)  # delayed double-delete closes the fill-race window\n    cache.delete(f\"profile:v2:{user_id}\")"
+    },
+    {
+      "type": "paragraph",
+      "text": "This snippet exists to show where the real logic lives: not in `get` and `set`, but in the **three lines around them**. Jittered TTLs (`jx=0.1`) spread expiries so 10,000 keys set at deploy time do not expire in the same second. Singleflight turns 5,000 concurrent misses into one DB query plus 4,999 waits — the difference between a blip and an outage. Delayed double-delete closes the most common stale race: thread A fills the old value between your DB commit and your delete. You pay an extra delete and slightly higher miss rate after writes. That is cheap compared to serving yesterday's balance or permissions."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from read/write ratio and freshness SLA",
+          "text": "Say: 100K reads/sec, 1K writes/sec, feed may be 30s stale but balance must be linearizable. That one sentence justifies cache-aside with 30s TTL for feeds and write-through with versioned reads for balances. Interviewers score this framing more than any tool name."
+        },
+        {
+          "title": "Draw the layers and place each data type",
+          "text": "Static assets at edge, sessions and hot profiles in L1+L2, search and recommendations in L2 only with refresh-ahead. State per-layer size, TTL, and eviction. L1: 500MB LRU 60s. L2: sharded cluster 60GB LFU 5min. Vague I would add Redis earns nothing."
+        },
+        {
+          "title": "Solve invalidation before capacity",
+          "text": "Walk a write: update DB, publish invalidation event, delete key, double-delete. Explain the race you are closing and what happens if the event bus is down. Then discuss cross-region: async replica with version comparison, last-writer-wins only for idempotent blobs."
+        },
+        {
+          "title": "Do the miss math under failure",
+          "text": "If hit rate falls from 0.95 to 0.50, backend load goes from 5K to 50K QPS — 10x. Show stampede protection, bulkheads, and fallback to stale when DB sheds load. This is the high-throughput part of the question."
+        },
+        {
+          "title": "Name the scaling limits explicitly",
+          "text": "Single shared cache tops out on connections and hot shards; fix with client-side sharding, hot-key replication, and pushing read-only keys to edge. Cache cluster failover needs replica promotion plus warming, otherwise failover just moves the avalanche. End with monitoring: hit rate per key-prefix, evictions, fill latency, staleness lag."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail the round"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**More cache memory always helps.** Beyond the working set, extra RAM only stores cold keys that are never re-read. Measure `hit_rate vs size` per prefix; doubling memory for a 0.99-hit workload buys nothing but cost.",
+        "**Caching fixes a slow database.** It hides it on hits and amplifies it on misses. A 200ms query that misses 20% of the time still dominates p99. Fix the query or denormalise first, then cache the fast result.",
+        "**LRU is always right.** LRU collapses under scans and periodic batch jobs. One nightly export can evict the entire hot set. Segment with separate pools or TinyLFU admission if batch and interactive traffic share a tier.",
+        "**Write-through means consistent everywhere.** It means consistent on the node you wrote, until replication lag, L1 copies, and edge replicas disagree. Consistency is a property of the invalidation path, not the write path alone.",
+        "**TTL expiry equals freshness.** Staleness is TTL plus replication lag plus L1 age plus clock skew plus refresh delay. Add them before promising anything to the product.",
+        "**A distributed cache is highly available by default.** A sharded cache without replicas loses 1/Nth of keys on every node loss, causing a partial avalanche. You must provision replicas, quorum reads for metadata, and a stale-serving fallback."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it, and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Apply caching per access pattern, not as a blanket layer.",
+      "headers": [
+        "Use caching when",
+        "Avoid caching when",
+        "What to do instead"
+      ],
+      "rows": [
+        [
+          "Read-heavy, skewed, reusable results (profiles, product pages, configs)",
+          "Write-heavy, unique-per-request results (ledger appends, per-click bids)",
+          "Scale the store, shard by key, or stream instead of caching"
+        ],
+        [
+          "Tolerance for seconds of staleness (feeds, counts, search)",
+          "Zero-staleness requirement with high write rate (live inventory, revocation)",
+          "Versioned reads from primary or consensus read; cache only immutable snapshots"
+        ],
+        [
+          "Expensive recomputation (aggregations, ML features, joins)",
+          "Cheap primary lookup already <5ms with headroom",
+          "The extra hop adds p99 without removing load — skip the cache"
+        ],
+        [
+          "Need to absorb bursts and stampedes (flash sales, celebrity posts)",
+          "Dataset fits in process and never shared (single-node job)",
+          "Use an in-process map; a network cache only adds failure modes"
+        ]
+      ]
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "Use **layered cache-aside with versioned keys, jittered short TTLs, singleflight fills, and delete-driven invalidation** — because hit rate buys both throughput and p99, and every other pattern is just trading write latency and staleness to protect that hit rate under failure."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:42:08.462Z",
+    "problems": []
+  }
+}

@@ -1,0 +1,281 @@
+{
+  "slug": "how-cdn-works",
+  "title": "How CDN works?",
+  "summary": "How a CDN actually works for a social network: DNS steering, edge caching, TLS termination, shielding and invalidation — with trade-offs, failures, and what to say in an HLD interview.",
+  "kind": "HLD",
+  "problemSlug": "how-cdn-works-144-304",
+  "topic": "Building Social Network",
+  "difficulty": "Medium",
+  "coverEmoji": " f310",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "CDN",
+    "Social Network",
+    "Caching"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "What Is a Video CDN? How Delivery Works - Swarmify",
+      "url": "https://swarmify.com/blog/what-is-video-cdn/",
+      "source": "swarmify.com",
+      "kind": "article"
+    },
+    {
+      "title": "Can someone explain how a Content Delivery Network (CDN) works?",
+      "url": "https://www.reddit.com/r/networking/comments/qok9p/can_someone_explain_how_a_content_delivery/",
+      "source": "reddit.com",
+      "kind": "article"
+    },
+    {
+      "title": "What is a CDN? | Learning Center - Cloudflare",
+      "url": "https://www.cloudflare.com/learning/cdn/what-is-a-cdn/",
+      "source": "cloudflare.com",
+      "kind": "article"
+    },
+    {
+      "title": "Content delivery network - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Content_delivery_network",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A CDN does not make your origin faster. It makes most requests **never reach your origin**. Every design decision — where to terminate TLS, what to cache, how long to keep it, how to throw it away — exists to increase the fraction served from memory a few milliseconds from the user. If your hit ratio is low, you bought expensive DNS routing and gained nothing. Say that first."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A CDN is a managed fleet of reverse proxies deployed in hundreds of points of presence, fronted by geography-aware DNS, backed by a small number of shield caches and your origin. The client resolves your hostname to an edge IP chosen for proximity and health, opens TLS to the edge rather than to you, and the edge either answers from RAM or disk or fetches once, stores the bytes, and answers all later clients from the copy. That is the whole system: **request steering plus shared cache plus offloaded TLS and filtering**. Anything else — image resizing, token checks, log collection — is an optimization bolted onto that core. For a social network this matters because 90% of bytes are not API JSON, they are immutable-ish blobs: avatars, feed photos, story video segments, JS bundles. Those blobs are large, requested millions of times, and tolerant of seconds of staleness. They are the ideal cache workload, which is why no feed design passes without a CDN."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why distance dominates: physics plus TCP behavior, not just fiber miles. A cache miss from Mumbai to a Virginia origin pays 200+ ms round-trip per handshake, then slow-start ramps throughput over several round-trips, then TLS negotiation adds more. A cache hit from a Mumbai edge pays 10-20 ms and starts at high throughput because the connection is warm and the object is local. Multiply that by 40 images on a feed load and you get the difference between a feed that feels instant and one that never finishes. The trade-off you accept: you now have **two sources of truth** — origin state and hundreds of edge copies — and you must explicitly manage divergence with TTLs, validators, and purges. Consistency is no longer free."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How a request actually flows"
+    },
+    {
+      "type": "paragraph",
+      "text": "Nobody hardcodes edge IPs. You create a DNS alias from `cdn.social.example` to the provider, and the provider's authoritative DNS answers each resolver with different edge addresses based on client subnet, edge load, and active probes. This is why DNS TTLs for CDN hostnames are kept short, often 20-60 seconds: steering must react to an edge failure without waiting for the internet to forget. The client never talks to your DNS logic for the steering decision; its local resolver does, and the provider infers client location from the resolver subnet extension where available. The trade-off: DNS steering is coarse and cached at multiple layers, so a fraction of users always land on a non-optimal edge. Anycast IP routing fixes some of that at the cost of harder capacity planning and debugging."
+    },
+    {
+      "type": "mermaid",
+      "title": "CDN request path with shield",
+      "caption": "Edge answers on hit, shield collapses concurrent misses, origin sees one fetch.",
+      "code": "flowchart TD\n  Client --> LocalDNS\n  LocalDNS --> ProviderDNS\n  ProviderDNS --> EdgeMumbai\n  EdgeMumbai --> Client\n  EdgeMumbai --> ShieldDelhi\n  ShieldDelhi --> OriginVirginia\n  ShieldDelhi --> EdgeMumbai\n  OriginVirginia --> ShieldDelhi"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Hit, miss, and revalidate"
+    },
+    {
+      "type": "paragraph",
+      "text": "On arrival the edge computes a cache key, normally method plus normalized URL plus selected headers and query parameters, then checks memory and SSD. On a hit with a fresh TTL it answers immediately without contacting you. On a miss it forwards one request upstream while collapsing duplicate in-flight requests for the same key so a viral post does not stampede your origin — this collapsing, called request coalescing, is the difference between surviving the front page and falling over. On expiry it can either refetch synchronously or serve the stale copy while revalidating in background if you permit `stale-while-revalidate`. Revalidation uses conditional requests with `ETag` and `Last-Modified` so unchanged objects cost a tiny `304` instead of a full download. Choose this deliberately: short TTLs plus validators give you freshness without paying full origin bandwidth on every expiry. The trade-off is complexity — every header you add to the cache key multiplies cache entries and crushes your hit ratio if you are careless."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Cache-Control from origin is law.** `max-age=86400, public, immutable` for versioned images means edge and browser both keep it. `private, no-store` for personalized API JSON means the edge must not store it at all. If you emit no headers, the provider guesses — and its guess will be wrong for a social feed.",
+        "**Query strings split the cache.** `avatar.jpg?v=12` and `avatar.jpg?v=13` are different objects by default. That is exactly what you want for immutable versioning after an edit, and exactly what destroys hit ratio if you let marketing trackers append random parameters. Normalize or ignore irrelevant params at the edge.",
+        "**Range requests matter for video.** Story and reel playback fetches 2-10 second segments or byte ranges, not whole files. The edge must cache partial responses correctly and forward `Range` upstream on miss. Misconfigure this and every seek restarts from byte zero at origin.",
+        "**Methods beyond GET are normally uncacheable.** POSTs for likes, comments, follows always go to origin. Do not try to cache them; instead use the CDN to terminate TLS and absorb network attacks so origin CPU is spent on logic, not handshakes."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The three mechanisms you must name"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers listen for three specifics beyond hit and miss. First, **TLS termination at edge**: the CDN holds your certificate or mints one, so the expensive handshake and bulk encryption happen near the user and your origin sees only clean upstream connections or persistent keepalives. This cuts tail latency but means the provider sees plaintext — the price of offload is delegated trust plus correct origin-to-edge authentication. Second, **shielding**: a mid-tier cache per region so 50 edges in one country collapse misses into one upstream fetch instead of 50. This halves origin load during spikes at the cost of one extra hop on true misses. Third, **purge and versioning**: you either wait for TTL expiry, actively invalidate by key or tag, or avoid invalidation entirely by never mutating URLs and issuing new versioned paths on every edit. Experienced designers pick the third wherever possible because purge is eventually consistent across hundreds of edges and takes seconds to minutes, not milliseconds. If your design requires instant global purge for normal operation, your cache strategy is broken."
+    },
+    {
+      "type": "table",
+      "caption": "Every CDN choice buys one thing by selling another.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Edge TTL of hours for images",
+          "95%+ hit ratio, tiny origin bill, fast feed",
+          "Stale avatar after edit until purge or version bump"
+        ],
+        [
+          "Shield tier enabled",
+          "Origin survives viral spikes, fewer thundering herds",
+          "Extra 20-80 ms on cold misses, extra per-GB cost"
+        ],
+        [
+          "TLS terminated at edge",
+          "Faster handshakes, HTTP/2 and HTTP/3 to users, attack filtering",
+          "Provider sees plaintext, must secure edge-to-origin and rotate certs"
+        ],
+        [
+          "Personalize via query or Cookie in cache key",
+          "Correct per-user content",
+          "Cache fragmentation, hit ratio collapse — usually a design error"
+        ],
+        [
+          "Serve stale while revalidating",
+          "No latency spike on expiry, smooth p99",
+          "Some users see seconds-old data; unacceptable for auth or abuse-takedown paths"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "CDN outages rarely look like a CDN outage. They look like your app broke for one city, or images updated for you but not for anyone else, or origin CPU spiked even though traffic was flat. Learn to map symptom to layer: DNS steering, key fragmentation, origin shielding, or certificate. The failure you must anticipate in design is not total edge loss — providers survive that with failover — it is **silent hit-ratio collapse**, where the system technically works but every request becomes a miss and your origin drowns under load it was never sized for."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Stale avatar or deleted abuse image still visible.** Symptom: user changed photo, old one persists for random viewers. Cause: long edge TTL plus browser cache plus versioned URL not bumped, or purge issued by exact URL while variants with different query strings survive. Fix the design trade-off: prefer content-addressed filenames like `avatar.{hash}.jpg` so an edit is a new object, purge becomes rare.",
+        "**Hit ratio drops from 97% to 40% overnight.** Symptom: origin bandwidth and latency spike, no traffic increase. Cause: someone added a cache-busting query param, enabled Cookie-based keying, or deployed `Cache-Control: private` on image responses. Check edge logs for key cardinality. The lesson: treat cache-key inputs as a privileged change requiring review.",
+        "**Thundering herd on a viral post.** Symptom: first thousand viewers of a celebrity video each trigger origin fetches, origin times out. Cause: shield disabled or per-edge negative caching off, and request coalescing window too short. Mitigation: shield tier plus short negative caching for 404s plus pre-warming the object by pushing it to edges on publish.",
+        "**One region slow, rest fine.** Symptom: complaints cluster in one country. Cause: steering sent them to a distant or overloaded PoP due to resolver location mismatch, or edge-to-origin path degraded. Remedy: anycast plus active health checks plus fallback to alternate PoP. Never promise single-digit global p99 without multi-CDN or multi-PoP failover.",
+        "**TLS or certificate breakage looks like total downtime.** Symptom: `certificate invalid` errors, or redirect loops between edge HTTP-to-HTTPS and origin. Cause: expired edge cert, mismatched hostname, or origin forcing HTTPS back to an edge fetch that expects HTTP. Pin down the contract: edge talks to clients one way, edge talks to origin over validated TLS with pinned CA, and that path is monitored separately."
+      ]
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "cdn_urls.py",
+      "code": "# Versioned, cache-friendly URLs + short-lived signed URLs for private blobs.\n# Trade-off made explicit: public posts are immutable and cache for a year;\n# private messages are never cached at edge and expire in minutes.\nimport hashlib, hmac, time\n\nCDN_BASE = \"https://cdn.social.example\"\nSIGN_KEY = b\"edge-signing-secret\"  # KMS in real system, rotated\n\ndef public_image_url(user_id: str, content_hash: str) -> str:\n    # New hash on every edit => new URL => no purge needed.\n    # Origin: Cache-Control: public, max-age=31536000, immutable\n    return f\"{CDN_BASE}/img/{user_id}/{content_hash}.jpg\"\n\ndef private_media_url(object_path: str, ttl_s: int = 300) -> str:\n    # Origin: Cache-Control: private, no-store. Edge forwards + checks token.\n    exp = int(time.time()) + ttl_s\n    sig = hmac.new(SIGN_KEY, f\"{object_path}:{exp}\".encode(), hashlib.sha256).hexdigest()\n    return f\"{CDN_BASE}/{object_path}?exp={exp}&sig={sig}\""
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Where CDN sits in a social network"
+    },
+    {
+      "type": "paragraph",
+      "text": "Draw it as three planes. The **write plane** — post creation, transcoding ladder, thumbnail generation — runs at origin and object storage and never touches the CDN except to push finished renditions or trigger pre-warm. The **read plane** — feed fetch, profile load, story playback — goes browser to edge to shield to storage-backed origin, with API JSON bypassing cache and media URLs pointing directly at versioned CDN objects. The **control plane** — auth, abuse takedowns, signed-URL issuance — stays at origin; the edge only enforces tokens and checks revocation lists with short TTLs. This split is opinionated and intentional: cache only blobs whose invalidation you can tolerate, keep all permission checks at origin issuance time, and never let the edge make authorization decisions from stale data. The price is an extra redirect to fetch signed URLs, but that cost is trivial next to serving megabytes of video from the wrong place."
+    },
+    {
+      "type": "mermaid",
+      "title": "CDN topology for a social feed",
+      "caption": "API stays dynamic, media goes versioned through edge and shield to object storage.",
+      "code": "flowchart LR\n  App --> Edge\n  Edge --> Shield\n  Shield --> APIOrigin\n  Shield --> ObjectStore\n  Transcoder --> ObjectStore\n  ObjectStore --> Shield\n  Shield --> Edge\n  Edge --> App"
+    },
+    {
+      "type": "paragraph",
+      "text": "Invalidation policy is where medium candidates separate from strong ones. Say this: profile and post media use **content hashing**, so updates need zero purges; takedowns for abuse use **tag-based purge** by post ID across all renditions, accepting seconds of residual visibility as the cost of caching; feed API and notifications use **no edge caching at all**, only browser-level short TTLs. State the residual risk out loud — a deleted image can linger on edges and in browsers until purge propagates — because legal and safety reviewers care more about that window than about hit ratio. If instant global deletion is a hard requirement, that class of object cannot sit on a CDN without a token check on every fetch, which halves the benefit. Name the trade-off instead of hiding it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Start from the feed load, not from definitions",
+          "text": "Draw user to edge to shield to origin and object storage. Annotate which arrows carry HTML, which carry API JSON, which carry image and video bytes. Interviewers grade placement, not vocabulary."
+        },
+        {
+          "title": "Quantify with hit ratio math",
+          "text": "State an assumption: 10M daily users, 30 images per session, 200KB each, 95% hit ratio. Show origin saves roughly 57TB per day versus no CDN. Then say what breaks the math: personalization in cache key or random query strings."
+        },
+        {
+          "title": "Handle the follow-up: edit, delete, private post",
+          "text": "Propose versioned URLs for edits, surrogate-tag purge for deletes, signed short-lived URLs with `private, no-store` for DMs. Explicitly accept delayed purge propagation as the cost of caching."
+        },
+        {
+          "title": "Handle the video follow-up",
+          "text": "Explain segmented streaming: manifests cached seconds, segments cached hours, range handling at edge. Mention pre-warming the first segments of a viral reel and shielding to collapse concurrent segment misses."
+        },
+        {
+          "title": "Close with cost and security",
+          "text": "Name egress savings versus origin bandwidth, shield surcharge, and purge limits. Add edge WAF and rate limiting for like-scraping, plus edge-to-origin mutual TLS so bypassing the edge by hitting origin IP directly is impossible."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**A CDN hosts your data.** No. It caches copies. Origin and durable storage still own truth, expiry, and deletion. Lose the origin and the CDN eventually expires into errors.",
+        "**Putting API behind a CDN makes it faster by default.** Dynamic, authenticated JSON has near-zero reuse across users. You gain TLS offload and attack absorption, not cache hits. Claiming otherwise signals you have never measured hit ratio.",
+        "**Purge is instant and global.** It is neither. It propagates in seconds to minutes and often misses variants. Design around it with versioned filenames; reserve purge for emergencies like abuse removal.",
+        "**More edges always means faster.** Only if objects are cacheable and shared. For uncacheable or one-time private blobs, extra hops add latency. Route those directly to origin or storage with signed URLs.",
+        "**HTTPS means end-to-end encryption to origin.** With edge TLS termination the edge decrypts, inspects, then re-encrypts to origin. That is the point — filtering and HTTP/2 handling require plaintext — but you must say who sees what and how edge-to-origin is authenticated."
+      ]
+    },
+    {
+      "type": "table",
+      "caption": "Use the CDN where reuse outweighs staleness risk.",
+      "headers": [
+        "Situation",
+        "Verdict",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Feed photos, avatars, JS bundles, video segments",
+          "Cache aggressively",
+          "Huge reuse, immutable versions, tolerant of seconds of staleness"
+        ],
+        [
+          "Live-stream manifests",
+          "Cache for seconds only",
+          "Freshness directly controls startup delay and channel-change time"
+        ],
+        [
+          "Personalized feed JSON, DMs, like counts",
+          "Do not cache at edge",
+          "Per-user, low reuse, correctness matters more than bytes saved"
+        ],
+        [
+          "Abuse takedown images",
+          "Cache with tag purge + short TTL",
+          "Need fast removal; accept brief residual visibility as explicit trade-off"
+        ],
+        [
+          "Admin and write APIs",
+          "Bypass cache, keep filtering",
+          "Must reach origin; CDN value is TLS offload and rate limiting only"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**A CDN steers each user to a nearby edge over DNS or anycast, terminates TLS there, and serves versioned blobs from cache — collapsing misses through a shield to origin — so the feed scales on hit ratio, not origin capacity.** Then add: we version public media for a year, sign private URLs for minutes, and accept seconds-delayed purge as the price."
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:37:08.033Z",
+    "problems": []
+  }
+}

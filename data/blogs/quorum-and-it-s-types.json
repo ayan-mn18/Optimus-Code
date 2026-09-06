@@ -1,0 +1,383 @@
+{
+  "slug": "quorum-and-it-s-types",
+  "title": "Quorum and it's types",
+  "summary": "Quorum is intersection, not consensus: how R, W, and N trade availability for staleness, and when majority, sloppy, and weighted quorums each win.",
+  "kind": "HLD",
+  "problemSlug": "quorum-and-its-types-96-188",
+  "topic": "Data consistency in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": "⚖️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "consistency",
+    "quorum",
+    "replication"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Quorum Definition - BoardEffect",
+      "url": "https://www.boardeffect.com/blog/what-constitutes-a-quorum/",
+      "source": "boardeffect.com",
+      "kind": "article"
+    },
+    {
+      "title": "Quorum - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Quorum",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "[PDF] INCLUDES QUORum Calculation Table",
+      "url": "https://www.eiu.edu/adulted/Chapter%205%20-%20Quorum.pdf",
+      "source": "eiu.edu",
+      "kind": "article"
+    },
+    {
+      "title": "What is a Quorum? Definition, Meaning & Board Policy",
+      "url": "https://boardsource.org/resources/board-meeting-quorum/",
+      "source": "boardsource.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**A quorum is a forced overlap.** If every write touches `W` replicas and every read touches `R` replicas out of `N`, and `R + W > N`, then every read *must* hit at least one replica that saw the latest write. That overlap is the entire trick — you get ordered-looking data without paying for global agreement."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What quorum is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A quorum system replicates the same logical value onto `N` physical nodes and declares an operation successful when a subset of them acknowledge. `W` is the write quorum size: the number of replicas that must confirm a write before the coordinator returns success. `R` is the read quorum size: the number of replicas you must query and reconcile before returning to the client. `N` is fixed per keyspace or shard; `R` and `W` are tunable per operation. There is no leader on the critical path, no log replication, no two-phase commit. The trade-off you are buying: you accept **stale reads, read-repair work, and version reconciliation** in exchange for **surviving minority partitions without blocking**."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why this works is pure set intersection. With `N = 3`, `W = 2`, `R = 2`, any read set of 2 nodes and any write set of 2 nodes share at least 1 node (`2 + 2 > 3`). That shared node holds a copy new enough to detect staleness elsewhere, provided versions or timestamps let you compare. If `R + W <= N`, the sets can be disjoint — the read can miss the write entirely and you have only eventual consistency with no recency bound. Choose the inequality deliberately: `R + W > N` buys read-your-write visibility under a single-key overlap guarantee; `W > N/2` alone buys write-write conflict avoidance because two writes must overlap. Every other choice is a latency-versus-freshness dial, not a correctness property."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The coordinator does the work; replicas are dumb. On write, the coordinator stamps the value with a version — vector clock, Lamport timestamp plus node ID, or server-side revision — and sends it to all `N` replicas in parallel, waiting for the first `W` acknowledgements. Slow or dead nodes are ignored past the deadline. On read, it requests the versioned value from all `N` (or a subset), waits for the first `R` responses, picks the highest version, returns it, and asynchronously pushes it back to laggards. That last step is **read-repair**, and it is not optional: without it, a crashed-and-recovered replica keeps serving ancient data forever and your next `R` set may exclude the fresh node. The cost is explicit — reads pay fan-out latency equal to the `R`-th fastest replica, writes pay the `W`-th fastest — which is why quorum systems tail off under heterogeneity."
+    },
+    {
+      "type": "mermaid",
+      "title": "Write path through a coordinator",
+      "caption": "Coordinator fans out to N=3, succeeds on W=2, leaves one straggler for hinted handoff.",
+      "code": "flowchart TD\n  Client --> Coord[Coordinator]\n  Coord --> A[Replica A]\n  Coord --> B[Replica B]\n  Coord --> C[Replica C]\n  A -->|ack fast| Coord\n  B -->|ack fast| Coord\n  C -->|timeout| Coord\n  Coord -->|W=2 met, success| Client\n  Coord -->|async hint| C"
+    },
+    {
+      "type": "mermaid",
+      "title": "Read path and overlap",
+      "caption": "Read of R=2 must intersect last write of W=2, so reconciliation sees the newest version.",
+      "code": "flowchart TD\n  Reader --> Coord2[Coordinator]\n  Coord2 --> RA[Replica A v3]\n  Coord2 --> RB[Replica B v2]\n  Coord2 --> RC[Replica C v3]\n  RA -->|v3| Coord2\n  RC -->|v3| Coord2\n  Coord2 -->|pick max v3| Reader\n  Coord2 -->|read repair v3| RB"
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The intersection rule you must be able to derive"
+    },
+    {
+      "type": "paragraph",
+      "text": "Interviewers do not want you to recite `R + W > N`; they want you to prove it on the whiteboard with pigeonhole logic. Two subsets of an `N`-element set with sizes `R` and `W` are guaranteed to intersect if and only if their sizes sum past `N`. That guarantee is per-key and per-version — it says nothing about ordering across keys, causal across shards, or durability if `W` nodes acknowledge in memory and then all die. This is why quorum gives you **single-key linearizability only when combined with version comparison plus read-repair plus a write rule that never goes backward**, and even then it breaks under concurrent writers that both believe they hold a majority in different partitions. Name that limit explicitly: quorum prevents missed writes, it does not prevent split-brain writes."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "quorum.py",
+      "code": "def quorum_write(replicas, value, version, W):\n    acks = 0\n    for r in replicas:\n        try:\n            r.store(value, version, timeout_ms=50)\n            acks += 1\n        except Timeout:\n            continue  # straggler becomes repair debt, not failure\n    return acks >= W  # success means overlap for future R where R + W > N\n\ndef quorum_read(replicas, R):\n    responses = []\n    for r in replicas:\n        try:\n            responses.append(r.fetch(timeout_ms=50))\n            if len(responses) >= R:\n                break\n        except Timeout:\n            continue\n    if len(responses) < R:\n        raise Unavailable(\"cannot meet R\")\n    newest = max(responses, key=lambda x: x.version)\n    # read-repair: push newest back async, else staleness never converges\n    for r, resp in zip(replicas, responses):\n        if resp.version < newest.version:\n            r.repair_async(newest)\n    return newest.value"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Types of quorum"
+    },
+    {
+      "type": "paragraph",
+      "text": "There is one mechanism and several policies for who counts. Do not list types as trivia — each type exists because strict majority is too rigid for real failure modes: hot keys need cheap reads, ingest pipelines need cheap writes, dead nodes cannot block traffic, and not all replicas are equal. Pick the type by naming which failure you refuse to block on."
+    },
+    {
+      "type": "table",
+      "caption": "Quorum variants by what they sacrifice and what they buy.",
+      "headers": [
+        "Type",
+        "Rule",
+        "Why you would choose it"
+      ],
+      "rows": [
+        [
+          "Majority / strict quorum",
+          "`W = R = N/2 + 1`, so `R + W > N` always",
+          "Single dial that survives `f` failures with `N = 2f+1`. Default when you cannot reason about workload skew."
+        ],
+        [
+          "Read-optimized (`R=1` / `W=N`)",
+          "Reads hit one replica; writes hit all",
+          "Read latency minimal. Pays with write unavailability if any replica is down and with write amplification."
+        ],
+        [
+          "Write-optimized (`W=1` / `R=N`)",
+          "Writes hit one replica; reads reconcile all",
+          "Ingest never blocks. Pays with slow, expensive reads and high staleness window until repair."
+        ],
+        [
+          "Sloppy quorum + hinted handoff",
+          "`W` nodes among *any* healthy nodes, not the `N` home replicas",
+          "Availability during long partitions or dead owners. Pays with temporary over-replication and repair debt."
+        ],
+        [
+          "Flexible / weighted voting",
+          "Votes weighted by capacity; quorums defined by vote sum, not node count",
+          "Heterogeneous hardware or witness nodes. Pays with operational complexity in reweighting safely."
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Majority quorum: the safe default"
+    },
+    {
+      "type": "paragraph",
+      "text": "Majority quorum sets both `R` and `W` to a strict majority: for `N = 3`, `R = 2, W = 2`; for `N = 5`, `R = 3, W = 3`. The reason it dominates is fault arithmetic: a 3-node group tolerates 1 failure while still meeting quorum, a 5-node group tolerates 2. Any two majorities intersect, so you get both read-write and write-write overlap in one rule. The trade-off is blunt: you pay majority latency on *every* operation and you lose availability when a majority partition is unreachable. Use it when correctness reasoning must stay simple — metadata, locks, configuration, membership — and move away from it only when you can prove your workload is skewed enough to justify asymmetric `R` and `W`."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Read-heavy vs write-heavy: tune R and W, not N"
+    },
+    {
+      "type": "paragraph",
+      "text": "Keep `N = 3` and slide the pair. `R = 1, W = 3` makes reads single-hop fast — ideal for a product catalog read 1000x per write — but a single replica outage blocks every write, so write availability collapses to that of the weakest node. `W = 1, R = 3` flips it: writes succeed if any replica lives, ideal for telemetry or likes counters, but every read pays full fan-out and must reconcile divergent versions, so p99 read latency tracks the slowest replica. The intermediate `R = 2, W = 2` balances both at majority latency. The opinionated rule: **never tune `N` upward to fix latency** — going from 3 to 5 replicas increases both quorum sizes and fan-out cost while only helping failure tolerance. Tune `R` and `W` per request class instead, even allowing `ONE` for non-critical reads and `QUORUM` for money reads against the same data."
+    },
+    {
+      "type": "table",
+      "caption": "N=3 tuning cheat sheet. All rows assume healthy replicas; stragglers shift the real cost.",
+      "headers": [
+        "Config",
+        "Read cost",
+        "Write cost",
+        "Consistency when R+W>N"
+      ],
+      "rows": [
+        [
+          "R=1, W=3",
+          "1 RTT to fastest",
+          "3 acks, blocks on 1 failure",
+          "Strong read-your-write, fragile writes"
+        ],
+        [
+          "R=2, W=2 (majority)",
+          "2nd-fastest RTT + repair",
+          "2nd-fastest RTT",
+          "Balanced; tolerates 1 failure either way"
+        ],
+        [
+          "R=3, W=1",
+          "3 responses, slowest dominates",
+          "1 ack, fastest",
+          "Strong read-your-write, fragile reads"
+        ],
+        [
+          "R=1, W=1",
+          "Cheapest possible",
+          "Cheapest possible",
+          "No guarantee — pure eventual, may miss writes"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Sloppy quorum and hinted handoff: availability when owners are dead"
+    },
+    {
+      "type": "paragraph",
+      "text": "Strict quorums fail closed: if the `N` home replicas for a key contain two dead nodes, `W = 2` can never be met and writes block. Sloppy quorum fails open instead — the coordinator takes `W` acknowledgements from *any* healthy nodes in the cluster, including stand-ins that do not own the key, and stores a hint that says this write belongs elsewhere. When the true owner recovers, the stand-in replays the hint. The trade-off is honesty about debt: you bought write availability during the outage by creating temporary over-replication, extra disk, and a repair backlog that can overwhelm a flapping node on return. If hints expire before replay — and they must expire, or a dead node accumulates unbounded debt — that write is silently lost unless anti-entropy (Merkle-tree comparison) later catches it. Use sloppy quorum for shopping carts and sessions where accepting a write now beats rejecting it; never use it where a lost hint equals lost money."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Weighted voting and flexible quorums"
+    },
+    {
+      "type": "paragraph",
+      "text": "Counting nodes is a special case of counting votes. Give a datacenter-grade node 2 votes and a small edge node 1 vote, and define quorum as a vote threshold rather than a node count. Flexible quorums push this further: you do not need both `R` and `W` to be majorities, you only need their *combined votes* to exceed total votes. That lets you run `W` small (fast ingest in one region) with `R` large (readers elsewhere do the reconciliation work), or place lightweight witnesses that vote without storing full data. The trade-off is operational: reweighting votes or changing thresholds is itself a distributed agreement problem, and getting it wrong creates two simultaneous quorums that both believe they are authoritative. Choose weighted quorums when hardware is genuinely heterogeneous or when you need a tiebreaker witness across two datacenters; otherwise the complexity tax exceeds the latency saving."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What quorum gives you and what it charges, with no euphemisms.",
+      "headers": [
+        "For",
+        "Against"
+      ],
+      "rows": [
+        [
+          "No leader on the data path, so minority partitions stay writable and p99 avoids leader bottleneck",
+          "No total order: concurrent writers to the same key need last-write-wins or CRDT merge, both of which silently drop someone's intent"
+        ],
+        [
+          "Tunable per operation: QUORUM for money, ONE for thumbnails, same cluster",
+          "Tuning is a footgun: R=1/W=1 in one code path voids the R+W>N guarantee for all readers"
+        ],
+        [
+          "Survives f failures with N=2f+1 without blocking, unlike primary-backup failover",
+          "Reads pay fan-out and version comparison; heterogeneous replicas make p99 track stragglers"
+        ],
+        [
+          "Scales horizontally by adding independent quorum groups per shard",
+          "Cross-key and cross-shard transactions have no atomicity; multi-key invariants rot"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The comparison that matters is quorum versus consensus. Consensus protocols elect a leader and replicate a log to a majority before acknowledging — they give you a single ordered history, linearizable reads and writes, and fencing for leader changes, at the cost of blocking when no majority is reachable and paying leader CPU and log coordination on every write. Quorum replication skips the log: any coordinator can write to any subset, which keeps the system writable in more partitions and removes the leader hotspot. The price is convergence instead of agreement — readers do the work of reconciling divergent histories, and there is no built-in defense against two partitions each assembling their own majority for different keys. Choose consensus when operations must be ordered or exclusive; choose quorum when per-key freshness with high availability matters more than global order."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Quorum failures do not page you with voted-no; they page you with slow reads, resurrected deletes, and repair storms. Every shortcut — skipping read-repair, letting clocks skew, expiring hints early, running with `R + W <= N` for speed — compounds silently until a routine node restart surfaces months of divergence at once. Learn the signatures so you can name the cause from the dashboard, not from the postmortem."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Stale read spike after a deploy:** symptom is `R=1` readers hitting a lagging replica while `W` succeeded elsewhere. Fix is per-request consistency: critical reads at `QUORUM`, not global `R=1`. Trade-off named: you bought p50 latency with unbounded staleness.",
+        "**Resurrected delete:** delete is a tombstone write at `W`; if the tombstone misses a downed replica and the replica returns after tombstone garbage-collection, the old value comes back. Symptom is deleted items reappearing days later. Fix is longer tombstone retention plus anti-entropy repair, paid for with disk.",
+        "**Hinted-handoff storm:** a flapping node returns to thousands of queued hints replayed at once, saturating it and flapping it again. Symptom is sawtooth availability correlated with single-node restarts. Fix is throttled replay plus Merkle-tree anti-entropy instead of blind push.",
+        "**Split-brain writes with last-write-wins:** two partitions each meet `W` for the same key with skewed wall clocks; the later wall-clock timestamp wins and silently discards the other partition's writes. Symptom is lost updates with no error logged. Fix is vector clocks or CRDTs, paid for with larger metadata and merge logic.",
+        "**Quorum unavailability masquerading as slowness:** with `N=3, W=2`, one slow disk makes every write wait for the straggler. Symptom is p99 climbing while p50 is flat. Fix is speculative retry to an extra replica or sloppy quorum, paid for with extra load."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The split-brain trap",
+      "text": "A 3-node group split 2-and-1 still has a majority on the 2-side, which is safe. A 4-node group split 2-and-2 has *two* majorities if you misconfigure quorum as 2 — both sides accept writes. **Always use odd `N` or weighted votes with an explicit tiebreaker.** Even `N` without weighting is a design bug, not a capacity plan."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Configuration that makes it concrete"
+    },
+    {
+      "type": "paragraph",
+      "text": "In practice you never hardcode `R` and `W`; you expose them as per-request consistency levels so the same cluster serves both fast and safe paths. The discipline is to default to quorum and let only explicitly non-critical paths downgrade, with code review treating any `ONE` read of authoritative state as a correctness change, not a performance tweak."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ConsistencyTuning.java",
+      "code": "// N=3 keyspace. Same data, different R/W per access pattern.\n// Trade-off is stated at the call site, not buried in config.\nResult product = cassandra.read(KEY, Consistency.ONE);\n// R=1: thumbnail, cacheable, staleness OK. Fast, may miss latest write.\n\nResult cart = cassandra.read(KEY, Consistency.QUORUM);\n// R=2, W=2, R+W>N: cart total. Pays 2nd-fastest latency for overlap.\n\ncassandra.write(KEY, delta, Consistency.ALL);\n// W=3: schema or price change. Blocks on any failure, zero staleness.\n// Anti-pattern: write at ONE + read at ONE => R+W=2 <= 3, no guarantee."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Derive the inequality, do not recite it",
+          "text": "Expect: design a highly available key-value store, or why does Dynamo allow stale reads. Draw N=3, shade a write set of W and a read set of R, show they must overlap only when R+W>N. Interviewers promote candidates who prove it with sets."
+        },
+        {
+          "title": "Tune for the workload they give you",
+          "text": "Expect: read-heavy feed versus write-heavy events. Answer with numbers: R=1/W=N for the first, W=1/R=N for the second, majority for the balanced case — and state what breaks when a replica dies in each."
+        },
+        {
+          "title": "Handle the dead-owner follow-up",
+          "text": "Expect: what if the responsible replicas are down. This is the sloppy-quorum cue. Describe writing to stand-ins plus hinted handoff plus Merkle anti-entropy, and name the cost: repair debt and possible hint expiry."
+        },
+        {
+          "title": "Resolve concurrent writes",
+          "text": "Expect: two clients write the same key at once. Answer: versions decide — vector clocks detect the conflict, application or CRDT merges it, last-write-wins by timestamp discards data. Say which loss you accept and why."
+        },
+        {
+          "title": "Draw the line against consensus",
+          "text": "Expect: why not use Raft for everything. Answer: Raft blocks without a majority and serialises through a leader; quorum stays writable in more cases and spreads load, but gives up total order and fencing. Pick by whether operations need ordering."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Quorum equals strong consistency.** It does not. `R+W>N` gives single-key read-your-write visibility *if* versions are compared and repaired. Without read-repair and monotonic versions, it is still eventual.",
+        "**Majority means half.** It means *strictly more than half*: 2 of 3, 3 of 5. Half of 4 is 2, and two disjoint sets of 2 exist — that is exactly the split-brain bug.",
+        "**More replicas means more availability.** Past 3, larger `N` raises quorum sizes and fan-out latency. Five tolerates 2 failures instead of 1 but every operation waits for 3 acks. Replicate for fault tolerance, not for speed.",
+        "**W=1 is always safe because reads repair.** Reads repair only if they happen and only if they overlap the write. With `W=1, R=1`, most reads never meet the write; repair is a hope, not a mechanism.",
+        "**Timestamps order writes correctly.** Wall clocks skew. Two writes ordered by wall clock can invert causality. Use Lamport clocks plus node IDs or vector clocks; treat wall-clock last-write-wins as deliberate data loss.",
+        "**Sloppy quorum is free availability.** It is borrowed availability repaid with interest: extra storage on stand-ins, replay load, and expiry risk. Budget the repair path or it becomes the outage."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use quorum where per-key availability beats global order; refuse it where ordering is the product.",
+      "headers": [
+        "Use quorum when",
+        "Do not use it when"
+      ],
+      "rows": [
+        [
+          "Single-key reads/writes dominate: carts, profiles, session state, catalog entries",
+          "You need cross-key atomicity: money transfer, inventory decrement plus order insert — use transactions or consensus"
+        ],
+        [
+          "Read/write ratios are skewed and you can tune R/W per operation",
+          "Every operation needs linearizability and fencing: leader election, distributed locks, exactly-once queues"
+        ],
+        [
+          "Partitions and stragglers are routine and blocking is worse than staleness",
+          "Concurrent writes to the same key must never silently drop intent without a mergeable type"
+        ],
+        [
+          "You can afford version metadata, read-repair, and anti-entropy as first-class work",
+          "Team will not operate repair: no tombstone discipline, no Merkle repair, no hint throttling — divergence will compound"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Quorum makes every read overlap every write by requiring `R + W > N`, trading read-repair work and last-write conflict handling for availability without a leader — use majority as the default, tune `R` versus `W` for skew, and reach for sloppy quorum only when you accept repair debt to stay writable.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:32:24.121Z",
+    "problems": []
+  }
+}

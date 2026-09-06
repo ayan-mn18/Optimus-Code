@@ -1,0 +1,305 @@
+{
+  "slug": "bloom-filters",
+  "title": "Bloom Filters",
+  "summary": "Bloom filters trade certainty for memory: a bit array plus k hashes that can prove absence but only suggest presence. This concept guide covers mechanism, sizing math, failure modes, and distributed-system uses.",
+  "kind": "HLD",
+  "problemSlug": "bloom-filters-90-182",
+  "topic": "Scalability in Distributed Systems",
+  "difficulty": "Medium",
+  "coverEmoji": " f33a",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Scalability",
+    "Distributed Systems",
+    "Probabilistic Data Structures"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Bloom Filters Explained - System Design",
+      "url": "https://systemdesign.one/bloom-filters-explained/",
+      "source": "systemdesign.one",
+      "kind": "article"
+    },
+    {
+      "title": "Bloom filter - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Bloom_filter",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Bloom Filters - Introduction and Implementation - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/python/bloom-filters-introduction-and-python-implementation/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A Bloom filter is a **memory-for-certainty trade**. It can tell you **definitely not in the set** for almost nothing, but **possibly in the set** is all you ever get on the positive side. You use it when a cheap negative saves you an expensive lookup elsewhere."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "A Bloom filter represents a set of `n` inserted keys as an array of `m` bits, initially all zero, plus `k` independent hash functions. To insert `x`, you compute `h1(x) ... hk(x)`, reduce each modulo `m`, and set those positions to `1`. To query `y`, you recompute the same `k` positions: if any is `0`, `y` was never inserted; if all are `1`, `y` was *probably* inserted. That is the entire structure. No keys are stored, no collisions are resolved, no iteration is possible. You chose this shape because storing the keys themselves — in a hash set, B-tree, or SSTable index — costs bytes per key plus pointers, while a Bloom filter costs **bits** per key, fixed up front, regardless of key size. The trade-off: you permanently lose the ability to enumerate, delete, or distinguish a true member from a hash collision."
+    },
+    {
+      "type": "paragraph",
+      "text": "The guarantees are asymmetric on purpose, and this is what interviewers probe. **False negatives are impossible.** If you inserted `x`, all `k` of its bits are `1`, so a query for `x` must succeed unless bits were cleared — which a classic Bloom filter never does. **False positives are inevitable and tunable.** As you insert more keys, more bits become `1`, and an uninserted key has a growing chance that all `k` of its positions were already set by other keys. You control that probability `p` at construction time by sizing `m` and `k` for an expected `n`. Exceed that `n` and `p` degrades silently. That silence is the operational price: the filter never tells you it is full, it just starts lying more often."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How the mechanism works"
+    },
+    {
+      "type": "paragraph",
+      "text": "Insertion and lookup are the same computation with a different final step — set versus test. Why `k` hashes instead of one? One hash gives you one bit of evidence; an attacker or unlucky key needs only one collision to fake membership. With `k` independent positions, a non-member must collide on *all* `k` positions simultaneously, which is exponentially harder when the array is sparse. But there is a counter-pressure: each insertion sets up to `k` bits, so larger `k` fills the array faster. The optimal `k` balances discriminating power against fill rate, which is why it is derived from the `m/n` ratio, not chosen arbitrarily. The trade-off is **CPU per operation versus bits per operation**: more hashes cost more hashing, less memory."
+    },
+    {
+      "type": "mermaid",
+      "title": "Bloom filter insert and query path",
+      "caption": "Insert sets k bits; query tests k bits. One zero means definitely absent.",
+      "code": "flowchart TD\n  IN[Input key x] --> H[Compute k hashes]\n  H --> M[Modulo m to get k positions]\n  M --> D{Insert or Query}\n  D -->|Insert| S[Set all k bits to 1]\n  D -->|Query| C[Check all k bits]\n  C -->|Any bit is 0| N[Definitely not in set]\n  C -->|All bits are 1| P[Possibly in set]"
+    },
+    {
+      "type": "paragraph",
+      "text": "Query cost is `O(k)` hash computations and `k` random bit reads — constant in `n`, constant in `m` if the array fits in memory. Space is `O(m)` bits, fixed at creation. That independence from `n` at query time is the reason it scales: checking membership in 10 million keys costs the same as checking membership in 10 thousand, provided you sized `m` for 10 million. The catch is that `O(1)` hides a large constant if you implement `k` hashes naively as `k` separate cryptographic hashes. Production implementations derive `k` positions from two base hashes with double-hashing or use a fast non-cryptographic hash like Murmur or xxHash, then stride. The trade-off here is **hash quality versus latency**: weak or correlated hashes inflate the real false-positive rate far above the textbook formula, and you will not see it until production traffic hits."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "bloom.py",
+      "code": "import mmh3  # fast non-crypto hash; any seeded hash works\n\nclass BloomFilter:\n    def __init__(self, m: int, k: int):\n        self.m = m\n        self.k = k\n        self.bits = bytearray((m + 7) // 8)\n\n    def _positions(self, key: str):\n        h1 = mmh3.hash(key, 0x5BD1) & 0xFFFFFFFF\n        h2 = mmh3.hash(key, 0xADC3) & 0xFFFFFFFF\n        # double hashing: k positions from 2 base hashes\n        for i in range(self.k):\n            yield (h1 + i * h2) % self.m\n\n    def add(self, key: str):\n        for pos in self._positions(key):\n            self.bits[pos // 8] |= 1 << (pos % 8)\n\n    def __contains__(self, key: str) -> bool:\n        # False means definitely absent. True means possibly present.\n        for pos in self._positions(key):\n            if not (self.bits[pos // 8] >> (pos % 8)) & 1:\n                return False\n        return True"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Sizing it: the only math that matters"
+    },
+    {
+      "type": "paragraph",
+      "text": "You do not guess `m` and `k`; you derive them from the capacity `n` you promise and the error rate `p` you tolerate. The standard relations are `m = -n * ln(p) / (ln(2)^2)` bits and `k = (m / n) * ln(2)` hashes, rounded to integers. Concretely: for `p = 1%` you need about **9.6 bits per key** and `k = 7`; for `p = 0.1%` you need about **14.4 bits per key** and `k = 10`. That is why the structure is compelling for large sets — 100 million keys at 1% costs roughly 114 MB, versus gigabytes for the raw keys. The trade-off is brutally explicit: halving `p` costs roughly 4.8 extra bits per key plus more hashes per lookup. Never size for current `n`; size for `n` at the next capacity review, because insert count is the only variable that silently destroys your guarantee. If you cannot bound `n`, do not use a fixed-size filter — use a scalable variant or a different structure."
+    },
+    {
+      "type": "table",
+      "caption": "Honest trade-offs of a classic Bloom filter.",
+      "headers": [
+        "What you gain",
+        "What you pay",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "~10 bits/key at 1% FP, independent of key size",
+          "False positives; no exact answers on hits",
+          "Only useful as a pre-filter before an authoritative check"
+        ],
+        [
+          "O(k) insert and query, no locks on read path",
+          "k hashes + k random bit probes per op",
+          "Pick fast hashes; keep filter in RAM or you lose"
+        ],
+        [
+          "Fixed memory, no per-key allocation",
+          "Must provision m up front for max n",
+          "Underestimate n and p explodes; overestimate and you waste RAM"
+        ],
+        [
+          "No keys stored, easily shared/replicated",
+          "Cannot iterate, delete, or count members",
+          "Good for negative caching, bad for anything needing enumeration"
+        ],
+        [
+          "Embarrassingly parallel inserts if bit-set is atomic",
+          "Concurrent bit-sets need care; saturated filter degrades globally",
+          "One hot filter affects every query, not just new keys"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "tip",
+      "title": "Rule of thumb to memorise",
+      "text": "**10 bits per key, 7 hashes, 1% false positives.** If an interviewer asks you to size one live, start there, then scale: `m` grows linearly with `n` and logarithmically with `1/p`. Say the trade-off aloud: tighter `p` costs memory *and* CPU."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The classic failure is **saturation**. The filter keeps accepting inserts past its designed `n` — `add` never fails — so the fraction of `1` bits climbs toward 100% and every query returns positive. In a cache-filtering deployment this looks like the filter suddenly stops filtering: disk or database load climbs back to unfiltered levels while the filter reports near-100% hit rate and uses no extra memory. Nothing errors, nothing crashes, dashboards for the filter itself look healthy. That is what makes it dangerous. The second failure is **hash correlation**: using one weak hash sliced into `k` values, or hashing an already-skewed key format, produces far more collisions than theory predicts. Symptom: measured false-positive rate 5-10x higher than calculated at the same fill ratio. The third is **staleness without deletes**: revoked usernames, deleted rows, or expired tokens still test positive forever, forcing ever-larger fallback lookups. The trade-off behind all three: the filter buys simplicity by refusing to signal distress — you must instrument fill ratio and measured `p` externally, or you will fly blind."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Filter stops helping:** fallback store QPS rises while filter positive rate approaches 1.0 — check bits-set ratio; above ~50% full, your effective p has already drifted.",
+        "**Phantom members after deletes:** deleted keys still return positive, causing wasted auth checks or stale routing — you needed a counting variant or explicit invalidation.",
+        "**p worse than math:** same m/n/k on paper, 5x worse in prod — suspect correlated hashes, poor seed choice, or tiny m with modulo bias.",
+        "**Latency regression:** filter paged to SSD or shared across NUMA nodes, k random probes become k cache misses — symptom is p99 up on every read, not just misses."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Variants you actually need to know"
+    },
+    {
+      "type": "table",
+      "caption": "When the classic filter is insufficient, pick by the missing capability.",
+      "headers": [
+        "Variant",
+        "What changes",
+        "Cost you accept"
+      ],
+      "rows": [
+        [
+          "Counting Bloom filter",
+          "Counters instead of bits, decrement on delete",
+          "4-8x memory; counters can overflow; still no enumeration"
+        ],
+        [
+          "Scalable Bloom filter",
+          "Chain of filters with tightening p as n grows",
+          "More memory and slower queries over chain; harder to replicate"
+        ],
+        [
+          "Partitioned / striped filter",
+          "Sharded bit array for cache locality and parallelism",
+          "Slightly higher p for same m; more complex hashing"
+        ],
+        [
+          "Compressed / quotient / cuckoo filter",
+          "Different layout supporting delete and lower space for low p",
+          "More code, deletions can yield false negatives on misuse; cuckoo filters need bounded load"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "In distributed systems the filter almost never stands alone; it sits **in front of the expensive truth**. The canonical pattern is request → Bloom filter in RAM → on negative, skip the lookup entirely; on positive, go to cache, then to disk or remote store to confirm. That turns millions of guaranteed misses — cold keys, crawlers probing random IDs, join probes that match nothing — into bit tests. Replication is trivial because the bit array is a dense blob: compute it offline on a batch job, ship the same immutable version to every edge node, and rotate on a schedule. The trade-off is **freshness versus coordination**: a shared immutable filter avoids write contention entirely but means new inserts are invisible until the next rebuild, so writes must go through the authoritative store regardless. Mutable distributed filters with concurrent sets across nodes reintroduce the consistency problem you were trying to dodge."
+    },
+    {
+      "type": "mermaid",
+      "title": "Bloom filter as a pre-filter",
+      "caption": "Negatives short-circuit; positives fall through to the authoritative check.",
+      "code": "flowchart LR\n  C[Request] --> F[Bloom filter in RAM]\n  F -->|Any bit 0| N[Return miss immediately]\n  F -->|All bits 1| A[Check cache or store]\n  A -->|Found| H[Return hit]\n  A -->|Not found| M[False positive - return miss]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Sizing and operating it"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "sizing.py",
+      "code": "import math\n\ndef size_for(n: int, p: float):\n    # m in bits, k hashes. Trade-off: smaller p costs m and k.\n    m = math.ceil(-n * math.log(p) / (math.log(2) ** 2))\n    k = max(1, round((m / n) * math.log(2)))\n    return m, k, m / n\n\nfor p in (0.05, 0.01, 0.001):\n    m, k, bpk = size_for(n=10_000_000, p=p)\n    print(f\"p={p}: m={m/8/1e6:.1f} MB k={k} bits/key={bpk:.1f}\")\n# Operate it: export fill ratio = bits_set / m.\n# Alert when fill > 0.4-0.5 or measured FP on sampled negatives drifts."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the expensive fallback you are avoiding",
+          "text": "Never answer bloom filter in a vacuum. Say: DB point lookups for non-existent keys cost disk I/O; cache misses for cold keys cost a round trip. The filter converts those into in-RAM bit tests. Trade-off stated up front: you accept a tunable false-positive rate."
+        },
+        {
+          "title": "Derive m and k from n and p live",
+          "text": "Ask for expected insertions and tolerable FP rate, then write the formulas and the 10-bits-per-key anchor. Interviewers score the derivation, not the arithmetic. Mention double-hashing to avoid k full hashes."
+        },
+        {
+          "title": "Handle the follow-ups: delete, growth, scale",
+          "text": "Classic filter cannot delete and cannot grow. Propose counting variant for deletes with its counter cost, or scalable chain / periodic rebuild for growth. Explain why rebuild-from-source is usually preferred over a mutable shared filter."
+        },
+        {
+          "title": "Place it in the read path and define the contract",
+          "text": "Draw request -> filter -> cache -> store. State the invariant: negative is authoritative, positive requires confirmation. Define who rebuilds the filter, how replicas get it, and what happens to writes between rebuilds."
+        },
+        {
+          "title": "Say how you would know it is broken",
+          "text": "Close with operations: track fill ratio and sampled false-positive rate on known negatives, alert on drift, load-shed by bypassing a saturated filter. This turns a textbook answer into a production design."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**It stores the set — it does not.** No keys, no values, no iteration. If you need listing or scanning, you need something else entirely.",
+        "**Fewer hashes are always faster and better — false.** Too few hashes raises `p` at fixed fill; too many fills the array faster. `k` has an optimum tied to `m/n`.",
+        "**It can tell you something is present — it cannot.** A positive means *maybe*. Any design that acts on a positive without confirming against ground truth is wrong.",
+        "**Deletes just clear the bits — they do not.** Clearing a bit can break other keys sharing it and create false *negatives*. Deletes require counters or a different filter.",
+        "**Bigger is always safer — not without bound.** Oversizing wastes RAM and cache locality; undersizing silently destroys `p`. Size for peak `n`, then monitor fill ratio.",
+        "**False-positive rate is fixed — it drifts with n.** `p` is a function of insertions. Double the inserts past design and your quoted `p` is fiction."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to run away"
+    },
+    {
+      "type": "table",
+      "caption": "Use it as a cheap negative; never as ground truth.",
+      "headers": [
+        "Use it when",
+        "Avoid it when",
+        "Prefer instead"
+      ],
+      "rows": [
+        [
+          "Most queries are misses and misses are expensive (disk, RPC)",
+          "Hit path must be exact with no second check",
+          "Full index or hash set"
+        ],
+        [
+          "n is large, keys are large, RAM is tight",
+          "You need deletes, enumeration, or counts",
+          "Counting/cuckoo filter, quotient filter, or HyperLogLog for counts"
+        ],
+        [
+          "Slight extra work on false positives is cheap",
+          "False positives trigger costly or irreversible action",
+          "Authoritative lookup first; filter only as hint"
+        ],
+        [
+          "Set is slowly changing; rebuilds are acceptable",
+          "Set churns constantly and freshness matters",
+          "Versioned index or negative cache with TTL"
+        ]
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Use a Bloom filter when a tiny, fixed RAM structure that can prove absence lets you skip an expensive lookup, accepting a tunable false-positive rate on hits that you always confirm elsewhere.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:09:58.393Z",
+    "problems": []
+  }
+}

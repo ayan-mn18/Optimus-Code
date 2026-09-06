@@ -1,0 +1,284 @@
+{
+  "slug": "write-through-policy",
+  "title": "Write through policy",
+  "summary": "Write-through forces every write to cache and database before success — simple reads at the cost of slow writes.",
+  "kind": "HLD",
+  "problemSlug": "write-through-policy-95-214",
+  "topic": "Caching Mechanisms",
+  "difficulty": "Medium",
+  "coverEmoji": "✍️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Caching",
+    "Write-Through",
+    "Consistency"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Cache Write Policies - System Design - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/cache-write-policies-system-design/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Cache Write Policies: Write-Through vs. Write-Back | PDF - Scribd",
+      "url": "https://www.scribd.com/presentation/865015333/Cache-Techniques-Jesse",
+      "source": "scribd.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "**Write-through means the cache is never allowed to be ahead of the database.** Every write updates both before you acknowledge success. You buy read simplicity and zero data-loss risk with write latency and database load. If you remember nothing else, remember that trade-off."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Write-through is a cache write policy where an application write goes to the cache **and** to the backing store synchronously, in the same request path. The write is reported as successful only after both have acknowledged it. After the operation completes, the cached copy and the persistent copy are identical. There is no dirty state, no background flush, no window where a cache crash loses committed data."
+    },
+    {
+      "type": "paragraph",
+      "text": "Contrast this with the two policies it is always confused with. In **write-back**, the cache acknowledges immediately and flushes to the database later, so the cache leads and the database follows. In **write-around**, a write bypasses the cache entirely and goes straight to the database, so the cache only fills on subsequent reads. Write-through is the middle position: write to both, wait for both, then return."
+    },
+    {
+      "type": "paragraph",
+      "text": "Why define it this strictly? Because the synchronous dual-write is the entire point. The moment you acknowledge after the cache write but before the database write completes, you no longer have write-through — you have write-back with a short flush delay and all of its recovery problems. Interviewers probe this boundary deliberately. If both stores have not confirmed, the write has not happened."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The write path is linear and blocking. The application sends the write to the caching layer. The caching layer applies it to its own copy, then forwards the same write to the database. Only when the database confirms does the cache confirm to the application. If either fails, the whole operation fails and you must roll back or invalidate the cached entry. Order matters here: most implementations write the database first or hold the cache entry in a pending state, because a cache-first commit followed by a database failure leaves a phantom value that later reads will serve."
+    },
+    {
+      "type": "mermaid",
+      "title": "Write-through write path",
+      "caption": "Every write blocks on both stores before success is returned.",
+      "code": "graph TD\n  Client[Client] --> Cache[Cache]\n  Cache --> DB[(Database)]\n  DB --> Cache\n  Cache --> Client"
+    },
+    {
+      "type": "paragraph",
+      "text": "The read path is deliberately boring, and that is why teams choose this policy. On a hit, serve directly from cache. On a miss, load from the database, populate the cache, then serve. Because every prior write updated both copies, a hit is guaranteed to be current as of the last acknowledged write. No version check, no dirty-bit inspection, no reconciliation logic. You pay for that boring read path on every write."
+    },
+    {
+      "type": "mermaid",
+      "title": "Write-through read path",
+      "caption": "Reads never need to check for dirty data.",
+      "code": "graph TD\n  Client2[Client] --> Cache2[Cache lookup]\n  Cache2 -->|Hit| Return[Return cached value]\n  Cache2 -->|Miss| DB2[(Database)]\n  DB2 --> Fill[Fill cache]\n  Fill --> Return"
+    },
+    {
+      "type": "paragraph",
+      "text": "Two implementation details decide whether this actually works. First, **failure atomicity**: if the database write times out after the cache write succeeded, you must invalidate or correct the cached key before returning an error, otherwise the next reader gets data the database never stored. Second, **ordering under concurrency**: two concurrent writes to the same key must serialize in the same order at both layers, typically with a per-key lock or a single-writer queue. Without that, the cache can end up holding the older value while the database holds the newer one, silently breaking the invariant the whole policy exists to provide."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "paragraph",
+      "text": "There is no free consistency. Write-through trades write latency and database throughput for read correctness and operational simplicity. Say both sides explicitly in an interview — candidates who list only benefits sound like they have never operated one."
+    },
+    {
+      "type": "table",
+      "caption": "Write-through benefits priced against what each one costs.",
+      "headers": [
+        "Benefit",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Strong cache-DB agreement",
+          "Reads from cache are current; no stale window after ack",
+          "Every write pays database round-trip latency synchronously"
+        ],
+        [
+          "No data loss on cache failure",
+          "Cache eviction or crash discards only a copy, never the authoritative value",
+          "No write coalescing; repeated writes to one key each hit the database"
+        ],
+        [
+          "Simple reasoning",
+          "No dirty bits, no flush scheduler, no recovery log for pending writes",
+          "Write throughput capped at database throughput; cache adds no absorption"
+        ],
+        [
+          "Fast reads for hot keys",
+          "Read-heavy workloads still avoid the database on hits",
+          "Write-heavy workloads get almost no caching benefit and carry double-write overhead"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The latency cost is the dominant one. A write-back cache can acknowledge in under a millisecond from memory. A write-through write takes as long as the slowest of the two stores, which is almost always the database — typically single-digit to double-digit milliseconds plus tail latency from connection contention. Under load that synchronous wait holds application threads, exhausts connection pools, and propagates database slowness directly to users. You chose correctness over absorption, so every database stall becomes a user-facing stall."
+    },
+    {
+      "type": "paragraph",
+      "text": "The throughput cost is subtler and worse at scale. A cache that should shield the database does not shield it from writes at all. Ten thousand writes per second to hot keys means ten thousand database writes per second, plus cache writes. If your workload is read-heavy at 95% reads and 5% writes, this is a fine price. If it is a counter, a feed, or session heartbeats with constant overwrites, you are paying the cost of a cache while getting the write scalability of no cache. That is the trade-off to name: **consistency and simplicity in exchange for zero write absorption**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "The most common failure is not incorrectness but saturation. Because writes cannot be coalesced, a burst of writes to a small set of keys hammers the database row or partition while the cache sits mostly idle. The symptom is distinctive: cache hit ratio stays high, read latency stays flat, but write latency climbs in lockstep with database latency and the database shows write-queue growth or throttling. Teams misdiagnose this as needing a larger cache. A larger cache changes nothing — the bottleneck is the synchronous database write that the policy mandates."
+    },
+    {
+      "type": "paragraph",
+      "text": "The second failure is partial commit. The cache write succeeds, the database write fails or times out, and the error path forgets to invalidate the cached entry. From that moment the cache serves a value the database does not have, and every subsequent read is a hit, so the self-healing miss path never triggers. The symptom is a read-your-own-write anomaly in reverse: the writer gets an error, but later readers see the supposedly failed value. You detect it by comparing cache and database contents during reconciliation, or by users reporting data that disappeared after a cache eviction. The fix is strict: on any database failure, delete the key from cache before returning, and never leave the optimistically written value in place."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Write p99 tracks database p99 exactly, including spikes — the cache provides no dampening.",
+        "Database CPU or IOPS saturates while cache CPU is low — classic write-through overload signature.",
+        "Stale-after-error reads: a failed write is still visible to readers until eviction.",
+        "Inverted skew under concurrency: cache holds version N while the database holds version N+1, caused by missing per-key serialization."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The partial-write trap",
+      "text": "Never acknowledge from cache before the database confirms and call it write-through. And never leave a cache entry populated after its paired database write failed. Either mistake converts a simple policy into an inconsistent one with all of the latency cost and none of the safety."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code: what it looks like"
+    },
+    {
+      "type": "paragraph",
+      "text": "The code shape makes the blocking contract obvious. Note the ordering discipline: the database write is attempted before the cache is made visible, and any database exception forces an invalidation. A production version would add a per-key lock around this entire block and a timeout on the database call so a stalled store does not hold cache threads indefinitely."
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "write_through.py",
+      "code": "class WriteThroughCache:\n    def __init__(self, cache, db):\n        self.cache = cache\n        self.db = db\n\n    def write(self, key, value):\n        # Synchronous dual write: both must succeed.\n        try:\n            self.db.write(key, value)      # authoritative store first\n        except DbError:\n            self.cache.delete(key)         # never leave a phantom value\n            raise\n        self.cache.set(key, value)         # publish only after DB confirms\n        return True\n\n    def read(self, key):\n        value = self.cache.get(key)\n        if value is not None:\n            return value                   # hit is safe: cache never leads DB\n        value = self.db.read(key)          # miss: load and fill\n        if value is not None:\n            self.cache.set(key, value)\n        return value"
+    },
+    {
+      "type": "paragraph",
+      "text": "Why database-first here instead of cache-first? Because the failure window is smaller and easier to repair. If the database write fails, the cache was never dirtied and a single `delete` removes any prior stale copy. If you write cache-first and the database then fails, you must actively undo a value you just published, and any concurrent reader in that gap already observed uncommitted data. The trade-off is a slightly slower happy path — readers miss during the database round trip — in exchange for a failure path that cannot serve phantom writes."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in an interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "State the contract in one sentence",
+          "text": "Open with: both stores update synchronously before ack, so the cache never leads. This signals you know what is being graded before any diagram."
+        },
+        {
+          "title": "Draw the write path with the blocking edge",
+          "text": "Show client to cache to database and the acknowledgment waiting on the database. Label the latency implication explicitly: write latency equals database latency."
+        },
+        {
+          "title": "Name the workload it fits",
+          "text": "Argue read-heavy with strong consistency needs: product catalogs, user profiles, configuration. Cite the ratio — high read-to-write makes the per-write tax affordable."
+        },
+        {
+          "title": "Handle the failure question",
+          "text": "Explain partial commit and your invalidation rule, then concurrency control with per-key serialization. Interviewers ask this to separate textbook answers from operated ones."
+        },
+        {
+          "title": "Compare against one alternative",
+          "text": "Contrast with write-back for write-heavy absorption or write-around for rarely-reread data. Never present write-through as universally best; present it as the consistency-first choice with a priced cost."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that get you rejected"
+    },
+    {
+      "type": "list",
+      "items": [
+        "That write-through reduces database write load — it does not. It reduces only read load. Write load is identical to having no cache.",
+        "That it is eventually consistent — it is not. After acknowledgment both copies agree. Staleness only appears from mishandled failures.",
+        "That adding a time-to-live fixes inconsistency — expiry bounds staleness duration but does not close the phantom-write window after a failed database commit.",
+        "That cache-first-then-database with async retry is still write-through — that is write-back with extra steps, and it reintroduces data-loss risk on cache crash.",
+        "That it solves thundering-herd on misses — miss stampedes are a read-path problem handled by request coalescing or locking, independent of the write policy."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Selection rule: match the policy to write frequency and loss tolerance.",
+      "headers": [
+        "Situation",
+        "Use write-through?",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Read-heavy, consistency-sensitive data (profiles, inventory counts, configs)",
+          "Yes",
+          "Per-write cost is rare; every read can safely trust the cache"
+        ],
+        [
+          "Data that must survive cache loss with zero recovery",
+          "Yes",
+          "Database always has the committed value; eviction is harmless"
+        ],
+        [
+          "Write-heavy counters, analytics ingestion, session heartbeats",
+          "No — prefer write-back",
+          "Repeated overwrites each pay full database cost with no coalescing benefit"
+        ],
+        [
+          "Write-once, rarely re-read blobs or logs",
+          "No — prefer write-around",
+          "Filling the cache on write pollutes it with data nobody rereads"
+        ],
+        [
+          "Database already saturated on writes",
+          "No",
+          "Synchronous dual-write propagates that saturation directly to users"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The decision rule fits in one line: choose write-through when writes are infrequent enough that paying database latency on each one is affordable, and correctness is valuable enough that you refuse a stale window. When either condition breaks — writes dominate, or brief staleness is acceptable — switch policies rather than scaling the cache. A bigger cache never fixes a write-path bottleneck that the policy itself creates."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "\"Write-through updates cache and database synchronously before acknowledging, so reads are always current and cache loss is harmless — at the cost of write latency bound by the database and zero write absorption.\""
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:39:19.646Z",
+    "problems": []
+  }
+}

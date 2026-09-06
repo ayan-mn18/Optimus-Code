@@ -1,0 +1,301 @@
+{
+  "slug": "proxy-design-pattern",
+  "title": "Proxy Design Pattern",
+  "summary": "Proxy is same-interface access control: virtual, protection, caching, and remote variants explained with mechanism, trade-offs, failures, and interview tactics.",
+  "kind": "LLD",
+  "problemSlug": "proxy-design-pattern-37-77",
+  "topic": "Structural Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "🛡️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Structural Patterns",
+    "Proxy"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Proxy Design Pattern - GeeksforGeeks",
+      "url": "https://www.geeksforgeeks.org/system-design/proxy-design-pattern/",
+      "source": "geeksforgeeks.org",
+      "kind": "article"
+    },
+    {
+      "title": "Proxy - Refactoring.Guru",
+      "url": "https://refactoring.guru/design-patterns/proxy",
+      "source": "refactoring.guru",
+      "kind": "article"
+    },
+    {
+      "title": "Proxy pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Proxy_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "Proxy Design Pattern: A Comprehensive Guide - Medium",
+      "url": "https://medium.com/@kalanamalshan98/proxy-design-pattern-a-comprehensive-guide-73688bbd8e93",
+      "source": "medium.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "A **Proxy is the same interface with a gate in front of it**. If your wrapper changes the interface, it is not a Proxy. The entire value is that the client cannot tell whether it holds the real thing or the stand-in, so you can inject lazy loading, access checks, caching, or remote hops **without touching either the client or the real object**. Choose it when construction or access is expensive, dangerous, or remote — and accept the indirection cost on every call."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What Proxy actually is"
+    },
+    {
+      "type": "paragraph",
+      "text": "Proxy is a structural pattern where one object stands in for another and controls every call that passes through. The proxy implements the exact `Subject` interface as the `RealSubject`, holds a reference to the real object (or the means to create or reach it), and decides per-request whether to reject, short-circuit, or delegate. The canonical four flavors are **virtual** (defer expensive creation until first use), **protection** (enforce authentication, authorization, rate limits), **caching** (memoize deterministic results), and **remote** (hide serialization and network behind a local-looking call). What unites them is not what extra work they do — it is *where* they do it: before or after delegation, never by rewriting the real object."
+    },
+    {
+      "type": "paragraph",
+      "text": "The identity rule is non-negotiable: **proxy and real subject must be substitutable**. In statically typed code that means a shared interface or base class; in dynamic code it means duck-typed method parity. This is WHY Proxy survives follow-ups that kill ad-hoc wrappers — you can inject `ImageProxy` wherever `Image` was expected, stack `AuthProxy -> CacheProxy -> RealService`, or swap a local implementation for a remote stub with zero client edits. Break this rule by adding public methods only the proxy has, and you have built a leaky abstraction that forces `instanceof` checks downstream. The trade-off: strict interface fidelity keeps clients clean but forbids the proxy from exposing useful control operations like `invalidateCache()` except through a separate interface or downcast, both of which reintroduce coupling."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "paragraph",
+      "text": "The runtime shape is always three roles: `Client -> Proxy -> RealSubject`. The client holds a `Subject` reference that happens to point at a proxy. On each call the proxy runs **pre-logic**, optionally ensures the real object exists or is reachable, delegates with the identical arguments, then runs **post-logic**. Pre-logic is where lazy init, permission checks, input validation, rate limiting, and cache lookups live. Post-logic is where you store to cache, emit metrics, close resources, or translate remote exceptions into domain errors. Critically, the proxy usually owns the lifecycle of the real subject — creating it on demand, holding it, releasing it, or reconnecting it. That ownership is WHY Proxy beats pushing lazy-init code into every caller: the duplication collapses into one gate, at the cost of making the proxy stateful and therefore harder to make thread-safe."
+    },
+    {
+      "type": "mermaid",
+      "title": "Proxy static structure",
+      "caption": "Client depends only on Subject; Proxy and RealSubject are interchangeable.",
+      "code": "classDiagram\n  class Subject {\n    <<interface>>\n    +request()\n  }\n  class RealSubject {\n    +request()\n  }\n  class Proxy {\n    -realSubject : RealSubject\n    +request()\n  }\n  class Client\n  Subject <|.. RealSubject\n  Subject <|.. Proxy\n  Proxy --> RealSubject : creates and delegates\n  Client --> Subject : uses"
+    },
+    {
+      "type": "paragraph",
+      "text": "The request path is what you should draw in an interview, not just the class box. A call enters the proxy, hits a guard, and only then touches the expensive thing. For a virtual proxy the guard is `if real == null then create`; for a protection proxy it is `if !authorizer.allow(user, op) then throw`; for a caching proxy it is `if cache.contains(key) then return hit`; for a remote proxy it is `serialize -> send -> deserialize`. Chaining works because each link speaks `Subject`: `LoggingProxy` forwards to `AuthProxy` forwards to `CacheProxy` forwards to `RealService`. That composability is the reason to prefer small single-responsibility proxies over one god-proxy. The trade-off is per-hop latency and stack depth — three thin proxies are cleaner to test but add three virtual dispatches and three places where an exception can be swallowed or mis-wrapped."
+    },
+    {
+      "type": "mermaid",
+      "title": "Proxy request lifecycle",
+      "caption": "Every variant is pre-check, optional init, delegate, post-process.",
+      "code": "flowchart TD\n  A[Client calls proxy.request] --> B{Pre-check}\n  B -->|deny| C[Reject or return cached]\n  B -->|allow or miss| D[Ensure RealSubject exists]\n  D --> E[Delegate to RealSubject]\n  E --> F[Post-process: cache, log, metrics]\n  F --> G[Return to client]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "Every gain from indirection bills you somewhere else.",
+      "headers": [
+        "Aspect",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Creation cost",
+          "Virtual proxy defers heavy init until first real use; startup stays fast",
+          "First-use latency spike plus need for thread-safe double-checked init"
+        ],
+        [
+          "Access safety",
+          "Protection proxy centralizes auth, validation, rate limits in one auditable place",
+          "Proxy becomes a choke point; a bug denies everyone and adds per-call check overhead"
+        ],
+        [
+          "Throughput",
+          "Caching proxy eliminates repeated expensive work and downstream load",
+          "Staleness, invalidation complexity, and memory pressure from unbounded cache"
+        ],
+        [
+          "Distribution",
+          "Remote proxy makes network look local; client code stays simple",
+          "Hides partial failure and latency; callers ignore timeouts until production timeouts"
+        ],
+        [
+          "Evolvability",
+          "Add logging, metrics, retries without editing RealSubject or clients",
+          "Interface freeze: changing Subject ripples through every proxy in the chain"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not present Proxy as free performance or free security — interviewers downgrade that instantly. The honest framing is: **you trade per-call overhead and a new stateful component for control you cannot get by editing the real class**. That control is worth it when the real class is closed, expensive, or untrusted — a third-party video loader, a 200MB image, a billing service. It is not worth it when the operation is cheap and local, because then you added an allocation, a branch, and a future maintenance burden to save nothing. Say this explicitly: if `RealSubject.request()` costs microseconds and has no access risk, a proxy is over-engineering, and a direct call wins on every axis that matters."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Virtual proxies fail as **thundering herds on first access**. Ten threads hit `display()` on an uninitialized `RealImage`, all see `real == null`, all load the 80MB file, and you get a latency cliff plus `OutOfMemoryError`. The symptom is a clean load test followed by a cold-start outage after every deploy or cache flush — p99 explodes only on the first request per key. The fix is not just `synchronized`; it is double-checked locking with a `volatile` reference or an explicit future/memoizer so concurrent callers share one in-flight load. Trade-off named: you pay synchronization on the slow path to avoid paying duplicate loads, and you must decide whether blocked threads wait or fail fast."
+    },
+    {
+      "type": "paragraph",
+      "text": "Caching and protection proxies fail silently, which is worse. A caching proxy without invalidation serves stale prices, permissions, or thumbnails for hours; the symptom is *correct-looking but wrong* responses and a dashboard that shows downstream load dropped to zero. A protection proxy that caches an `allow` decision becomes a privilege-escalation bug when roles change; the symptom is a user who retains access after revocation. Remote proxies fail as **leaky timeouts**: the interface pretends `getUser()` is local, so callers never set deadlines, and one slow downstream saturates every worker thread. The symptom is cascading thread-pool exhaustion with no error in the proxy itself. The discipline is boring but mandatory: TTLs plus explicit invalidation, never cache auth verdicts beyond seconds without a revocation path, and always surface timeouts and retries as first-class proxy policy."
+    },
+    {
+      "type": "table",
+      "caption": "Failures, the symptom you will actually see, and the fix.",
+      "headers": [
+        "Failure",
+        "Symptom in prod",
+        "Fix that holds"
+      ],
+      "rows": [
+        [
+          "Unsynchronized lazy init",
+          "First-request p99 spike, duplicate loads, OOM on cold start",
+          "Volatile + double-checked lock or shared Future; load once, share result"
+        ],
+        [
+          "Unbounded / never-invalidated cache",
+          "Stale reads; memory growth until GC thrash",
+          "TTL + max size + explicit `invalidate(key)`; measure hit rate and age"
+        ],
+        [
+          "Cached authorization",
+          "Revoked users still pass for minutes or hours",
+          "Do not cache deny/allow long; re-check on sensitive ops or subscribe to revocation"
+        ],
+        [
+          "Remote proxy without deadline",
+          "Thread-pool saturation, cascading timeouts, no local error",
+          "Timeout, retry with backoff and idempotency key, circuit breaker, map to domain exception"
+        ],
+        [
+          "Over-chained proxies",
+          "Deep stacks, duplicated logging, swallowed causes",
+          "One responsibility per proxy; preserve cause chain; cap depth at 2-3 in request path"
+        ]
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Code: virtual proxy that earns its keep"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ImageProxy.java",
+      "code": "interface Image {\n    void display();\n}\n\nfinal class RealImage implements Image {\n    private final String file;\n    private final byte[] pixels;\n\n    RealImage(String file) {\n        this.file = file;\n        this.pixels = loadFromDisk(file); // expensive: 50-200ms + MBs\n    }\n\n    @Override public void display() { render(pixels); }\n\n    private static byte[] loadFromDisk(String f) { /* ... */ return new byte[0]; }\n    private static void render(byte[] p) { /* ... */ }\n}\n\nfinal class ImageProxy implements Image {\n    private final String file;\n    private volatile RealImage real; // volatile: safe publication for DCL\n\n    ImageProxy(String file) { this.file = file; }\n\n    @Override public void display() {\n        RealImage r = real;\n        if (r == null) {\n            synchronized (this) {\n                r = real;\n                if (r == null) {\n                    r = new RealImage(file);\n                    real = r;\n                }\n            }\n        }\n        r.display(); // identical interface: client never knows\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This shape is WHY the pattern works: `ImageProxy` and `RealImage` share `Image`, so a gallery holding `List<Image>` mixes loaded and unloaded entries freely. Construction is cheap — just a filename — and the heavy `loadFromDisk` moves to first `display()`. The `volatile` plus double-checked lock is the whole production lesson: without it you either synchronize every frame (paying lock cost on a hot path) or risk duplicate loads. The trade-off to state aloud is startup time versus first-interaction jank plus code complexity. If the interviewer pushes, note the alternative — eager load with a background prefetch pool — wins when the user will almost certainly scroll to every image, because lazy then just defers inevitable work and adds branching."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "AccessProxy.java",
+      "code": "interface DocumentStore {\n    byte[] read(String docId, User user);\n}\n\nfinal class AccessProxy implements DocumentStore {\n    private final DocumentStore real;\n    private final Authorizer authz;\n    private final Cache<String, byte[]> cache;\n\n    AccessProxy(DocumentStore real, Authorizer authz, Cache<String, byte[]> cache) {\n        this.real = real; this.authz = authz; this.cache = cache;\n    }\n\n    @Override public byte[] read(String docId, User user) {\n        if (!authz.allow(user, \"read:\" + docId))\n            throw new SecurityException(\"denied: \" + docId);\n        // Never key cache by docId alone when auth matters.\n        String key = user.tenant() + \":\" + docId;\n        byte[] hit = cache.get(key);\n        if (hit != null) return hit;\n        byte[] fresh = real.read(docId, user);\n        cache.put(key, fresh,Ttl.seconds(30));\n        return fresh;\n    }\n}\ninterface Authorizer { boolean allow(User u, String perm); }\ninterface Cache<K,V> { V get(K k); void put(K k, V v, Ttl t); }\nrecord User(String id, String tenant()) {}\nenum Ttl { seconds(int s){ return null; } }"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Name the variant before you code",
+          "text": "Say out loud: virtual, protection, caching, or remote. Interviewers score this because each variant has a different correctness bar — thread-safety for virtual, deny-by-default for protection, invalidation for caching, deadlines for remote. Guessing after coding looks like pattern-matching."
+        },
+        {
+          "title": "Lock the interface first",
+          "text": "Write the `Subject` interface and state the substitutability contract: client code compiles and behaves identically with real or proxy. Then show the proxy holding a `RealSubject` reference it manages. This ordering proves you understand the gate, not just delegation."
+        },
+        {
+          "title": "Code the guard, not the plumbing",
+          "text": "Implement exactly one decision: lazy init with double-checked locking, or an auth check, or a cache lookup with TTL. Skip file I/O and network bodies with a stub comment. Depth on the guard beats breadth on boilerplate."
+        },
+        {
+          "title": "Answer the chaining follow-up",
+          "text": "Expect: add logging plus caching plus auth. Do not fatten one class — stack `AuthProxy(CacheProxy(RealStore))` and defend the order: auth outermost so denied requests never pollute the cache, logging outermost if you need to observe denials. Ordering is the graded insight."
+        },
+        {
+          "title": "Close with invalidation and concurrency",
+          "text": "Volunteer the failure answers unprompted: how concurrent first loads share one future, what TTL and size bound the cache, why auth verdicts are not cached long, what timeout and retry policy the remote proxy enforces. This turns a textbook answer into a hire signal."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Proxy *adds features* like Decorator does — no. Decorator enriches behavior and can be stacked freely at runtime; Proxy **controls access** to the same behavior and usually owns lifecycle. Saying logging-decorator equals proxy signals you memorized names, not forces.",
+        "Proxy and Adapter are interchangeable wrappers — no. Adapter **converts** one interface into another so incompatible code can connect; Proxy **preserves** the interface so identical code stays untouched. If the method signatures change, you built an Adapter.",
+        "Lazy means always faster — no. Lazy shifts cost from startup to first use and adds a branch plus synchronization on every call. If hit rate is near 100%, eager or batched prefetch wins; lazy only wins when many created objects are never used.",
+        "Caching proxy can key by resource id alone — dangerous when authorization is in the path. Key must include the security principal or tenant, or a low-privilege hit leaks into a high-privilege context. Default to `tenant:resource` keys and short TTLs.",
+        "Remote proxy makes the network transparent — the classic fallacy. Timeouts, partial failures, retries, and version skew leak through. A proxy that hides them without exposing policy creates cascading outages; expose deadline and failure semantics explicitly."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when to walk away"
+    },
+    {
+      "type": "table",
+      "caption": "Use Proxy for control; reach for siblings when the interface or intent differs.",
+      "headers": [
+        "Use Proxy when",
+        "Avoid it when"
+      ],
+      "rows": [
+        [
+          "Real object is expensive to build and often unused (large images, heavy reports, ML models)",
+          "Object is cheap and always used — indirection adds cost with zero saving"
+        ],
+        [
+          "Access needs a central gate: auth, rate limit, validation, audit",
+          "Policy varies per caller in ways a single gate cannot express without becoming a god-class"
+        ],
+        [
+          "Repeated deterministic reads can be memoized safely with clear TTL",
+          "Data is strongly consistent or auth-sensitive with no invalidation story"
+        ],
+        [
+          "Remote or third-party resource must look local but needs timeouts/retries",
+          "You can change the real class directly — just add the check there instead of a wrapper"
+        ],
+        [
+          "You need stackable cross-cutting gates without editing clients",
+          "You need a different interface (use Adapter) or to enrich behavior openly (use Decorator)"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The sibling test closes the discussion cleanly. Pick **Decorator** when the caller *wants* the extra behavior and you advertise it — toppings on the interface. Pick **Adapter** when interfaces mismatch and someone must translate. Pick **Facade** when you want a simpler front over a whole subsystem, not a same-shape gate over one object. Pick **Proxy** only when the caller should remain oblivious and the gate decides. That obliviousness is both the power and the price: it keeps call sites stable, but it also hides cost, failure, and staleness behind an innocent-looking method call, so document the policy on the proxy itself."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "**Proxy keeps the same interface and puts a gate in front of delegation — lazy init, auth, cache, or remote hop — so clients stay unchanged while control lives in one testable place, at the cost of indirection, state, and explicit invalidation and timeout policy.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T16:02:51.921Z",
+    "problems": []
+  }
+}

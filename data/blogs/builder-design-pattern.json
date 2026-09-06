@@ -1,0 +1,314 @@
+{
+  "slug": "builder-design-pattern",
+  "title": "Builder Design Pattern",
+  "summary": "Builder separates step-by-step construction from the finished object so you can build immutable, valid products without telescoping constructors — at the cost of extra classes and mutable builder state.",
+  "kind": "LLD",
+  "problemSlug": "builder-design-pattern-35-75",
+  "topic": "Creational Design Patterns",
+  "difficulty": "Medium",
+  "coverEmoji": "🏗️",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "LLD",
+    "Creational Patterns",
+    "Builder"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Builder pattern - Wikipedia",
+      "url": "https://en.wikipedia.org/wiki/Builder_pattern",
+      "source": "en.wikipedia.org",
+      "kind": "article"
+    },
+    {
+      "title": "object oriented - When should the builder design pattern be used?",
+      "url": "https://softwareengineering.stackexchange.com/questions/341196/when-should-the-builder-design-pattern-be-used",
+      "source": "softwareengineering.stackexchange.com",
+      "kind": "article"
+    },
+    {
+      "title": "Understanding the Builder Design Pattern - LinkedIn",
+      "url": "https://www.linkedin.com/pulse/understanding-builder-design-pattern-mariusz-mario-dworniczak-pmp-42m4f",
+      "source": "linkedin.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Builder is not about **chaining setters for style**. It is about making an **invalid object unconstructable**: you accumulate messy, optional, order-independent input in a mutable helper, then validate once and freeze it into an immutable product. If your object can be built in one sane constructor call, you do not need it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What it is, precisely"
+    },
+    {
+      "type": "paragraph",
+      "text": "Builder is a creational pattern that splits object creation into two roles. A **Builder** collects parts incrementally through small, readable steps. A **Product** is the final object, usually immutable, created only when `build()` is called. The same stepwise process can yield different configurations or even different representations, without the client touching the product's constructor. The critical distinction from a factory or a long constructor is *when* decisions happen: factories decide everything at call time in one shot; Builder lets the client decide incrementally, deferring validation and assembly to the end. That is why it dominates when you have many parameters, most of them optional, with cross-field rules that cannot be checked until all inputs are present."
+    },
+    {
+      "type": "paragraph",
+      "text": "The textbook GoF version adds a fourth role, the **Director**, which owns a fixed recipe like `constructSportsCar()` and drives a Builder interface. The modern Java / Kotlin / C# version most interviews expect drops the Director and uses a **fluent inner Builder**: `new User.Builder(id, email).withPhone(p).withAddress(a).build()`. Both are the same pattern. The difference is who controls order. Use a Director when construction has a mandated sequence — parse header, then body, then checksum — and the client should not be allowed to reorder it. Use a fluent Builder when the client controls what is set and in what order, and you only enforce completeness at `build()`. Picking the wrong one is a common design smell, and interviewers notice it."
+    },
+    {
+      "type": "list",
+      "items": [
+        "You reach for Builder when you see **telescoping constructors**: `User(id)`, `User(id, email)`, `User(id, email, phone, address, prefs, ...)`, each calling the next with `null` defaults.",
+        "You reach for it when most fields are **optional but the result must be immutable** — you cannot use setters on the product, so you need somewhere else to be mutable.",
+        "You reach for it when validity is **holistic**: no single setter can say yes or no, only the full combination can, like `endDate after startDate` or `oauthToken requires refreshStrategy`.",
+        "You do *not* reach for it for two required fields, or when every combination is valid — that is just ceremony."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism"
+    },
+    {
+      "type": "mermaid",
+      "title": "Builder structure",
+      "caption": "Client drives Builder stepwise; Director is optional and owns the recipe when order matters.",
+      "code": "classDiagram\n    class Client\n    class Director {\n        +construct(builder: Builder)\n    }\n    class Builder {\n        <<interface>>\n        +reset()\n        +buildPartA()\n        +buildPartB()\n        +getProduct() Product\n    }\n    class ConcreteBuilder {\n        -product: Product\n        +reset()\n        +buildPartA()\n        +buildPartB()\n        +getProduct() Product\n    }\n    class Product {\n        -partA: String\n        -partB: String\n    }\n    Client --> Director\n    Director --> Builder\n    ConcreteBuilder ..|> Builder\n    ConcreteBuilder --> Product : creates"
+    },
+    {
+      "type": "paragraph",
+      "text": "The flow is deliberately boring, and that is the point. The client creates a Builder, not the product. It calls fine-grained step methods — `withTimeout()`, `addHeader()`, `enableCache()` — each of which mutates *only the Builder* and returns it for chaining. Nothing is validated yet, nothing is published. When the client calls `build()`, three things happen in strict order: validate required fields and invariants, invoke the product's private constructor with the Builder as the sole argument, and hand back a fully formed, preferably immutable object. The product never exposes a half-built state because its constructor is private and its fields are final. The trade-off is explicit: you buy **readability at the call site and safety at the boundary** by paying for **a parallel mutable shadow of every field**."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Product:** the thing you actually want. Private constructor, final fields, no setters. It trusts the Builder completely.",
+        "**Builder (interface or concrete inner class):** mutable accumulator. Holds copies of every field, returns `this` from each step so calls chain.",
+        "**ConcreteBuilder:** one per representation. `HttpRequestBuilder` vs `MockRequestBuilder` can share the same steps but produce different products.",
+        "**Director (optional):** encodes a reusable recipe. Client says *what* variant it wants; Director decides *in what order* the Builder methods fire.",
+        "**Client:** the only place that knows which optional parts matter. It never calls `new Product(...)` directly."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Fluent builder vs. GoF director"
+    },
+    {
+      "type": "paragraph",
+      "text": "Most production code uses the fluent inner Builder and never writes a Director, because most products do not care about step order. `host` before `port` or `port` before `host` yields the same request. A Director earns its keep only when order carries meaning: document builders where you must open, add sections in sequence, then close; SQL or HTTP pipeline builders where middleware order changes semantics; multi-part parsers where the header determines how the body is interpreted. If you add a Director to an order-independent problem, you add indirection with no control benefit. If you omit it from an order-dependent one, you push sequencing discipline onto every caller, which is how you get subtly corrupt documents. Name that trade-off out loud in the interview."
+    },
+    {
+      "type": "mermaid",
+      "title": "Build lifecycle",
+      "caption": "Accumulate mutably, validate once, freeze into an immutable product.",
+      "code": "flowchart TD\n    A[client creates Builder] --> B[call withX / addY steps]\n    B --> C{build called}\n    C -->|no| B\n    C -->|yes| D[validate required and invariants]\n    D -->|fail| E[throw IllegalStateException]\n    D -->|pass| F[private ctor copies builder state]\n    F --> G[return immutable Product]"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The code that matters"
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "User.java",
+      "code": "public final class User {\n    private final String id;\n    private final String email;\n    private final String phone;\n    private final String displayName;\n    private final boolean marketingOptIn;\n\n    private User(Builder b) {\n        this.id = b.id;\n        this.email = b.email;\n        this.phone = b.phone;\n        this.displayName = b.displayName;\n        this.marketingOptIn = b.marketingOptIn;\n    }\n\n    public static final class Builder {\n        private final String id;      // required\n        private final String email;   // required\n        private String phone;\n        private String displayName;\n        private boolean marketingOptIn;\n\n        public Builder(String id, String email) {\n            if (id == null || id.isBlank()) throw new IllegalArgumentException(\"id required\");\n            if (email == null || !email.contains(\"@\")) throw new IllegalArgumentException(\"valid email required\");\n            this.id = id;\n            this.email = email;\n        }\n\n        public Builder withPhone(String phone) {\n            this.phone = phone;\n            return this;\n        }\n\n        public Builder withDisplayName(String name) {\n            this.displayName = name;\n            return this;\n        }\n\n        public Builder withMarketingOptIn(boolean optIn) {\n            this.marketingOptIn = optIn;\n            return this;\n        }\n\n        public User build() {\n            if (marketingOptIn && (phone == null && displayName == null)) {\n                throw new IllegalStateException(\"marketing opt-in needs a contact channel\");\n            }\n            return new User(this);\n        }\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every line here defends a decision. The product constructor is **private** so no one can bypass validation — that is what makes the guarantee real rather than conventional. Fields are **final** so the built object is thread-safe to share, which is the entire payoff for tolerating a mutable Builder. Required fields go in the **Builder constructor**, not in `build()`, so you fail in one line instead of five chained calls later; this converts a runtime `build()` surprise into an early, local error. Optional fields use `withX` methods returning `this` for fluency, but fluency is cosmetic — the substance is that cross-field rules live in exactly one place, `build()`. The trade-off you accepted: you duplicated the field list and wrote ~40 lines to replace a 6-argument constructor. That is correct when invalid combinations are dangerous and call sites must stay readable, and it is over-engineering when they are not."
+    },
+    {
+      "type": "code",
+      "language": "java",
+      "filename": "ReportDirector.java",
+      "code": "interface ReportBuilder {\n    void reset();\n    void addHeader(String title);\n    void addSection(String body);\n    void addFooter(String disclaimer);\n    Report getReport();\n}\n\nfinal class ReportDirector {\n    void buildSummary(ReportBuilder b, String title, List<String> highlights) {\n        b.reset();\n        b.addHeader(title);\n        for (String h : highlights) b.addSection(h);\n        b.addFooter(\"auto-generated\");\n    }\n\n    void buildEmpty(ReportBuilder b, String title) {\n        b.reset();\n        b.addHeader(title);\n        b.addFooter(\"no data\");\n    }\n}"
+    },
+    {
+      "type": "paragraph",
+      "text": "The Director version looks heavier because it is solving a different problem: **enforcing a recipe**. The client no longer decides to skip the footer or add sections before the header; the Director does. Different `ReportBuilder` implementations — `PdfReportBuilder`, `HtmlReportBuilder`, `TestSpyBuilder` — reuse the same `buildSummary` sequence but emit different representations. That is the textbook payoff: same construction process, different output. Do not shoehorn every Builder into this shape. If your steps are order-independent, a Director just hides simple setter calls behind an extra class and makes debugging harder. Say so explicitly: Director buys **sequence control and reuse** at the price of **indirection and rigidity**."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly"
+    },
+    {
+      "type": "table",
+      "caption": "What Builder gives you and what it charges.",
+      "headers": [
+        "Decision",
+        "What you gain",
+        "What you pay",
+        "Why it matters"
+      ],
+      "rows": [
+        [
+          "Fluent steps vs telescoping constructor",
+          "Call sites read like specification; no null soup",
+          "A second class duplicating every field",
+          "Readability scales with optional params; duplication does not"
+        ],
+        [
+          "Mutable builder, immutable product",
+          "Thread-safe sharing after build; easy incremental assembly",
+          "Builder itself is not thread-safe and must not escape",
+          "You isolate mutability in time, not eliminate it"
+        ],
+        [
+          "Validation in build()",
+          "Holistic invariants checked once, atomically",
+          "Errors surface late, after chaining",
+          "Good for cross-field rules; bad for fast fail on typos"
+        ],
+        [
+          "One builder per representation",
+          "Same process, different products",
+          "Class explosion if variants multiply",
+          "Powerful for parsers and renderers; wasteful for CRUD DTOs"
+        ],
+        [
+          "Director for sequencing",
+          "Order guaranteed, recipes reusable",
+          "Extra layer, harder to trace",
+          "Worth it when order changes semantics"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The two costs people understate are **API surface** and **dependency-injection friction**. A Builder doubles the visible API: every product field now has a builder field, a `with` method, and possibly validation logic, all of which must be maintained when the product changes. Forget to copy a new field in the private constructor and you ship silent defaults — a bug constructors cannot produce. In DI-heavy codebases, Builders also fight the container: frameworks want to instantiate via constructors or no-arg creation, while Builders want to own creation. You end up either injecting a Builder factory, which is clunky, or making the Builder a static inner class that the container cannot advise or proxy. That is acceptable for value objects like requests, configs, and messages. It is a reason to avoid Builder for services and entities the container should manage."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production"
+    },
+    {
+      "type": "paragraph",
+      "text": "Builder failures do not look like pattern failures. They look like **missing data, shared mutable state, and late validation** that pages you at 2am. Because the Builder is mutable and reusable by default, the most damaging bug is reuse across requests: a singleton or pooled Builder retains the previous request's optional fields, so one tenant's `tenantId` or auth token leaks into the next request's object. The symptom is intermittent cross-tenant contamination that never reproduces in unit tests, because unit tests use a fresh Builder. The second classic failure is **deferred validation**: `build()` throws `IllegalStateException` deep in a batch job after 10,000 records were processed, because a required invariant was only checked at the end. The symptom is a poison message that retries forever. Both are consequences of the core trade-off — mutability now for safety later — mishandled."
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Reused Builder leaks state:** symptom is flaky tests and cross-request bleed (`X-Request-Id` from prior call appears). Fix: never share Builders; `build()` should either `reset()` or invalidate, and code review should flag any Builder stored in a field.",
+        "**Missing copy in private constructor:** symptom is a new field always `null` or `0` in production despite being set on the Builder. Fix: assign every field explicitly; add a test that reflects over Builder vs Product fields.",
+        "**Late `build()` explosion in a loop:** symptom is batch aborts halfway with `IllegalStateException`. Fix: validate required inputs in the Builder constructor, keep only cross-field checks in `build()`, and validate records before enqueueing.",
+        "**Half-published Builder escapes via `this`:** symptom is race where two threads interleave `withX` calls and produce a chimera object. Fix: Builders are single-threaded by contract — document it, do not synchronize, create one per thread.",
+        "**Lombok-style `@Builder` with defaults:** symptom is defaults silently overriding explicit `null` intent, or vice versa. Fix: be explicit about whether `null` means unset or set-to-null; do not rely on generated magic for invariants."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "gotcha",
+      "title": "The reuse trap",
+      "text": "A Builder is **single-use scratch paper**, not a template. If you call `build()` twice on the same instance or cache it in a field to save allocation, the second product inherits leftover optionals from the first. Allocate a fresh Builder per object — it is cheap — or make `build()` consume and clear itself. Any shared Builder is a data-leak bug waiting for load."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it shows up in interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "Design a config / request / pizza / computer",
+          "text": "They give you 8-12 parameters, mostly optional. Do not start chaining. First say: telescoping constructor degrades into unreadable nulls, JavaBeans setters break immutability, so Builder isolates mutability in the helper and freezes on build(). Then write the inner Builder with required args in its constructor."
+        },
+        {
+          "title": "Enforce an invariant",
+          "text": "Expect: start date before end date, TLS requires cert, at least one contact channel. Put single-field checks in withX or the Builder constructor, cross-field checks only in build(). Say why: only build() sees the whole picture. Throw IllegalStateException with a precise message."
+        },
+        {
+          "title": "Make the product immutable and thread-safe",
+          "text": "Make all Product fields final, constructor private, defensive-copy any mutable collections or dates passed from the Builder. State the contract: Builder is not thread-safe, Product is. Interviewers award points for the defensive copy, not just final."
+        },
+        {
+          "title": "Evolve the API without breaking callers",
+          "text": "Add a new optional withX with a sensible default; existing build() calls keep compiling. Contrast with adding a constructor overload, which forks every call site. Mention the cost: you now maintain two field lists."
+        },
+        {
+          "title": "Director or multiple representations",
+          "text": "If they ask for PDF vs HTML reports from the same steps, or strict ordering, introduce a Builder interface plus Director. Otherwise explicitly decline it: order does not matter here, so a Director would be gratuitous indirection. That judgment call is what separates Senior from Mid."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Builder equals method chaining.** Chaining is syntax. Builder is a guarantee: no valid-configuration check happens until build(), and no Product exists before that. A fluent setter class without validation and immutability is just a fancy struct.",
+        "**Every complex object needs a Director.** No. Director controls order. If steps commute, it adds noise. Most interview solutions should not have one — and you should say why you omitted it.",
+        "**Builder makes objects thread-safe.** Only the product is, after safe publication. The Builder itself is mutable and must stay thread-confined. Sharing it across threads without external sync is a race.",
+        "**Builder replaces factories.** They solve orthogonal axes: Factory chooses *which* type to create; Builder controls *how* a single type is assembled step by step. Real systems compose them — a Factory returns the right ConcreteBuilder.",
+        "**Generated `@Builder` is always equivalent.** Codegen gives you chaining for free but hides validation placement and default semantics. In an interview, hand-write build() validation; in production, audit what the annotation actually generates."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to use it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Use Builder for combinatorial, validity-sensitive assembly — not for simple construction.",
+      "headers": [
+        "Use it when",
+        "Avoid it when",
+        "What to do instead"
+      ],
+      "rows": [
+        [
+          "4+ parameters, mostly optional, with defaults",
+          "1-3 required params, all always present",
+          "Single constructor; Builder is pure overhead"
+        ],
+        [
+          "Product must be immutable but assembly is incremental",
+          "Product is naturally mutable (UI widget, ORM entity)",
+          "Plain setters or Kotlin data-class copy"
+        ],
+        [
+          "Cross-field invariants only checkable at the end",
+          "Each field validates independently",
+          "Guard clauses in constructor or value objects"
+        ],
+        [
+          "Same steps must yield PDF, HTML, test spy",
+          "Only one representation will ever exist",
+          "Concrete fluent Builder, no interface or Director"
+        ],
+        [
+          "Step order changes semantics (headers before body)",
+          "Steps commute freely",
+          "Skip Director; let client call in any order"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "A pragmatic rule: if you can delete the Builder and no call site becomes harder to read and no invalid object becomes constructable, delete it. Builder pays rent on every field addition and every code review. It earns that rent when configurations explode combinatorially — HTTP clients, query builders, test fixtures, notification payloads — where the alternative is either a forest of constructors or a mutable bag passed around half-initialized. In languages with named parameters, default arguments, or data-class copy, the threshold is higher: use those first, and reserve full Builder for cases needing staged validation or multiple representations. Saying that trade-off explicitly is stronger than reciting the pattern."
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence",
+      "text": "Use Builder when **incremental assembly of many optional parts must still yield an immutable, atomically validated object** — accumulate mutably in the Builder, enforce cross-field rules in `build()`, and freeze into a private-constructor product."
+    },
+    {
+      "type": "divider"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T15:55:54.707Z",
+    "problems": []
+  }
+}

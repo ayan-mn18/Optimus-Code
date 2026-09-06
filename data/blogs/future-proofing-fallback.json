@@ -1,0 +1,304 @@
+{
+  "slug": "future-proofing-fallback",
+  "title": "Future Proofing & Fallback",
+  "summary": "Future-proofing is designing for change and failure: versioned contracts, extensible schemas, and explicit fallback paths that degrade UX gracefully instead of erroring.",
+  "kind": "HLD",
+  "problemSlug": "future-proofing--fallback-148-316",
+  "topic": "User Empathy, User Experience, Future Proofing & Realistic Design",
+  "difficulty": "Medium",
+  "coverEmoji": "🛟",
+  "origin": "pipeline",
+  "authorName": "Optimus Code",
+  "status": "published",
+  "tags": [
+    "HLD",
+    "Resilience",
+    "Fallback",
+    "User Experience"
+  ],
+  "evidence": [],
+  "refs": [
+    {
+      "title": "Future-Proofing | Mendix Glossary",
+      "url": "https://www.mendix.com/glossary/future-proofing/",
+      "source": "mendix.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Is Future-Proofing? How to Make Sure Your Business Thrives",
+      "url": "https://www.thealternativeboard.com/blog/what-is-future-proofing-how-to-make-sure-your-business-thrives",
+      "source": "thealternativeboard.com",
+      "kind": "article"
+    },
+    {
+      "title": "Future-proof your operations - Delaware Consulting",
+      "url": "https://www.delawareconsulting.com/en-us/solutions/future-proof-your-operations",
+      "source": "delawareconsulting.com",
+      "kind": "article"
+    },
+    {
+      "title": "What Future-Proofing Really Means (And Why It's More Than a Buzzword)",
+      "url": "https://www.appliedinnovation.com/general/what-future-proofing-really-means-and-why-its-more-than-a-buzzword/",
+      "source": "appliedinnovation.com",
+      "kind": "article"
+    }
+  ],
+  "blocks": [
+    {
+      "type": "callout",
+      "tone": "info",
+      "title": "The one idea that matters",
+      "text": "Future-proofing is **not predicting the future**. It is **pricing change and failure into the design today**: versioned contracts so old clients keep working, extensible schemas so new fields do not break old readers, and a defined fallback for every dependency you do not control. If a component can fail or evolve, you either name its fallback now or you ship an outage later."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "What future-proofing and fallback actually mean"
+    },
+    {
+      "type": "paragraph",
+      "text": "Future-proofing in system design means making the cost of the *next* change small without making the *current* system slow or incomprehensible. Concretely that is three things: **backward-compatible interfaces** where v1 clients still parse v2 responses, **extensible data models** where unknown fields are ignored rather than rejected, and **substitutable dependencies** where a recommendation service, payments provider, or ML ranker can be swapped, disabled, or downgraded without rewriting callers. Fallback is the runtime half of the same idea: a pre-decided, tested path the system takes when the ideal path is unavailable, slow, or wrong. Full personalization becomes cached personalization becomes generic bestsellers becomes a static page with a clear banner. The trade-off is explicit: you pay design and testing cost up front for every fallback branch, in exchange for not paying user trust and revenue later when something inevitably degrades."
+    },
+    {
+      "type": "paragraph",
+      "text": "Do not confuse this with over-abstraction. Adding a plugin framework, an event bus, and a rules engine on day one is not future-proofing, it is future-guessing, and it makes the system harder to change, not easier. Real future-proofing is boring: stable IDs that never get reused, timestamps in UTC with explicit schema versions, pagination that does not break when rows are inserted, idempotency keys on every mutating API, and a default-deny-then-allow policy for unknown enum values. Fallback is equally concrete: stale cache with a *stale-while-revalidate* header, read-only mode when the writer is down, local defaults when a config service times out after 50ms. If you cannot draw the degraded screen and name the data source that renders it, you do not have a fallback. You have hope."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "The mechanism: degrade by design, not by accident"
+    },
+    {
+      "type": "paragraph",
+      "text": "Every user-facing request should traverse a ranked chain: ideal path, cheap fallback, static survival. The ranking is decided by two signals that must be explicit in the design: **health** of the dependency and **budget** for the request. Health comes from timeouts, circuit breakers, and load-shed signals, not from waiting indefinitely. Budget comes from latency SLOs: if search personalization takes more than 120ms, you cut it and serve the cached result rather than blowing a 500ms page budget. The reason this structure wins is isolation. Without it, one slow dependency couples itself to every page that calls it. With it, failure is contained to a feature box, and the user still completes their core task. The trade-off you must name: more branches means more code paths to test, monitor, and keep consistent, which is why each fallback needs an owner and an alert."
+    },
+    {
+      "type": "mermaid",
+      "title": "Fallback decision flow",
+      "caption": "Ranked degradation: full experience first, then stale, static, or explicit degraded mode.",
+      "code": "flowchart TD\n  Client --> Gateway\n  Gateway --> Check{Primary healthy and within budget?}\n  Check -->|yes| Full[Full experience]\n  Check -->|no| Router[Fallback router]\n  Router --> Cache[Stale cache]\n  Router --> Static[Static defaults]\n  Router --> Degraded[Degraded mode + banner]\n  Cache --> Response[User response]\n  Static --> Response\n  Degraded --> Response\n  Full --> Response"
+    },
+    {
+      "type": "paragraph",
+      "text": "Read the diagram as a contract, not a suggestion. The gateway enforces timeouts and breakers so a sick dependency cannot hold threads hostage. The fallback router does not guess; it executes the next pre-ranked option with its own data source and its own latency budget. Stale cache is preferred because it preserves personalization and freshness within bounds. Static defaults are next because they are always available but impersonal. Degraded mode is last before error: read-only, queue writes, tell the user exactly what is limited and for how long. Why this order? Because user empathy is a ranking problem. The core job — view content, check out, send a message — must survive even if the delightful job — perfect ranking, live prices, animated previews — does not. Every arrow that skips this order needs a written justification."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "The three fallback tiers you should name explicitly"
+    },
+    {
+      "type": "list",
+      "items": [
+        "**Tier 1: Stale but personal.** Serve last-known-good from CDN, edge cache, or read replica with `Age` and retry in background. Trade-off: freshness loss in exchange for zero UX breakage. Requires TTLs, invalidation, and a max-staleness cap.",
+        "**Tier 2: Generic but fresh.** Serve computed defaults: top sellers, default pricing, server-side ranking without personalization. Trade-off: relevance loss in exchange for correctness. Requires a code path that does not call the failed service at all.",
+        "**Tier 3: Degraded but honest.** Disable writes, queue intents, show *what* is unavailable and *what still works*. Trade-off: functionality loss in exchange for trust. Requires idempotent queues and a UI state most teams never design.",
+        "**The versioning tier underneath all three.** `Accept: v1`, additive-only schema changes, unknown-field tolerance, dual-write then dual-read migrations. Trade-off: payload bloat and migration toil in exchange for zero forced upgrades."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Trade-offs, honestly on both sides"
+    },
+    {
+      "type": "table",
+      "caption": "Every resilience choice costs something. Name it.",
+      "headers": [
+        "Choice",
+        "What you gain",
+        "What you pay"
+      ],
+      "rows": [
+        [
+          "Stale-while-revalidate + CDN fallback",
+          "P99 stays flat during origin failures; users see content",
+          "Staleness bugs, invalidation complexity, larger cache footprint"
+        ],
+        [
+          "Circuit breaker + timeout + bulkhead",
+          "Slow dependency cannot cascade; threads stay free",
+          "False opens, tuning toil, extra dashboards and alerts"
+        ],
+        [
+          "Versioned APIs, additive schemas",
+          "Old mobile clients keep working for years",
+          "Bigger payloads, translator code, longer deprecation tails"
+        ],
+        [
+          "Feature flags + kill switches",
+          "Instant disable of toxic feature without deploy",
+          "Flag sprawl, untested combinations, tech-debt flags that never die"
+        ],
+        [
+          "Multi-region / multi-provider fallback",
+          "Survives regional or vendor outage",
+          "2-3x cost, consistency gaps, failover logic that rots if unexercised"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "The pattern across all five rows is the same: **resilience buys independence at the price of complexity you must operate**. That is why senior answers always pair a fallback with its operating cost. A stale cache without a max-staleness bound is a lie. A circuit breaker without a half-open probe and an alert is a silent feature killer. A kill switch nobody has flipped in six months will fail when you need it because the code behind it bit-rotted. So be opinionated: allow at most two live API versions, expire flags after 30 days by default, and require every fallback to have a game-day runbook. If you cannot afford to test and monitor the fallback, you cannot afford to claim it."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How it fails in production, and the symptom you would see"
+    },
+    {
+      "type": "paragraph",
+      "text": "Fallbacks die from neglect, not from logic errors. The classic failure is the unexercised fallback: the team draws a beautiful degraded path, never routes real traffic to it, then discovers during an outage that the stale cache key was never populated, the static asset references a deleted bundle, or the read replica lags by 40 minutes and serves other users' carts. The second classic is the fallback that amplifies the outage. Every app server times out on search at the same time, every server falls back to the origin database simultaneously, and your safety net becomes a thundering herd that finishes off the database. The third is version betrayal: a new service adds a required field, old clients start rejecting responses, and what looked like an additive change forces a mass upgrade. Why these happen is structural: fallbacks sit off the happy path, so they get no traffic, no metrics, and no love until the worst day."
+    },
+    {
+      "type": "list",
+      "items": [
+        "Symptom: blank page or spinner instead of degraded content — fallback branch was never wired to UI, or breaker timeout equals user timeout so user gives up first.",
+        "Symptom: cascade after failover — DB CPU spikes 5x the moment cache fails; you lacked bulkheads, jittered retries, and request coalescing on the fallback.",
+        "Symptom: old app versions crash after backend deploy — strict schema parsing, renamed enums, or reused IDs; check client crash rate by version within minutes of rollout.",
+        "Symptom: kill switch does nothing — flag is read at startup only, or cached per-process; you needed dynamic config with sub-second propagation.",
+        "Symptom: degraded mode never exits — breaker opens but half-open probe queries the same overloaded endpoint without backoff; you need exponential backoff plus load-shed headers."
+      ]
+    },
+    {
+      "type": "callout",
+      "tone": "warn",
+      "title": "The fallback that kills you",
+      "text": "Retry without a budget *is* an outage multiplier. Cap it: **timeout + max 1 idempotent retry with jitter, then fallback, then shed**. Never retry non-idempotent writes without an idempotency key, and never let fallback traffic exceed the capacity of the fallback store. If your fallback can take only 20% of peak, say so and shed the rest with a clear message."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Making it concrete: code where it clarifies"
+    },
+    {
+      "type": "code",
+      "language": "python",
+      "filename": "resilient_fetch.py",
+      "code": "import time, random\n\nclass Breaker:\n    def __init__(self, fail_threshold=20, cooldown_s=30):\n        self.fails = 0; self.open_until = 0\n        self.fail_threshold = fail_threshold; self.cooldown_s = cooldown_s\n    def allow(self):\n        return time.time() >= self.open_until\n    def record(self, ok: bool):\n        if ok:\n            self.fails = 0\n        else:\n            self.fails += 1\n            if self.fails >= self.fail_threshold:\n                self.open_until = time.time() + self.cooldown_s\n                self.fails = 0\n\nbreaker = Breaker()\n\ndef get_recommendations(user_id, ctx):\n    # Budget: 120ms for personalization, then cut losses.\n    if breaker.allow():\n        try:\n            res = primary_ranker(user_id, timeout_ms=120)\n            breaker.record(True)\n            return {\"mode\": \"full\", \"items\": res, \"stale\": False}\n        except TimeoutError:\n            breaker.record(False)\n    # Tier 1: stale personal cache, bounded staleness\n    cached = cache.get(f\"rec:{user_id}\")\n    if cached and cached.age_s < 3600:\n        # revalidate async, do not block user\n        ctx.run_background(lambda: refresh_async(user_id))\n        return {\"mode\": \"stale\", \"items\": cached.items, \"stale\": True}\n    # Tier 2: generic, no dependency on ranker at all\n    return {\"mode\": \"generic\", \"items\": top_sellers(), \"stale\": False}\n\ndef mutate_with_retry(key, payload, store):\n    # Idempotency first, retry second. Never invert this order.\n    ikey = payload[\"idempotency_key\"]\n    if store.seen(ikey):\n        return store.result(ikey)\n    # one retry max, with jitter, only for idempotent path\n    for attempt in range(2):\n        try:\n            return store.apply_once(ikey, payload, timeout_ms=200)\n        except TimeoutError:\n            time.sleep(0.05 * (2 ** attempt) + random.uniform(0, 0.02))\n    # Tier 3: queue intent, tell UI it is pending\n    queue.enqueue(key, payload)\n    return {\"mode\": \"queued\", \"status\": \"pending\"}"
+    },
+    {
+      "type": "paragraph",
+      "text": "This shape is deliberate. The breaker check happens before any wait, so a known-sick dependency costs zero latency. The primary gets a tight timeout because user budget matters more than model quality. The stale branch enforces a max age — unbounded staleness is how you show last year's prices — and it revalidates out of band so the next user gets fresh data. The generic branch calls nothing that can fail the same way, which is the whole point; a fallback that shares fate with the primary is theater. For writes, idempotency precedes retry, because retry without it duplicates charges and orders. The trade-off is more code and more metrics per branch, but each branch maps to a visible UX state you can test with a flag."
+    },
+    {
+      "type": "heading",
+      "level": 3,
+      "text": "Config that matters more than code"
+    },
+    {
+      "type": "code",
+      "language": "yaml",
+      "filename": "resilience.yaml",
+      "code": "flags:\n  recs_personalization: { enabled: true, rollout_pct: 100, kill_switch: true }\n  checkout_v2: { enabled: false, rollout_pct: 5, expires: 2026-10-06 }\napi:\n  version: v2\n  additive_only: true           # never rename, never require new fields\n  unknown_fields: ignore        # old clients must not crash\n  unknown_enums: default        # map to UNKNOWN, never throw\nslo:\n  page_p99_ms: 500\n  ranker_timeout_ms: 120\n  max_staleness_s: 3600\nbulkhead:\n  ranker_pool: 50              # isolated from checkout pool\n  fallback_db_qps_cap: 2000    # shed beyond this, do not herd"
+    },
+    {
+      "type": "paragraph",
+      "text": "Put this in review because interviewers grade operational realism, not just boxes. Flags need expiry and a kill path that propagates in seconds, not on restart. Schemas need a compatibility rule enforced in CI: additive only, tolerant readers. Budgets need numbers: if the page must render in 500ms at P99, the ranker cannot own 400ms of it. Bulkheads need caps: the fallback store gets its own connection pool and quota so failover cannot crush it. Why config over code? Because future-proofing lives in defaults, TTLs, and quotas that change weekly, and you should not need a deploy to survive a bad afternoon."
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "How this shows up in the interview"
+    },
+    {
+      "type": "steps",
+      "items": [
+        {
+          "title": "They add a new dependency mid-design",
+          "text": "You propose search, feed, or payments calling a new ML or vendor service. They ask: what if it is slow? Expected move: draw the timeout, breaker, and ranked fallback on the spot. Say the degraded screen out loud."
+        },
+        {
+          "title": "They demand v2 without breaking v1",
+          "text": "Mobile clients from two years ago still exist. Expected move: additive fields only, version in path or header, tolerant reader, translator at edge. State the deprecation policy: N-1 supported, sunset with metrics."
+        },
+        {
+          "title": "They kill a region or a vendor",
+          "text": "What if the primary region or provider is gone? Expected move: active-passive vs active-active, RPO/RTO numbers, where queued writes live, how reads stay stale-but-available. Name the consistency loss."
+        },
+        {
+          "title": "They push scale + failure together",
+          "text": "Cache stampede during failover. Expected move: request coalescing, jittered backoff, fallback quota, load shedding with `Retry-After`. Show you know fallback has capacity limits."
+        },
+        {
+          "title": "They test empathy explicitly",
+          "text": "What does the user see when X fails? Expected move: never a raw 500. Name skeleton vs stale vs banner vs read-only, and which core action still completes. Empathy is a system property."
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "Misconceptions that fail you"
+    },
+    {
+      "type": "list",
+      "items": [
+        "Future-proofing means building for every possible future — No. It means making the *likely* changes cheap: versioning, tolerant readers, stable IDs. Flexibility without a named change is just complexity.",
+        "Fallback equals retry — Retry repeats the same failing path. Fallback switches paths. Retry first with a tiny budget, then fallback. Doing five retries is not resilience, it is a self-inflicted DDoS.",
+        "More regions means more availability by default — Only if failover is tested, data is recoverable, and fallback capacity exists. Untested multi-region is slower single-region with a bigger bill.",
+        "Feature flags make you safe — Only with expiry, ownership, and combinatorial testing. Twenty long-lived flags create thousands of untested states that break in exactly the degraded mode you needed.",
+        "Showing an error is honest UX — A raw error for a non-critical widget is lazy design. Honest UX is stale data labeled stale, or a disabled button that says *why* and *what still works*."
+      ]
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "When to build it and when not to"
+    },
+    {
+      "type": "table",
+      "caption": "Realistic design means matching investment to blast radius.",
+      "headers": [
+        "Situation",
+        "Do this",
+        "Why"
+      ],
+      "rows": [
+        [
+          "Core path: checkout, login, read feed",
+          "Full ranked fallback + breaker + queue + game day",
+          "Failure here loses trust and money; cost is justified"
+        ],
+        [
+          "Enrichment: personalization, badges, previews",
+          "Timeout fast, serve generic, hide widget on failure",
+          "Delight can degrade invisibly; never block core path"
+        ],
+        [
+          "Early prototype, <1000 users",
+          "Tolerant schema + idempotency keys only; skip multi-region",
+          "Speed matters more; keep hooks for fallback, do not build it"
+        ],
+        [
+          "Regulated or monetary writes",
+          "Idempotency + outbox + reconciler; no silent drops",
+          "Duplicates and loss are unacceptable; queue, do not discard"
+        ],
+        [
+          "Low-value admin or internal tool",
+          "Simple error + retry; static fallback only if trivial",
+          "Operating a fallback costs more than the outage it prevents"
+        ]
+      ]
+    },
+    {
+      "type": "paragraph",
+      "text": "Tie this back to user empathy and your score jumps. Interviewers are not grading how many resilient patterns you can recite; they are grading whether the user can still do the thing they came to do when your favorite service is down. So frame every choice as a user outcome with a price. *If ranking dies, shoppers still check out with bestsellers — we pay 15% relevance loss to protect 100% of purchases.* *If writes die, drafts queue locally and sync later — we pay sync complexity to avoid data loss.* That sentence structure — outcome, degradation, price — is what realistic design sounds like. It proves you understand that availability is not a percentage; it is a specific screen, with specific data, that still works on a bad day."
+    },
+    {
+      "type": "divider"
+    },
+    {
+      "type": "callout",
+      "tone": "interview",
+      "title": "What to say in one sentence if asked",
+      "text": "Say: **Future-proofing is versioned, tolerant contracts plus ranked, tested fallbacks so the core task succeeds even when dependencies fail — and I will name the timeout, the degraded screen, and the operating cost for each one.**"
+    }
+  ],
+  "generatedBy": {
+    "model": "muse-spark-1.3-contributor",
+    "at": "2026-09-06T17:16:53.975Z",
+    "problems": []
+  }
+}
