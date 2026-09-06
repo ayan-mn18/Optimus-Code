@@ -49,11 +49,11 @@ async function searchRows(table, fields, columns, tokens, configure) {
 }
 
 /** Fast cross-catalogue search for the ⌘K command bar. */
-export function searchContent(rawQuery) {
+export function searchContent(rawQuery, { includeBlogs = true } = {}) {
   const query = normalizeQuery(rawQuery);
   if (query.length < 2) return Promise.resolve({ items: [] });
 
-  const key = `search:command:${query.toLocaleLowerCase()}`;
+  const key = `search:command:${includeBlogs ? 'pro' : 'free'}:${query.toLocaleLowerCase()}`;
   return getOrSetCached(key, SEARCH_TTL_MS, async () => {
     const term = searchTerm(query);
     const tokens = searchTokens(term);
@@ -61,8 +61,10 @@ export function searchContent(rawQuery) {
     const [problems, blogs] = await Promise.all([
       searchRows('problems', SEARCH_FIELDS, ['title', 'topic', 'subtopic', 'description'], tokens,
         (query) => query.order('order_index')),
-      searchRows('blogs', BLOG_FIELDS, ['title', 'summary', 'topic'], tokens,
-        (query) => query.eq('status', 'published').order('published_at', { ascending: false })),
+      includeBlogs
+        ? searchRows('blogs', BLOG_FIELDS, ['title', 'summary', 'topic'], tokens,
+          (query) => query.eq('status', 'published').order('published_at', { ascending: false }))
+        : Promise.resolve([]),
     ]);
 
     const items = [

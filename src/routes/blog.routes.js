@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { optionalAuth, requireAuth } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
+import { requirePro } from '../middleware/subscription.js';
 import { validate } from '../middleware/validate.js';
 import {
   createBlog,
@@ -81,7 +82,7 @@ const createSchema = z.object({
 
 const updateSchema = createSchema.partial();
 
-router.get('/', optionalAuth, validate(listSchema, 'query'), async (req, res, next) => {
+router.get('/', requireAuth, requirePro, validate(listSchema, 'query'), async (req, res, next) => {
   try {
     res.json(await listBlogs(req.user, req.validatedQuery));
   } catch (error) {
@@ -89,7 +90,7 @@ router.get('/', optionalAuth, validate(listSchema, 'query'), async (req, res, ne
   }
 });
 
-router.get('/mine', requireAuth, async (req, res, next) => {
+router.get('/mine', requireAuth, requirePro, async (req, res, next) => {
   try {
     res.json(await listMyBlogs(req.user));
   } catch (error) {
@@ -97,7 +98,7 @@ router.get('/mine', requireAuth, async (req, res, next) => {
   }
 });
 
-router.post('/', requireAuth, validate(createSchema), async (req, res, next) => {
+router.post('/', requireAuth, requirePro, validate(createSchema), async (req, res, next) => {
   try {
     res.status(201).json({ blog: await createBlog(req.user, req.body) });
   } catch (error) {
@@ -105,7 +106,7 @@ router.post('/', requireAuth, validate(createSchema), async (req, res, next) => 
   }
 });
 
-router.patch('/:id', requireAuth, validate(updateSchema), async (req, res, next) => {
+router.patch('/:id', requireAuth, requirePro, validate(updateSchema), async (req, res, next) => {
   try {
     res.json({ blog: await updateBlog(req.user, req.params.id, req.body) });
   } catch (error) {
@@ -113,7 +114,7 @@ router.patch('/:id', requireAuth, validate(updateSchema), async (req, res, next)
   }
 });
 
-router.delete('/:id', requireAuth, async (req, res, next) => {
+router.delete('/:id', requireAuth, requirePro, async (req, res, next) => {
   try {
     await deleteBlog(req.user, req.params.id);
     res.status(204).end();
@@ -122,7 +123,7 @@ router.delete('/:id', requireAuth, async (req, res, next) => {
   }
 });
 
-router.post('/:id/like', requireAuth, async (req, res, next) => {
+router.post('/:id/like', requireAuth, requirePro, async (req, res, next) => {
   try {
     res.json(await toggleBlogLike(req.user, req.params.id));
   } catch (error) {
@@ -131,7 +132,7 @@ router.post('/:id/like', requireAuth, async (req, res, next) => {
 });
 
 // Last: a bare segment would otherwise swallow /mine.
-router.get('/:slug', optionalAuth, async (req, res, next) => {
+router.get('/:slug', requireAuth, requirePro, async (req, res, next) => {
   try {
     res.json(await getBlog(req.user, req.params.slug));
   } catch (error) {

@@ -2,11 +2,13 @@ import { Router } from 'express';
 import { z } from 'zod';
 import rateLimit from 'express-rate-limit';
 import { requireAuth } from '../middleware/auth.js';
+import { requirePro } from '../middleware/subscription.js';
 import { validate } from '../middleware/validate.js';
 import { cancelJob, createJob, getJob, listJobs } from '../services/research/job.service.js';
 
 const router = Router();
 router.use(requireAuth);
+router.use(requirePro);
 
 // A run costs real money and publishes under the Optimus Code name.
 const startLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 5, standardHeaders: 'draft-7', legacyHeaders: false });
