@@ -88,6 +88,29 @@ export async function createCheckout(user, plan, { client = dodo } = {}) {
   return { checkoutUrl: session.checkout_url };
 }
 
+export async function createCustomerPortal(user, { client = dodo } = {}) {
+  if (user.billing_exempt) throw new ApiError(409, 'Your account has complimentary Pro access');
+  if (!client) throw new ApiError(503, 'Billing is not configured');
+
+  const subscription = unwrap(
+    await db
+      .from('subscriptions')
+      .select('provider_customer_id')
+      .eq('user_id', user.id)
+      .maybeSingle(),
+    'load billing customer',
+  );
+  if (!subscription?.provider_customer_id) {
+    throw new ApiError(409, 'Complete a Pro checkout before opening billing management');
+  }
+
+  const session = await client.customers.customerPortal.create(subscription.provider_customer_id, {
+    return_url: `${env.email.appUrl}/settings`,
+  });
+  if (!session.link) throw new ApiError(502, 'Dodo did not return a billing portal URL');
+  return { portalUrl: session.link };
+}
+
 export function verifyDodoWebhook(rawBody, headers, { client = dodo } = {}) {
   if (!client || !env.billing.webhookKey) throw new ApiError(503, 'Billing webhook is not configured');
   try {

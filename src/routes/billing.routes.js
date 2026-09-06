@@ -5,6 +5,7 @@ import { validate } from '../middleware/validate.js';
 import {
   PRICING,
   createCheckout,
+  createCustomerPortal,
   getSubscription,
   processDodoWebhook,
   verifyDodoWebhook,
@@ -52,5 +53,13 @@ router.post(
     }
   },
 );
+
+router.post('/portal', async (req, res, next) => {
+  try {
+    res.status(201).json(await createCustomerPortal(req.user));
+  } catch (error) {
+    next(error);
+  }
+});
 
 export default router;
