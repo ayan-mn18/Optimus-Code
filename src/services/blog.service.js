@@ -152,11 +152,14 @@ async function uniqueSlug(base, ignoreId) {
 
 async function likedSlugs(user, blogIds) {
   if (!user || !blogIds.length) return new Set();
-  const rows = unwrap(
-    await db.from('blog_likes').select('blog_id').eq('user_id', user.id).in('blog_id', blogIds),
-    'load blog likes',
-  );
-  return new Set(rows.map((row) => row.blog_id));
+  const key = `blogs:likes:${user.id}:${[...new Set(blogIds)].sort().join(',')}`;
+  return getOrSetCached(key, 5_000, async () => {
+    const rows = unwrap(
+      await db.from('blog_likes').select('blog_id').eq('user_id', user.id).in('blog_id', blogIds),
+      'load blog likes',
+    );
+    return new Set(rows.map((row) => row.blog_id));
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -228,10 +231,10 @@ async function listBlogsUncached(user, { kind, topic, company, tag, search, prob
 }
 
 export async function getBlog(user, slug) {
-  const row = unwrap(
+  const row = await getOrSetCached(`blogs:detail:${slug}`, 30_000, async () => unwrap(
     await db.from('blogs').select(FULL_FIELDS).eq('slug', slug).maybeSingle(),
     'load blog',
-  );
+  ));
   if (!row) throw ApiError.notFound('Blog not found');
   // A draft is visible to its author, and — for machine-written ones, which
   // have no author — to any signed-in reader, because otherwise a pipeline
@@ -240,22 +243,26 @@ export async function getBlog(user, slug) {
   const reviewable = !row.author_id && Boolean(user);
   if (row.status !== 'published' && !ownDraft && !reviewable) throw ApiError.notFound('Blog not found');
 
-  const [viewCount, liked, related] = await Promise.all([
-    row.status === 'published'
-      ? db.rpc('increment_blog_views', { p_slug: slug }).then(({ data, error }) => error ? null : data).catch(() => null)
-      : Promise.resolve(null),
+  // View accounting is deliberately off the critical path. It is best-effort
+  // telemetry and should never add a Supabase round trip to reading an article.
+  if (row.status === 'published') {
+    void db.rpc('increment_blog_views', { p_slug: slug }).catch(() => {});
+  }
+
+  const [liked, related] = await Promise.all([
     likedSlugs(user, [row.id]),
-    db
+    getOrSetCached(`blogs:related:${row.kind}:${row.id}`, 30_000, async () => unwrap(
+      await db
         .from('blogs')
         .select(LIST_FIELDS)
         .eq('status', 'published')
         .eq('kind', row.kind)
         .neq('id', row.id)
         .order('views', { ascending: false })
-        .limit(3)
-      .then((result) => unwrap(result, 'load related blogs')),
+        .limit(3),
+      'load related blogs',
+    )),
   ]);
-  if (typeof viewCount === 'number') row.views = viewCount;
 
   return {
     blog: toBlog(row, { user, liked: liked.has(row.id) }),
@@ -323,6 +330,7 @@ export async function createBlog(user, payload) {
   );
 
   invalidateCache('blogs:list:');
+  invalidateCache('blogs:related:');
   invalidateCache('blogs:problem-slugs:');
   return toBlog(row, { user });
 }
@@ -371,6 +379,8 @@ export async function updateBlog(user, id, payload) {
     'update blog',
   );
   invalidateCache('blogs:list:');
+  invalidateCache('blogs:detail:');
+  invalidateCache('blogs:related:');
   invalidateCache('blogs:problem-slugs:');
   return toBlog(row, { user });
 }
@@ -385,6 +395,8 @@ export async function deleteBlog(user, id) {
 
   unwrap(await db.from('blogs').delete().eq('id', id), 'delete blog');
   invalidateCache('blogs:list:');
+  invalidateCache('blogs:detail:');
+  invalidateCache('blogs:related:');
   invalidateCache('blogs:problem-slugs:');
 }
 
@@ -393,6 +405,9 @@ export async function toggleBlogLike(user, id) {
   if (error) throw ApiError.notFound('Blog not found');
   const result = Array.isArray(data) ? data[0] : data;
   invalidateCache('blogs:list:');
+  invalidateCache('blogs:detail:');
+  invalidateCache('blogs:related:');
+  invalidateCache(`blogs:likes:${user.id}:`);
   return { liked: Boolean(result?.liked), likes: result?.likes ?? 0 };
 }
 
