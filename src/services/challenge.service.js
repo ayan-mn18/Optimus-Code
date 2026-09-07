@@ -164,7 +164,7 @@ async function requireEnrollment(userId) {
  * fell short of the target becomes a red day; its unsolved problems simply stop
  * being "assigned today" and flow back into the pool as backlog.
  */
-async function closeOpenDays(userId, today) {
+export async function closeOpenDays(userId, today) {
   const openLogs = unwrap(
     await db
       .from('daily_logs')
