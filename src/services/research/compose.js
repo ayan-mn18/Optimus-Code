@@ -119,6 +119,13 @@ export async function composeArticle(job, evidence, pages, { fetchImpl = fetch }
         content: [
           `Write the article for: ${job.title}`,
           job.kind ? `Track: ${job.kind}. Topic: ${job.topic ?? 'n/a'}. Difficulty: ${job.difficulty ?? 'n/a'}.` : '',
+          job.brief?.goal ? `Reader goal: ${job.brief.goal}` : '',
+          job.brief?.audience ? `Audience: ${job.brief.audience}.` : '',
+          job.brief?.format ? `Requested format: ${job.brief.format}.` : '',
+          job.brief?.questions?.length
+            ? `Questions this article must answer:\n${job.brief.questions.map((question) => `- ${question}`).join('\n')}`
+            : '',
+          job.brief?.constraints ? `Constraints and context:\n${job.brief.constraints}` : '',
           job.leetcode ? `LeetCode twin: ${job.leetcode.id} ${job.leetcode.title} (${job.leetcode.difficulty}).` : '',
           companies.length ? `Reported asked at: ${companies.join(', ')}. Do NOT restate this in the body — the page renders it separately.` : '',
           '',

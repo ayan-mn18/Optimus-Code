@@ -9,6 +9,7 @@ import {
   getBlog,
   listBlogs,
   listMyBlogs,
+  toggleBlogBookmark,
   toggleBlogLike,
   updateBlog,
 } from '../services/blog.service.js';
@@ -59,6 +60,7 @@ const listSchema = z.object({
   tag: z.string().trim().min(1).max(60).optional(),
   search: z.string().trim().max(120).optional(),
   problemId: z.string().uuid().optional(),
+  saved: z.coerce.boolean().optional(),
   sort: z.enum(['recent', 'popular', 'liked']).default('recent'),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(48).default(12),
@@ -126,6 +128,14 @@ router.delete('/:id', requireAuth, requirePro, async (req, res, next) => {
 router.post('/:id/like', requireAuth, requirePro, async (req, res, next) => {
   try {
     res.json(await toggleBlogLike(req.user, req.params.id));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/:id/bookmark', requireAuth, requirePro, async (req, res, next) => {
+  try {
+    res.json(await toggleBlogBookmark(req.user, req.params.id));
   } catch (error) {
     next(error);
   }

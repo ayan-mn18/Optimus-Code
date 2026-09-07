@@ -124,7 +124,7 @@ test('research jobs table applies and constrains its status', async () => {
     select column_name from information_schema.columns
     where table_schema='public' and table_name='blog_research_jobs'`);
   const columns = new Set(rows.map((row) => row.column_name));
-  for (const name of ['request', 'status', 'stage', 'progress', 'slug', 'error']) {
+  for (const name of ['request', 'brief', 'status', 'stage', 'progress', 'slug', 'error']) {
     assert.ok(columns.has(name), `${name} column missing`);
   }
 

@@ -60,15 +60,29 @@ const INTAKE_SCHEMA = {
   },
 };
 
-/** Turns "design a text editor LLD question" into a job spec. */
+/** Turns a structured research brief into a job spec. */
 export async function intake(request, { fetchImpl = fetch } = {}) {
+  const brief = typeof request === 'string'
+    ? { topic: request, goal: '', audience: 'interview', format: 'interview-guide', questions: [], constraints: '' }
+    : (request?.brief ?? request);
+  const questions = (brief.questions ?? []).filter(Boolean);
   const spec = await chatJson({
-    system: `You turn a free-text request into a spec for a design write-up.
+    system: `You turn a research brief into a spec for a design write-up.
 Set ok=false with a reason if the request is not a software design topic.
 template=problem for "design X" interview questions; template=concept for a
 topic or mechanism. searchQueries: 4-6 web queries most likely to surface
-FIRST-HAND interview reports naming companies — not tutorials.`,
-    user: request,
+FIRST-HAND interview reports naming companies — not tutorials. Use the brief's
+goal, audience, format, questions, and constraints to choose the exact title,
+scope, and search queries. Every user question must be answerable in the final
+article; do not broaden the topic into a generic guide.`,
+    user: [
+      `<topic>${brief.topic ?? ''}</topic>`,
+      `<goal>${brief.goal ?? ''}</goal>`,
+      `<audience>${brief.audience ?? ''}</audience>`,
+      `<format>${brief.format ?? ''}</format>`,
+      `<questions>${questions.join('\n')}</questions>`,
+      `<constraints>${brief.constraints ?? ''}</constraints>`,
+    ].join('\n'),
     schema: INTAKE_SCHEMA,
     schemaName: 'intake',
     effort: 'low',
@@ -77,7 +91,7 @@ FIRST-HAND interview reports naming companies — not tutorials.`,
   });
 
   if (!spec.ok) throw new Error(spec.reason || 'Not a design topic');
-  return { ...spec, slug: slugify(spec.title) };
+  return { ...spec, slug: slugify(spec.title), brief };
 }
 
 /* --------------------------------------------------------------- harvest -- */
@@ -181,7 +195,9 @@ export async function runPipeline(request, { onStage = () => {}, fetchImpl = fet
 
   // 1. intake
   onStage('intake');
-  const job = typeof request === 'string' ? await intake(request, { fetchImpl }) : request;
+  const job = typeof request === 'string' || request?.brief
+    ? await intake(request, { fetchImpl })
+    : request;
   note(`intake: ${job.title} (${job.kind}, ${job.template})`);
 
   const file = path.join(BLOG_DIR, `${job.slug}.json`);
@@ -283,6 +299,7 @@ export async function runPipeline(request, { onStage = () => {}, fetchImpl = fet
     readMinutes: estimateReadMinutes(doc.blocks),
     evidence: evidence.length,
     companies: companiesFromEvidence(evidence).length,
+    document: { ...doc, readMinutes: estimateReadMinutes(doc.blocks) },
     problems,
     log,
   };

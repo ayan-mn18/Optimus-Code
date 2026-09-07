@@ -42,6 +42,7 @@ const EXPECTED_TABLES = [
   'payment_webhook_events',
   'blogs',
   'blog_likes',
+  'blog_bookmarks',
   'blog_research_jobs',
 ];
 

@@ -515,6 +515,16 @@ create table if not exists public.blog_likes (
 
 create index if not exists blog_likes_user_idx on public.blog_likes (user_id);
 
+-- A private reading list. Like state is social; bookmarks are personal.
+create table if not exists public.blog_bookmarks (
+  blog_id    uuid not null references public.blogs(id) on delete cascade,
+  user_id    uuid not null references public.users(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (blog_id, user_id)
+);
+
+create index if not exists blog_bookmarks_user_idx on public.blog_bookmarks (user_id, created_at desc);
+
 -- Read counter. Called on every published-blog fetch, so it stays a single
 -- statement rather than a read-modify-write from the API.
 create or replace function public.increment_blog_views(p_slug text)
@@ -564,6 +574,7 @@ grant execute on function public.toggle_blog_like(uuid, uuid) to service_role;
 
 alter table public.blogs      enable row level security;
 alter table public.blog_likes enable row level security;
+alter table public.blog_bookmarks enable row level security;
 
 -- ---------------------------------------------------------------------------
 -- blog_research_jobs — a pipeline run requested from the app
@@ -575,6 +586,7 @@ create table if not exists public.blog_research_jobs (
   id           uuid primary key default gen_random_uuid(),
   user_id      uuid references public.users(id) on delete set null,
   request      text not null,
+  brief        jsonb not null default '{}'::jsonb,
   status       text not null default 'queued'
     check (status in ('queued', 'running', 'needs_review', 'published', 'failed')),
   stage        text,
@@ -593,3 +605,5 @@ create index if not exists blog_research_jobs_user_idx   on public.blog_research
 create index if not exists blog_research_jobs_status_idx on public.blog_research_jobs (status, created_at);
 
 alter table public.blog_research_jobs enable row level security;
+
+alter table public.blog_research_jobs add column if not exists brief jsonb not null default '{}'::jsonb;

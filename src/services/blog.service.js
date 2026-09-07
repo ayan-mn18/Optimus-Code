@@ -13,7 +13,7 @@ const FULL_FIELDS = `${LIST_FIELDS}, blocks`;
 /** Words a reader gets through in a minute — the usual estimate for technical prose. */
 const WORDS_PER_MINUTE = 200;
 
-function toBlog(row, { user, liked = false } = {}) {
+function toBlog(row, { user, liked = false, bookmarked = false } = {}) {
   if (!row) return null;
   return {
     id: row.id,
@@ -36,6 +36,7 @@ function toBlog(row, { user, liked = false } = {}) {
     views: row.views,
     likes: row.likes,
     liked,
+    bookmarked,
     isAuthor: Boolean(user && row.author_id && row.author_id === user.id),
     publishedAt: row.published_at,
     createdAt: row.created_at,
@@ -162,29 +163,51 @@ async function likedSlugs(user, blogIds) {
   });
 }
 
+async function bookmarkedSlugs(user, blogIds) {
+  if (!user || !blogIds.length) return new Set();
+  const key = `blogs:bookmarks:${user.id}:${[...new Set(blogIds)].sort().join(',')}`;
+  return getOrSetCached(key, 5_000, async () => {
+    const rows = unwrap(
+      await db.from('blog_bookmarks').select('blog_id').eq('user_id', user.id).in('blog_id', blogIds),
+      'load blog bookmarks',
+    );
+    return new Set(rows.map((row) => row.blog_id));
+  });
+}
+
 /* -------------------------------------------------------------------------- */
 /* Reads                                                                       */
 /* -------------------------------------------------------------------------- */
 
-export async function listBlogs(user, { kind, topic, company, tag, search, problemId, sort, page, pageSize }) {
+export async function listBlogs(user, { kind, topic, company, tag, search, problemId, saved = false, sort, page, pageSize }) {
   const isPublic = !user;
   const cacheKey = isPublic
-    ? `blogs:list:${JSON.stringify({ kind, topic, company, tag, search, problemId, sort, page, pageSize })}`
+    ? `blogs:list:${JSON.stringify({ kind, topic, company, tag, search, problemId, saved, sort, page, pageSize })}`
     : null;
   if (cacheKey) {
-    return getOrSetCached(cacheKey, 30_000, () => listBlogsUncached(user, { kind, topic, company, tag, search, problemId, sort, page, pageSize }));
+    return getOrSetCached(cacheKey, 30_000, () => listBlogsUncached(user, { kind, topic, company, tag, search, problemId, saved, sort, page, pageSize }));
   }
-  return listBlogsUncached(user, { kind, topic, company, tag, search, problemId, sort, page, pageSize });
+  return listBlogsUncached(user, { kind, topic, company, tag, search, problemId, saved, sort, page, pageSize });
 }
 
-async function listBlogsUncached(user, { kind, topic, company, tag, search, problemId, sort, page, pageSize }) {
+async function listBlogsUncached(user, { kind, topic, company, tag, search, problemId, saved, sort, page, pageSize }) {
   let query = db.from('blogs').select(LIST_FIELDS).eq('status', 'published');
   if (kind) query = query.eq('kind', kind);
   if (topic) query = query.eq('topic', topic);
   if (problemId) query = query.eq('problem_id', problemId);
   if (tag) query = query.contains('tags', [tag]);
 
-  const rows = unwrap(await query, 'load blogs');
+  let rows = unwrap(await query, 'load blogs');
+
+  if (saved) {
+    if (!user) return { items: [], total: 0, page, pageSize, facets: { topics: [], tags: [], companies: [], kinds: [] } };
+    const savedRows = unwrap(
+      await db.from('blog_bookmarks').select('blog_id').eq('user_id', user.id),
+      'load saved blog ids',
+    );
+    const savedIds = new Set(savedRows.map((row) => row.blog_id));
+    rows = rows.filter((row) => savedIds.has(row.id));
+  }
 
   const term = search?.trim().toLocaleLowerCase();
   const matched = rows
@@ -201,7 +224,11 @@ async function listBlogsUncached(user, { kind, topic, company, tag, search, prob
 
   const start = (page - 1) * pageSize;
   const pageRows = sorted.slice(start, start + pageSize);
-  const liked = await likedSlugs(user, pageRows.map((row) => row.id));
+  const pageIds = pageRows.map((row) => row.id);
+  const [liked, bookmarked] = await Promise.all([
+    likedSlugs(user, pageIds),
+    bookmarkedSlugs(user, pageIds),
+  ]);
 
   // Facets come off the unfiltered published set so a filter never hides its
   // own sibling options.
@@ -215,7 +242,7 @@ async function listBlogsUncached(user, { kind, topic, company, tag, search, prob
   }
 
   return {
-    items: pageRows.map((row) => toBlog(row, { user, liked: liked.has(row.id) })),
+    items: pageRows.map((row) => toBlog(row, { user, liked: liked.has(row.id), bookmarked: bookmarked.has(row.id) })),
     total: sorted.length,
     page,
     pageSize,
@@ -249,8 +276,9 @@ export async function getBlog(user, slug) {
     void Promise.resolve(db.rpc('increment_blog_views', { p_slug: slug })).catch(() => {});
   }
 
-  const [liked, related] = await Promise.all([
+  const [liked, bookmarked, related] = await Promise.all([
     likedSlugs(user, [row.id]),
+    bookmarkedSlugs(user, [row.id]),
     getOrSetCached(`blogs:related:${row.kind}:${row.id}`, 30_000, async () => unwrap(
       await db
         .from('blogs')
@@ -265,7 +293,7 @@ export async function getBlog(user, slug) {
   ]);
 
   return {
-    blog: toBlog(row, { user, liked: liked.has(row.id) }),
+    blog: toBlog(row, { user, liked: liked.has(row.id), bookmarked: bookmarked.has(row.id) }),
     related: related.map((entry) => toBlog(entry, { user })),
   };
 }
@@ -409,6 +437,31 @@ export async function toggleBlogLike(user, id) {
   invalidateCache('blogs:related:');
   invalidateCache(`blogs:likes:${user.id}:`);
   return { liked: Boolean(result?.liked), likes: result?.likes ?? 0 };
+}
+
+export async function toggleBlogBookmark(user, id) {
+  const existing = unwrap(
+    await db.from('blog_bookmarks').select('blog_id').eq('blog_id', id).eq('user_id', user.id).maybeSingle(),
+    'load blog bookmark',
+  );
+
+  if (existing) {
+    unwrap(
+      await db.from('blog_bookmarks').delete().eq('blog_id', id).eq('user_id', user.id),
+      'remove blog bookmark',
+    );
+  } else {
+    unwrap(
+      await db.from('blog_bookmarks').insert({ blog_id: id, user_id: user.id }),
+      'save blog bookmark',
+    );
+  }
+
+  invalidateCache(`blogs:bookmarks:${user.id}:`);
+  invalidateCache('blogs:list:');
+  invalidateCache('blogs:detail:');
+  invalidateCache('blogs:related:');
+  return { bookmarked: !existing };
 }
 
 /** Slug per problem id, so the System Design catalogue can deep-link to a write-up. */
