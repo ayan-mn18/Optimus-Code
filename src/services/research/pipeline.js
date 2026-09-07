@@ -182,9 +182,9 @@ function buildRefs(job, pages) {
 /* ------------------------------------------------------------------ run --- */
 
 /**
- * The whole pipeline. Writes data/blogs/<slug>.json and nothing else —
- * publishing stays `npm run seed:blogs`, so research never touches the database
- * and a bad run is reverted with git rather than SQL.
+ * The pipeline writes an auditable data/blogs/<slug>.json document. Batch CLI
+ * runs still publish through `npm run seed:blogs`; the on-demand job worker
+ * also inserts the returned document into the database for review.
  */
 export async function runPipeline(request, { onStage = () => {}, fetchImpl = fetch, force = false } = {}) {
   if (!llmConfigured()) throw new Error('No LLM_API_KEY configured — set LLM_BASE_URL and LLM_API_KEY');
