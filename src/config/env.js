@@ -99,7 +99,7 @@ export const env = {
     replyTo: process.env.EMAIL_REPLY_TO?.trim() || undefined,
     appUrl: (process.env.APP_URL ?? 'http://localhost:5173').replace(/\/$/, ''),
     inviteTtlHours: Number(process.env.INVITE_TOKEN_TTL_HOURS ?? 168),
-    warningHour: Number(process.env.STREAK_WARNING_HOUR ?? 20),
+    warningHour: Number(process.env.STREAK_WARNING_HOUR ?? 22),
     workerIntervalMs: Number(process.env.EMAIL_WORKER_INTERVAL_MIN ?? 15) * 60_000,
   },
 };

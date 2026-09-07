@@ -306,6 +306,70 @@ export async function runStreakRiskNotifications(
   return { checked: logs.length, sent };
 }
 
+/**
+ * Closes open days for users who are not actively using the app. The API also
+ * settles days on request, but email delivery must not depend on a login.
+ */
+export async function runHeadlessDayClosures() {
+  if (!emailConfigured()) return { checked: 0, closed: 0 };
+
+  const activeLogs = unwrap(
+    await db.from('daily_logs').select('user_id').eq('status', 'active').limit(5000),
+    'load users with open days',
+  );
+  const userIds = [...new Set(activeLogs.map((log) => log.user_id))];
+  if (!userIds.length) return { checked: 0, closed: 0 };
+
+  const users = unwrap(
+    await db.from('users').select('id, timezone').in('id', userIds),
+    'load users for day closure',
+  );
+  const { closeOpenDays } = await import('./challenge.service.js');
+  let closed = 0;
+  for (const user of users) {
+    const days = await closeOpenDays(user.id, todayIn(user.timezone));
+    closed += days.length;
+  }
+  return { checked: users.length, closed };
+}
+
+/** Delivers red-day messages queued by a headless closure or a later login. */
+export async function sendPendingRedDayEmails() {
+  if (!emailConfigured()) return { checked: 0, sent: 0 };
+
+  const logs = unwrap(
+    await db
+      .from('daily_logs')
+      .select('id, user_id, log_date, solved_count, required_count')
+      .eq('status', 'missed')
+      .is('red_alerted_at', null)
+      .order('closed_at', { ascending: true })
+      .limit(100),
+    'load pending red-day emails',
+  );
+  if (!logs.length) return { checked: 0, sent: 0 };
+
+  const users = unwrap(
+    await db.from('users').select('id, email, name').in('id', [...new Set(logs.map((log) => log.user_id))]),
+    'load red-day email users',
+  );
+  const userById = new Map(users.map((user) => [user.id, user]));
+  let sent = 0;
+  for (const log of logs) {
+    const user = userById.get(log.user_id);
+    if (!user) continue;
+    const delivered = await sendRedDayNotification(user, {
+      id: log.id,
+      status: 'missed',
+      date: log.log_date,
+      solved: log.solved_count,
+      required: log.required_count,
+    });
+    if (delivered) sent += 1;
+  }
+  return { checked: logs.length, sent };
+}
+
 /** Sends one reminder roughly three days before an automatic renewal. */
 export async function runSubscriptionRenewalReminders(
   now = new Date(),
@@ -367,16 +431,25 @@ export async function runSubscriptionRenewalReminders(
 export function startEmailNotificationWorker() {
   if (!emailConfigured()) return () => {};
 
-  const run = () => {
-    Promise.all([
-      runStreakRiskNotifications(),
-      runSubscriptionRenewalReminders(),
-      sendPendingGreenStreakEmails(),
-      sendPendingWaitlistInvites(),
-      sendPendingMilestoneEmails(),
-    ]).catch((error) => {
+  let running = false;
+  const run = async () => {
+    if (running) return;
+    running = true;
+    try {
+      await runHeadlessDayClosures();
+      await sendPendingRedDayEmails();
+      await Promise.all([
+        runStreakRiskNotifications(),
+        runSubscriptionRenewalReminders(),
+        sendPendingGreenStreakEmails(),
+        sendPendingWaitlistInvites(),
+        sendPendingMilestoneEmails(),
+      ]);
+    } catch (error) {
       console.error('[email] notification worker failed:', error instanceof Error ? error.message : error);
-    });
+    } finally {
+      running = false;
+    }
   };
   const initial = setTimeout(run, 5_000);
   const interval = setInterval(run, env.email.workerIntervalMs);

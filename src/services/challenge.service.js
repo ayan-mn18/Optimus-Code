@@ -1,7 +1,7 @@
 import { db, unwrap } from '../lib/supabase.js';
 import { ApiError } from '../lib/errors.js';
 import { todayIn, addDays, daysBetween } from '../lib/dates.js';
-import { sendGreenStreakNotification, sendRedDayNotification } from './notification.service.js';
+import { sendGreenStreakNotification } from './notification.service.js';
 import { getProblemById, getProblemCatalog } from './problem-catalog.service.js';
 import { getOrSetCached, invalidateCache } from '../lib/cache.js';
 
@@ -204,7 +204,6 @@ async function closeOpenDays(userId, today) {
   const closed = [];
   let greenDays = priorGreenDays;
   let freezesUsed = account.freezes_used;
-  let latestMissed = null;
 
   for (const log of [...openLogs].sort((a, b) => (a.log_date < b.log_date ? -1 : 1))) {
     const counts = { DSA: 0, LLD: 0, HLD: 0 };
@@ -243,11 +242,7 @@ async function closeOpenDays(userId, today) {
     );
 
     closed.push({ date: log.log_date, status, solved, required: log.required_count });
-    if (status === 'missed') {
-      latestMissed = { id: log.id, date: log.log_date, status, solved, required: log.required_count };
-    }
   }
-  if (latestMissed) await sendRedDayNotification(account, latestMissed);
 
   if (freezesUsed !== account.freezes_used) {
     unwrap(await db.from('users').update({ freezes_used: freezesUsed }).eq('id', userId), 'record freeze use');
