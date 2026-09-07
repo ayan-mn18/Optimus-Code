@@ -17,7 +17,7 @@ test('canonical schema applies cleanly and contains new product tables', async (
     order by table_name
   `);
   const tables = new Set(result.rows.map((row) => row.table_name));
-  for (const name of ['problems', 'assessment_attempts', 'assessment_answers', 'subscriptions', 'payment_webhook_events', 'streak_milestones', 'blog_bookmarks']) {
+  for (const name of ['problems', 'assessment_attempts', 'assessment_answers', 'subscriptions', 'payment_webhook_events', 'streak_milestones', 'inactive_reminder_events', 'blog_bookmarks']) {
     assert.ok(tables.has(name), `${name} table missing`);
   }
 
@@ -31,5 +31,14 @@ test('canonical schema applies cleanly and contains new product tables', async (
   assert.ok(enrollmentColumns.has('lld_target'));
   assert.ok(enrollmentColumns.has('hld_target'));
   assert.equal(enrollmentColumns.has('daily_target'), false);
+
+  const userColumns = await database.query(`
+    select column_name
+    from information_schema.columns
+    where table_schema = 'public' and table_name = 'users'
+  `);
+  const userColumnNames = new Set(userColumns.rows.map((row) => row.column_name));
+  assert.ok(userColumnNames.has('last_login_at'));
+  assert.ok(userColumnNames.has('last_activity_at'));
   await database.close();
 });

@@ -74,7 +74,16 @@ router.post('/login', authLimiter, validate(loginSchema), async (req, res, next)
 
     if (!user || !ok) throw ApiError.unauthorized('Email or password is incorrect');
 
-    res.json(await sessionPayload(user));
+    const loggedInUser = unwrap(
+      await db
+        .from('users')
+        .update({ last_login_at: new Date().toISOString(), last_activity_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq('id', user.id)
+        .select('*')
+        .single(),
+      'record login',
+    );
+    res.json(await sessionPayload(loggedInUser));
   } catch (err) {
     next(err);
   }
@@ -116,6 +125,8 @@ router.post(
               google_sub: profile.sub,
               auth_provider: 'google',
               picture_url: profile.picture ?? user.picture_url,
+              last_login_at: new Date().toISOString(),
+              last_activity_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
             })
             .eq('id', user.id)
@@ -136,6 +147,8 @@ router.post(
               timezone: req.body.timezone,
               avatar_seed: `google-${profile.sub.slice(-12)}`,
               picture_url: profile.picture ?? null,
+              last_login_at: new Date().toISOString(),
+              last_activity_at: new Date().toISOString(),
             })
             .select('*')
             .single(),

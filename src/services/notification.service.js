@@ -3,10 +3,19 @@ import { env } from '../config/env.js';
 import { todayIn } from '../lib/dates.js';
 import { email, emailConfigured } from './email.service.js';
 import { sendPendingWaitlistInvites } from './invite.service.js';
-import { billingEmail, greenStreakEmail, milestoneEmail, redDayEmail, streakRiskEmail } from '../emails/templates.js';
+import {
+  billingEmail,
+  greenStreakEmail,
+  inactiveWeeklyEmail,
+  milestoneEmail,
+  redDayEmail,
+  streakRiskEmail,
+} from '../emails/templates.js';
 
 const dashboardUrl = `${env.email.appUrl}/dashboard`;
 export const GREEN_STREAK_STEP = 7;
+export const INACTIVE_DAYS_THRESHOLD = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const UNIQUE_VIOLATION = '23505';
 
 function localHour(date, timezone) {
@@ -16,6 +25,16 @@ function localHour(date, timezone) {
     hourCycle: 'h23',
   }).formatToParts(date).find(({ type }) => type === 'hour');
   return Number(part?.value ?? 0);
+}
+
+export function inactivityState(user, now = new Date()) {
+  const anchor = new Date(user.last_activity_at ?? user.last_login_at ?? user.created_at ?? now.toISOString());
+  const inactiveDays = Math.max(0, Math.floor((now.getTime() - anchor.getTime()) / DAY_MS));
+  return {
+    inactiveDays,
+    inactive: inactiveDays >= INACTIVE_DAYS_THRESHOLD,
+    inactiveWeek: Math.floor(inactiveDays / INACTIVE_DAYS_THRESHOLD),
+  };
 }
 
 export async function sendMilestoneNotification(
@@ -128,6 +147,99 @@ export async function sendRedDayNotification(
     console.error('[email] red-day delivery failed:', error instanceof Error ? error.message : error);
     return false;
   }
+}
+
+export async function sendInactiveWeeklyReminder(
+  user,
+  { now = new Date(), sender = email, enabled = emailConfigured() } = {},
+) {
+  const state = inactivityState(user, now);
+  if (!enabled || !user.email || !state.inactive) return false;
+
+  let event = unwrap(
+    await db
+      .from('inactive_reminder_events')
+      .select('id, emailed_at')
+      .eq('user_id', user.id)
+      .eq('inactive_week', state.inactiveWeek)
+      .maybeSingle(),
+    'load inactive reminder state',
+  );
+  if (!event) {
+    const created = await db
+      .from('inactive_reminder_events')
+      .insert({ user_id: user.id, inactive_week: state.inactiveWeek })
+      .select('id, emailed_at')
+      .maybeSingle();
+    if (created.error && created.error.code !== UNIQUE_VIOLATION) {
+      throw Object.assign(new Error(`create inactive reminder state: ${created.error.message}`), { status: 500 });
+    }
+    event = created.data;
+    if (!event) {
+      event = unwrap(
+        await db
+          .from('inactive_reminder_events')
+          .select('id, emailed_at')
+          .eq('user_id', user.id)
+          .eq('inactive_week', state.inactiveWeek)
+          .single(),
+        'load concurrent inactive reminder state',
+      );
+    }
+  }
+  if (event.emailed_at) return false;
+
+  const result = await sender.send({
+    to: user.email,
+    message: inactiveWeeklyEmail({
+      name: user.name,
+      inactiveDays: state.inactiveDays,
+      loginUrl: dashboardUrl,
+    }),
+    idempotencyKey: `inactive-weekly/${user.id}/${state.inactiveWeek}`,
+  });
+  if (!result.sent) return false;
+
+  unwrap(
+    await db.from('inactive_reminder_events').update({ emailed_at: now.toISOString() }).eq('id', event.id),
+    'record inactive reminder email',
+  );
+  // A weekly re-engagement replaces the backlog of daily red-day messages.
+  unwrap(
+    await db
+      .from('daily_logs')
+      .update({ red_alerted_at: now.toISOString() })
+      .eq('user_id', user.id)
+      .eq('status', 'missed')
+      .is('red_alerted_at', null),
+    'suppress inactive red-day emails',
+  );
+  return true;
+}
+
+export async function sendPendingInactiveWeeklyReminders(now = new Date()) {
+  if (!emailConfigured()) return { checked: 0, sent: 0 };
+
+  const enrollments = unwrap(
+    await db.from('enrollments').select('user_id').eq('status', 'active').limit(5000),
+    'load enrolled users for inactive reminders',
+  );
+  const userIds = [...new Set(enrollments.map((enrollment) => enrollment.user_id))];
+  if (!userIds.length) return { checked: 0, sent: 0 };
+
+  const users = unwrap(
+    await db.from('users').select('id, email, name, last_activity_at, last_login_at, created_at').in('id', userIds),
+    'load inactive reminder users',
+  );
+  let sent = 0;
+  for (const user of users) {
+    try {
+      if (await sendInactiveWeeklyReminder(user, { now })) sent += 1;
+    } catch (error) {
+      console.error('[email] inactive reminder failed:', error instanceof Error ? error.message : error);
+    }
+  }
+  return { checked: users.length, sent };
 }
 
 /**
@@ -265,7 +377,7 @@ export async function runStreakRiskNotifications(
 
   const userIds = [...new Set(logs.map((log) => log.user_id))];
   const users = unwrap(
-    await db.from('users').select('id, email, name, timezone, current_streak').in('id', userIds),
+    await db.from('users').select('id, email, name, timezone, current_streak, last_activity_at, last_login_at, created_at').in('id', userIds),
     'load streak-risk users',
   );
   const userById = new Map(users.map((user) => [user.id, user]));
@@ -273,7 +385,7 @@ export async function runStreakRiskNotifications(
 
   for (const log of logs) {
     const user = userById.get(log.user_id);
-    if (!user || todayIn(user.timezone) !== log.log_date) continue;
+    if (!user || inactivityState(user, now).inactive || todayIn(user.timezone) !== log.log_date) continue;
 
     const hour = localHour(now, user.timezone);
     const remaining = Math.max(log.required_count - log.solved_count, 0);
@@ -350,14 +462,14 @@ export async function sendPendingRedDayEmails() {
   if (!logs.length) return { checked: 0, sent: 0 };
 
   const users = unwrap(
-    await db.from('users').select('id, email, name').in('id', [...new Set(logs.map((log) => log.user_id))]),
+    await db.from('users').select('id, email, name, last_activity_at, last_login_at, created_at').in('id', [...new Set(logs.map((log) => log.user_id))]),
     'load red-day email users',
   );
   const userById = new Map(users.map((user) => [user.id, user]));
   let sent = 0;
   for (const log of logs) {
     const user = userById.get(log.user_id);
-    if (!user) continue;
+    if (!user || inactivityState(user).inactive) continue;
     const delivered = await sendRedDayNotification(user, {
       id: log.id,
       status: 'missed',
@@ -437,6 +549,7 @@ export function startEmailNotificationWorker() {
     running = true;
     try {
       await runHeadlessDayClosures();
+      await sendPendingInactiveWeeklyReminders();
       await sendPendingRedDayEmails();
       await Promise.all([
         runStreakRiskNotifications(),

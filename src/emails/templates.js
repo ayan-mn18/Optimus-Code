@@ -159,6 +159,22 @@ export function streakRiskEmail({ name, remaining, currentStreak, hoursLeft, log
   };
 }
 
+export function inactiveWeeklyEmail({ name, inactiveDays, loginUrl }) {
+  return {
+    subject: 'Your Optimus Code queue is ready when you are.',
+    html: layout({
+      preheader: `Your practice queue has been waiting for ${inactiveDays} days.`,
+      eyebrow: 'Weekly check-in',
+      title: 'The queue is still here.',
+      intro: `Hi ${firstName(name)}. We have not seen you on Optimus Code for ${escapeHtml(inactiveDays)} days. Your practice plan is still ready, and one problem is enough to restart the rhythm.`,
+      content: `<div style="margin-top:24px;padding:18px;border-left:3px solid ${COLORS.brand};border-radius:10px;background:${COLORS.elevated}"><p style="margin:0;color:${COLORS.ink};font-size:15px;font-weight:700">No catch-up required.</p><p style="margin:7px 0 0;color:${COLORS.muted};font-size:13px;line-height:1.6">Come back when you have a few focused minutes. Optimus will meet you where you left off.</p></div>`,
+      cta: { label: 'Return to my dashboard', url: loginUrl },
+      footnote: 'We send this check-in once a week while your account is inactive.',
+    }),
+    text: `Hi ${name}. We have not seen you on Optimus Code for ${inactiveDays} days. Your practice queue is ready when you are: ${loginUrl}`,
+  };
+}
+
 export function greenStreakEmail({ name, streakLength, longestStreak, loginUrl }) {
   return {
     subject: `${streakLength} green days in a row. Keep the rhythm.`,

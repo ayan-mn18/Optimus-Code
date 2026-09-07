@@ -23,6 +23,8 @@ create table if not exists public.users (
   -- System Design rollout. New accounts default to paid access.
   billing_exempt boolean not null default false,
   created_at    timestamptz not null default now(),
+  last_login_at timestamptz,
+  last_activity_at timestamptz,
   updated_at    timestamptz not null default now()
 );
 
@@ -49,6 +51,8 @@ alter table public.users add column if not exists google_sub text;
 alter table public.users add column if not exists auth_provider text not null default 'password';
 alter table public.users add column if not exists picture_url text;
 alter table public.users add column if not exists billing_exempt boolean not null default false;
+alter table public.users add column if not exists last_login_at timestamptz;
+alter table public.users add column if not exists last_activity_at timestamptz;
 create unique index if not exists users_google_sub_idx on public.users (google_sub) where google_sub is not null;
 alter table public.users drop constraint if exists users_auth_provider_check;
 alter table public.users add constraint users_auth_provider_check
@@ -56,6 +60,19 @@ alter table public.users add constraint users_auth_provider_check
 
 create index if not exists users_leaderboard_idx
   on public.users (show_on_leaderboard, current_streak desc, total_solved desc);
+
+-- One durable event per inactive week keeps re-engagement reminders sparse.
+create table if not exists public.inactive_reminder_events (
+  id              uuid primary key default gen_random_uuid(),
+  user_id         uuid not null references public.users(id) on delete cascade,
+  inactive_week   int not null,
+  emailed_at      timestamptz,
+  created_at      timestamptz not null default now(),
+  unique (user_id, inactive_week)
+);
+
+create index if not exists inactive_reminder_events_user_idx
+  on public.inactive_reminder_events (user_id, inactive_week desc);
 
 -- ---------------------------------------------------------------------------
 -- refresh_tokens (rotating, hashed)
@@ -445,6 +462,7 @@ alter table public.daily_assignments enable row level security;
 alter table public.user_problems     enable row level security;
 alter table public.milestone_recaps  enable row level security;
 alter table public.streak_milestones enable row level security;
+alter table public.inactive_reminder_events enable row level security;
 alter table public.problems          enable row level security;
 alter table public.waitlist          enable row level security;
 alter table public.account_invites    enable row level security;

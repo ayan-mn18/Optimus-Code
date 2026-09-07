@@ -9,7 +9,9 @@ import {
   redDayEmail,
   streakRiskEmail,
   greenStreakEmail,
+  inactiveWeeklyEmail,
 } from '../src/emails/templates.js';
+import { inactivityState } from '../src/services/notification.service.js';
 
 test('email sender passes content and idempotency to Brevo', async () => {
   const calls = [];
@@ -79,6 +81,7 @@ test('transactional templates include plain text and escape names', () => {
     redDayEmail({ name: 'Ada', date: '2026-08-24', solved: 2, required: 5, loginUrl: 'https://example.com' }),
     streakRiskEmail({ name: 'Ada', remaining: 2, currentStreak: 9, hoursLeft: 4, loginUrl: 'https://example.com' }),
     greenStreakEmail({ name: 'Ada', streakLength: 7, longestStreak: 7, loginUrl: 'https://example.com' }),
+    inactiveWeeklyEmail({ name: 'Ada', inactiveDays: 9, loginUrl: 'https://example.com' }),
   ];
 
   for (const message of messages) {
@@ -89,4 +92,18 @@ test('transactional templates include plain text and escape names', () => {
   }
   assert.doesNotMatch(messages[0].html, /<script>Ada<\/script>/);
   assert.match(messages[0].html, /&lt;script&gt;Ada&lt;\/script&gt;/);
+});
+
+test('inactivity cadence changes only after a full inactive week', () => {
+  const now = new Date('2026-09-08T00:00:00.000Z');
+  assert.deepEqual(inactivityState({ last_login_at: '2026-09-02T00:00:00.000Z' }, now), {
+    inactiveDays: 6,
+    inactive: false,
+    inactiveWeek: 0,
+  });
+  assert.deepEqual(inactivityState({ last_login_at: '2026-09-01T00:00:00.000Z' }, now), {
+    inactiveDays: 7,
+    inactive: true,
+    inactiveWeek: 1,
+  });
 });
