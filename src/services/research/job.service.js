@@ -125,7 +125,9 @@ async function execute(id) {
 
   try {
     const result = await Promise.race([
-      runPipeline({ ...row, brief: storedBrief(row) }, { onStage }),
+      // An on-demand run must always return a document for the database
+      // publisher. Batch CLI runs keep the file-based skip optimisation.
+      runPipeline({ ...row, brief: storedBrief(row) }, { onStage, force: true }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('Research timed out')), env.research.timeoutMs)),
     ]);
 
