@@ -91,7 +91,7 @@
       <h1>Supabase → Amazon RDS migration</h1>
       <p class="lede">A production-safe plan to move the live application database into an Arm-based Amazon RDS for PostgreSQL instance, connect it privately to the existing EC2 service, and cut over with verifiable rollback points.</p>
       <div class="meta">
-        <span class="pill"><strong>Plan status:</strong> inventory captured</span>
+        <span class="pill"><strong>Migration status:</strong> RDS live · API cut over</span>
         <span class="pill"><strong>Inventory date:</strong> 19 Sep 2026 (Asia/Kolkata)</span>
         <span class="pill"><strong>Region:</strong> ap-south-1</span>
         <span class="pill"><strong>Requested class:</strong> db.t4g.micro</span>
@@ -99,9 +99,20 @@
     </header>
 
     <section class="grid">
-      <article class="card notice">
-        <div class="icon">⚠</div>
-        <div><h2>Provisioning gate</h2><p>No RDS instance, subnet group, security group, parameter group, or production secret was created by this run. Creating RDS is billable and changes the AWS account, so provisioning should happen only after the target sizing and cutover choices below are approved.</p></div>
+      <article class="card success">
+        <div class="icon">✓</div>
+        <div><h2>Execution completed</h2><p><code>optimus-prod-db</code> is live as a private, encrypted <code>db.t4g.micro</code> PostgreSQL 17.6 instance in <code>ap-south-1c</code>. The production EC2 service is running with the native PostgreSQL adapter and the RDS app role. Supabase credentials remain available for the rollback window.</p></div>
+      </article>
+
+      <article class="card">
+        <h2>Executed result</h2>
+        <div class="stat-grid">
+          <div class="stat"><span class="label">RDS status</span><span class="value">available</span></div>
+          <div class="stat"><span class="label">API status</span><span class="value">healthy</span></div>
+          <div class="stat"><span class="label">Row parity</span><span class="value">22 / 22</span></div>
+          <div class="stat"><span class="label">Catalog parity</span><span class="value">4 / 4</span></div>
+        </div>
+        <p class="small muted">Executed resources: subnet group <code>optimus-prod-db-subnets</code>, RDS security group <code>sg-033ccbbc7486a9774</code>, parameter group <code>optimus-prod-postgres17</code> with SSL enforcement, and Secrets Manager credentials for the RDS master and <code>optimus_app</code> roles. Exact counts, 87 constraints, 72 indexes, and 22 RLS-enabled tables matched the live Supabase source.</p>
       </article>
 
       <article class="card">
@@ -313,14 +324,14 @@ DB_CONNECT_TIMEOUT_MS=5000</code></pre>
       </article>
 
       <article class="card half success">
-        <h2>Approval choices</h2>
-        <p>Before AWS changes are made, confirm:</p>
+        <h2>Post-cutover follow-ups</h2>
+        <p>The migration is live. Keep these operational decisions visible:</p>
         <ol>
-          <li>Proceed with <code>db.t4g.micro</code>, or approve the safer <code>db.t4g.small</code> starting size?</li>
-          <li>Use newly created private subnets, or the existing two-AZ subnets with RDS marked non-public?</li>
-          <li>Native <code>pg</code> adapter or a transitional PostgREST/compatibility layer?</li>
-          <li>Is Supabase Auth/Storage/Realtime out of scope, or must any of them be replaced too?</li>
-          <li>What maintenance window and rollback duration should be used?</li>
+          <li>Monitor the 1 GiB <code>db.t4g.micro</code>; move to <code>db.t4g.small</code> if connection pressure or memory warrants it.</li>
+          <li>Keep RDS private and retain the EC2 security-group-only ingress rule.</li>
+          <li>Complete the agreed Supabase rollback window before revoking its credentials.</li>
+          <li>Supabase Auth/Storage/Realtime remain out of scope unless separately replaced.</li>
+          <li>Archive the dump checksums and restore/parity logs, then delete sensitive dump files.</li>
         </ol>
       </article>
 
@@ -337,7 +348,7 @@ DB_CONNECT_TIMEOUT_MS=5000</code></pre>
         <p class="small muted">Store dumps and reports in encrypted, access-controlled storage. They contain PII, refresh-token hashes, and payment identifiers; set a deletion deadline after the rollback window.</p>
       </article>
     </section>
-    <footer>Generated as a read-only planning artifact from live catalog queries and dump metadata. No RDS resources or production data were modified.</footer>
+    <footer>Updated after execution from live catalog, restore, parity, and EC2 health checks. Supabase remains available for the agreed rollback window.</footer>
   </main>
 </body>
 </html>
