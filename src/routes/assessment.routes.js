@@ -8,6 +8,7 @@ import { CODE_LANGUAGES, languageChoices } from '../services/runner/index.js';
 import {
   createAssessment,
   abandonAssessment,
+  bankHealth,
   getAssessment,
   runAssessmentAnswer,
   saveAssessmentAnswer,
@@ -19,11 +20,14 @@ const router = Router();
 router.use(requireAuth);
 router.use(requirePro);
 
+// Keyed by user, not by address: an office behind one NAT is many students,
+// and rate-limiting them as one locks out a whole team.
 const generationLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   limit: 20,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id ?? req.ip,
   message: { error: { message: 'Assessment limit reached. Try again later.' } },
 });
 
@@ -39,6 +43,22 @@ const runLimiter = rateLimit({
 
 router.get('/languages', (_req, res) => {
   res.json({ languages: languageChoices() });
+});
+
+/**
+ * Bank depth for the problems that have been assessed.
+ *
+ * Supply is demand-driven now, so this is the number that predicts how long the
+ * next student waits: a problem with depth is a ~300ms open, a problem without
+ * one pays for a question. Declared before /:attemptId so "bank" is not read as
+ * an attempt id.
+ */
+router.get('/bank/health', async (_req, res, next) => {
+  try {
+    res.json(await bankHealth());
+  } catch (error) {
+    next(error);
+  }
 });
 
 router.post(

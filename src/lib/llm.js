@@ -87,11 +87,11 @@ const RETRYABLE = new Set([408, 409, 429, 500, 502, 503, 504]);
  * six questions in a single warming run. What must not happen is a timeout being
  * retried, which is why that case throws instead of looping.
  */
-async function post(fetchImpl, url, headers, body) {
+async function post(fetchImpl, url, headers, body, timeoutMs = TIMEOUT_MS) {
   let lastError;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetchImpl(url, {
         method: 'POST',
@@ -109,7 +109,7 @@ async function post(fetchImpl, url, headers, body) {
       if (error?.name === 'AbortError') {
         // A request that ran out the clock will not beat it on the next go, and
         // a caller retrying above us would multiply the wait.
-        throw new LlmError(504, `LLM request timed out after ${Math.round(TIMEOUT_MS / 1000)}s`);
+        throw new LlmError(504, `LLM request timed out after ${Math.round(timeoutMs / 1000)}s`);
       }
       lastError = new LlmError(502, error?.message ?? 'LLM request failed');
     } finally {
@@ -144,10 +144,33 @@ export async function chat({
   effort = 'medium',
   maxTokens = 8000,
   model = env.ai.model,
+  timeoutMs = TIMEOUT_MS,
   fetchImpl = fetch,
 }) {
   if (!llmConfigured()) throw new LlmError(503, 'No LLM_API_KEY configured');
 
+  const { body, url, headers, isAnthropic } = buildRequest({
+    system, user, schema, json, schemaName, tools, messages, looseSchema, effort, maxTokens, model,
+  });
+
+  const payload = await post(fetchImpl, url, headers, isAnthropic ? toAnthropic(body, { schema, schemaName }) : body, timeoutMs);
+
+  if (isAnthropic) return readAnthropic(payload);
+
+  const choice = payload.choices?.[0];
+  return {
+    message: choice?.message ?? {},
+    text: choice?.message?.content ?? '',
+    toolCalls: choice?.message?.tool_calls ?? [],
+    finishReason: choice?.finish_reason,
+    usage: payload.usage ?? {},
+  };
+}
+
+/** The wire shape for one call, so a provider quirk is fixed in one place. */
+function buildRequest({
+  system, user, schema, json, schemaName, tools, messages, looseSchema, effort, maxTokens, model,
+}) {
   const body = {
     model,
     max_tokens: maxTokens,
@@ -176,31 +199,22 @@ export async function chat({
   }
 
   const isAnthropic = env.ai.provider === 'anthropic';
-  const url = isAnthropic ? `${env.ai.baseUrl}/messages` : `${env.ai.baseUrl}/chat/completions`;
-  const headers = isAnthropic
-    ? {
-      'x-api-key': env.ai.apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-      ...(env.ai.workspaceId ? { 'anthropic-workspace-id': env.ai.workspaceId } : {}),
-    }
-    : {
-      authorization: `Bearer ${env.ai.apiKey}`,
-      'content-type': 'application/json',
-      ...(env.ai.workspaceId ? { 'x-workspace-id': env.ai.workspaceId } : {}),
-    };
-
-  const payload = await post(fetchImpl, url, headers, isAnthropic ? toAnthropic(body, { schema, schemaName }) : body);
-
-  if (isAnthropic) return readAnthropic(payload);
-
-  const choice = payload.choices?.[0];
   return {
-    message: choice?.message ?? {},
-    text: choice?.message?.content ?? '',
-    toolCalls: choice?.message?.tool_calls ?? [],
-    finishReason: choice?.finish_reason,
-    usage: payload.usage ?? {},
+    body,
+    isAnthropic,
+    url: isAnthropic ? `${env.ai.baseUrl}/messages` : `${env.ai.baseUrl}/chat/completions`,
+    headers: isAnthropic
+      ? {
+        'x-api-key': env.ai.apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        ...(env.ai.workspaceId ? { 'anthropic-workspace-id': env.ai.workspaceId } : {}),
+      }
+      : {
+        authorization: `Bearer ${env.ai.apiKey}`,
+        'content-type': 'application/json',
+        ...(env.ai.workspaceId ? { 'x-workspace-id': env.ai.workspaceId } : {}),
+      },
   };
 }
 

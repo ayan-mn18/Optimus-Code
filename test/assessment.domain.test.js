@@ -5,7 +5,6 @@ import { PASS_RATIO, planBlueprint } from '../src/services/assessment/blueprint.
 import { SCHEMAS, fingerprint, isParamType, isReturnType } from '../src/services/assessment/schemas.js';
 import { generateCodingQuestion, generateDebugQuestion, generateMcqSet } from '../src/services/assessment/generator.js';
 import { chooseFromPool, redistribute } from '../src/services/assessment/bank.js';
-import { thinnestKind } from '../src/services/assessment/worker.js';
 import { publicQuestion, scoreMultipleChoice, upgradeLegacyEntry } from '../src/services/assessment.service.js';
 
 const HLD = { id: 'p-hld', kind: 'HLD', title: 'Design a URL Shortener', topic: 'Data storage', difficulty: 'Medium' };
@@ -21,14 +20,27 @@ test('an HLD paper is ten equally weighted questions', () => {
   assert.equal(new Set(plan.slots.map((slot) => slot.conceptArea)).size, 10);
 });
 
-test('an LLD paper is mostly code', () => {
+test('a codeable paper is six reasoning questions and four you write code for', () => {
   const plan = planBlueprint({ problem: LLD, userId: 'u1', attemptNumber: 1, language: 'java' });
-  const weights = Object.fromEntries(plan.slots.map((slot) => [slot.type === 'mcq' ? slot.id : slot.type, slot.weight]));
+  const coding = plan.slots.filter((slot) => slot.type === 'machine_coding');
+  const debug = plan.slots.filter((slot) => slot.type === 'debug');
+
   assert.equal(plan.maxScore, 100);
-  assert.equal(weights.machine_coding, 60);
-  assert.equal(weights.debug, 25);
-  assert.equal(plan.slots.filter((slot) => slot.type === 'mcq').length, 3);
+  assert.equal(plan.slots.filter((slot) => slot.type === 'mcq').length, 6);
+  assert.equal(coding.length, 3);
+  assert.equal(debug.length, 1);
   assert.equal(plan.language, 'java');
+
+  // Multiple choice comes first so the slow coding generation has the student's
+  // opening minutes to land in.
+  assert.deepEqual(plan.slots.slice(0, 6).map((slot) => slot.type), Array(6).fill('mcq'));
+
+  // Three coding tasks have to be three different exercises, not one renamed.
+  assert.equal(new Set(coding.map((slot) => slot.conceptArea)).size, 3);
+
+  // Exactly one coding task is required; the paper survives losing the others.
+  assert.equal(coding.filter((slot) => !slot.optional).length, 1);
+  assert.equal(debug[0].optional, true);
 });
 
 test('at most two questions come from our own article, and none when there is no article', () => {
@@ -91,6 +103,61 @@ test('a class name and answer key that are only cosmetically off are snapped, no
   assert.deepEqual(item.question.correctAnswers, ['Write through the cache']);
 });
 
+test('a diagram survives a fence, and a bad one costs the diagram rather than the question', async () => {
+  const slot = { id: 'q1', type: 'mcq', conceptArea: 'rate limiting', difficulty: 'Medium', selectionMode: 'single', source: 'catalog' };
+  const question = (diagram) => ({
+    questions: [{
+      id: 'q1', label: 'Limiter', prompt: 'A prompt long enough to count as a real question.', context: '',
+      selectionMode: 'single', options: ['a', 'b', 'c', 'd'], correctAnswers: ['b'],
+      explanation: 'b is right because of the stated constraint.',
+      diagram,
+    }],
+  });
+
+  // Models fence mermaid roughly a third of the time.
+  const [fenced] = await generateMcqSet({
+    problem: HLD, slots: [slot], seed: 1,
+    chatImpl: async () => question({ type: 'mermaid', source: '```mermaid\ngraph LR\n  A[Client] --> B[Limiter]\n```', caption: 'path' }),
+  });
+  assert.equal(fenced.question.diagram.source.startsWith('graph LR'), true);
+  assert.equal(fenced.question.diagram.caption, 'path');
+
+  // A type that will not render is dropped; the question is still good.
+  const [unrenderable] = await generateMcqSet({
+    problem: HLD, slots: [slot], seed: 1,
+    chatImpl: async () => question({ type: 'mermaid', source: 'gantt\n  title Nope\n  section A', caption: '' }),
+  });
+  assert.equal(unrenderable.question.diagram, null);
+  assert.equal(unrenderable.question.options.length, 4);
+
+  // No diagram at all is the normal case, not a failure.
+  const [plain] = await generateMcqSet({
+    problem: HLD, slots: [slot], seed: 1, chatImpl: async () => question(null),
+  });
+  assert.equal(plain.question.diagram, null);
+});
+
+test('a diagram reaches the student, and still brings no answer key with it', () => {
+  const rendered = publicQuestion({
+    slotId: 'q1', type: 'mcq', weight: 5, conceptArea: 'rate limiting',
+    payload: {
+      label: 'Limiter', prompt: 'p', context: '',
+      diagram: { type: 'mermaid', source: 'graph LR\n  A --> B', caption: 'write path' },
+      selectionMode: 'single', options: ['a', 'b'], correctAnswers: ['b'], explanation: 'because',
+    },
+  });
+  assert.equal(rendered.diagram.source, 'graph LR\n  A --> B');
+  assert.equal(rendered.correctAnswers, undefined);
+  assert.equal(rendered.explanation, undefined);
+
+  // Every paper written before diagrams existed still renders.
+  const legacy = publicQuestion({
+    slotId: 'q2', type: 'mcq', weight: 1, conceptArea: 'caching',
+    payload: { label: 'C', prompt: 'p', context: '', selectionMode: 'single', options: ['a', 'b'], correctAnswers: ['a'], explanation: 'x' },
+  });
+  assert.equal(legacy.diagram, null);
+});
+
 test('an MCQ with no wrong answer, or a key outside its options, is rejected', () => {
   const base = {
     kind: 'mcq', label: 'Sharding', prompt: 'A question long enough to be a real question about sharding.',
@@ -98,6 +165,10 @@ test('an MCQ with no wrong answer, or a key outside its options, is rejected', (
     explanation: 'Because a is the only option that survives the stated constraint.',
   };
   assert.ok(SCHEMAS.mcq.safeParse(base).success);
+  // A diagram is optional, and defaults to none rather than being required.
+  assert.equal(SCHEMAS.mcq.safeParse(base).data.diagram, null);
+  assert.ok(SCHEMAS.mcq.safeParse({ ...base, diagram: { type: 'mermaid', source: 'sequenceDiagram\n  A->>B: get', caption: '' } }).success);
+  assert.ok(!SCHEMAS.mcq.safeParse({ ...base, diagram: { type: 'mermaid', source: 'pie title Nope', caption: '' } }).success);
   assert.ok(!SCHEMAS.mcq.safeParse({ ...base, correctAnswers: ['d'] }).success);
   assert.ok(!SCHEMAS.mcq.safeParse({ ...base, correctAnswers: ['a', 'b', 'c'] }).success);
   assert.ok(!SCHEMAS.mcq.safeParse({ ...base, selectionMode: 'multiple', correctAnswers: ['a'] }).success);
@@ -453,13 +524,22 @@ test('a droppable slot hands its marks to the heaviest remaining question', () =
   assert.deepEqual(redistribute(ordered, []), ordered);
 });
 
-test('the worker tops up the thinnest slot type and stops when stocked', () => {
-  assert.equal(thinnestKind({ mcq: 30, machine_coding: 2, debug: 20 }, LLD), 'machine_coding');
-  assert.equal(thinnestKind({ mcq: 30, machine_coding: 20, debug: 20 }, LLD), null);
-  assert.equal(thinnestKind({ mcq: 3 }, HLD), 'mcq');
-  // Neither an HLD paper nor an LLD explainer needs a coding bank.
-  assert.equal(thinnestKind({ mcq: 40 }, HLD), null);
-  assert.equal(thinnestKind({ mcq: 40 }, { kind: 'LLD', coding_enabled: false }), null);
+test('a codeable HLD problem gets coding questions, and the catalogue flag decides it', () => {
+  // A rate limiter is HLD and entirely implementable. Before this the kind
+  // decided, so every HLD paper was ten MCQs and no code.
+  const rateLimiter = {
+    id: 'p-rl', kind: 'HLD', title: 'Design Rate Limiter (HLD)', topic: 'Rate limiting',
+    difficulty: 'Medium', coding_enabled: true,
+  };
+  const plan = planBlueprint({ problem: rateLimiter, userId: 'u1', attemptNumber: 1, language: 'python' });
+  assert.equal(plan.codeable, true);
+  assert.equal(plan.slots.filter((slot) => slot.type === 'machine_coding').length, 3);
+  assert.equal(plan.slots.filter((slot) => slot.type === 'debug').length, 1);
+
+  // The same problem without the flag is a knowledge paper.
+  const unflagged = planBlueprint({ problem: { ...rateLimiter, coding_enabled: false }, userId: 'u1', attemptNumber: 1 });
+  assert.equal(unflagged.codeable, false);
+  assert.ok(unflagged.slots.every((slot) => ['mcq', 'sql'].includes(slot.type)));
 });
 
 test('an LLD explainer page is a knowledge paper, not a coding one', () => {

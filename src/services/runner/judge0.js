@@ -21,6 +21,21 @@ import { getOrSetCached } from '../../lib/cache.js';
 
 const RETRYABLE = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const DEDUPE_TTL_MS = 10 * 60_000;
+const LANGUAGES_TTL_MS = 60 * 60_000;
+
+/**
+ * Judge0 language ids are per-instance, not universal.
+ *
+ * The public CE tracks recent runtimes — Python 3.12 is 100, Node 22 is 102 —
+ * while a self-hosted 1.13.1 has neither and tops out at Python 3.8 (71) and
+ * Node 12 (63). Sending 100 to that box is a 422 on every coding submission,
+ * which is exactly what happened. So the ids we prefer are a list, and the
+ * transport picks the newest one the instance in front of it actually has.
+ */
+const LANGUAGE_FALLBACKS = {
+  100: [100, 71],   // Python 3.12 → 3.8
+  102: [102, 63],   // Node 22 → Node 12
+};
 
 const encode = (text) => Buffer.from(text ?? '', 'utf8').toString('base64');
 const decode = (text) => Buffer.from(text ?? '', 'base64').toString('utf8');
@@ -48,6 +63,33 @@ function createGate(limit) {
 
 export function createJudge0({ config = env.runner, fetchImpl = fetch } = {}) {
   const gate = createGate(config.concurrency ?? 4);
+
+  /** What this instance can actually run. Asked once an hour, not per submission. */
+  async function supportedLanguages() {
+    return getOrSetCached(`judge0:languages:${config.baseUrl}`, LANGUAGES_TTL_MS, async () => {
+      try {
+        const headers = {};
+        if (config.apiKey) headers[config.authHeader ?? 'x-rapidapi-key'] = config.apiKey;
+        if (config.apiHost) headers['x-rapidapi-host'] = config.apiHost;
+        const response = await fetchImpl(`${config.baseUrl}/languages`, { headers });
+        if (!response.ok) return null;
+        const languages = await response.json();
+        return new Set(languages.map((language) => language.id));
+      } catch {
+        // An instance that will not list its languages still gets the request
+        // we would otherwise have sent; this is an optimisation, not a gate.
+        return null;
+      }
+    });
+  }
+
+  async function resolveLanguageId(wanted) {
+    const candidates = LANGUAGE_FALLBACKS[wanted];
+    if (!candidates) return wanted;
+    const supported = await supportedLanguages();
+    if (!supported) return wanted;
+    return candidates.find((candidate) => supported.has(candidate)) ?? wanted;
+  }
 
   async function post(body) {
     const headers = { 'content-type': 'application/json' };
@@ -97,6 +139,9 @@ export function createJudge0({ config = env.runner, fetchImpl = fetch } = {}) {
 
       const body = {
         ...judge0,
+        // Resolved before the cache key is built, so the key describes the
+        // submission that is actually sent.
+        language_id: await resolveLanguageId(judge0.language_id),
         ...(judge0.source_code !== undefined ? { source_code: encode(judge0.source_code) } : {}),
         cpu_time_limit: config.cpuTimeLimit ?? 5,
         wall_time_limit: config.wallTimeLimit ?? 12,

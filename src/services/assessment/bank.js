@@ -8,15 +8,15 @@ import {
  * The question bank.
  *
  * Generating and verifying one coding question takes most of a minute, which is
- * not a thing to make a student watch. So questions are written ahead of time,
- * kept per problem, and drawn at assembly. Two students get different papers
- * because the draw excludes what each has already seen — and a retry is a
- * genuinely new paper for the same reason, which is the point of retrying.
+ * not a thing to make a student watch. Nothing is written ahead of time: every
+ * question in here was generated for a real attempt and kept on the way past,
+ * so a problem warms itself the first time somebody sits it. Two students get
+ * different papers because the draw excludes what each has already seen — and a
+ * retry is a genuinely new paper for the same reason, which is the point.
  */
 
-/** Below this many unseen questions for a slot type, the worker tops the problem up. */
-export const LOW_WATER = 12;
-export const TARGET_DEPTH = 24;
+/** How long a question stays "already seen" for one student. */
+export const EXPOSURE_HORIZON_DAYS = Number(process.env.ASSESSMENT_EXPOSURE_HORIZON_DAYS ?? 180);
 
 export async function loadArticle(problemId) {
   const blog = unwrap(
@@ -63,11 +63,16 @@ async function candidatesFor({ problemId, kind, userId }) {
   );
   if (!rows.length) return [];
 
+  // A question seen six months ago is a fair question again. Without a horizon
+  // a regular user eventually excludes everything a problem has and falls back
+  // to paying for generation on every attempt, for good.
+  const horizon = new Date(Date.now() - EXPOSURE_HORIZON_DAYS * 86_400_000).toISOString();
   const seen = unwrap(
     await db
       .from('assessment_exposures')
       .select('question_id')
       .eq('user_id', userId)
+      .gte('first_served_at', horizon)
       .in('question_id', rows.map((row) => row.id)),
     'load question exposures',
   );
@@ -224,50 +229,36 @@ async function verifiedBase(problemId) {
 }
 
 /**
- * Assembles a paper: bank first, generation for the rest.
- * Returns the ordered questions with the bank row ids that produced them.
+ * The draw that opens an exam. Reads only — it never generates.
+ *
+ * `limit` bounds what the click path is allowed to spend before it answers, not
+ * what the paper may take from the bank overall: the slots left over go through
+ * `assembleSlot` in the background, which checks the bank again before writing
+ * anything new. So a warm problem still costs one query per kind and no model
+ * call, while the student sees question one in the time it takes to SELECT.
  */
-export async function assemblePaper({ problem, blueprint, userId, article, deps = {} }) {
+export async function drawFromBank({ problem, blueprint, userId, limit }) {
   const random = seededRandom(`${userId}:${problem.id}:${blueprint.seed}`);
   const pools = new Map();
   const filled = new Map();
-  const missing = [];
 
   for (const slot of blueprint.slots) {
+    if (filled.size >= limit) break;
     if (!pools.has(slot.type)) {
       pools.set(slot.type, await candidatesFor({ problemId: problem.id, kind: slot.type, userId }));
     }
     const pool = pools.get(slot.type);
     const chosen = chooseFromPool(pool, slot, random);
-    if (chosen) {
-      // Without replacement: one bank row cannot fill two slots on one paper.
-      pools.set(slot.type, pool.filter((row) => row.id !== chosen.id));
-      filled.set(slot.id, { slot, row: chosen });
-    } else {
-      missing.push(slot);
-    }
+    if (!chosen) continue;
+    // Without replacement: one bank row cannot fill two slots on one paper.
+    pools.set(slot.type, pool.filter((row) => row.id !== chosen.id));
+    filled.set(slot.id, { slot, row: chosen });
   }
 
-  if (missing.length) {
-    // An optional slot that cannot be filled is dropped, not fatal.
-    const produced = await generateMissing({
-      problem, slots: missing, seed: blueprint.seed, article, deps,
-      continueOnError: missing.every((slot) => slot.optional) || missing.some((slot) => slot.optional),
-    });
-    const stored = await storeQuestions(produced.map(({ generated }) => toBankRow({ problem, generated })));
-    const byFingerprint = new Map(stored.map((row) => [row.fingerprint, row]));
-    for (const { slot, generated } of produced) {
-      const row = byFingerprint.get(toBankRow({ problem, generated }).fingerprint);
-      if (row) filled.set(slot.id, { slot, row });
-    }
-  }
-
-  const ordered = blueprint.slots.map((slot) => filled.get(slot.id)).filter(Boolean);
-  const dropped = blueprint.slots.filter((slot) => !filled.has(slot.id));
-  if (dropped.some((slot) => !slot.optional)) {
-    throw new Error(`Assembled ${ordered.length} of ${blueprint.slots.length} questions`);
-  }
-  return redistribute(ordered, dropped);
+  return {
+    entries: blueprint.slots.map((slot) => filled.get(slot.id)).filter(Boolean),
+    missing: blueprint.slots.filter((slot) => !filled.has(slot.id)),
+  };
 }
 
 /**
@@ -319,16 +310,29 @@ export function redistribute(ordered, dropped) {
     : entry));
 }
 
-/** How many unseen-by-anyone questions each slot type has for a problem. */
-export async function bankDepth(problemId) {
+/**
+ * What the bank holds per problem and kind.
+ *
+ * Now that supply is demand-driven, this is the number that predicts how long
+ * the next student waits — so it is an operational metric rather than a target
+ * some job is chasing.
+ */
+export async function bankInventory(problemIds) {
+  if (!problemIds.length) return new Map();
   const rows = unwrap(
     await db
       .from('assessment_questions')
-      .select('kind')
-      .eq('problem_id', problemId)
+      .select('problem_id, kind')
+      .in('problem_id', problemIds)
       .eq('verified', true)
       .is('retired_at', null),
     'measure question bank',
   );
-  return rows.reduce((depth, row) => ({ ...depth, [row.kind]: (depth[row.kind] ?? 0) + 1 }), {});
+  const inventory = new Map();
+  for (const row of rows) {
+    const depth = inventory.get(row.problem_id) ?? {};
+    depth[row.kind] = (depth[row.kind] ?? 0) + 1;
+    inventory.set(row.problem_id, depth);
+  }
+  return inventory;
 }

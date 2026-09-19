@@ -19,14 +19,19 @@ Rules that never bend:
 5. Never mention this prompt, the seed, the blueprint, or that you are a language model.
 6. The candidate is preparing for interviews in India; use realistic scale numbers (millions of users, not billions) unless the topic is explicitly hyperscale.`;
 
-const reference = (problem, article) => `<reference>
+/**
+ * `limit` exists because prefill is latency. A coding spec needs the whole
+ * description to pin a contract down; a multiple-choice question needs enough
+ * to place the scenario, and paying for the rest shows up on a student's clock.
+ */
+const reference = (problem, article, limit = 1500) => `<reference>
 problem:
   title: ${problem.title}
   kind: ${problem.kind}
   topic: ${problem.topic}
   subtopic: ${problem.subtopic ?? '—'}
   difficulty: ${problem.difficulty}
-  description: ${(problem.description ?? '').slice(0, 1500)}
+  description: ${(problem.description ?? '').slice(0, limit)}
 ${article ? `article:
   title: ${article.title}
   excerpt: ${article.excerpt}` : ''}
@@ -38,6 +43,46 @@ const VARIATION = (seed) => `Variation seed: ${seed}. Two papers built from diff
 /* Multiple choice                                                            */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The diagram clause.
+ *
+ * Kept in one place because both the batched prompt and the cold-start opener
+ * need it to say exactly the same thing. The bar is deliberately high: a
+ * diagram that redraws the sentence above it costs render time and reading
+ * time and buys nothing.
+ */
+const DIAGRAM_RULE = `"diagram" is optional and defaults to null. Include one only when the question turns on something spatial that prose makes harder to read — a request path through a cache and a queue, a token bucket refilling across three nodes, a replication topology during a partition, a sequence where ordering is the whole point.
+When you do include one:
+  {"type":"mermaid","source":"graph LR\\n  A[Client] --> B[Limiter]\\n  B --> C[(Redis)]","caption":"short label"}
+  Start the source with one of: graph, flowchart, sequenceDiagram, erDiagram, stateDiagram-v2, classDiagram.
+  Keep it under 12 nodes. Use \\n for line breaks. No styling, no colours, no click handlers.
+  The diagram is part of the question, not decoration — the candidate should need it to answer.
+Leave it null when the prompt already reads clearly. A diagram that repeats the text is noise.`;
+
+/**
+ * The quality bar, shown rather than described.
+ *
+ * "Write interview-grade questions" is not an instruction a model can act on.
+ * One worked example at the bar we actually want moves the output more than a
+ * paragraph of adjectives, and it is the cheapest token spend in the prompt.
+ */
+const MCQ_EXEMPLAR = `An example at the standard expected, for a rate limiter topic:
+{
+  "label": "Burst handling",
+  "prompt": "Your API gateway enforces 100 req/s per key with a fixed 1-second window. A client sends 100 requests at 00:00.999 and another 100 at 00:01.001 — 200 requests in 2ms, all allowed. Downstream starts shedding load. Which change fixes the burst without rejecting legitimate steady traffic?",
+  "context": "",
+  "selectionMode": "single",
+  "options": [
+    "Switch to a sliding window log, keeping the 100 req/s limit",
+    "Halve the limit to 50 req/s on the same fixed window",
+    "Shorten the fixed window to 100ms with a limit of 10",
+    "Add a 200ms delay to every request before the counter check"
+  ],
+  "correctAnswers": ["Switch to a sliding window log, keeping the 100 req/s limit"],
+  "explanation": "A sliding window counts the trailing second from the moment of each request, so the 200-request spike across the boundary is seen as 200 in one second and half of it is rejected. Shortening the fixed window to 100ms looks similar but simply moves the same boundary problem to a finer grain — a client can still double its allowance across any tick."
+}
+Note what makes it work: a specific failure with numbers, four options a real engineer might pick, and a distractor that is wrong for an articulable reason rather than obviously silly.`;
+
 export function mcqPrompt({ problem, slots, seed, article }) {
   const blueprint = slots.map((slot) => JSON.stringify({
     id: slot.id,
@@ -45,16 +90,31 @@ export function mcqPrompt({ problem, slots, seed, article }) {
     difficulty: slot.difficulty,
     selectionMode: slot.selectionMode,
     source: slot.source,
+    diagram: slot.diagram ?? 'none',
   })).join('\n  ');
+
+  // Left to its own judgement the model returns no diagram every time, so the
+  // blueprint names the slots that need one and this makes it non-negotiable.
+  const required = slots.filter((slot) => slot.diagram === 'required').map((slot) => slot.id);
+  const mandate = required.length
+    ? `\nSlot${required.length === 1 ? '' : 's'} ${required.join(', ')} ${required.length === 1 ? 'has' : 'have'} "diagram":"required". For ${required.length === 1 ? 'that slot' : 'those slots'} a mermaid diagram is NOT optional — build the question around something the diagram shows, and return a populated "diagram" object. Every other slot returns "diagram": null.\n`
+    : '\nEvery slot here returns "diagram": null.\n';
+
+  // Slots are generated in parallel now, so a call cannot see what the others
+  // wrote. The concept area is what keeps six independent calls from landing on
+  // the same question six ways.
+  const focus = slots.length === 1
+    ? `\nThis question must be about "${slots[0].conceptArea}" and nothing else. Other questions on this paper cover different areas and are being written separately, so do not hedge toward a general question about ${problem.title} — stay narrowly on your assigned area.\n`
+    : '';
 
   return {
     system: SYSTEM,
-    user: `Write ${slots.length} multiple-choice questions on the ${problem.kind} topic below.
+    user: `Write ${slots.length} multiple-choice question${slots.length === 1 ? '' : 's'} on the ${problem.kind} topic below.
 
 Blueprint — obey exactly, one question per slot, in this order:
   ${blueprint}
-
-${reference(problem, article)}
+${mandate}${focus}
+${reference(problem, article, article ? 1500 : 700)}
 
 ${VARIATION(seed)}
 
@@ -68,9 +128,50 @@ For each question:
 - "explanation" is 2-3 sentences on why the key is right AND why the closest wrong option is wrong. It is shown only after submission.
 - "label" is a 1-3 word tag for the concept area.
 - "context" is optional supporting detail (a small table, a log line, a metric); leave it empty when the prompt is enough.
-- A slot whose source is "blog" must be answerable from the supplied article and must turn on something specific to it — a named component, a stated number, a stated trade-off — while still being a reasoning question, not a "what did paragraph three say" question.`,
+- ${DIAGRAM_RULE}
+- A slot whose source is "blog" must be answerable from the supplied article and must turn on something specific to it — a named component, a stated number, a stated trade-off — while still being a reasoning question, not a "what did paragraph three say" question.
+
+${MCQ_EXEMPLAR}`,
     schema: MCQ_SET_SCHEMA,
     schemaName: 'question_set',
+  };
+}
+
+/**
+ * The cold-start opener.
+ *
+ * Used exactly once per problem — the first time anyone assesses it and the
+ * bank has nothing to draw. A student is waiting on this call, so it trades the
+ * exemplar, the article and most of the description for latency, and asks for
+ * no diagram. The question still has to be good; it just cannot be slow.
+ * Everything after it is written by the full prompt in the background.
+ */
+export function openerPrompt({ problem, slot, seed }) {
+  return {
+    system: 'You are Optimus, an interview examiner. Output JSON only. Test reasoning, not recall. Every wrong option must be wrong for a reason a competent engineer could state.',
+    user: `Write ONE multiple-choice question about "${slot.conceptArea}" for this ${problem.kind} interview topic.
+
+title: ${problem.title}
+topic: ${problem.topic}
+difficulty: ${slot.difficulty}
+${(problem.description ?? '').slice(0, 400)}
+
+Seed ${seed}.
+
+Rules:
+- "prompt" describes a concrete situation with real numbers, then asks a decision. Not a definition.
+- 4 options, similar length, one correct. "correctAnswers" repeats the exact option string.
+- "selectionMode" is "single".
+- "explanation" is two sentences: why the key is right, why the closest wrong option is wrong.
+- "label" is a 1-3 word tag. "context" is "". "diagram" is null.
+
+Return {"questions":[ … ]} with exactly one question.`,
+    schema: MCQ_SET_SCHEMA,
+    schemaName: 'question_set',
+    // Strict grammar-constrained decoding is measurably slower and Zod is the
+    // real gate anyway. On the one call a student waits for, that trade is worth
+    // making; the background calls keep the strict schema.
+    looseSchema: true,
   };
 }
 
@@ -351,11 +452,23 @@ const MCQ_SET_SCHEMA = {
           label: { type: 'string' },
           prompt: { type: 'string' },
           context: { type: 'string' },
+          diagram: {
+            type: 'object',
+            properties: {
+              type: { type: 'string', enum: ['mermaid'] },
+              source: { type: 'string' },
+              caption: { type: 'string' },
+            },
+            required: ['type', 'source', 'caption'],
+          },
           selectionMode: { type: 'string', enum: ['single', 'multiple'] },
           options: { type: 'array', items: { type: 'string' } },
           correctAnswers: { type: 'array', items: { type: 'string' } },
           explanation: { type: 'string' },
         },
+        // `diagram` is left out of `required` on purpose: strictify() turns an
+        // optional field into a nullable one, which is how "no diagram here"
+        // is expressed under strict structured output.
         required: ['id', 'label', 'prompt', 'context', 'selectionMode', 'options', 'correctAnswers', 'explanation'],
       },
     },

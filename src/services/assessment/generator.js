@@ -3,9 +3,9 @@ import { env } from '../../config/env.js';
 import { getLanguage } from '../runner/index.js';
 import { runAnswer } from '../runner/grade.js';
 import { createJudge0 } from '../runner/judge0.js';
-import { SCHEMAS, fingerprint } from './schemas.js';
+import { SCHEMAS, diagramSchema, fingerprint } from './schemas.js';
 import {
-  PROMPT_VERSION, bugPrompt, mcqPrompt, portPrompt, repairPrompt, repairTestsPrompt,
+  PROMPT_VERSION, bugPrompt, mcqPrompt, openerPrompt, portPrompt, repairPrompt, repairTestsPrompt,
   specPrompt, sqlPrompt, testsPrompt,
 } from './prompts.js';
 
@@ -145,6 +145,33 @@ function snapAnswers(raw) {
   };
 }
 
+/**
+ * A diagram is a bonus, never a reason to lose the question.
+ *
+ * Models fence mermaid in backticks, wrap it in an extra object, or reach for a
+ * diagram type that will not render. All of those are worth fixing or dropping;
+ * none is worth discarding a good question over, so anything that does not
+ * survive validation simply becomes no diagram.
+ */
+function normaliseDiagram(raw) {
+  if (!Object.hasOwn(raw, 'diagram')) return raw;
+  const candidate = raw.diagram;
+  if (!candidate || typeof candidate !== 'object') return { ...raw, diagram: null };
+
+  const source = String(candidate.source ?? candidate.code ?? candidate.mermaid ?? '')
+    // Models fence the diagram roughly a third of the time.
+    .replace(/^\s*```(?:mermaid)?\s*/i, '')
+    .replace(/```\s*$/, '')
+    .trim();
+
+  const parsed = diagramSchema.safeParse({
+    type: 'mermaid',
+    source,
+    caption: String(candidate.caption ?? '').slice(0, 200),
+  });
+  return { ...raw, diagram: parsed.success ? parsed.data : null };
+}
+
 function parseOne(kind, raw) {
   const input = raw?.entity
     ? normaliseTests(dropVoidExpectations({
@@ -156,7 +183,7 @@ function parseOne(kind, raw) {
         steps: (test.steps ?? []).map((step) => (step?.op === 'new' ? step : { ...step, op: camelise(step?.op) })),
       })),
     }))
-    : snapAnswers({ ...raw });
+    : normaliseDiagram(snapAnswers({ ...raw }));
   if (kind === 'debug' && input && !input.buggySource) {
     input.buggySource = input.buggyImplementation ?? input.buggyCode ?? input.brokenSource ?? input.flawedSource;
     input.bugSummary = input.bugSummary ?? input.bugsSummary ?? input.bugDescription;
@@ -175,14 +202,17 @@ function parseOne(kind, raw) {
 
 export async function generateMcqSet({ problem, slots, seed, article, chatImpl = chatJson }) {
   const prompt = mcqPrompt({ problem, slots, seed, article });
-  // MCQs are short, self-contained JSON objects. High reasoning and an 8k
-  // output budget were appropriate for coding questions, but make a cold MCQ
-  // unnecessarily slow. Keep this configurable for providers with different
-  // latency/quality trade-offs, while using the fast safe default in prod.
-  const effort = process.env.ASSESSMENT_MCQ_REASONING_EFFORT ?? 'low';
-  const maxTokens = Math.max(800, Number(process.env.ASSESSMENT_MCQ_MAX_TOKENS ?? 2200));
+  // MCQs are short, self-contained JSON objects, and the whole paper's worth of
+  // them is issued in parallel rather than as one call — so the budget here is
+  // per question, and reasoning effort is latency the student pays for nothing.
+  // The fast model binding defaults to the main one, so this is inert until set.
   const startedAt = Date.now();
-  const raw = await chatImpl({ ...prompt, effort, maxTokens });
+  const raw = await chatImpl({
+    ...prompt,
+    effort: env.assessment.mcqEffort,
+    maxTokens: Math.max(env.assessment.mcqMaxTokens, slots.length * 900),
+    model: env.ai.fastModel,
+  });
   console.info(`[optimus] generated ${slots.length} MCQ question(s) in ${Date.now() - startedAt}ms`);
   const questions = Array.isArray(raw?.questions) ? raw.questions : [];
   if (questions.length !== slots.length) {
@@ -208,6 +238,45 @@ export async function generateMcqSet({ problem, slots, seed, article, chatImpl =
   });
 }
 
+/**
+ * The one question a student may actually wait for.
+ *
+ * Reached only when a problem has nothing bankable — the first time anyone
+ * assesses it. Everything that costs latency and is not strictly needed for a
+ * fair question is stripped: no article, a short description, no exemplar, no
+ * diagram, no strict grammar, and a hard timeout well under what the full
+ * prompt is allowed. It is banked like any other question, so the second
+ * student on this problem draws it instead of paying for it.
+ */
+export async function generateOpener({ problem, slot, seed, chatImpl = chatJson }) {
+  const startedAt = Date.now();
+  const raw = await chatImpl({
+    ...openerPrompt({ problem, slot, seed }),
+    effort: 'minimal',
+    maxTokens: 900,
+    model: env.ai.fastModel,
+    timeoutMs: env.assessment.openerTimeoutMs,
+  });
+  const [question] = Array.isArray(raw?.questions) ? raw.questions : [];
+  if (!question) throw new GenerationError('The opener call returned no question');
+  console.info(`[optimus] generated cold-start opener in ${Date.now() - startedAt}ms`);
+
+  return {
+    question: parseOne('mcq', {
+      ...question,
+      selectionMode: 'single',
+      context: question.context ?? '',
+      diagram: null,
+    }),
+    meta: {
+      conceptArea: slot.conceptArea,
+      difficulty: slot.difficulty,
+      source: 'catalog',
+      language: null,
+    },
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Coding — machine coding and debug                                          */
 /* -------------------------------------------------------------------------- */
@@ -217,11 +286,15 @@ export async function generateCodingQuestion({ problem, slot, seed, chatImpl = c
 
   // Contract and working code first; the test suite is written afterwards
   // against code the model can read rather than code it is predicting.
-  const spec = await chatImpl({ ...specPrompt({ problem, slot, seed }), effort: 'high', maxTokens: 10_000 });
+  const spec = await chatImpl({
+    ...specPrompt({ problem, slot, seed }),
+    effort: 'high',
+    maxTokens: env.assessment.codingSpecMaxTokens,
+  });
   const suite = await chatImpl({
     ...testsPrompt({ spec: { ...spec, entity: normaliseEntity(spec.entity) } }),
     effort: 'high',
-    maxTokens: 10_000,
+    maxTokens: env.assessment.codingTestsMaxTokens,
   });
 
   let question = parseOne(kind, { ...spec, tests: suite?.tests ?? [] });
@@ -232,7 +305,7 @@ export async function generateCodingQuestion({ problem, slot, seed, chatImpl = c
     const corrected = await chatImpl({
       ...repairTestsPrompt({ question, failures: verification.report }),
       effort: 'high',
-      maxTokens: 10_000,
+      maxTokens: env.assessment.codingTestsMaxTokens,
     });
     const byName = new Map((corrected?.tests ?? []).map((test) => [test.name, test]));
     const merged = question.tests
