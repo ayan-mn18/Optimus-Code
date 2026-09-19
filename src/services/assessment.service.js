@@ -14,6 +14,11 @@ import { PROMPT_VERSION } from './assessment/prompts.js';
 const OPEN_STATUSES = ['generating', 'active', 'grading'];
 const MAX_RUNS_PER_QUESTION = 20;
 
+// node-postgres encodes JavaScript arrays as PostgreSQL array literals. The
+// assessment paper is JSONB, so native PostgreSQL needs the JSON text form;
+// PostgREST already accepts the structured value directly.
+const jsonbValue = (value) => (env.database.driver === 'native' ? JSON.stringify(value) : value);
+
 function assertLlmConfigured() {
   if (!env.ai.enabled) throw ApiError.serviceUnavailable('Optimus assessments require an LLM configuration');
 }
@@ -283,7 +288,7 @@ async function prepareAssessment({ user, problem, blueprint, placeholder, articl
           .from('assessment_attempts')
           .update({
             status: 'active',
-            question_set: questionSet,
+            question_set: jsonbValue(questionSet),
             blueprint: progress,
             ...(current.status === 'generating' ? { started_at: new Date().toISOString() } : {}),
             updated_at: new Date().toISOString(),
@@ -315,7 +320,7 @@ async function prepareAssessment({ user, problem, blueprint, placeholder, articl
         .from('assessment_attempts')
         .update({
           status: 'active',
-          question_set: finalSet,
+          question_set: jsonbValue(finalSet),
           blueprint: { ...blueprint, generation: { complete: true, ready: finalSet.length, target: blueprint.slots.length } },
           updated_at: new Date().toISOString(),
         })
