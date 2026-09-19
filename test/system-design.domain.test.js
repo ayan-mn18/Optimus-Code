@@ -1,10 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import { env } from '../src/config/env.js';
-import { generateQuestionSet, scoreMultipleChoice } from '../src/services/assessment.service.js';
 import { normalizeDailyTarget, quotaComplete } from '../src/services/challenge.service.js';
-import { createCodeRunner } from '../src/services/code-runner.service.js';
+import { createJudge0 } from '../src/services/runner/judge0.js';
 import { PRICING, publicSubscription } from '../src/services/billing.service.js';
 
 test('daily picker rejects object targets instead of expanding to full catalog', () => {
@@ -19,67 +17,14 @@ test('daily completion requires every configured category', () => {
   assert.equal(quotaComplete({ dsa_required: 0, dsa_solved: 0, lld_required: 1, lld_solved: 1, hld_required: 0, hld_solved: 0 }), true);
 });
 
-test('MCQ grading requires an exact single- or multi-select match', () => {
-  const question = { correctAnswers: ['availability', 'latency'] };
-  assert.equal(scoreMultipleChoice(question, { values: ['availability', 'latency'] }).score, 1);
-  assert.equal(scoreMultipleChoice(question, { values: ['latency', 'availability'] }).score, 1);
-  assert.equal(scoreMultipleChoice(question, { values: ['availability'] }).score, 0);
-  assert.equal(scoreMultipleChoice(question, { values: ['availability', 'latency', 'failure'] }).score, 0);
-});
-
-test('LLM generator validates ten MCQs and preserves the answer key', async () => {
-  const previous = { ...env.ai };
-  Object.assign(env.ai, { enabled: true, provider: 'openai', apiKey: 'test-key', baseUrl: 'https://llm.example/v1', model: 'test-model' });
-  const problem = { id: 'problem-hld', title: 'Design URL Shortener', kind: 'HLD', topic: 'Distributed systems', difficulty: 'Medium' };
-  const questions = Array.from({ length: 10 }, (_, index) => ({
-    id: `q${index + 1}`,
-    type: 'multiple_choice',
-    label: `Question ${index + 1}`,
-    prompt: `Choose the best design for question ${index + 1}.`,
-    context: 'System design context.',
-    selectionMode: index === 1 ? 'multiple' : 'single',
-    options: ['A', 'B', 'C'],
-    correctAnswers: index === 1 ? ['A', 'B'] : ['A'],
-  }));
+test('Judge0 transport encodes the program, forbids the network, and dedupes repeats', async () => {
   const calls = [];
-  try {
-    const result = await generateQuestionSet(problem, 'user-a', 1, {
-      fetchImpl: async (...args) => {
-        calls.push(args);
-        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ questions }) } }] }), { status: 200 });
-      },
-    });
-    assert.equal(result.questions.length, 10);
-    assert.ok(result.questions.every((question) => question.type === 'multiple_choice'));
-    assert.deepEqual(result.questions[1].correctAnswers, ['A', 'B']);
-    assert.match(calls[0][0], /chat\/completions$/);
-  } finally {
-    Object.assign(env.ai, previous);
-  }
-});
-
-test('Optimus generation is unavailable when no LLM key is configured', async () => {
-  const previous = env.ai.enabled;
-  env.ai.enabled = false;
-  try {
-    await assert.rejects(
-      generateQuestionSet({ id: 'problem', title: 'Topic', kind: 'HLD' }, 'user-a', 1),
-      (error) => error?.status === 503,
-    );
-  } finally {
-    env.ai.enabled = previous;
-  }
-});
-
-test('Judge0 adapter sends isolated code and returns per-test results', async () => {
-  const calls = [];
-  const expected = [{ name: 'smallest', passed: true, expected: 1, actual: 1 }];
-  const runner = createCodeRunner({
-    config: { enabled: true, baseUrl: 'https://judge.example', apiKey: 'key', apiHost: 'judge.example' },
+  const transport = createJudge0({
+    config: { enabled: true, baseUrl: 'https://judge.example', apiKey: 'key', apiHost: 'judge.example', concurrency: 2 },
     fetchImpl: async (...args) => {
       calls.push(args);
       return new Response(JSON.stringify({
-        stdout: Buffer.from(`__OPTIMUS_RESULT__${JSON.stringify(expected)}\n`).toString('base64'),
+        stdout: Buffer.from('hello\n').toString('base64'),
         stderr: '',
         compile_output: '',
         status: { description: 'Accepted' },
@@ -88,16 +33,21 @@ test('Judge0 adapter sends isolated code and returns per-test results', async ()
       }), { status: 201, headers: { 'content-type': 'application/json' } });
     },
   });
-  const result = await runner.run({
-    source: 'function selectNext(items) { return items[0].id; }',
-    tests: [{ name: 'smallest', input: [{ id: 1, available: true }], expected: 1 }],
-  });
-  assert.equal(result.passed, true);
-  assert.deepEqual(result.results, expected);
+
+  const source_code = `print("hello")  # ${Math.random()}`;
+  const result = await transport.execute({ language_id: 100, source_code });
+  assert.equal(result.stdout, 'hello\n');
+  assert.equal(result.status.description, 'Accepted');
+
   const request = JSON.parse(calls[0][1].body);
-  const source = Buffer.from(request.source_code, 'base64').toString('utf8');
-  assert.match(source, /function selectNext/);
+  assert.equal(Buffer.from(request.source_code, 'base64').toString('utf8'), source_code);
   assert.equal(request.enable_network, false);
+  assert.equal(request.cpu_time_limit, 5);
+  assert.equal(calls[0][1].headers['x-rapidapi-key'], 'key');
+
+  // Students press Run far more often than they edit; an identical body is free.
+  await transport.execute({ language_id: 100, source_code });
+  assert.equal(calls.length, 1);
 });
 
 test('catalog snapshot contains complete source counts and stable keys', async () => {

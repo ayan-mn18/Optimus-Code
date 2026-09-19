@@ -64,6 +64,7 @@ export async function createCheckout(user, plan, { client = dodo } = {}) {
 
   const session = await client.checkoutSessions.create({
     product_cart: [{ product_id: productId, quantity: 1 }],
+    allow_discount_code: true,
     customer: { email: user.email, name: user.name },
     return_url: `${env.email.appUrl}/billing/success`,
     metadata: { user_id: user.id, plan },

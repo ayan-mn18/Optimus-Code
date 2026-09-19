@@ -38,10 +38,17 @@ test('private product routes reject anonymous requests', async () => {
   await withServer(async (baseUrl) => {
     const requests = [
       fetch(`${baseUrl}/api/system-design?kind=LLD`),
+      fetch(`${baseUrl}/api/search/index`),
       fetch(`${baseUrl}/api/assessments`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ problemId: '00000000-0000-0000-0000-000000000000' }),
+      }),
+      fetch(`${baseUrl}/api/assessments/languages`),
+      fetch(`${baseUrl}/api/assessments/00000000-0000-0000-0000-000000000000/answers/q5/run`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ answer: { language: 'python', source: 'class A: pass' } }),
       }),
       fetch(`${baseUrl}/api/billing/checkout`, {
         method: 'POST',
@@ -50,7 +57,7 @@ test('private product routes reject anonymous requests', async () => {
       }),
     ];
     const responses = await Promise.all(requests);
-    assert.deepEqual(responses.map((response) => response.status), [401, 401, 401]);
+    assert.deepEqual(responses.map((response) => response.status), [401, 401, 401, 401, 401, 401]);
   });
 });
 

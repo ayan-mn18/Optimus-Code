@@ -5,8 +5,10 @@ The DSA catalogue comes from the Striver SDE and A2Z sheets. LLD and HLD metadat
 comes from [Code With Aryan](https://codewitharyan.com/system-design) with source attribution.
 
 Each user chooses separate DSA, LLD, and HLD goals. A day turns green only when every
-category quota is complete. System Design completion requires passing a ten-question
-LLM-generated MCQ Optimus assessment.
+category quota is complete. System Design completion requires passing an Optimus
+assessment at 80%: ten generated multiple-choice questions for HLD, and for LLD a
+machine-coding task, a debug-and-fix task and three design questions, answered in
+Python, JavaScript or Java and graded by running hidden tests.
 
 Frontend lives in [Optimus-Code-UI](https://github.com/ayan-mn18/Optimus-Code-UI).
 
@@ -54,6 +56,22 @@ instead.
 | `npm run seed`                 | Upserts DSA, LLD, and HLD catalogues by `(kind, slug)`              |
 | `npm run scrape`               | Refreshes the Striver DSA snapshot                                  |
 | `npm run scrape:system-design` | Refreshes 73 LLD and 205 HLD items                                  |
+
+### The question bank
+
+Questions are generated and verified ahead of time so no student waits for a model. The
+background worker keeps the banks topped up, and this fills or inspects them directly:
+
+```bash
+node scripts/bank.js status --kind LLD                  # depth per problem
+node scripts/bank.js fill   --kind LLD --problems 10    # generate and verify
+node scripts/bank.js show   <questionId>                # read one, answer key included
+```
+
+`--each N` runs N rounds per problem, `--all` includes the explainer pages, `--dry` generates
+without storing. LLD defaults to the coding-enabled problems. Expect roughly half of coding
+generations to be discarded at the verification gate — that is the gate working, and the
+surviving questions are the ones worth a student's forty minutes.
 `psql` is required for `db:apply` / `db:check` (`brew install libpq && brew link --force libpq`).
 The password is passed through `PGPASSWORD`, so it never appears in the process list or your
 shell history.
@@ -76,6 +94,19 @@ npm run dev
 ```
 
 It listens on `http://localhost:4000`. `GET /health` is a liveness check.
+
+To run the backend against the production RDS database from a local machine, use
+the SSM-backed tunnel (the RDS instance is private and is not reachable directly
+from the public internet):
+
+```bash
+brew install --cask session-manager-plugin
+npm run dev:rds
+```
+
+This forwards local `127.0.0.1:15432` through the Optimus EC2 instance to RDS and
+loads the `optimus_app` credentials from the `optimus/prod/rds-app` Secrets Manager
+secret at runtime. The password is intentionally not stored in `.env.local` or Git.
 
 ### Production environment and headless notifications
 
@@ -122,8 +153,10 @@ npm run scrape:system-design
 | `daily_logs`             | Per-category snapshots and daily status                         |
 | `daily_assignments`      | Stored daily assignments and DSA extra rounds                   |
 | `user_problems`          | Verified solve state                                              |
-| `assessment_attempts`    | Immutable Optimus question sets and result state                |
-| `assessment_answers`     | Answers, rubric feedback, and test results                      |
+| `assessment_attempts`    | Immutable Optimus question sets, blueprint, and result state     |
+| `assessment_answers`     | Answers, source code, rubric feedback, and test results          |
+| `assessment_questions`   | The verified question bank, one row per generated question       |
+| `assessment_exposures`   | What each user has already been shown, so a retry is a new paper |
 | `subscriptions`          | Dodo subscription lifecycle                                     |
 | `payment_webhook_events` | Idempotent signed webhook receipts                              |
 | `milestone_recaps`       | Immutable milestone analytics                                   |
@@ -233,10 +266,58 @@ returns one attributed catalogue item.
 
 ### Optimus — `/api/assessments`
 
-Create or resume an attempt, autosave answers, and submit once. Each attempt contains ten
-LLM-generated single- or multi-select questions. An LLM key is required; there is no local
-question fallback. The answer key is included in the client response so the UI can score live,
-and the server independently verifies the exact selections. Passing requires more than 80%.
+| Method | Path                                  | Notes                                                |
+| ------ | ------------------------------------- | ---------------------------------------------------- |
+| GET    | `/languages`                          | The coding languages an answer may be written in      |
+| POST   | `/`                                   | Create or resume an attempt; `language?` picks a default |
+| GET    | `/:attemptId`                         | The paper, redacted                                   |
+| PATCH  | `/:attemptId/answers/:questionId`     | Autosave — options for an MCQ, source for anything run |
+| POST   | `/:attemptId/answers/:questionId/run` | Run the **sample** tests (capped at 20 per question)   |
+| POST   | `/:attemptId/submit`                  | Run the hidden tests and grade; 202 while grading      |
+
+An LLM key is required; there is no local question fallback.
+
+**Papers are planned, not improvised.** A seeded blueprint decides every slot before the
+model is called — concept area, difficulty, and whether the question comes from the
+catalogue or from one of our own articles (at most two per paper). HLD papers are ten
+equally weighted questions; LLD papers are three design questions (5 each), a
+debug-and-fix task (25), and a machine-coding task (60). Passing is 80% either way.
+
+**Coding questions are language-neutral.** A question declares a class contract and a list
+of test scenarios — a sequence of method calls with expected values — and the runner turns
+that into a program in whichever of Python, JavaScript or Java the student picked. SQL
+questions run as SQLite and are graded by diffing result sets. A debug question is pinned
+to the language it was written in.
+
+**Nothing that decides a grade reaches the browser.** The answer key, the hidden tests and
+the reference solution stay server-side, and the program built for the Run button does not
+contain the hidden tests at all — so no amount of printing from inside a student's code can
+reveal them. Each submission carries a nonce in its result line; a run that prints two of
+them is rejected as a forgery.
+
+**Half the LLD catalogue is explainer pages** — "What is Low Level Design?", "Class
+Relationships" — where a machine-coding task would be nonsense. `problems.coding_enabled`
+decides: the 30 interview problems get the weighted coding paper, everything else gets a
+ten-question knowledge paper like HLD.
+
+**Every coding question is executed before anyone sees it.** The model's own reference
+solution must pass all of its tests, an empty skeleton must fail (or the tests assert
+nothing), and a debug question's broken source must fail at least one visible and one
+hidden test. A question that fails gets one repair round and is then discarded. Because
+that takes most of a minute, questions are written ahead of time into
+`assessment_questions` by a background worker and drawn at assembly, excluding whatever
+that student has already seen.
+
+Generation itself is two calls, not one. Asked for a statement, a class, a test suite and a
+reference implementation in a single response, the model writes tests by predicting what its
+own code will do — and often mispredicts a detail the statement never pinned down. So the
+contract and the working code come first, and the test suite is written afterwards against
+code the model can read. Debug questions go further: they are a verified machine-coding
+question, ported to the student's language and then deliberately broken.
+
+**A runner outage is not a failed assessment.** If Judge0 is unreachable mid-grading the
+attempt stays in `grading` and the worker finishes it later; nobody loses a green day
+because a shared judge was down.
 
 ### Billing — `/api/billing`
 
@@ -246,6 +327,25 @@ the paid System Design rollout are stored as permanent billing exceptions. Authe
 create Dodo checkout sessions and read their subscription. `/webhook` verifies Standard Webhooks
 signatures and processes events idempotently. Payment receipts, invoice links, failed-payment
 alerts, and upcoming-renewal reminders are delivered through the configured email transport.
+
+## Code execution
+
+Assessments execute untrusted code through [Judge0](https://judge0.com). The default
+endpoint is the free public instance, which needs no key and supports everything the
+design uses — multi-file Java, SQLite, and per-submission CPU, memory and network limits.
+It owes us no SLA, so the API is a polite guest: a global concurrency cap, backoff on 429,
+a dedupe cache for repeated Run presses, and a per-question run budget.
+
+Moving off it is `JUDGE0_URL` plus `JUDGE0_API_KEY` — Sulu and RapidAPI read the key from
+`x-rapidapi-key`, a self-hosted instance from `x-auth-token` (`JUDGE0_AUTH_HEADER`).
+Self-hosting needs its own box: Judge0 pulls ~11 GB of images, requires cgroup v1
+(`systemd.unified_cgroup_hierarchy=0` in GRUB, then a reboot) and privileged Docker, and
+runs untrusted code — so never on the API instance, which holds the service-role key. Pin
+v1.13.1 or later and change the default database password.
+
+Every submission runs with the network off, a CPU and wall-clock limit, a memory cap, and a
+source denylist that rejects filesystem, process and network APIs before we call the judge
+at all.
 
 ## Environment
 

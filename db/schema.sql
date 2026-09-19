@@ -625,3 +625,96 @@ create index if not exists blog_research_jobs_status_idx on public.blog_research
 alter table public.blog_research_jobs enable row level security;
 
 alter table public.blog_research_jobs add column if not exists brief jsonb not null default '{}'::jsonb;
+
+-- ---------------------------------------------------------------------------
+-- Optimus assessments v3 — coding, debugging and SQL alongside MCQs
+--
+-- A paper is assembled from a seeded blueprint (server-decided slots) filled
+-- from a bank of pre-generated, execution-verified questions. The bank is what
+-- makes generation affordable: writing and verifying a coding question takes
+-- most of a minute, which no student should ever wait for.
+-- ---------------------------------------------------------------------------
+
+-- Preferred language for machine-coding answers; per-attempt choice overrides it.
+alter table public.users add column if not exists preferred_language text not null default 'python';
+
+-- Weighted papers cannot score 0-10 integers any more.
+alter table public.assessment_attempts drop constraint if exists assessment_attempts_score_check;
+alter table public.assessment_attempts alter column score type numeric(6,2) using score::numeric;
+alter table public.assessment_attempts add column if not exists max_score numeric(6,2);
+alter table public.assessment_attempts add column if not exists blueprint jsonb;
+alter table public.assessment_attempts add column if not exists language text;
+
+alter table public.assessment_answers add column if not exists language text;
+alter table public.assessment_answers add column if not exists source_code text;
+alter table public.assessment_answers add column if not exists run_count int not null default 0;
+alter table public.assessment_answers alter column score type numeric(6,2) using score::numeric;
+
+-- ---------------------------------------------------------------------------
+-- assessment_questions — the verified bank
+--
+-- `payload` holds the whole question INCLUDING the answer key and the hidden
+-- tests. It is never sent to a client unredacted.
+-- ---------------------------------------------------------------------------
+create table if not exists public.assessment_questions (
+  id             uuid primary key default gen_random_uuid(),
+  problem_id     uuid not null references public.problems(id) on delete cascade,
+  kind           text not null check (kind in ('mcq', 'machine_coding', 'debug', 'sql')),
+  concept_area   text not null,
+  difficulty     text not null check (difficulty in ('Easy', 'Medium', 'Hard')),
+  language       text,
+  payload        jsonb not null,
+  fingerprint    text not null,
+  source         text not null default 'catalog' check (source in ('catalog', 'blog')),
+  blog_id        uuid references public.blogs(id) on delete set null,
+  model_version  text not null,
+  prompt_version text not null,
+  verified       boolean not null default false,
+  verification   jsonb,
+  times_served   int not null default 0,
+  retired_at     timestamptz,
+  created_at     timestamptz not null default now()
+);
+
+-- Two generations that landed on the same question are one question.
+create unique index if not exists assessment_questions_fingerprint_idx
+  on public.assessment_questions (problem_id, fingerprint);
+-- The draw: verified, unretired, matching the slot.
+create index if not exists assessment_questions_draw_idx
+  on public.assessment_questions (problem_id, kind, concept_area, times_served)
+  where verified and retired_at is null;
+
+-- ---------------------------------------------------------------------------
+-- assessment_exposures — what a user has already been shown
+--
+-- A retry that repeats the paper teaches nothing, so a served question is
+-- excluded from that user's future draws for good.
+-- ---------------------------------------------------------------------------
+create table if not exists public.assessment_exposures (
+  user_id         uuid not null references public.users(id) on delete cascade,
+  question_id     uuid not null references public.assessment_questions(id) on delete cascade,
+  attempt_id      uuid references public.assessment_attempts(id) on delete set null,
+  first_served_at timestamptz not null default now(),
+  primary key (user_id, question_id)
+);
+
+create index if not exists assessment_exposures_user_idx on public.assessment_exposures (user_id);
+
+alter table public.assessment_questions enable row level security;
+alter table public.assessment_exposures enable row level security;
+
+-- Serve counts are a tie-break in the draw, so they are incremented in the
+-- database rather than read-modify-written from the API.
+create or replace function public.increment_question_served(question uuid)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  update public.assessment_questions
+  set times_served = times_served + 1
+  where id = question;
+$$;
+
+revoke all on function public.increment_question_served(uuid) from public, anon, authenticated;
+grant execute on function public.increment_question_served(uuid) to service_role;

@@ -2,14 +2,26 @@ import { db, unwrap } from '../lib/supabase.js';
 import { getOrSetCached } from '../lib/cache.js';
 
 const SEARCH_TTL_MS = 30_000;
+const INDEX_TTL_MS = 5 * 60_000;
 const RESULT_LIMIT = 8;
 const CANDIDATE_LIMIT = 1_000;
 const SEARCH_FIELDS = 'id, slug, title, kind, topic, subtopic, difficulty, description';
 const BLOG_FIELDS = 'id, slug, title, kind, topic, difficulty, summary, tags';
+const INDEX_PROBLEM_FIELDS = 'id, slug, title, kind, topic, subtopic, difficulty';
+const INDEX_BLOG_FIELDS = 'id, slug, title, kind, topic, difficulty';
 const STOP_WORDS = new Set([
   'a', 'an', 'and', 'are', 'can', 'could', 'design', 'do', 'explain', 'find', 'for',
   'how', 'i', 'in', 'is', 'me', 'of', 'or', 'please', 'show', 'the', 'to', 'what',
   'with', 'would', 'you',
+]);
+
+// People naturally type these as one word even though the catalogue titles
+// use the spaced form. Keep this small and explicit so a typo cannot broaden
+// every search into an expensive fuzzy query.
+const TOKEN_ALIASES = new Map([
+  ['ratelimit', ['rate', 'limit', 'limiter', 'limiting']],
+  ['ratelimiter', ['rate', 'limit', 'limiter', 'limiting']],
+  ['ratelimiting', ['rate', 'limit', 'limiter', 'limiting']],
 ]);
 
 function normalizeQuery(value) {
@@ -23,7 +35,9 @@ function searchTerm(value) {
 }
 
 function searchTokens(value) {
-  return [...new Set(value.toLocaleLowerCase().split(/\s+/).filter((token) => token.length > 1 && !STOP_WORDS.has(token)))];
+  const rawTokens = value.toLocaleLowerCase().split(/\s+/)
+    .filter((token) => token.length > 1 && !STOP_WORDS.has(token));
+  return [...new Set(rawTokens.flatMap((token) => [token, ...(TOKEN_ALIASES.get(token) ?? [])]))];
 }
 
 function orExpression(columns, tokens) {
@@ -46,6 +60,45 @@ async function searchRows(table, fields, columns, tokens, configure) {
   let query = db.from(table).select(fields).or(orExpression(columns, tokens));
   query = configure(query);
   return unwrap(await query.limit(CANDIDATE_LIMIT), `search ${table}`);
+}
+
+function toSearchItem(row, type) {
+  return {
+    type,
+    id: row.id,
+    slug: row.slug,
+    title: row.title,
+    kind: row.kind,
+    topic: row.topic ?? null,
+    subtopic: row.subtopic ?? null,
+    difficulty: row.difficulty ?? null,
+  };
+}
+
+/** Lightweight catalogue metadata for the client-side ⌘K index. */
+export function getSearchIndex({ includeBlogs = true } = {}) {
+  const key = `search:index:${includeBlogs ? 'pro' : 'free'}`;
+  return getOrSetCached(key, INDEX_TTL_MS, async () => {
+    const [problems, blogs] = await Promise.all([
+      unwrap(
+        await db.from('problems').select(INDEX_PROBLEM_FIELDS).order('order_index'),
+        'load search problem index',
+      ),
+      includeBlogs
+        ? unwrap(
+          await db.from('blogs').select(INDEX_BLOG_FIELDS).eq('status', 'published').order('published_at', { ascending: false }),
+          'load search blog index',
+        )
+        : Promise.resolve([]),
+    ]);
+
+    return {
+      items: [
+        ...problems.map((problem) => toSearchItem(problem, 'problem')),
+        ...blogs.map((blog) => toSearchItem(blog, 'blog')),
+      ],
+    };
+  });
 }
 
 /** Fast cross-catalogue search for the ⌘K command bar. */
