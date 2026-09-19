@@ -88,6 +88,8 @@ test('source guard blocks escapes and oversized answers', () => {
   assert.throws(() => guardSource(getLanguage('python'), 'x = 1\n'.repeat(20_000)), /50 KB/);
   assert.throws(() => guardSource(getLanguage('python'), '   '), /Write some code/);
   assert.doesNotThrow(() => guardSource(getLanguage('python'), 'class A:\n    pass\n'));
+  assert.doesNotThrow(() => guardSource(getLanguage('cpp'), getLanguage('cpp').starter({ entity: QUESTION.entity })));
+  assert.throws(() => guardSource(getLanguage('cpp'), '#include <fstream>\n'), /not available/);
 });
 
 test('a practice run cannot contain the hidden tests', () => {
@@ -118,6 +120,20 @@ test('java submissions ship the student file, the harness, and both scripts', ()
   const archive = Buffer.from(submission.judge0.additional_files, 'base64');
   const text = archive.toString('latin1');
   for (const name of ['LruCache.java', 'Main.java', 'compile', 'run']) assert.ok(text.includes(name), `${name} missing`);
+});
+
+test('cpp submissions use Judge0 GCC and ship the student file, harness, and scripts', () => {
+  const [submission] = buildSubmissions({
+    question: QUESTION,
+    languageId: 'cpp',
+    source: '#include <string>\nclass LruCache { public: LruCache(int) {} int get(std::string) { return -1; } };',
+    tests: prepareTests(QUESTION, { includeHidden: true }),
+    marker: newMarker(),
+  });
+  assert.equal(submission.judge0.language_id, 54);
+  const archive = Buffer.from(submission.judge0.additional_files, 'base64');
+  const text = archive.toString('latin1');
+  for (const name of ['LruCache.cpp', 'main.cpp', 'compile', 'run']) assert.ok(text.includes(name), `${name} missing`);
 });
 
 test('result lines are trusted only when there is exactly one', () => {

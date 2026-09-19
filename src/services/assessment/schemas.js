@@ -7,7 +7,7 @@ import { z } from 'zod';
  * These schemas are the contract the model is held to, and they are deliberately
  * narrower than what a model would produce unprompted. The tight spots are the
  * type vocabulary and the identifier rules: a question is answered in Python,
- * JavaScript or Java, so anything that cannot be spelled in all three cannot
+ * JavaScript, Java or C++, so anything that cannot be spelled in all four cannot
  * appear in a signature.
  */
 
@@ -15,7 +15,7 @@ const SCALAR = ['int', 'long', 'double', 'bool', 'string'];
 const SCALARS = new Set(SCALAR);
 
 /**
- * Everything we can emit as a literal in all three languages: scalars, and one
+ * Everything we can emit as a literal in all four languages: scalars, and one
  * level of nesting inside a list or a string-keyed map. Deeper than that is not
  * a machine-coding question, it is a serialisation exercise.
  */
@@ -152,7 +152,7 @@ const codeBody = {
   entity: entitySchema,
   tests: z.array(testSchema).min(6).max(30),
   referenceSolution: z.object({
-    language: z.enum(['python', 'javascript', 'java']),
+    language: z.enum(['python', 'javascript', 'java', 'cpp']),
     source: z.string().min(40).max(20_000),
   }),
   rubricNotes: z.string().max(2500).optional().default(''),

@@ -5,11 +5,11 @@ import { zipBase64 } from './zip.js';
 import { python } from './languages/python.js';
 import { javascript } from './languages/javascript.js';
 import { java } from './languages/java.js';
+import { cpp } from './languages/cpp.js';
 import { sql, normaliseResultSet } from './languages/sql.js';
 
-export const LANGUAGES = { python, javascript, java, sql };
-/** Launch set. Adding C++/Go/TypeScript is a new module and an entry here. */
-export const CODE_LANGUAGES = ['python', 'javascript', 'java'];
+export const LANGUAGES = { python, javascript, java, cpp, sql };
+export const CODE_LANGUAGES = ['python', 'javascript', 'java', 'cpp'];
 export const DEFAULT_LANGUAGE = 'python';
 
 const MAX_SOURCE_BYTES = 50_000;

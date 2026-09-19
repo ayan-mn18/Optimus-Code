@@ -1,7 +1,7 @@
 /**
  * One definition of "these two values are the same answer", for every language.
  *
- * A question is written once and answered in Python, JavaScript or Java, so the
+ * A question is written once and answered in Python, JavaScript, Java or C++, so the
  * grader cannot compare native values — a Java `HashMap` and a Python `dict`
  * are the same answer and share no representation. Instead every harness
  * renders its result to a canonical string using the rules below, and compares

@@ -434,7 +434,7 @@ test('nothing a student receives contains the answer key or the hidden tests', (
   assert.ok(coding.visibleTests.every((item) => item.name.startsWith('visible')));
   assert.equal(JSON.stringify(coding).includes('hidden'), false);
   assert.equal(JSON.stringify(coding).includes('# reference'), false);
-  assert.deepEqual(Object.keys(coding.starters).sort(), ['java', 'javascript', 'python']);
+  assert.deepEqual(Object.keys(coding.starters).sort(), ['cpp', 'java', 'javascript', 'python']);
 
   const debug = publicQuestion({
     slotId: 'q4', type: 'debug', weight: 25, conceptArea: 'reading', language: 'python',
