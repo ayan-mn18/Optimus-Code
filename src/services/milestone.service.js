@@ -117,7 +117,11 @@ async function loadRecap(user, milestone) {
       'load milestone solves',
     ),
     unwrap(
-      await db.from('enrollments').select('dsa_target').eq('user_id', user.id).maybeSingle(),
+      await db
+        .from('enrollments')
+        .select('dsa_target, lld_target, hld_target')
+        .eq('user_id', user.id)
+        .maybeSingle(),
       'load milestone target',
     ),
     getStreak(user),
@@ -128,7 +132,11 @@ async function loadRecap(user, milestone) {
     milestone,
     solves,
     streak,
-    dailyTarget: enrollment?.dsa_target,
+    dailyTarget: enrollment
+      ? Number(enrollment.dsa_target ?? 0)
+        + Number(enrollment.lld_target ?? 0)
+        + Number(enrollment.hld_target ?? 0)
+      : undefined,
   });
 }
 
