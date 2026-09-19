@@ -14,6 +14,40 @@ import { PROMPT_VERSION } from './assessment/prompts.js';
 const OPEN_STATUSES = ['generating', 'active', 'grading'];
 const MAX_RUNS_PER_QUESTION = 20;
 
+// Assessment generation is one-way progress from server to browser. Keep the
+// live subscribers in memory; the database remains the source of truth, so a
+// reconnect always starts with a fresh snapshot and no event is lost.
+const assessmentSubscribers = new Map();
+const assessmentEmitQueues = new Map();
+
+export function subscribeAssessment(attemptId, listener) {
+  const listeners = assessmentSubscribers.get(attemptId) ?? new Set();
+  listeners.add(listener);
+  assessmentSubscribers.set(attemptId, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) assessmentSubscribers.delete(attemptId);
+  };
+}
+
+function emitAssessmentUpdate(user, attemptId) {
+  if (!assessmentSubscribers.has(attemptId)) return;
+  const previous = assessmentEmitQueues.get(attemptId) ?? Promise.resolve();
+  const next = previous.then(async () => {
+    const listeners = assessmentSubscribers.get(attemptId);
+    if (!listeners?.size) return;
+    const snapshot = await getAssessment(user, attemptId);
+    for (const listener of [...listeners]) {
+      try {
+        listener(snapshot);
+      } catch (error) {
+        console.error('[optimus] assessment stream listener failed:', error instanceof Error ? error.message : error);
+      }
+    }
+  });
+  assessmentEmitQueues.set(attemptId, next.catch(() => {}));
+}
+
 // node-postgres encodes JavaScript arrays as PostgreSQL array literals. The
 // assessment paper is JSONB, so native PostgreSQL needs the JSON text form;
 // PostgREST already accepts the structured value directly.
@@ -291,6 +325,10 @@ async function prepareAssessment({ user, problem, blueprint, placeholder, articl
             .maybeSingle(),
           'publish assessment question',
         );
+        // Do not make the generation worker wait for a browser connection. The
+        // queued emitter serialises snapshots so concurrent workers cannot send
+        // q3 before the q2 snapshot that was committed first.
+        emitAssessmentUpdate(user, placeholder.id);
         return Boolean(published);
       });
       publishQueue = run.catch(() => {});
@@ -364,6 +402,7 @@ async function prepareAssessment({ user, problem, blueprint, placeholder, articl
         .eq('status', 'active'),
       'finish assessment generation',
     );
+    emitAssessmentUpdate(user, placeholder.id);
   } catch (error) {
     await db.from('assessment_attempts')
       .update({

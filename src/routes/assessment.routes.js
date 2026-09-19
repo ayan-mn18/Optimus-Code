@@ -12,6 +12,7 @@ import {
   runAssessmentAnswer,
   saveAssessmentAnswer,
   submitAssessment,
+  subscribeAssessment,
 } from '../services/assessment.service.js';
 
 const router = Router();
@@ -56,6 +57,65 @@ router.post(
     }
   },
 );
+
+/**
+ * One authenticated stream replaces the 1.5s polling loop while a paper is
+ * being prepared. The browser still receives only redacted, verified snapshots
+ * from getAssessment; answer keys never enter this channel.
+ */
+router.get('/:attemptId/events', async (req, res, next) => {
+  let unsubscribe = () => {};
+  let heartbeat;
+  let closed = false;
+  try {
+    res.status(200).set({
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+    res.flushHeaders?.();
+
+    const send = (snapshot) => {
+      if (closed || res.writableEnded) return;
+      res.write(`event: assessment\ndata: ${JSON.stringify(snapshot)}\n\n`);
+      res.flush?.();
+    };
+
+    // Hold events until the initial snapshot has been written so a concurrent
+    // publish cannot make the client briefly move backwards to stale state.
+    let ready = false;
+    let pending;
+    unsubscribe = subscribeAssessment(req.params.attemptId, (snapshot) => {
+      if (!ready) pending = snapshot;
+      else send(snapshot);
+    });
+
+    const initial = await getAssessment(req.user, req.params.attemptId);
+    send(initial);
+    ready = true;
+    if (pending) send(pending);
+    heartbeat = setInterval(() => {
+      if (!closed && !res.writableEnded) {
+        res.write(': keep-alive\n\n');
+        res.flush?.();
+      }
+    }, 15_000);
+    heartbeat.unref?.();
+
+    req.on('close', () => {
+      closed = true;
+      clearInterval(heartbeat);
+      unsubscribe();
+    });
+  } catch (error) {
+    closed = true;
+    clearInterval(heartbeat);
+    unsubscribe();
+    if (!res.headersSent) next(error);
+    else res.end();
+  }
+});
 
 router.get('/:attemptId', async (req, res, next) => {
   try {
