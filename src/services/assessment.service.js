@@ -274,19 +274,11 @@ export async function createAssessment(user, problemId, { language } = {}) {
     blogAvailable: Boolean(article),
   });
 
-  // The click path reads and nothing else. Whatever the bank can supply, up to
-  // the draw limit, is what the exam opens on.
+  // The click path reads and nothing else — no model call, ever, not even for a
+  // problem with an empty bank. Whatever the bank can supply, up to the draw
+  // limit, is what the exam opens on; anything else arrives over the stream.
   const drawn = await drawFromBank({ problem, blueprint, userId: user.id, limit: env.assessment.drawLimit });
-  let seeded = drawn.entries;
-
-  // A problem nobody has sat yet has nothing to draw. Rather than send the
-  // student to a loading screen, write one stripped-down question on the
-  // request — and bank it, so this only ever happens once per problem.
-  if (!seeded.length) {
-    const opener = await openFirstQuestion({ problem, blueprint });
-    if (opener) seeded = [opener];
-  }
-
+  const seeded = drawn.entries;
   const questionSet = seeded.map(({ slot, row }) => questionEntry(slot, row));
   const startedAt = questionSet.length ? new Date().toISOString() : null;
   const attempt = unwrap(
@@ -319,19 +311,26 @@ export async function createAssessment(user, problemId, { language } = {}) {
 }
 
 /**
- * One multiple-choice question, fast, for a problem with an empty bank.
+ * The first question for a problem with an empty bank.
  *
- * Deliberately never a coding question: those take minutes and belong in the
- * background whatever the state of the bank. If it fails or runs out its short
- * clock the attempt simply opens as `generating` and the normal fill takes over.
+ * Runs at the head of the background fill, not on the request — blocking the
+ * POST on a model call is the thing this whole design exists to stop, and a
+ * student staring at an empty screen while the API holds the connection open
+ * is worse than one watching a question arrive over the stream.
+ *
+ * Deliberately never a coding question: those take minutes. The prompt is
+ * stripped to what a fair question needs and nothing more, it gets one attempt
+ * on a short clock, and it is banked like anything else — so the second student
+ * on this problem draws it instead of paying for it.
  */
-async function openFirstQuestion({ problem, blueprint }) {
+async function openFirstQuestion({ problem, blueprint, usedQuestionIds }) {
   const slot = blueprint.slots.find((entry) => entry.type === 'mcq');
   if (!slot) return null;
   try {
     const generated = await generateOpener({ problem, slot, seed: `${blueprint.seed}:${slot.id}` });
     const [row] = await storeQuestions([toBankRow({ problem, generated })]);
-    return row ? { slot, row } : null;
+    if (!row || usedQuestionIds.has(row.id)) return null;
+    return { slot, row };
   } catch (error) {
     console.warn('[optimus] cold-start opener failed:', error instanceof Error ? error.message : error);
     return null;
@@ -403,6 +402,7 @@ async function fillRemaining({ user, problem, blueprint, attempt, article, seede
   };
 
   const prepareOne = async (slot) => {
+    if (assembled.has(slot.id)) return;
     try {
       let result = await assembleSlot({
         problem, blueprint, userId: user.id, article, slot, usedQuestionIds: [...usedQuestionIds],
@@ -414,7 +414,8 @@ async function fillRemaining({ user, problem, blueprint, attempt, article, seede
           problem, blueprint, userId: user.id, article, slot, usedQuestionIds: [...usedQuestionIds],
         });
       }
-      if (!result || usedQuestionIds.has(result.row.id)) return;
+      // The opener races for the first slot, so check again on the way back.
+      if (!result || usedQuestionIds.has(result.row.id) || assembled.has(slot.id)) return;
       usedQuestionIds.add(result.row.id);
       assembled.set(slot.id, result);
       await publish();
@@ -442,13 +443,34 @@ async function fillRemaining({ user, problem, blueprint, attempt, article, seede
   };
 
   try {
+    // Nothing was drawn, so the student is looking at an empty screen. Race a
+    // stripped-down question against the ordinary fan-out rather than queueing
+    // it in front: it is usually the faster of the two, but when it is not,
+    // waiting for it to fail costs the student its entire timeout — measured at
+    // 12s of dead air before the real question arrived.
+    const opener = assembled.size ? null : openFirstQuestion({ problem, blueprint, usedQuestionIds })
+      .then(async (result) => {
+        if (!result || assembled.has(result.slot.id) || usedQuestionIds.has(result.row.id)) return;
+        usedQuestionIds.add(result.row.id);
+        assembled.set(result.slot.id, result);
+        await publish();
+      })
+      .catch(() => {});
+
     const remaining = blueprint.slots.filter((slot) => !assembled.has(slot.id));
-    // Multiple choice and SQL are seconds; machine coding is minutes; a debug
-    // exercise is a broken copy of a machine-coding question and has to follow
-    // one. That ordering is the whole scheduling policy.
-    await runPool(remaining.filter((slot) => slot.type === 'mcq' || slot.type === 'sql'), env.assessment.generationConcurrency);
-    await runPool(remaining.filter((slot) => slot.type === 'machine_coding'), env.assessment.codingConcurrency);
-    await runPool(remaining.filter((slot) => slot.type === 'debug'), 1);
+    // Multiple choice is seconds and machine coding is minutes, and they share
+    // nothing, so both start now — waiting for the quick ones first only
+    // delayed the slow ones. A debug exercise is a broken copy of a verified
+    // machine-coding question, so that one genuinely has to follow.
+    const quick = runPool(
+      remaining.filter((slot) => slot.type === 'mcq' || slot.type === 'sql'),
+      env.assessment.generationConcurrency,
+    );
+    const coding = runPool(
+      remaining.filter((slot) => slot.type === 'machine_coding'),
+      env.assessment.codingConcurrency,
+    ).then(() => runPool(remaining.filter((slot) => slot.type === 'debug'), 1));
+    await Promise.all([opener, quick, coding]);
 
     const ordered = blueprint.slots.map((slot) => assembled.get(slot.id)).filter(Boolean);
     const missed = blueprint.slots.filter((slot) => !assembled.has(slot.id));

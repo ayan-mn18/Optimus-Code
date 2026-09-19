@@ -71,7 +71,7 @@ export function strictify(node) {
   return out;
 }
 
-export const llmConfigured = () => Boolean(env.ai.apiKey);
+export const llmConfigured = (config = env.ai) => Boolean(config.apiKey);
 
 const TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 600_000);
 const RETRYABLE = new Set([408, 409, 429, 500, 502, 503, 504]);
@@ -87,9 +87,9 @@ const RETRYABLE = new Set([408, 409, 429, 500, 502, 503, 504]);
  * six questions in a single warming run. What must not happen is a timeout being
  * retried, which is why that case throws instead of looping.
  */
-async function post(fetchImpl, url, headers, body, timeoutMs = TIMEOUT_MS) {
+async function post(fetchImpl, url, headers, body, timeoutMs = TIMEOUT_MS, maxAttempts = 3) {
   let lastError;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -143,17 +143,37 @@ export async function chat({
   looseSchema = false,
   effort = 'medium',
   maxTokens = 8000,
-  model = env.ai.model,
+  model,
+  llmConfig = env.ai,
   timeoutMs = TIMEOUT_MS,
+  // Retries multiply the wait, which is fine for a background job and not fine
+  // on a call something is waiting for. A caller on a deadline passes 1.
+  maxAttempts = 3,
   fetchImpl = fetch,
 }) {
-  if (!llmConfigured()) throw new LlmError(503, 'No LLM_API_KEY configured');
+  if (!llmConfigured(llmConfig)) throw new LlmError(503, 'No LLM_API_KEY configured');
+  const resolvedModel = model ?? llmConfig.model ?? env.ai.model;
 
   const { body, url, headers, isAnthropic } = buildRequest({
-    system, user, schema, json, schemaName, tools, messages, looseSchema, effort, maxTokens, model,
+    system,
+    user,
+    schema,
+    json,
+    schemaName,
+    tools,
+    messages,
+    looseSchema,
+    effort,
+    maxTokens,
+    model: resolvedModel,
+    llmConfig,
   });
 
-  const payload = await post(fetchImpl, url, headers, isAnthropic ? toAnthropic(body, { schema, schemaName }) : body, timeoutMs);
+  const payload = await post(
+    fetchImpl, url, headers,
+    isAnthropic ? toAnthropic(body, { schema, schemaName }) : body,
+    timeoutMs, maxAttempts,
+  );
 
   if (isAnthropic) return readAnthropic(payload);
 
@@ -169,7 +189,7 @@ export async function chat({
 
 /** The wire shape for one call, so a provider quirk is fixed in one place. */
 function buildRequest({
-  system, user, schema, json, schemaName, tools, messages, looseSchema, effort, maxTokens, model,
+  system, user, schema, json, schemaName, tools, messages, looseSchema, effort, maxTokens, model, llmConfig = env.ai,
 }) {
   const body = {
     model,
@@ -198,22 +218,22 @@ function buildRequest({
     body.tool_choice = 'auto';
   }
 
-  const isAnthropic = env.ai.provider === 'anthropic';
+  const isAnthropic = llmConfig.provider === 'anthropic';
   return {
     body,
     isAnthropic,
-    url: isAnthropic ? `${env.ai.baseUrl}/messages` : `${env.ai.baseUrl}/chat/completions`,
+    url: isAnthropic ? `${llmConfig.baseUrl}/messages` : `${llmConfig.baseUrl}/chat/completions`,
     headers: isAnthropic
       ? {
-        'x-api-key': env.ai.apiKey,
+        'x-api-key': llmConfig.apiKey,
         'anthropic-version': '2023-06-01',
         'content-type': 'application/json',
-        ...(env.ai.workspaceId ? { 'anthropic-workspace-id': env.ai.workspaceId } : {}),
+        ...(llmConfig.workspaceId ? { 'anthropic-workspace-id': llmConfig.workspaceId } : {}),
       }
       : {
-        authorization: `Bearer ${env.ai.apiKey}`,
+        authorization: `Bearer ${llmConfig.apiKey}`,
         'content-type': 'application/json',
-        ...(env.ai.workspaceId ? { 'x-workspace-id': env.ai.workspaceId } : {}),
+        ...(llmConfig.workspaceId ? { 'x-workspace-id': llmConfig.workspaceId } : {}),
       },
   };
 }

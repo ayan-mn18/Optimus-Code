@@ -17,6 +17,22 @@ const emailTransport = (process.env.EMAIL_TRANSPORT ?? 'api').trim().toLowerCase
 const databaseUrl = process.env.DATABASE_URL?.trim() ?? '';
 const databaseDriver = (process.env.DB_DRIVER ?? (databaseUrl ? 'native' : 'supabase')).trim().toLowerCase();
 const nativeDatabase = databaseDriver === 'native';
+const assessmentOverrideProblemIds = (process.env.ASSESSMENT_LLM_OVERRIDE_PROBLEM_IDS ?? '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
+const assessmentLlmOverride = {
+  enabled: Boolean(assessmentOverrideProblemIds.length && process.env.ASSESSMENT_LLM_OVERRIDE_API_KEY?.trim()),
+  problemIds: assessmentOverrideProblemIds,
+  provider: (process.env.ASSESSMENT_LLM_OVERRIDE_PROVIDER ?? 'openai').trim().toLowerCase(),
+  apiKey: process.env.ASSESSMENT_LLM_OVERRIDE_API_KEY?.trim() ?? '',
+  baseUrl: (process.env.ASSESSMENT_LLM_OVERRIDE_BASE_URL ?? '').trim().replace(/\/$/, ''),
+  model: process.env.ASSESSMENT_LLM_OVERRIDE_MODEL?.trim() ?? '',
+  fastModel: process.env.ASSESSMENT_LLM_OVERRIDE_FAST_MODEL?.trim() ?? '',
+  reasoningEffort: process.env.ASSESSMENT_LLM_OVERRIDE_REASONING_EFFORT?.trim() || 'minimal',
+  openerMaxTokens: Math.max(1_200, Number(process.env.ASSESSMENT_LLM_OVERRIDE_OPENER_MAX_TOKENS ?? 2_200)),
+  mcqMaxTokens: Math.max(1_200, Number(process.env.ASSESSMENT_LLM_OVERRIDE_MCQ_MAX_TOKENS ?? 3_600)),
+};
 
 export const env = {
   port: Number(process.env.PORT ?? 4000),
@@ -105,7 +121,7 @@ export const env = {
     codingConcurrency: Math.max(1, Number(process.env.ASSESSMENT_CODING_CONCURRENCY ?? 4)),
     // A brand-new problem has nothing to draw, so one stripped-down question is
     // generated on the request. It must never become the slow path it replaced.
-    openerTimeoutMs: Number(process.env.ASSESSMENT_OPENER_TIMEOUT_MS ?? 12_000),
+    openerTimeoutMs: Number(process.env.ASSESSMENT_OPENER_TIMEOUT_MS ?? 20_000),
     mcqMaxTokens: Math.max(800, Number(process.env.ASSESSMENT_MCQ_MAX_TOKENS ?? 3_000)),
     mcqEffort: process.env.ASSESSMENT_MCQ_REASONING_EFFORT ?? 'minimal',
     // A coding spec is a statement, a class contract and a working reference;
@@ -114,6 +130,8 @@ export const env = {
     // being cut off mid-scenario and the whole question thrown away.
     codingSpecMaxTokens: Number(process.env.ASSESSMENT_CODING_SPEC_MAX_TOKENS ?? 12_000),
     codingTestsMaxTokens: Number(process.env.ASSESSMENT_CODING_TESTS_MAX_TOKENS ?? 20_000),
+    // Optional, problem-scoped LLM experiment. Disabled without IDs + key.
+    llmOverride: assessmentLlmOverride,
   },
 
   runner: {
