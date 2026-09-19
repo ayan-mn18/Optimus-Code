@@ -17,12 +17,19 @@ test('daily completion requires every configured category', () => {
   assert.equal(quotaComplete({ dsa_required: 0, dsa_solved: 0, lld_required: 1, lld_solved: 1, hld_required: 0, hld_solved: 0 }), true);
 });
 
-test('Judge0 transport encodes the program, forbids the network, and dedupes repeats', async () => {
-  const calls = [];
-  const transport = createJudge0({
-    config: { enabled: true, baseUrl: 'https://judge.example', apiKey: 'key', apiHost: 'judge.example', concurrency: 2 },
-    fetchImpl: async (...args) => {
-      calls.push(args);
+/** A Judge0 that reports whatever language set the test wants it to have. */
+function fakeJudge(languageIds, calls) {
+  return createJudge0({
+    config: {
+      enabled: true, baseUrl: `https://judge-${languageIds.join('-')}.example`, apiKey: 'key', apiHost: 'judge.example', concurrency: 2,
+    },
+    fetchImpl: async (url, init) => {
+      calls.push([url, init]);
+      if (String(url).endsWith('/languages')) {
+        return new Response(JSON.stringify(languageIds.map((id) => ({ id, name: `lang ${id}` }))), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        });
+      }
       return new Response(JSON.stringify({
         stdout: Buffer.from('hello\n').toString('base64'),
         stderr: '',
@@ -33,21 +40,60 @@ test('Judge0 transport encodes the program, forbids the network, and dedupes rep
       }), { status: 201, headers: { 'content-type': 'application/json' } });
     },
   });
+}
+
+const submissions = (calls) => calls.filter(([url]) => String(url).includes('/submissions'));
+
+test('Judge0 transport encodes the program, forbids the network, and dedupes repeats', async () => {
+  const calls = [];
+  const transport = fakeJudge([100, 102, 89, 82], calls);
 
   const source_code = `print("hello")  # ${Math.random()}`;
   const result = await transport.execute({ language_id: 100, source_code });
   assert.equal(result.stdout, 'hello\n');
   assert.equal(result.status.description, 'Accepted');
 
-  const request = JSON.parse(calls[0][1].body);
+  const [, init] = submissions(calls)[0];
+  const request = JSON.parse(init.body);
   assert.equal(Buffer.from(request.source_code, 'base64').toString('utf8'), source_code);
   assert.equal(request.enable_network, false);
   assert.equal(request.cpu_time_limit, 5);
-  assert.equal(calls[0][1].headers['x-rapidapi-key'], 'key');
+  assert.equal(init.headers['x-rapidapi-key'], 'key');
 
   // Students press Run far more often than they edit; an identical body is free.
   await transport.execute({ language_id: 100, source_code });
-  assert.equal(calls.length, 1);
+  assert.equal(submissions(calls).length, 1);
+});
+
+test('a submission targets a runtime the instance in front of us actually has', async () => {
+  // Judge0 language ids are per-instance. A self-hosted 1.13.1 has neither
+  // Python 3.12 (100) nor Node 22 (102), so sending those — as the code used
+  // to, unconditionally — made every coding submission a 422.
+  const oldCalls = [];
+  const selfHosted = fakeJudge([62, 63, 71, 82, 89], oldCalls);
+  await selfHosted.execute({ language_id: 100, source_code: 'print(1)' });
+  await selfHosted.execute({ language_id: 102, source_code: 'console.log(1)' });
+  assert.deepEqual(
+    submissions(oldCalls).map(([, init]) => JSON.parse(init.body).language_id),
+    [71, 63],
+    'should fall back to the newest runtime the instance has',
+  );
+
+  // A current instance keeps the modern runtimes.
+  const newCalls = [];
+  const publicCe = fakeJudge([62, 63, 71, 82, 89, 100, 102], newCalls);
+  await publicCe.execute({ language_id: 100, source_code: 'print(1)' });
+  await publicCe.execute({ language_id: 102, source_code: 'console.log(1)' });
+  assert.deepEqual(
+    submissions(newCalls).map(([, init]) => JSON.parse(init.body).language_id),
+    [100, 102],
+  );
+
+  // Multi-file and SQL have no alternative spelling, so they pass through.
+  const passthroughCalls = [];
+  const passthrough = fakeJudge([82, 89], passthroughCalls);
+  await passthrough.execute({ language_id: 89, additional_files: 'zip' });
+  assert.equal(JSON.parse(submissions(passthroughCalls)[0][1].body).language_id, 89);
 });
 
 test('catalog snapshot contains complete source counts and stable keys', async () => {

@@ -100,11 +100,30 @@ const testSchema = z.object({
   steps: z.array(stepSchema).min(1).max(60),
 });
 
+/**
+ * Mermaid diagram types a question may use. Anything outside this list either
+ * will not render or is not a thing an interview question needs, and a diagram
+ * that fails to parse in the browser is worse than no diagram at all.
+ */
+const MERMAID_TYPES = /^\s*(graph|flowchart|sequenceDiagram|erDiagram|stateDiagram(-v2)?|classDiagram)\b/;
+
+export const diagramSchema = z.object({
+  type: z.literal('mermaid'),
+  source: z.string().min(20).max(2000).refine(
+    (value) => MERMAID_TYPES.test(value),
+    { message: 'A diagram must start with a supported mermaid type' },
+  ),
+  caption: z.string().max(200).default(''),
+});
+
 export const mcqSchema = z.object({
   kind: z.literal('mcq'),
   label: z.string().min(1).max(80),
   prompt: z.string().min(20).max(1400),
   context: z.string().max(2000).default(''),
+  // A topology, a request sequence or a write path reads far better drawn than
+  // described. Optional on purpose: a diagram that restates the prompt is noise.
+  diagram: diagramSchema.nullable().default(null),
   selectionMode: z.enum(['single', 'multiple']),
   options: z.array(z.string().min(1).max(400)).min(3).max(6),
   correctAnswers: z.array(z.string().min(1).max(400)).min(1).max(4),

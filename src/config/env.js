@@ -66,6 +66,11 @@ export const env = {
     workspaceId: process.env.LLM_WORKSPACE_ID?.trim() ?? '',
     baseUrl: (process.env.LLM_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/$/, ''),
     model: process.env.LLM_MODEL ?? 'gpt-4o-mini',
+    // Multiple choice is a short structured answer; a coding spec is not. Point
+    // this at a faster model to cut the latency a student actually waits on,
+    // while coding generation keeps the stronger one. Defaults to the same
+    // model, so setting nothing changes nothing.
+    fastModel: process.env.LLM_FAST_MODEL?.trim() || (process.env.LLM_MODEL ?? 'gpt-4o-mini'),
   },
   research: {
     // Firecrawl does both search and scrape, so there is no separate search vendor.
@@ -88,15 +93,27 @@ export const env = {
   },
 
   assessment: {
-    // Keep a small verified bank warm so a student normally draws the first
-    // question from Postgres instead of waiting for a cold model call.
-    workerIntervalMs: Number(process.env.ASSESSMENT_WORKER_INTERVAL_MIN ?? 5) * 60_000,
-    bankTopUp: process.env.ASSESSMENT_BANK_TOPUP !== 'false',
-    bankTopUpPerTick: Math.max(1, Number(process.env.ASSESSMENT_BANK_TOPUP_PER_TICK ?? 2)),
-    // A couple of background slots can be prepared in parallel after the first
-    // question is visible. Keep this bounded so the LLM and runner stay fair to
-    // live requests.
-    generationConcurrency: Math.max(1, Number(process.env.ASSESSMENT_GENERATION_CONCURRENCY ?? 2)),
+    // The worker no longer pre-seeds a bank. It exists for crash recovery:
+    // finishing papers whose generation or grading was cut short.
+    workerIntervalMs: Number(process.env.ASSESSMENT_WORKER_INTERVAL_MIN ?? 2) * 60_000,
+    // How many ready questions the click path may draw before it answers. The
+    // rest of the paper is generated behind the student.
+    drawLimit: Math.max(1, Number(process.env.ASSESSMENT_DRAW_LIMIT ?? 3)),
+    // Background slots are independent, so they are issued together rather than
+    // queued. Coding generation is the expensive one and gets the tighter cap.
+    generationConcurrency: Math.max(1, Number(process.env.ASSESSMENT_GENERATION_CONCURRENCY ?? 6)),
+    codingConcurrency: Math.max(1, Number(process.env.ASSESSMENT_CODING_CONCURRENCY ?? 4)),
+    // A brand-new problem has nothing to draw, so one stripped-down question is
+    // generated on the request. It must never become the slow path it replaced.
+    openerTimeoutMs: Number(process.env.ASSESSMENT_OPENER_TIMEOUT_MS ?? 12_000),
+    mcqMaxTokens: Math.max(800, Number(process.env.ASSESSMENT_MCQ_MAX_TOKENS ?? 3_000)),
+    mcqEffort: process.env.ASSESSMENT_MCQ_REASONING_EFFORT ?? 'minimal',
+    // A coding spec is a statement, a class contract and a working reference;
+    // the suite that follows is six to thirty scenarios of steps and expected
+    // values, and is the longer of the two by some margin. At 10k the suite was
+    // being cut off mid-scenario and the whole question thrown away.
+    codingSpecMaxTokens: Number(process.env.ASSESSMENT_CODING_SPEC_MAX_TOKENS ?? 12_000),
+    codingTestsMaxTokens: Number(process.env.ASSESSMENT_CODING_TESTS_MAX_TOKENS ?? 20_000),
   },
 
   runner: {

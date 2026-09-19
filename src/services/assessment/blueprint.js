@@ -37,6 +37,55 @@ const LLD_AREAS = [
   'extensibility under change',
 ];
 
+/**
+ * Concept areas where a picture carries something prose does not: a topology, a
+ * request path, an ordering. Asking the model to decide produced no diagrams at
+ * all in practice — it takes the "optional" escape every time — so the
+ * blueprint decides here, exactly as it decides everything else about a paper.
+ */
+const DIAGRAM_AREAS = new Set([
+  'API and interface design',
+  'data modelling',
+  'partitioning and sharding',
+  'replication and consistency',
+  'caching strategy',
+  'failure modes and resilience',
+  'scaling bottlenecks',
+  'rate limiting and abuse',
+  'class responsibilities and SOLID',
+  'design pattern choice',
+  'state and invariants',
+  'concurrency and thread safety',
+]);
+
+/** At most this many diagrams per paper: past that they stop being a signal. */
+const MAX_DIAGRAMS = 2;
+
+/**
+ * Marks the first couple of diagram-friendly slots as needing one, so a paper
+ * reliably carries a diagram or two without every question turning into one.
+ */
+function withDiagrams(slots) {
+  let remaining = MAX_DIAGRAMS;
+  return slots.map((slot) => {
+    if (slot.type !== 'mcq' || !remaining || !DIAGRAM_AREAS.has(slot.conceptArea)) return slot;
+    remaining -= 1;
+    return { ...slot, diagram: 'required' };
+  });
+}
+
+/**
+ * Three machine-coding tasks on one paper have to be three different exercises,
+ * not the same contract renamed. Naming the angle in the slot is what makes the
+ * generator produce three, since the calls run in parallel and cannot see each
+ * other's output.
+ */
+const CODING_FOCUS = [
+  'implementing the core algorithm',
+  'modelling state and enforcing its invariants',
+  'extending the design to meet one new requirement',
+];
+
 /** Topics where a SQL question is a fair thing to ask, rather than a non sequitur. */
 const SQL_TOPICS = /\b(data|database|storage|sql|index|shard|warehouse|analytic|search|feed|ledger|payment|inventory)\b/i;
 
@@ -76,12 +125,13 @@ export function planBlueprint({ problem, userId, attemptNumber, language = DEFAU
   const random = seededRandom(seedText);
   const seed = Math.floor(random() * 1e9);
   // Half the LLD catalogue is explainer pages — "What is Low Level Design?",
-  // "Class Relationships" — where a machine-coding task would be nonsense.
-  // Those are knowledge papers; only the interview problems are coded.
-  const codeable = problem.kind === 'LLD' && problem.coding_enabled !== false;
-  const slots = codeable
-    ? lldSlots({ problem, random, language, blogAvailable })
-    : knowledgeSlots({ problem, random, blogAvailable });
+  // "Class Relationships" — where a machine-coding task would be nonsense, and
+  // plenty of HLD problems (rate limiter, consistent hashing, LRU) have a real
+  // implementable core. So the catalogue flag decides this, not the kind.
+  const codeable = problem.coding_enabled === true;
+  const slots = withDiagrams(codeable
+    ? mixedSlots({ problem, random, language, blogAvailable })
+    : knowledgeSlots({ problem, random, blogAvailable }));
 
   return {
     version: 'optimus-blueprint-v3',
@@ -122,44 +172,57 @@ function knowledgeSlots({ problem, random, blogAvailable }) {
   });
 }
 
-function lldSlots({ problem, random, language, blogAvailable }) {
-  const areas = shuffled(LLD_AREAS, random);
-  const mcq = areas.slice(0, 3).map((area, index) => ({
+/**
+ * A codeable problem: six reasoning questions, then four you write code for.
+ *
+ * Order is load-bearing. The MCQs are drawn or generated in seconds and the
+ * coding tasks take minutes, so putting the MCQs first buys the generator the
+ * student's opening ten minutes. Only the first coding task is required — a
+ * paper is still a paper with two, and the weight of anything dropped moves to
+ * what survived.
+ */
+function mixedSlots({ problem, random, language, blogAvailable }) {
+  const areas = shuffled([...LLD_AREAS, ...HLD_AREAS], random).slice(0, 6);
+  const mcq = areas.map((area, index) => ({
     id: `q${index + 1}`,
     type: 'mcq',
     conceptArea: area,
-    difficulty: problem.difficulty,
+    difficulty: index < 3 ? problem.difficulty : harder(problem.difficulty),
     selectionMode: random() < 0.25 ? 'multiple' : 'single',
     weight: 5,
-    // At most one of an LLD paper's three MCQs leans on our article.
-    source: blogAvailable && index === 2 ? 'blog' : 'catalog',
+    // At most one of a codeable paper's six MCQs leans on our article.
+    source: blogAvailable && index === 5 ? 'blog' : 'catalog',
+  }));
+
+  const coding = shuffled(CODING_FOCUS, random).map((focus, index) => ({
+    id: `q${index + 7}`,
+    type: 'machine_coding',
+    conceptArea: focus,
+    difficulty: index === 0 ? problem.difficulty : harder(problem.difficulty),
+    weight: 20,
+    source: 'catalog',
+    language,
+    minutes: problem.difficulty === 'Hard' ? 35 : 25,
+    // One coding task is the floor; the other two are worth having but not
+    // worth holding a paper hostage to.
+    optional: index > 0,
   }));
 
   return [
     ...mcq,
+    ...coding,
     {
-      id: 'q4',
+      id: 'q10',
       type: 'debug',
       conceptArea: 'reading code and finding the fault',
       difficulty: problem.difficulty,
-      weight: 25,
+      weight: 10,
       source: 'catalog',
       language,
       bugCount: random() < 0.35 ? 2 : 1,
       // Planting a bug that the tests actually catch is the least reliable thing
-      // the generator does. Rather than hold a whole paper hostage to it, the
-      // slot is droppable and its weight moves to the machine-coding task.
+      // the generator does, and it needs a verified question to break.
       optional: true,
-    },
-    {
-      id: 'q5',
-      type: 'machine_coding',
-      conceptArea: 'implementing the design',
-      difficulty: problem.difficulty,
-      weight: 60,
-      source: 'catalog',
-      language,
-      minutes: problem.difficulty === 'Hard' ? 40 : 30,
     },
   ];
 }

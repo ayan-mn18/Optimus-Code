@@ -8,11 +8,30 @@ import {
 } from './runner/index.js';
 import { runAnswer, redactResults } from './runner/grade.js';
 import { PASS_RATIO, planBlueprint } from './assessment/blueprint.js';
-import { assembleSlot, loadArticle, recordExposures, redistribute } from './assessment/bank.js';
+import {
+  assembleSlot, bankInventory, drawFromBank, loadArticle, recordExposures, redistribute, storeQuestions,
+} from './assessment/bank.js';
+import { generateOpener, toBankRow } from './assessment/generator.js';
 import { PROMPT_VERSION } from './assessment/prompts.js';
 
 const OPEN_STATUSES = ['generating', 'active', 'grading'];
+// A paper being graded is finished as far as generation is concerned — a
+// background slot must never append a question to one.
+const GENERATING_STATUSES = ['generating', 'active'];
 const MAX_RUNS_PER_QUESTION = 20;
+
+/** One slot of a paper, as it is stored on the attempt. */
+const questionEntry = (slot, row) => ({
+  slotId: slot.id,
+  questionId: row.id,
+  type: slot.type,
+  weight: slot.weight,
+  conceptArea: row.concept_area,
+  difficulty: row.difficulty,
+  minutes: slot.minutes ?? null,
+  language: slot.type === 'debug' ? row.payload.referenceSolution.language : null,
+  payload: row.payload,
+});
 
 // Assessment generation is one-way progress from server to browser. Keep the
 // live subscribers in memory; the database remains the source of truth, so a
@@ -82,6 +101,7 @@ export function upgradeLegacyEntry(entry) {
       label: entry.label ?? 'Question',
       prompt: entry.prompt ?? '',
       context: entry.context ?? '',
+      diagram: null,
       selectionMode: entry.selectionMode ?? 'single',
       options: entry.options ?? [],
       correctAnswers: entry.correctAnswers ?? (entry.correctAnswer ? [entry.correctAnswer] : []),
@@ -101,6 +121,8 @@ export function publicQuestion(rawEntry) {
       label: payload.label,
       prompt: payload.prompt,
       context: payload.context ?? '',
+      // Questions written before diagrams existed simply have none.
+      diagram: payload.diagram ?? null,
       selectionMode: payload.selectionMode,
       options: payload.options,
     };
@@ -223,27 +245,27 @@ const entryFor = (attempt, questionId) => (attempt.question_set ?? [])
 
 export async function createAssessment(user, problemId, { language } = {}) {
   assertLlmConfigured();
-  const problem = await getProblemById(problemId, '*', ['LLD', 'HLD']);
-  if (!problem?.assessment_enabled) throw ApiError.notFound('Assessment problem not found');
 
-  const existing = unwrap(
-    await db
-      .from('assessment_attempts')
-      .select('*')
-      .eq('user_id', user.id)
-      .eq('problem_id', problemId)
-      .in('status', OPEN_STATUSES)
-      .maybeSingle(),
-    'load active assessment',
-  );
+  // Four independent reads. Serialising them put half a second on the one
+  // request a student is actually watching, for no reason at all.
+  const [problem, existing, prior, article] = await Promise.all([
+    getProblemById(problemId, '*', ['LLD', 'HLD']),
+    (async () => unwrap(
+      await db.from('assessment_attempts').select('*')
+        .eq('user_id', user.id).eq('problem_id', problemId).in('status', OPEN_STATUSES).maybeSingle(),
+      'load active assessment',
+    ))(),
+    (async () => unwrap(
+      await db.from('assessment_attempts').select('id').eq('user_id', user.id).eq('problem_id', problemId),
+      'count prior assessments',
+    ))(),
+    loadArticle(problemId),
+  ]);
+
+  if (!problem?.assessment_enabled) throw ApiError.notFound('Assessment problem not found');
   if (existing) return getAssessment(user, existing.id);
 
   const chosen = CODE_LANGUAGES.includes(language) ? language : (user.preferred_language ?? DEFAULT_LANGUAGE);
-  const prior = unwrap(
-    await db.from('assessment_attempts').select('id').eq('user_id', user.id).eq('problem_id', problemId),
-    'count prior assessments',
-  );
-  const article = await loadArticle(problemId);
   const blueprint = planBlueprint({
     problem,
     userId: user.id,
@@ -251,198 +273,282 @@ export async function createAssessment(user, problemId, { language } = {}) {
     language: chosen,
     blogAvailable: Boolean(article),
   });
-  blueprint.generation = { complete: false, ready: 0, target: blueprint.slots.length };
 
-  const placeholder = unwrap(
+  // The click path reads and nothing else. Whatever the bank can supply, up to
+  // the draw limit, is what the exam opens on.
+  const drawn = await drawFromBank({ problem, blueprint, userId: user.id, limit: env.assessment.drawLimit });
+  let seeded = drawn.entries;
+
+  // A problem nobody has sat yet has nothing to draw. Rather than send the
+  // student to a loading screen, write one stripped-down question on the
+  // request — and bank it, so this only ever happens once per problem.
+  if (!seeded.length) {
+    const opener = await openFirstQuestion({ problem, blueprint });
+    if (opener) seeded = [opener];
+  }
+
+  const questionSet = seeded.map(({ slot, row }) => questionEntry(slot, row));
+  const startedAt = questionSet.length ? new Date().toISOString() : null;
+  const attempt = unwrap(
     await db
       .from('assessment_attempts')
       .insert({
         user_id: user.id,
         problem_id: problemId,
-        status: 'generating',
+        status: questionSet.length ? 'active' : 'generating',
         model_version: env.ai.model,
         prompt_version: PROMPT_VERSION,
-        blueprint,
+        blueprint: {
+          ...blueprint,
+          generation: { complete: false, ready: questionSet.length, target: blueprint.slots.length },
+        },
         language: chosen,
         max_score: blueprint.maxScore,
+        question_set: jsonbValue(questionSet),
+        started_at: startedAt,
       })
       .select('*')
       .single(),
     'create assessment',
   );
 
-  // Paper assembly can involve several LLM and code-runner calls. Do not hold
-  // the HTTP request open while those complete: the API returns the generating
-  // attempt immediately and the client polls it until the paper is active.
-  void prepareAssessment({ user, problem, blueprint, placeholder, article });
-  return { attempt: publicAttempt(placeholder), problem };
+  // Everything the draw could not cover is written behind the student. Each
+  // one checks the bank again first, so a paper gets cheaper as the bank fills.
+  void fillRemaining({ user, problem, blueprint, attempt, article, seeded });
+  return { attempt: publicAttempt(attempt), problem };
 }
 
-async function prepareAssessment({ user, problem, blueprint, placeholder, article }) {
+/**
+ * One multiple-choice question, fast, for a problem with an empty bank.
+ *
+ * Deliberately never a coding question: those take minutes and belong in the
+ * background whatever the state of the bank. If it fails or runs out its short
+ * clock the attempt simply opens as `generating` and the normal fill takes over.
+ */
+async function openFirstQuestion({ problem, blueprint }) {
+  const slot = blueprint.slots.find((entry) => entry.type === 'mcq');
+  if (!slot) return null;
   try {
-    const assembled = new Map();
-    const usedQuestionIds = [];
+    const generated = await generateOpener({ problem, slot, seed: `${blueprint.seed}:${slot.id}` });
+    const [row] = await storeQuestions([toBankRow({ problem, generated })]);
+    return row ? { slot, row } : null;
+  } catch (error) {
+    console.warn('[optimus] cold-start opener failed:', error instanceof Error ? error.message : error);
+    return null;
+  }
+}
 
-    const questionEntry = (itemSlot, row) => ({
-      slotId: itemSlot.id,
-      questionId: row.id,
-      type: itemSlot.type,
-      weight: itemSlot.weight,
-      conceptArea: row.concept_area,
-      difficulty: row.difficulty,
-      minutes: itemSlot.minutes ?? null,
-      language: itemSlot.type === 'debug' ? row.payload.referenceSolution.language : null,
-      payload: row.payload,
-    });
+/**
+ * Writes the rest of the paper while the student answers what they already have.
+ *
+ * Three properties matter here. Slots are independent, so they are issued
+ * together rather than queued — multiple choice first because it is quick,
+ * then coding, then the debug exercise which needs a verified question to
+ * break. Every question is banked as it lands, so the next student for this
+ * problem draws it. And a slot that cannot be written is dropped, never fatal:
+ * an attempt somebody is part-way through must never be failed from back here.
+ */
+async function fillRemaining({ user, problem, blueprint, attempt, article, seeded }) {
+  const attemptId = attempt.id;
+  const assembled = new Map(seeded.map((entry) => [entry.slot.id, entry]));
+  const usedQuestionIds = new Set(seeded.map((entry) => entry.row.id));
+  let needsStart = !attempt.started_at;
 
-    // Concurrent workers must not overwrite each other's question_set update.
-    // Queue only the tiny database publish, never the slow model generation.
-    let publishQueue = Promise.resolve();
-    const publish = () => {
-      const run = publishQueue.then(async () => {
-        // Always publish in blueprint order even when background workers finish
-        // out of order. This keeps q1, q2, ... stable in the exam UI.
-        const questionSet = blueprint.slots
-          .map((slot) => assembled.get(slot.id))
-          .filter(Boolean)
-          .map(({ slot: itemSlot, row }) => questionEntry(itemSlot, row));
-        const progress = {
-          ...blueprint,
-          generation: { complete: false, ready: questionSet.length, target: blueprint.slots.length },
-        };
-        const published = unwrap(
-          await db
-            .from('assessment_attempts')
-            .update({
-              status: 'active',
-              question_set: jsonbValue(questionSet),
-              blueprint: progress,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', placeholder.id)
-            .in('status', OPEN_STATUSES)
-            .select('id')
-            .maybeSingle(),
-          'publish assessment question',
-        );
-        // Do not make the generation worker wait for a browser connection. The
-        // queued emitter serialises snapshots so concurrent workers cannot send
-        // q3 before the q2 snapshot that was committed first.
-        emitAssessmentUpdate(user, placeholder.id);
-        return Boolean(published);
-      });
-      publishQueue = run.catch(() => {});
-      return run;
-    };
-
-    const prepareOne = async (slot) => {
-      const current = unwrap(
-        await db.from('assessment_attempts').select('status').eq('id', placeholder.id).maybeSingle(),
-        'check assessment generation',
+  // Concurrent slots must not overwrite each other's question_set update.
+  // Queue only the tiny database publish, never the slow model generation.
+  let publishQueue = Promise.resolve();
+  const publish = () => {
+    const run = publishQueue.then(async () => {
+      // Always publish in blueprint order even when slots finish out of order,
+      // so q1, q2, … stay stable in the exam UI.
+      const questionSet = blueprint.slots
+        .map((slot) => assembled.get(slot.id))
+        .filter(Boolean)
+        .map(({ slot, row }) => questionEntry(slot, row));
+      const published = unwrap(
+        await db
+          .from('assessment_attempts')
+          .update({
+            status: 'active',
+            question_set: jsonbValue(questionSet),
+            blueprint: {
+              ...blueprint,
+              generation: { complete: false, ready: questionSet.length, target: blueprint.slots.length },
+            },
+            ...(needsStart ? { started_at: new Date().toISOString() } : {}),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', attemptId)
+          .in('status', GENERATING_STATUSES)
+          .select('id')
+          .maybeSingle(),
+        'publish assessment question',
       );
-      if (!current || !OPEN_STATUSES.includes(current.status)) return false;
+      if (published) needsStart = false;
+      // Do not make generation wait for a browser. The queued emitter
+      // serialises snapshots so a later question cannot overtake an earlier one.
+      emitAssessmentUpdate(user, attemptId);
+      return Boolean(published);
+    });
+    publishQueue = run.catch(() => {});
+    return run;
+  };
 
+  const stillOpen = async () => {
+    const current = unwrap(
+      await db.from('assessment_attempts').select('status').eq('id', attemptId).maybeSingle(),
+      'check assessment generation',
+    );
+    return Boolean(current && GENERATING_STATUSES.includes(current.status));
+  };
+
+  const prepareOne = async (slot) => {
+    try {
       let result = await assembleSlot({
         problem, blueprint, userId: user.id, article, slot, usedQuestionIds: [...usedQuestionIds],
       });
       // Concurrent bank reads can select the same row. Retry only that rare
-      // collision, keeping every question unique without serialising generation.
-      if (result && usedQuestionIds.includes(result.row.id)) {
+      // collision, keeping every question unique without serialising the fill.
+      if (result && usedQuestionIds.has(result.row.id)) {
         result = await assembleSlot({
           problem, blueprint, userId: user.id, article, slot, usedQuestionIds: [...usedQuestionIds],
         });
       }
-      if (!result) {
-        if (slot.optional) return true;
-        throw new Error(`Could not prepare ${slot.type} question ${slot.id}`);
-      }
-
-      usedQuestionIds.push(result.row.id);
+      if (!result || usedQuestionIds.has(result.row.id)) return;
+      usedQuestionIds.add(result.row.id);
       assembled.set(slot.id, result);
-      if (!await publish()) return false;
-      if (current.status === 'generating') {
-        await db.from('assessment_attempts')
-          .update({ started_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-          .eq('id', placeholder.id)
-          .in('status', OPEN_STATUSES);
-      }
-      await recordExposures(user.id, placeholder.id, [result.row.id]);
-      return true;
-    };
+      await publish();
+    } catch (error) {
+      // A model hiccup costs one question, not the paper. The slot's weight is
+      // redistributed when the fill finishes.
+      console.warn(
+        `[optimus] dropped ${slot.type} slot ${slot.id} on attempt ${attemptId}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  };
 
-    // Deliver q1 as soon as it is verified; prepare the rest in bounded,
-    // independent workers so background generation cannot block the exam.
-    if (!await prepareOne(blueprint.slots[0])) return;
-    const remaining = blueprint.slots.slice(1);
-    const workerCount = Math.min(env.assessment.generationConcurrency, remaining.length);
-    let nextIndex = 0;
-    const runWorker = async () => {
-      while (nextIndex < remaining.length) {
-        const slot = remaining[nextIndex];
-        nextIndex += 1;
-        if (!await prepareOne(slot)) return;
+  const runPool = async (slots, width) => {
+    let next = 0;
+    const worker = async () => {
+      while (next < slots.length) {
+        const slot = slots[next];
+        next += 1;
+        if (!await stillOpen()) return;
+        await prepareOne(slot);
       }
     };
-    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+    await Promise.all(Array.from({ length: Math.min(width, slots.length) }, () => worker()));
+  };
 
-    const dropped = blueprint.slots.filter((slot) => !assembled.has(slot.id));
+  try {
+    const remaining = blueprint.slots.filter((slot) => !assembled.has(slot.id));
+    // Multiple choice and SQL are seconds; machine coding is minutes; a debug
+    // exercise is a broken copy of a machine-coding question and has to follow
+    // one. That ordering is the whole scheduling policy.
+    await runPool(remaining.filter((slot) => slot.type === 'mcq' || slot.type === 'sql'), env.assessment.generationConcurrency);
+    await runPool(remaining.filter((slot) => slot.type === 'machine_coding'), env.assessment.codingConcurrency);
+    await runPool(remaining.filter((slot) => slot.type === 'debug'), 1);
+
     const ordered = blueprint.slots.map((slot) => assembled.get(slot.id)).filter(Boolean);
-    const finalSet = redistribute(ordered, dropped)
-      .map(({ slot: itemSlot, row }) => questionEntry(itemSlot, row));
+    const missed = blueprint.slots.filter((slot) => !assembled.has(slot.id));
+
+    if (!ordered.length) {
+      // Nothing was written at all, so nobody is part-way through anything.
+      // This is the only case where an attempt is failed, and it can only ever
+      // apply to one still sitting in `generating`.
+      await db.from('assessment_attempts')
+        .update({
+          status: 'failed',
+          blueprint: {
+            ...blueprint,
+            generation: { complete: false, ready: 0, target: blueprint.slots.length, error: 'No question could be prepared' },
+          },
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', attemptId)
+        .eq('status', 'generating');
+      emitAssessmentUpdate(user, attemptId);
+      return;
+    }
+
+    const finalSet = redistribute(ordered, missed).map(({ slot, row }) => questionEntry(slot, row));
     unwrap(
       await db
         .from('assessment_attempts')
         .update({
           status: 'active',
           question_set: jsonbValue(finalSet),
-          blueprint: { ...blueprint, generation: { complete: true, ready: finalSet.length, target: blueprint.slots.length } },
+          blueprint: {
+            ...blueprint,
+            generation: {
+              complete: true,
+              ready: finalSet.length,
+              target: blueprint.slots.length,
+              ...(missed.length ? { dropped: missed.map((slot) => slot.id) } : {}),
+            },
+          },
+          ...(needsStart ? { started_at: new Date().toISOString() } : {}),
           updated_at: new Date().toISOString(),
         })
-        .eq('id', placeholder.id)
-        .eq('status', 'active'),
+        .eq('id', attemptId)
+        .in('status', GENERATING_STATUSES),
       'finish assessment generation',
     );
-    emitAssessmentUpdate(user, placeholder.id);
+    emitAssessmentUpdate(user, attemptId);
   } catch (error) {
+    // Even here the paper stays open. Mark generation settled on what exists so
+    // the student can finish and submit rather than waiting on a dead fill.
+    console.error('[optimus] paper fill failed:', error instanceof Error ? error.message : error);
     await db.from('assessment_attempts')
       .update({
-        status: 'failed',
         blueprint: {
           ...blueprint,
           generation: {
-            complete: false,
-            ready: 0,
+            complete: true,
+            ready: assembled.size,
             target: blueprint.slots.length,
             error: error instanceof Error ? error.message : String(error),
           },
         },
         updated_at: new Date().toISOString(),
       })
-      .eq('id', placeholder.id)
-      .in('status', OPEN_STATUSES);
-    console.error('[optimus] paper assembly failed:', error instanceof Error ? error.message : error);
+      .eq('id', attemptId)
+      .in('status', GENERATING_STATUSES);
+    emitAssessmentUpdate(user, attemptId);
   }
 }
 
-// A process restart can interrupt the in-process generation task. Keep the
-// attempt open and resume it on the next worker tick instead of leaving the
-// student on a permanent loading screen. The set prevents duplicate work
-// while a slow LLM call is still in flight.
+// A process restart can interrupt an in-flight fill. The attempt stays open and
+// is resumed on the next worker tick rather than leaving the student on a
+// half-written paper they cannot submit. The set prevents duplicate work while
+// a slow model call is still running in this process.
 const resumingAttempts = new Set();
 
-export async function resumeGeneratingAssessments({ limit = 10 } = {}) {
+/**
+ * Finishes papers whose generation was cut short.
+ *
+ * An attempt goes `active` the moment its first question publishes, so looking
+ * only at `generating` — as this once did — missed every paper interrupted
+ * after that point and left it unfinishable for good.
+ */
+export async function resumeIncompleteAssessments({ limit = 10 } = {}) {
   const rows = unwrap(
     await db
       .from('assessment_attempts')
-      .select('id, user_id, problem_id, blueprint, language')
-      .eq('status', 'generating')
+      .select('id, user_id, problem_id, blueprint, language, started_at, status')
+      .in('status', GENERATING_STATUSES)
       .order('created_at', { ascending: true })
-      .limit(limit),
-    'load generating assessments',
+      .limit(60),
+    'load unfinished assessments',
   );
 
-  for (const row of rows) {
-    if (resumingAttempts.has(row.id)) continue;
+  const unfinished = rows
+    .filter((row) => row.blueprint?.generation && row.blueprint.generation.complete !== true)
+    .filter((row) => !resumingAttempts.has(row.id))
+    .slice(0, limit);
+
+  for (const row of unfinished) {
     const blueprint = row.blueprint;
     if (!blueprint?.slots?.length) {
       await db.from('assessment_attempts').update({
@@ -455,20 +561,38 @@ export async function resumeGeneratingAssessments({ limit = 10 } = {}) {
     resumingAttempts.add(row.id);
     void (async () => {
       try {
-        const [user, problem] = await Promise.all([
-          unwrap(await db.from('users').select('id, email, name, timezone, preferred_language').eq('id', row.user_id).maybeSingle(), 'load assessment owner'),
+        const [user, problem, current] = await Promise.all([
+          (async () => unwrap(await db.from('users').select('id, email, name, timezone, preferred_language').eq('id', row.user_id).maybeSingle(), 'load assessment owner'))(),
           getProblemById(row.problem_id, '*', ['LLD', 'HLD']),
+          (async () => unwrap(await db.from('assessment_attempts').select('question_set, started_at').eq('id', row.id).maybeSingle(), 'load partial paper'))(),
         ]);
         if (!user || !problem?.assessment_enabled) return;
-        await prepareAssessment({
+
+        // Whatever already published is kept; only the gaps are rewritten.
+        const already = (current?.question_set ?? []).map(upgradeLegacyEntry);
+        const bySlot = new Map(already.map((entry) => [entry.slotId, entry]));
+        const seeded = blueprint.slots
+          .filter((slot) => bySlot.has(slot.id))
+          .map((slot) => {
+            const entry = bySlot.get(slot.id);
+            return {
+              slot,
+              row: {
+                id: entry.questionId,
+                concept_area: entry.conceptArea,
+                difficulty: entry.difficulty,
+                payload: entry.payload,
+              },
+            };
+          });
+
+        await fillRemaining({
           user,
           problem,
-          blueprint: blueprint.generation ? blueprint : {
-            ...blueprint,
-            generation: { complete: false, ready: 0, target: blueprint.slots.length },
-          },
-          placeholder: row,
+          blueprint,
+          attempt: { id: row.id, started_at: current?.started_at ?? row.started_at },
           article: await loadArticle(row.problem_id),
+          seeded,
         });
       } catch (error) {
         console.error('[optimus] could not resume assessment', row.id, error instanceof Error ? error.message : error);
@@ -477,7 +601,7 @@ export async function resumeGeneratingAssessments({ limit = 10 } = {}) {
       }
     })();
   }
-  return rows.length;
+  return unfinished.length;
 }
 
 export async function getAssessment(user, attemptId) {
@@ -643,15 +767,16 @@ async function gradeEntry(entry, answer) {
 export async function submitAssessment(user, attemptId) {
   const attempt = await loadOwnedAttempt(user.id, attemptId);
   if (['passed', 'failed'].includes(attempt.status)) throw ApiError.conflict('Assessment was already submitted');
-  const generationComplete = attempt.blueprint?.generation?.complete ?? true;
-  if (!generationComplete) throw ApiError.conflict('Assessment is still preparing. Please wait for the remaining questions.');
+
+  const entries = (attempt.question_set ?? []).map(upgradeLegacyEntry);
+  if (!entries.length) throw ApiError.conflict('This assessment has no questions to submit');
 
   const answers = unwrap(
     await db.from('assessment_answers').select('*').eq('attempt_id', attempt.id),
     'load submitted answers',
   );
   const answerByQuestion = new Map(answers.map((answer) => [answer.question_id, answer]));
-  const missing = attempt.question_set.map(upgradeLegacyEntry).filter((entry) => !answerByQuestion.has(entry.slotId));
+  const missing = entries.filter((entry) => !answerByQuestion.has(entry.slotId));
   if (missing.length && attempt.status === 'active') {
     throw ApiError.badRequest(`Answer every question before submitting (${missing.length} remaining)`);
   }
@@ -668,10 +793,16 @@ export async function submitAssessment(user, attemptId) {
   );
   if (!grading) throw ApiError.conflict('Assessment was already submitted');
 
+  // Exposure is recorded here rather than as each question publishes. A student
+  // who opens a paper and quits has not seen anything worth burning, and doing
+  // it at publish time meant three false starts cost them thirty questions of
+  // a finite bank — permanently, since exposure is what the draw filters on.
+  await recordExposures(user.id, attempt.id, entries.map((entry) => entry.questionId).filter(Boolean));
+
   let total = 0;
   const results = [];
   try {
-    for (const entry of attempt.question_set.map(upgradeLegacyEntry)) {
+    for (const entry of entries) {
       const answer = answerByQuestion.get(entry.slotId);
       const graded = await gradeEntry(entry, answer);
       const score = Number((graded.ratio * entry.weight).toFixed(2));
@@ -705,7 +836,14 @@ export async function submitAssessment(user, attemptId) {
       .eq('id', answer.id);
   }));
 
-  const maxScore = Number(attempt.max_score ?? attempt.blueprint?.maxScore ?? attempt.question_set.length);
+  // A paper whose fill was cut short is marked out of the questions it actually
+  // contains. Scoring 7 questions out of a planned 100 would make the pass mark
+  // unreachable through no fault of the student.
+  const presentWeight = entries.reduce((sum, entry) => sum + Number(entry.weight ?? 1), 0);
+  const generationComplete = attempt.blueprint?.generation?.complete ?? true;
+  const maxScore = generationComplete
+    ? Number(attempt.max_score ?? attempt.blueprint?.maxScore ?? presentWeight)
+    : presentWeight;
   const passed = maxScore > 0 && total / maxScore >= PASS_RATIO;
   const completedAt = new Date().toISOString();
   const final = unwrap(
@@ -734,6 +872,51 @@ export async function submitAssessment(user, attemptId) {
     passed,
     score: Number(total.toFixed(2)),
     maxScore,
+  };
+}
+
+/**
+ * How well the bank is covering demand.
+ *
+ * With no pre-seeding, depth is the metric that predicts student latency: a
+ * problem with stock opens in a query, a problem without one pays for a
+ * question. Reported per problem that has actually been assessed, because a
+ * problem nobody has sat is supposed to have nothing.
+ */
+export async function bankHealth() {
+  const attempts = unwrap(
+    await db.from('assessment_attempts').select('problem_id, status, created_at').order('created_at', { ascending: false }).limit(500),
+    'load assessment attempts',
+  );
+  const problemIds = [...new Set(attempts.map((row) => row.problem_id))];
+  const inventory = await bankInventory(problemIds);
+
+  const problems = await Promise.all(problemIds.map(async (problemId) => {
+    const problem = await getProblemById(problemId, 'id, title, kind, coding_enabled');
+    const depth = inventory.get(problemId) ?? {};
+    return {
+      problemId,
+      title: problem?.title ?? null,
+      kind: problem?.kind ?? null,
+      codeable: problem?.coding_enabled === true,
+      depth,
+      total: Object.values(depth).reduce((sum, count) => sum + count, 0),
+      attempts: attempts.filter((row) => row.problem_id === problemId).length,
+    };
+  }));
+
+  problems.sort((left, right) => left.total - right.total);
+  const banked = unwrap(
+    await db.from('assessment_questions').select('kind').eq('verified', true).is('retired_at', null),
+    'count banked questions',
+  );
+
+  return {
+    problemsAssessed: problemIds.length,
+    questionsBanked: banked.length,
+    byKind: banked.reduce((totals, row) => ({ ...totals, [row.kind]: (totals[row.kind] ?? 0) + 1 }), {}),
+    // The ones that will make somebody wait next.
+    thinnest: problems.slice(0, 25),
   };
 }
 
