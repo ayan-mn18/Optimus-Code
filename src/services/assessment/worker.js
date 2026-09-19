@@ -1,7 +1,7 @@
 import { env } from '../../config/env.js';
 import { db, unwrap } from '../../lib/supabase.js';
 import { getProblemById } from '../problem-catalog.service.js';
-import { settlePendingGrades } from '../assessment.service.js';
+import { resumeGeneratingAssessments, settlePendingGrades } from '../assessment.service.js';
 import { planBlueprint } from './blueprint.js';
 import {
   LOW_WATER, bankDepth, generateMissing, loadArticle, storeQuestions,
@@ -89,6 +89,9 @@ export function startAssessmentWorker({ intervalMs = env.assessment.workerInterv
     if (running) return;
     running = true;
     try {
+      const resumed = await resumeGeneratingAssessments();
+      if (resumed) console.log(`[optimus] resumed ${resumed} generating assessment(s)`);
+
       const settled = await settlePendingGrades();
       if (settled) console.log(`[optimus] settled ${settled} interrupted assessment(s)`);
 
@@ -108,6 +111,6 @@ export function startAssessmentWorker({ intervalMs = env.assessment.workerInterv
 
   const timer = setInterval(tick, intervalMs);
   timer.unref?.();
-  setTimeout(tick, 15_000).unref?.();
+  setTimeout(tick, 1_000).unref?.();
   return () => clearInterval(timer);
 }

@@ -344,6 +344,62 @@ async function prepareAssessment({ user, problem, blueprint, placeholder, articl
   }
 }
 
+// A process restart can interrupt the in-process generation task. Keep the
+// attempt open and resume it on the next worker tick instead of leaving the
+// student on a permanent loading screen. The set prevents duplicate work
+// while a slow LLM call is still in flight.
+const resumingAttempts = new Set();
+
+export async function resumeGeneratingAssessments({ limit = 10 } = {}) {
+  const rows = unwrap(
+    await db
+      .from('assessment_attempts')
+      .select('id, user_id, problem_id, blueprint, language')
+      .eq('status', 'generating')
+      .order('created_at', { ascending: true })
+      .limit(limit),
+    'load generating assessments',
+  );
+
+  for (const row of rows) {
+    if (resumingAttempts.has(row.id)) continue;
+    const blueprint = row.blueprint;
+    if (!blueprint?.slots?.length) {
+      await db.from('assessment_attempts').update({
+        status: 'failed',
+        updated_at: new Date().toISOString(),
+      }).eq('id', row.id).eq('status', 'generating');
+      continue;
+    }
+
+    resumingAttempts.add(row.id);
+    void (async () => {
+      try {
+        const [user, problem] = await Promise.all([
+          unwrap(await db.from('users').select('id, email, name, timezone, preferred_language').eq('id', row.user_id).maybeSingle(), 'load assessment owner'),
+          getProblemById(row.problem_id, '*', ['LLD', 'HLD']),
+        ]);
+        if (!user || !problem?.assessment_enabled) return;
+        await prepareAssessment({
+          user,
+          problem,
+          blueprint: blueprint.generation ? blueprint : {
+            ...blueprint,
+            generation: { complete: false, ready: 0, target: blueprint.slots.length },
+          },
+          placeholder: row,
+          article: await loadArticle(row.problem_id),
+        });
+      } catch (error) {
+        console.error('[optimus] could not resume assessment', row.id, error instanceof Error ? error.message : error);
+      } finally {
+        resumingAttempts.delete(row.id);
+      }
+    })();
+  }
+  return rows.length;
+}
+
 export async function getAssessment(user, attemptId) {
   const attempt = await loadOwnedAttempt(user.id, attemptId);
   const [answers, problem] = await Promise.all([
