@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Optimus · Supabase to Amazon RDS migration plan</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #121a2b;
+      --panel-2: #172238;
+      --line: #2b3956;
+      --text: #edf3ff;
+      --muted: #aab8d2;
+      --faint: #7585a4;
+      --blue: #71a7ff;
+      --cyan: #53d7d0;
+      --amber: #f7c66a;
+      --red: #ff8d9a;
+      --green: #7ce3a3;
+      --shadow: 0 18px 50px rgba(0, 0, 0, .22);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 85% -15%, #1c3962 0, transparent 42%), var(--bg);
+      color: var(--text);
+      font: 15px/1.6 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .wrap { width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding: 42px 0 80px; }
+    header { padding: 34px 36px; border: 1px solid var(--line); border-radius: 26px; background: linear-gradient(135deg, rgba(27, 46, 78, .95), rgba(16, 24, 42, .95)); box-shadow: var(--shadow); }
+    .eyebrow { color: var(--cyan); text-transform: uppercase; letter-spacing: .14em; font-size: 11px; font-weight: 750; }
+    h1 { margin: 7px 0 11px; font-size: clamp(30px, 5vw, 52px); line-height: 1.06; letter-spacing: -.04em; }
+    h2 { margin: 0 0 14px; font-size: 24px; letter-spacing: -.02em; }
+    h3 { margin: 23px 0 7px; font-size: 17px; }
+    p { margin: 8px 0 12px; color: var(--muted); }
+    a { color: var(--blue); }
+    .lede { max-width: 830px; font-size: 17px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 24px; }
+    .pill, .tag { border: 1px solid #41557b; border-radius: 999px; padding: 4px 10px; color: #cad7ef; background: rgba(18, 29, 51, .8); font-size: 12px; }
+    .pill strong { color: var(--text); }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 18px; margin-top: 18px; }
+    .card { grid-column: span 12; border: 1px solid var(--line); border-radius: 20px; background: rgba(18, 26, 43, .93); padding: 25px; box-shadow: 0 12px 35px rgba(0,0,0,.12); }
+    .half { grid-column: span 6; }
+    .third { grid-column: span 4; }
+    .notice { display: flex; gap: 13px; align-items: flex-start; border-color: #745a27; background: linear-gradient(135deg, rgba(73, 54, 20, .75), rgba(39, 31, 20, .72)); }
+    .notice .icon { color: var(--amber); }
+    .success { border-color: #296448; background: linear-gradient(135deg, rgba(22, 61, 54, .58), rgba(17, 35, 39, .75)); }
+    .danger { border-color: #713846; background: linear-gradient(135deg, rgba(75, 30, 44, .60), rgba(37, 23, 36, .75)); }
+    .icon { font-size: 22px; line-height: 1; }
+    .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .stat { border: 1px solid var(--line); border-radius: 14px; padding: 15px; background: rgba(11, 17, 31, .42); }
+    .stat .value { display: block; margin-top: 2px; font-size: 25px; font-weight: 760; letter-spacing: -.04em; }
+    .stat .label { color: var(--faint); font-size: 12px; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 13px; }
+    table { width: 100%; border-collapse: collapse; min-width: 520px; }
+    th, td { padding: 9px 12px; border-bottom: 1px solid rgba(43,57,86,.62); text-align: left; vertical-align: top; }
+    th { color: #c9d6ed; background: rgba(30, 44, 70, .55); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+    td { color: var(--muted); font-size: 13px; }
+    tr:last-child td { border-bottom: 0; }
+    code, pre { font: 12.5px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+    code { color: #c7e4ff; }
+    pre { overflow-x: auto; margin: 12px 0 0; padding: 16px; border: 1px solid #2e4164; border-radius: 13px; background: #0a1120; color: #d7e6ff; }
+    .muted { color: var(--faint); }
+    .small { font-size: 12px; }
+    .checklist { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 9px 22px; margin: 12px 0 0; padding: 0; list-style: none; }
+    .checklist li::before { content: "□"; color: var(--cyan); margin-right: 9px; font-size: 17px; vertical-align: -1px; }
+    .flow { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; align-items: stretch; margin: 15px 0 4px; }
+    .node { position: relative; display: flex; flex-direction: column; justify-content: center; min-height: 96px; padding: 13px; border: 1px solid #3a5278; border-radius: 13px; background: #101a2e; text-align: center; }
+    .node b { color: #e2edff; font-size: 13px; }
+    .node span { color: var(--faint); font-size: 11px; }
+    .arrow { position: absolute; right: -14px; top: calc(50% - 10px); z-index: 2; color: var(--cyan); font-size: 20px; }
+    .phase { display: grid; grid-template-columns: 60px 1fr; gap: 16px; padding: 15px 0; border-top: 1px solid rgba(43,57,86,.75); }
+    .phase:first-of-type { border-top: 0; }
+    .number { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 13px; background: rgba(69, 111, 183, .22); border: 1px solid #4b70ac; color: var(--blue); font-weight: 800; }
+    .phase h3 { margin: 1px 0 3px; }
+    .phase p { margin: 2px 0; }
+    .decision { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .decision > div { padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: rgba(8, 14, 27, .38); }
+    .decision strong { display: block; margin-bottom: 4px; color: #e4edff; }
+    footer { margin-top: 24px; color: var(--faint); font-size: 12px; text-align: center; }
+    @media (max-width: 840px) { .half, .third { grid-column: span 12; } .stat-grid { grid-template-columns: repeat(2, 1fr); } .flow { grid-template-columns: 1fr; } .arrow { right: auto; left: calc(50% - 5px); top: auto; bottom: -16px; transform: rotate(90deg); } .node { min-height: 74px; } }
+    @media (max-width: 560px) { .wrap { width: min(100% - 22px, 1180px); padding-top: 11px; } header, .card { padding: 19px; border-radius: 17px; } .checklist, .decision { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div class="eyebrow">Optimus Code · infrastructure runbook</div>
+      <h1>Supabase → Amazon RDS migration</h1>
+      <p class="lede">A production-safe plan to move the live application database into an Arm-based Amazon RDS for PostgreSQL instance, connect it privately to the existing EC2 service, and cut over with verifiable rollback points.</p>
+      <div class="meta">
+        <span class="pill"><strong>Plan status:</strong> inventory captured</span>
+        <span class="pill"><strong>Inventory date:</strong> 19 Sep 2026 (Asia/Kolkata)</span>
+        <span class="pill"><strong>Region:</strong> ap-south-1</span>
+        <span class="pill"><strong>Requested class:</strong> db.t4g.micro</span>
+      </div>
+    </header>
+
+    <section class="grid">
+      <article class="card notice">
+        <div class="icon">⚠</div>
+        <div><h2>Provisioning gate</h2><p>No RDS instance, subnet group, security group, parameter group, or production secret was created by this run. Creating RDS is billable and changes the AWS account, so provisioning should happen only after the target sizing and cutover choices below are approved.</p></div>
+      </article>
+
+      <article class="card">
+        <h2>What was measured from the live systems</h2>
+        <p>The catalog and row counts below came from the production Supabase database through its production connection. The repository’s <code>db/schema.sql</code> was not used as the migration source of truth; it is only a validation reference. No secret values are included in this page.</p>
+        <div class="stat-grid">
+          <div class="stat"><span class="label">Application tables</span><span class="value">22</span></div>
+          <div class="stat"><span class="label">Public functions / RPCs</span><span class="value">4</span></div>
+          <div class="stat"><span class="label">Exact public rows</span><span class="value">3,218</span></div>
+          <div class="stat"><span class="label">Extensions observed</span><span class="value">5</span></div>
+        </div>
+        <h3>Exact live row counts</h3>
+        <div class="table-wrap"><table><thead><tr><th>Table</th><th>Rows</th><th>Table</th><th>Rows</th></tr></thead><tbody>
+          <tr><td><code>account_invites</code></td><td>11</td><td><code>assessment_answers</code></td><td>10</td></tr>
+          <tr><td><code>assessment_attempts</code></td><td>19</td><td><code>assessment_exposures</code></td><td>0</td></tr>
+          <tr><td><code>assessment_questions</code></td><td>82</td><td><code>blog_bookmarks</code></td><td>0</td></tr>
+          <tr><td><code>blog_likes</code></td><td>0</td><td><code>blog_research_jobs</code></td><td>1</td></tr>
+          <tr><td><code>blogs</code></td><td>280</td><td><code>daily_assignments</code></td><td>1,091</td></tr>
+          <tr><td><code>daily_logs</code></td><td>83</td><td><code>enrollments</code></td><td>10</td></tr>
+          <tr><td><code>inactive_reminder_events</code></td><td>17</td><td><code>milestone_recaps</code></td><td>1</td></tr>
+          <tr><td><code>payment_webhook_events</code></td><td>0</td><td><code>problems</code></td><td>822</td></tr>
+          <tr><td><code>refresh_tokens</code></td><td>557</td><td><code>streak_milestones</code></td><td>0</td></tr>
+          <tr><td><code>subscriptions</code></td><td>0</td><td><code>user_problems</code></td><td>217</td></tr>
+          <tr><td><code>users</code></td><td>11</td><td><code>waitlist</code></td><td>6</td></tr>
+        </tbody></table></div>
+      </article>
+
+      <article class="card half">
+        <h2>Live Supabase footprint</h2>
+        <p>Production endpoint is a Supabase transaction pooler in <code>ap-southeast-2</code> on port <code>6543</code>. Use a direct/session connection for the final dump if available; poolers can make long-running <code>pg_dump</code> sessions less predictable.</p>
+        <table><tbody>
+          <tr><td>PostgreSQL</td><td>17.6, x86_64</td></tr>
+          <tr><td>Database / schema</td><td><code>postgres</code> / <code>public</code></td></tr>
+          <tr><td>Managed schemas</td><td><code>auth</code>, <code>storage</code>, <code>realtime</code>, <code>graphql</code>, <code>vault</code>, <code>supabase_migrations</code></td></tr>
+          <tr><td>Extensions</td><td><code>pgcrypto</code>, <code>uuid-ossp</code>, <code>pg_stat_statements</code>, <code>plpgsql</code>, <code>supabase_vault</code></td></tr>
+          <tr><td>Public functions</td><td><code>accept_waitlist_invite</code>, <code>increment_blog_views</code>, <code>increment_question_served</code>, <code>toggle_blog_like</code></td></tr>
+          <tr><td>RLS</td><td>Enabled on all 22 public tables; only one public read policy was observed (for <code>problems</code>).</td></tr>
+        </tbody></table>
+      </article>
+
+      <article class="card half">
+        <h2>Current EC2 / VPC footprint</h2>
+        <p>The app runs on a public-subnet EC2 host. The database should still be private and should trust the EC2 security group, not the host’s public IP.</p>
+        <table><tbody>
+          <tr><td>Instance</td><td><code>i-0e0f6f5503ee50d48</code> · <code>t3.micro</code> · running</td></tr>
+          <tr><td>Availability Zone</td><td><code>ap-south-1a</code></td></tr>
+          <tr><td>VPC</td><td><code>vpc-0dfc5b1580f85feb9</code> · <code>172.31.0.0/16</code></td></tr>
+          <tr><td>Subnet / private IP</td><td><code>subnet-04689a0526aeb5eee</code> · <code>172.31.38.190</code></td></tr>
+          <tr><td>EC2 security group</td><td><code>sg-081d1dcdd15800cfa</code> (HTTP/HTTPS ingress; unrestricted egress)</td></tr>
+          <tr><td>Instance role</td><td><code>optimus-code-ec2</code>; current custom permission reads SSM parameter <code>/optimus-code/prod/env</code> only</td></tr>
+          <tr><td>Existing RDS</td><td>None; no RDS subnet group exists</td></tr>
+        </tbody></table>
+      </article>
+
+      <article class="card">
+        <h2>Application access-layer constraint</h2>
+        <p>The backend currently creates a service-role <code>@supabase/supabase-js</code> client and calls <code>db.from(...)</code> and <code>db.rpc(...)</code> throughout the services, routes, auth, billing, research, blogs, and assessment workers. The current package has no PostgreSQL driver. Changing <code>SUPABASE_DB_URL</code> to an RDS URL will therefore not switch the app over.</p>
+        <div class="decision">
+          <div><strong>Recommended: native PostgreSQL adapter</strong><span class="muted small">Introduce <code>pg</code> (or a chosen query layer), port each query/RPC, recreate authorization in the API, and remove the Supabase service-role dependency after parity tests. This is the cleanest long-term RDS design.</span></div>
+          <div><strong>Transitional: self-host an API compatibility layer</strong><span class="muted small">Run PostgREST or a small adapter beside the app and point the existing client at it. This reduces first-cutover code churn but adds another service, key management, and a need to reproduce the current RLS/service-role behavior.</span></div>
+        </div>
+        <p class="small muted">Decision required before implementation. The database restore can proceed in parallel, but application cutover cannot be considered complete until one access strategy is tested end-to-end.</p>
+      </article>
+
+      <article class="card">
+        <h2>Target topology</h2>
+        <div class="flow">
+          <div class="node"><b>Browser / API traffic</b><span>HTTPS → EC2</span><i class="arrow">→</i></div>
+          <div class="node"><b>Optimus EC2</b><span>private IP 172.31.38.190</span><i class="arrow">→</i></div>
+          <div class="node"><b>RDS SG</b><span>TCP 5432 from EC2 SG only</span><i class="arrow">→</i></div>
+          <div class="node"><b>RDS PostgreSQL</b><span>private endpoint · SSL required</span><i class="arrow">→</i></div>
+          <div class="node"><b>Secrets Manager / SSM</b><span>runtime secret retrieval</span></div>
+        </div>
+        <p class="small">Use two subnets in different AZs for the RDS DB subnet group (for example the existing <code>ap-south-1a</code> and <code>ap-south-1b</code> subnets, or newly created private subnets). Set <code>PubliclyAccessible=false</code>. Add a single inbound rule to the RDS security group with source <code>sg-081d1dcdd15800cfa</code>; do not allow <code>0.0.0.0/0</code> on port 5432.</p>
+      </article>
+
+      <article class="card">
+        <h2>Migration sequence</h2>
+        <div class="phase"><div class="number">1</div><div><h3>Freeze the source of truth</h3><p>Confirm the Supabase project, maintenance window, data-retention requirements, and whether Supabase Auth, Storage, Realtime, or only the application-owned <code>public</code> schema is in scope. Record a final live catalog snapshot and checksum.</p></div></div>
+        <div class="phase"><div class="number">2</div><div><h3>Capture live DDL and DML</h3><p>Run the commands below from a host that can reach Supabase. Dump <code>public</code> only unless a separate decision explicitly includes managed schemas. Store dumps encrypted; they contain user, token, billing, and research data.</p></div></div>
+        <div class="phase"><div class="number">3</div><div><h3>Provision RDS and private networking</h3><p>Create a DB subnet group across two AZs, an RDS security group that trusts only the EC2 SG, a PostgreSQL parameter group with SSL enforcement, encryption, backups, deletion protection, and a Secrets Manager secret. Validate connectivity from EC2 before restoring data.</p></div></div>
+        <div class="phase"><div class="number">4</div><div><h3>Restore and validate schema</h3><p>Restore the live DDL, required extensions, functions, constraints, indexes, sequences, and RLS flags. Do not restore Supabase ownership, managed roles, or Supabase internal schemas. Create a least-privilege application role.</p></div></div>
+        <div class="phase"><div class="number">5</div><div><h3>Restore data and replay deltas</h3><p>Load the data-only dump, reset sequences, compare exact counts and checksums, and run foreign-key/orphan checks. For low downtime, take a final delta dump during the maintenance window; otherwise schedule a short write freeze.</p></div></div>
+        <div class="phase"><div class="number">6</div><div><h3>Port the application access layer</h3><p>Implement the selected native adapter or compatibility layer, move the DB secret into the EC2 runtime, and test auth, DSA/LLD/HLD content, assessments, blogs/bookmarks, research jobs, billing webhooks, email workers, and scheduled jobs against RDS.</p></div></div>
+        <div class="phase"><div class="number">7</div><div><h3>Shadow, cut over, observe</h3><p>Run read-only parity checks, measure p50/p95/p99 database latency, enable RDS Performance Insights/Enhanced Monitoring, switch writes, and keep Supabase read-only for the agreed rollback period.</p></div></div>
+        <div class="phase"><div class="number">8</div><div><h3>Retire only after the rollback window</h3><p>Rotate old Supabase credentials, export the final audit artifacts, remove unused Supabase dependencies, and decommission the old database only after backups and business-owner sign-off.</p></div></div>
+      </article>
+
+      <article class="card half">
+        <h2>Live capture commands</h2>
+        <p>These are templates. Load the password from a secret manager or a protected shell environment; never put it in source control, the command history, or this HTML.</p>
+        <pre><code># Run from a controlled migration host
+export SUPABASE_DB_URL='&lt;live Supabase direct/session URL&gt;'
+mkdir -p /secure/optimus-migration
+
+# Live DDL: application schema only
+pg_dump "$SUPABASE_DB_URL" \
+  --schema=public --schema-only --no-owner --no-privileges \
+  --file=/secure/optimus-migration/public-schema.sql
+
+# Live DML: custom format for resumable restore
+pg_dump "$SUPABASE_DB_URL" \
+  --schema=public --data-only --no-owner --no-privileges \
+  --format=custom --file=/secure/optimus-migration/public-data.dump
+
+sha256sum /secure/optimus-migration/public-schema.sql \
+          /secure/optimus-migration/public-data.dump</code></pre>
+        <p class="small muted">The captured live schema was 1,478 lines and contained 22 tables plus 4 public functions. The observed data dump was about 1.2 MiB compressed. Treat those figures as a baseline, not a replacement for a final cutover dump.</p>
+      </article>
+
+      <article class="card half">
+        <h2>RDS provisioning templates</h2>
+        <p>Use placeholders and review every value. The requested <code>db.t4g.micro</code> is Graviton/Arm-based but has only 1 GiB RAM; <code>db.t4g.small</code> is the safer starting point for a production API if the budget allows.</p>
+        <pre><code>REGION=ap-south-1
+VPC_ID=vpc-0dfc5b1580f85feb9
+APP_SG_ID=sg-081d1dcdd15800cfa
+DB_SG_ID=&lt;new RDS security-group-id&gt;
+
+aws ec2 authorize-security-group-ingress \
+  --region "$REGION" --group-id "$DB_SG_ID" \
+  --protocol tcp --port 5432 --source-group "$APP_SG_ID"
+
+aws rds create-db-subnet-group \
+  --region "$REGION" --db-subnet-group-name optimus-rds-private \
+  --db-subnet-group-description "Optimus PostgreSQL private subnets" \
+  --subnet-ids &lt;ap-south-1a-subnet&gt; &lt;ap-south-1b-subnet&gt;
+
+aws rds create-db-instance \
+  --region "$REGION" --db-instance-identifier optimus-prod \
+  --engine postgres --engine-version 17 \
+  --db-instance-class db.t4g.micro \
+  --allocated-storage 20 --storage-type gp3 \
+  --master-username optimus_admin \
+  --manage-master-user-password \
+  --db-name optimus --port 5432 \
+  --db-subnet-group-name optimus-rds-private \
+  --vpc-security-group-ids "$DB_SG_ID" \
+  --no-publicly-accessible \
+  --backup-retention-period 7 \
+  --storage-encrypted --deletion-protection \
+  --copy-tags-to-snapshot</code></pre>
+        <p class="small muted">Prefer an explicitly approved KMS key, parameter group (<code>rds.force_ssl=1</code>), CloudWatch log exports, and a maintenance window. Store the generated master secret in Secrets Manager and create a separate least-privilege app role after restore.</p>
+      </article>
+
+      <article class="card half">
+        <h2>Restore commands</h2>
+        <pre><code>export RDS_ADMIN_URL='&lt;temporary admin URL from Secrets Manager&gt;'
+
+# Check extensions before restore; install only what the live public DDL needs
+psql "$RDS_ADMIN_URL" -v ON_ERROR_STOP=1 -c \
+  'create extension if not exists pgcrypto;'
+
+psql "$RDS_ADMIN_URL" -v ON_ERROR_STOP=1 \
+  --file=/secure/optimus-migration/public-schema.sql
+
+pg_restore "$RDS_ADMIN_URL" \
+  --data-only --no-owner --no-privileges \
+  /secure/optimus-migration/public-data.dump
+
+# Generate sequence resets from live ownership metadata (UUID tables are ignored)
+psql "$RDS_ADMIN_URL" -Atc &lt;&lt;'SQL' | psql "$RDS_ADMIN_URL" -v ON_ERROR_STOP=1
+select format('select setval(%L, coalesce(max(%I), 1), true) from %I.%I;',
+  seq.oid::regclass::text, att.attname, ns.nspname, tbl.relname)
+from pg_class seq
+join pg_namespace ns on ns.oid = seq.relnamespace
+join pg_depend dep on dep.objid = seq.oid and dep.deptype = 'a'
+join pg_class tbl on tbl.oid = dep.refobjid
+join pg_attribute att on att.attrelid = tbl.oid and att.attnum = dep.refobjsubid
+where seq.relkind = 'S' and ns.nspname = 'public';
+SQL</code></pre>
+        <p class="small muted">The sequence query uses live ownership metadata and ignores UUID-backed tables. Restore extensions and functions before data-dependent validation, then apply grants and the app role.</p>
+      </article>
+
+      <article class="card half">
+        <h2>Runtime configuration changes</h2>
+        <p>Keep all non-database integrations unchanged. Replace only the Supabase data access path after the adapter work is complete.</p>
+        <table><thead><tr><th>Current category</th><th>RDS-era action</th></tr></thead><tbody>
+          <tr><td><code>SUPABASE_URL</code> / <code>SUPABASE_SERVICE_ROLE_KEY</code></td><td>Remove from the app only after the selected adapter no longer needs them. Rotate/revoke after rollback window.</td></tr>
+          <tr><td><code>SUPABASE_DB_URL</code> / <code>SUPABASE_DB_PASSWORD</code></td><td>Replace with an RDS private endpoint and a Secrets Manager-backed credential. Use SSL and a least-privilege role.</td></tr>
+          <tr><td>JWT, Google, Dodo, email, LLM, Judge0</td><td>Keep values and behavior unchanged; verify their DB-backed paths during staging and cutover.</td></tr>
+          <tr><td>EC2 startup / process manager</td><td>Either extend the existing SSM SecureString flow (current role already reads <code>/optimus-code/prod/env</code>) or grant the role narrowly scoped <code>secretsmanager:GetSecretValue</code> plus KMS decrypt. Restart only after an RDS health check passes.</td></tr>
+        </tbody></table>
+        <pre><code># Example shape only; use the actual process manager on EC2
+DATABASE_URL='postgresql://optimus_app:&lt;secret&gt;@&lt;rds-private-endpoint&gt;:5432/optimus?sslmode=require'
+DB_POOL_MAX=10
+DB_POOL_IDLE_TIMEOUT_MS=30000
+DB_CONNECT_TIMEOUT_MS=5000</code></pre>
+      </article>
+
+      <article class="card">
+        <h2>Validation gates before switching traffic</h2>
+        <ul class="checklist">
+          <li>Exact row counts match for all 22 public tables.</li>
+          <li>Primary keys, unique indexes, foreign keys, checks, and four RPC functions exist.</li>
+          <li>All sequences/UUID defaults generate new values without collisions.</li>
+          <li>RLS posture and API authorization are equivalent after the adapter change.</li>
+          <li>Users can sign in, refresh tokens, use Google auth, and update profiles.</li>
+          <li>DSA, LLD, HLD, assessments, code execution, blogs, likes, and bookmarks work.</li>
+          <li>Research jobs, workers, invoices, Dodo webhooks, and reminder emails are idempotent.</li>
+          <li>Payment rows and webhook event history are present and no duplicate events are created.</li>
+          <li>p50/p95/p99 database latency, error rate, CPU, connections, and storage are observed.</li>
+          <li>Backups restore into a disposable instance and the final dump checksums are archived.</li>
+        </ul>
+      </article>
+
+      <article class="card half danger">
+        <h2>Rollback</h2>
+        <p>If parity or error-rate gates fail, stop writes to RDS, point the adapter back to Supabase, and replay only the approved delta or restore from the final source snapshot. Keep Supabase credentials active until the business-owner rollback window expires. Never delete the Supabase project as part of the first cutover.</p>
+      </article>
+
+      <article class="card half success">
+        <h2>Approval choices</h2>
+        <p>Before AWS changes are made, confirm:</p>
+        <ol>
+          <li>Proceed with <code>db.t4g.micro</code>, or approve the safer <code>db.t4g.small</code> starting size?</li>
+          <li>Use newly created private subnets, or the existing two-AZ subnets with RDS marked non-public?</li>
+          <li>Native <code>pg</code> adapter or a transitional PostgREST/compatibility layer?</li>
+          <li>Is Supabase Auth/Storage/Realtime out of scope, or must any of them be replaced too?</li>
+          <li>What maintenance window and rollback duration should be used?</li>
+        </ol>
+      </article>
+
+      <article class="card">
+        <h2>Migration artifact checklist</h2>
+        <table><thead><tr><th>Artifact</th><th>Required record</th></tr></thead><tbody>
+          <tr><td>Source catalog snapshot</td><td>Timestamp, PostgreSQL version, schema/table/function/extension list, row counts.</td></tr>
+          <tr><td>DDL dump</td><td><code>public-schema.sql</code>, SHA-256, pg_dump version, connection type.</td></tr>
+          <tr><td>DML dump</td><td><code>public-data.dump</code>, SHA-256, byte size, row-count report.</td></tr>
+          <tr><td>Restore log</td><td>RDS endpoint, parameter group, extensions, restore output, sequence-reset output.</td></tr>
+          <tr><td>Parity report</td><td>Counts, checksums, constraints, RPC calls, application smoke tests, latency.</td></tr>
+          <tr><td>Cutover record</td><td>Freeze start/end, DNS/config version, operator, rollback deadline, sign-off.</td></tr>
+        </tbody></table>
+        <p class="small muted">Store dumps and reports in encrypted, access-controlled storage. They contain PII, refresh-token hashes, and payment identifiers; set a deletion deadline after the rollback window.</p>
+      </article>
+    </section>
+    <footer>Generated as a read-only planning artifact from live catalog queries and dump metadata. No RDS resources or production data were modified.</footer>
+  </main>
+</body>
+</html>
