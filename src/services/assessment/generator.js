@@ -256,6 +256,9 @@ export async function generateOpener({ problem, slot, seed, chatImpl = chatJson 
     maxTokens: 900,
     model: env.ai.fastModel,
     timeoutMs: env.assessment.openerTimeoutMs,
+    // One attempt. Retrying here would turn a 12s ceiling into a 39s one, and
+    // the background fill is already writing this slot's replacement anyway.
+    maxAttempts: 1,
   });
   const [question] = Array.isArray(raw?.questions) ? raw.questions : [];
   if (!question) throw new GenerationError('The opener call returned no question');
