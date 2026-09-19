@@ -8,7 +8,7 @@ Each user chooses separate DSA, LLD, and HLD goals. A day turns green only when 
 category quota is complete. System Design completion requires passing an Optimus
 assessment at 80%: ten generated multiple-choice questions for HLD, and for LLD a
 machine-coding task, a debug-and-fix task and three design questions, answered in
-Python, JavaScript or Java and graded by running hidden tests.
+Python, JavaScript, Java or C++ and graded by running hidden tests.
 
 Frontend lives in [Optimus-Code-UI](https://github.com/ayan-mn18/Optimus-Code-UI).
 
@@ -285,7 +285,7 @@ debug-and-fix task (25), and a machine-coding task (60). Passing is 80% either w
 
 **Coding questions are language-neutral.** A question declares a class contract and a list
 of test scenarios — a sequence of method calls with expected values — and the runner turns
-that into a program in whichever of Python, JavaScript or Java the student picked. SQL
+that into a program in whichever of Python, JavaScript, Java or C++ the student picked. SQL
 questions run as SQLite and are graded by diffing result sets. A debug question is pinned
 to the language it was written in.
 
@@ -332,7 +332,7 @@ alerts, and upcoming-renewal reminders are delivered through the configured emai
 
 Assessments execute untrusted code through [Judge0](https://judge0.com). The default
 endpoint is the free public instance, which needs no key and supports everything the
-design uses — multi-file Java, SQLite, and per-submission CPU, memory and network limits.
+design uses — multi-file Java/C++, SQLite, and per-submission CPU, memory and network limits.
 It owes us no SLA, so the API is a polite guest: a global concurrency cap, backoff on 429,
 a dedupe cache for repeated Run presses, and a per-question run budget.
 
