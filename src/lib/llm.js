@@ -7,11 +7,9 @@ import { env } from '../config/env.js';
  * Meta's Model API (https://api.meta.ai/v1) or by a gateway — both speak
  * /chat/completions, so only LLM_BASE_URL and LLM_API_KEY change between them.
  *
- * Anthropic's Messages API is the one shape that is not /chat/completions, and
- * we support it here rather than in each caller: structured output arrives as a
- * forced tool call instead of a response_format, and the whole difference is
- * contained in `anthropicBody` and `readAnthropic` below. Switching providers
- * stays an environment change.
+ * That one wire shape is all this client speaks. A provider that does not talk
+ * /chat/completions belongs behind a gateway that does, so switching endpoints
+ * stays an environment change rather than a second code path nobody exercises.
  */
 
 export class LlmError extends Error {
@@ -137,9 +135,9 @@ export async function chat({
   schemaName = 'result',
   tools,
   messages,
-  // Some documents carry free-form JSON values that OpenAI's strict mode cannot
-  // express. Anthropic's tool schemas can, so the same schema is used as a
-  // forced tool there and degraded to plain JSON mode elsewhere.
+  // Some documents carry free-form JSON values that strict structured output
+  // cannot express at all. Those calls ask for plain JSON mode instead and are
+  // validated by the caller.
   looseSchema = false,
   effort = 'medium',
   maxTokens = 8000,
@@ -154,7 +152,7 @@ export async function chat({
   if (!llmConfigured(llmConfig)) throw new LlmError(503, 'No LLM_API_KEY configured');
   const resolvedModel = model ?? llmConfig.model ?? env.ai.model;
 
-  const { body, url, headers, isAnthropic } = buildRequest({
+  const { body, url, headers } = buildRequest({
     system,
     user,
     schema,
@@ -169,13 +167,7 @@ export async function chat({
     llmConfig,
   });
 
-  const payload = await post(
-    fetchImpl, url, headers,
-    isAnthropic ? toAnthropic(body, { schema, schemaName }) : body,
-    timeoutMs, maxAttempts,
-  );
-
-  if (isAnthropic) return readAnthropic(payload);
+  const payload = await post(fetchImpl, url, headers, body, timeoutMs, maxAttempts);
 
   const choice = payload.choices?.[0];
   return {
@@ -218,60 +210,14 @@ function buildRequest({
     body.tool_choice = 'auto';
   }
 
-  const isAnthropic = llmConfig.provider === 'anthropic';
   return {
     body,
-    isAnthropic,
-    url: isAnthropic ? `${llmConfig.baseUrl}/messages` : `${llmConfig.baseUrl}/chat/completions`,
-    headers: isAnthropic
-      ? {
-        'x-api-key': llmConfig.apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        ...(llmConfig.workspaceId ? { 'anthropic-workspace-id': llmConfig.workspaceId } : {}),
-      }
-      : {
-        authorization: `Bearer ${llmConfig.apiKey}`,
-        'content-type': 'application/json',
-        ...(llmConfig.workspaceId ? { 'x-workspace-id': llmConfig.workspaceId } : {}),
-      },
-  };
-}
-
-/**
- * Anthropic speaks messages, not chat completions: the system prompt is its own
- * field, and structured output is a tool the model is forced to call rather than
- * a response format. Reasoning effort has no portable spelling here, so it goes.
- */
-function toAnthropic(body, { schema, schemaName }) {
-  const system = body.messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n\n');
-  const messages = body.messages.filter((message) => message.role !== 'system');
-  return {
-    model: body.model,
-    max_tokens: body.max_tokens,
-    ...(system ? { system } : {}),
-    messages,
-    ...(schema
-      ? {
-        tools: [{ name: schemaName, description: `Return the ${schemaName}.`, input_schema: schema }],
-        tool_choice: { type: 'tool', name: schemaName },
-      }
-      : {}),
-    ...(body.tools && !schema ? { tools: body.tools } : {}),
-  };
-}
-
-function readAnthropic(payload) {
-  const parts = payload.content ?? [];
-  const forced = parts.find((part) => part.type === 'tool_use');
-  return {
-    message: { role: 'assistant', content: parts },
-    // A forced tool call IS the structured answer; hand it back as text so
-    // chatJson parses it the same way it parses every other provider.
-    text: forced ? JSON.stringify(forced.input) : parts.find((part) => part.type === 'text')?.text ?? '',
-    toolCalls: parts.filter((part) => part.type === 'tool_use'),
-    finishReason: payload.stop_reason,
-    usage: payload.usage ?? {},
+    url: `${llmConfig.baseUrl}/chat/completions`,
+    headers: {
+      authorization: `Bearer ${llmConfig.apiKey}`,
+      'content-type': 'application/json',
+      ...(llmConfig.workspaceId ? { 'x-workspace-id': llmConfig.workspaceId } : {}),
+    },
   };
 }
 

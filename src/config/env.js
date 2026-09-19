@@ -27,7 +27,6 @@ const assessmentLlmOverride = {
     && process.env.ASSESSMENT_LLM_OVERRIDE_API_KEY?.trim()),
   all: assessmentOverrideAll,
   problemIds: assessmentOverrideProblemIds,
-  provider: (process.env.ASSESSMENT_LLM_OVERRIDE_PROVIDER ?? 'openai').trim().toLowerCase(),
   apiKey: process.env.ASSESSMENT_LLM_OVERRIDE_API_KEY?.trim() ?? '',
   baseUrl: (process.env.ASSESSMENT_LLM_OVERRIDE_BASE_URL ?? '').trim().replace(/\/$/, ''),
   model: process.env.ASSESSMENT_LLM_OVERRIDE_MODEL?.trim() ?? '',
@@ -80,7 +79,6 @@ export const env = {
   },
   ai: {
     enabled: Boolean(process.env.LLM_API_KEY?.trim()),
-    provider: (process.env.LLM_PROVIDER ?? 'openai').trim().toLowerCase(),
     apiKey: process.env.LLM_API_KEY?.trim() ?? '',
     workspaceId: process.env.LLM_WORKSPACE_ID?.trim() ?? '',
     baseUrl: (process.env.LLM_BASE_URL ?? 'https://api.openai.com/v1').replace(/\/$/, ''),
