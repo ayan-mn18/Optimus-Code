@@ -21,6 +21,10 @@ export function assessmentChat(problemId) {
     model: override.model || env.ai.model,
     fastModel: override.fastModel || override.model || env.ai.fastModel,
   };
+  // DeepSeek implements JSON mode but currently rejects OpenAI's strict
+  // `json_schema` response format. Generator schemas still validate every
+  // response locally, so use the portable JSON-object envelope for this test.
+  const deepSeekJsonMode = config.baseUrl.includes('deepseek.com');
 
   return (options = {}) => {
     const isOpener = options.maxTokens === 900;
@@ -36,6 +40,7 @@ export function assessmentChat(problemId) {
       llmConfig: config,
       model: config.model,
       effort: override.reasoningEffort,
+      ...(deepSeekJsonMode ? { looseSchema: true } : {}),
       ...(maxTokens ? { maxTokens } : {}),
     });
   };
