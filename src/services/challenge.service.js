@@ -639,7 +639,10 @@ export async function getToday(user) {
   const solvedMap = new Map(solvedRows.map((row) => [row.problem_id, row]));
   log = (await refreshDayCounters(user.id, today)) ?? log;
 
-  const assignedTodayIds = new Set(assignments.map((row) => row.problem.id));
+  // A deleted/retired catalog item can leave a historical assignment without
+  // a joined problem. Ignore that orphan rather than taking down today's feed.
+  const validAssignments = assignments.filter((row) => row.problem?.id);
+  const assignedTodayIds = new Set(validAssignments.map((row) => row.problem.id));
   const bonusSolves = unwrap(
     await db
       .from('user_problems')
@@ -648,7 +651,7 @@ export async function getToday(user) {
       .eq('solved_on', today)
       .eq('is_bonus', true),
     'load bonus solves',
-  ).filter((row) => !assignedTodayIds.has(row.problem.id));
+  ).filter((row) => row.problem?.id && !assignedTodayIds.has(row.problem.id));
 
   return {
     date: today,
@@ -661,10 +664,10 @@ export async function getToday(user) {
     status: log.status,
     isComplete: log.status === 'complete',
     closedDays,
-    problems: assignments.filter((row) => row.round === 1).map(toProblem(solvedMap)),
-    extraSets: [...new Set(assignments.filter((row) => row.round > 1).map((row) => row.round))]
+    problems: validAssignments.filter((row) => row.round === 1).map(toProblem(solvedMap)),
+    extraSets: [...new Set(validAssignments.filter((row) => row.round > 1).map((row) => row.round))]
       .sort((a, b) => b - a)
-      .map((round) => ({ round, problems: assignments.filter((row) => row.round === round).map(toProblem(solvedMap)) })),
+      .map((round) => ({ round, problems: validAssignments.filter((row) => row.round === round).map(toProblem(solvedMap)) })),
     canExtend: log.status === 'complete' && enrollment.dsa_target > 0,
     bonusProblems: bonusSolves.map((row) => ({ ...row.problem, solved: true, solvedOn: row.solved_on })),
   };

@@ -1,7 +1,13 @@
 import pg from 'pg';
 import { env } from '../config/env.js';
 
-const { Pool } = pg;
+const { Pool, types } = pg;
+
+// Supabase's REST API returns PostgreSQL DATE values as `YYYY-MM-DD` strings.
+// Keep the native adapter's result shape identical; node-postgres otherwise
+// converts DATE columns into JavaScript Date objects, which breaks date-only
+// comparisons and streak calculations throughout the application.
+types.setTypeParser(1082, (value) => value);
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 

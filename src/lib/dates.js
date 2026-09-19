@@ -38,15 +38,21 @@ export function isValidTimezone(timezone) {
 
 /** Shifts a YYYY-MM-DD string by `days`, staying in plain-date space. */
 export function addDays(isoDate, days) {
-  const [y, m, d] = isoDate.split('-').map(Number);
+  const [y, m, d] = dateOnly(isoDate).split('-').map(Number);
   const stamp = Date.UTC(y, m - 1, d) + days * 86_400_000;
   return new Date(stamp).toISOString().slice(0, 10);
+}
+
+/** Normalizes a database date value without shifting its calendar day. */
+export function dateOnly(value) {
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
 }
 
 /** Whole days between two YYYY-MM-DD strings (b - a). */
 export function daysBetween(a, b) {
   const toUtc = (iso) => {
-    const [y, m, d] = iso.split('-').map(Number);
+    const [y, m, d] = dateOnly(iso).split('-').map(Number);
     return Date.UTC(y, m - 1, d);
   };
   return Math.round((toUtc(b) - toUtc(a)) / 86_400_000);
