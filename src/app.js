@@ -19,6 +19,7 @@ import billingRoutes from './routes/billing.routes.js';
 import blogRoutes from './routes/blog.routes.js';
 import researchRoutes from './routes/research.routes.js';
 import searchRoutes from './routes/search.routes.js';
+import reportRoutes from './routes/report.routes.js';
 
 export function createApp() {
   const app = express();
@@ -27,7 +28,7 @@ export function createApp() {
   app.use(helmet());
   app.use(compression());
   app.use(express.json({
-    limit: '128kb',
+    limit: '8mb',
     verify(req, _res, buffer) {
       if (req.originalUrl === '/api/billing/webhook') req.rawBody = Buffer.from(buffer);
     },
@@ -68,6 +69,7 @@ export function createApp() {
   app.use('/api/blogs', blogRoutes);
   app.use('/api/research', researchRoutes);
   app.use('/api/search', searchRoutes);
+  app.use('/api/reports', reportRoutes);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

@@ -11,7 +11,7 @@ export function parseSender(value) {
 
 export function createEmailSender({ fetchImpl = fetch, apiKey, from, replyTo, endpoint = BREVO_ENDPOINT }) {
   return {
-    async send({ to, message, idempotencyKey }) {
+    async send({ to, message, idempotencyKey, attachments = [] }) {
       if (!apiKey || !from) return { sent: false, reason: 'not_configured' };
 
       const response = await fetchImpl(endpoint, {
@@ -24,6 +24,9 @@ export function createEmailSender({ fetchImpl = fetch, apiKey, from, replyTo, en
           htmlContent: message.html,
           textContent: message.text,
           ...(replyTo ? { replyTo: parseSender(replyTo) } : {}),
+          ...(attachments.length ? {
+            attachment: attachments.map(({ filename, content }) => ({ name: filename, content })),
+          } : {}),
           headers: { 'Idempotency-Key': idempotencyKey },
           tags: ['optimus-code'],
         }),
@@ -46,7 +49,7 @@ export function createSmtpEmailSender({ host, port, secure, user, password, from
   });
 
   return {
-    async send({ to, message, idempotencyKey }) {
+    async send({ to, message, idempotencyKey, attachments = [] }) {
       if (!user || !password || !from) return { sent: false, reason: 'not_configured' };
       const info = await transporter.sendMail({
         from,
@@ -55,6 +58,14 @@ export function createSmtpEmailSender({ host, port, secure, user, password, from
         html: message.html,
         text: message.text,
         ...(replyTo ? { replyTo } : {}),
+        ...(attachments.length ? {
+          attachments: attachments.map(({ filename, content, contentType }) => ({
+            filename,
+            content,
+            encoding: 'base64',
+            contentType,
+          })),
+        } : {}),
         headers: { 'X-Optimus-Idempotency-Key': idempotencyKey },
       });
       return { sent: true, messageId: info.messageId };

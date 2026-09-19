@@ -48,6 +48,27 @@ test('sender parser supports named and plain addresses', () => {
   assert.deepEqual(parseSender('hello@example.com'), { email: 'hello@example.com' });
 });
 
+test('email sender includes report screenshots as Brevo attachments', async () => {
+  let payload;
+  const sender = createEmailSender({
+    fetchImpl: async (_url, init) => {
+      payload = JSON.parse(init.body);
+      return new Response(JSON.stringify({ messageId: 'report-123' }), { status: 201 });
+    },
+    apiKey: 'brevo-test-key',
+    from: 'Optimus Code <no-reply@example.com>',
+  });
+
+  await sender.send({
+    to: 'info@example.com',
+    message: { subject: 'Problem report', html: '<p>Broken</p>', text: 'Broken' },
+    attachments: [{ filename: 'screen.png', content: 'aGVsbG8=', contentType: 'image/png' }],
+    idempotencyKey: 'report/123',
+  });
+
+  assert.deepEqual(payload.attachment, [{ name: 'screen.png', content: 'aGVsbG8=' }]);
+});
+
 test('disabled email sender performs no network call', async () => {
   const sender = createEmailSender({ apiKey: '', from: '', replyTo: undefined });
   const result = await sender.send({
