@@ -175,7 +175,15 @@ function parseOne(kind, raw) {
 
 export async function generateMcqSet({ problem, slots, seed, article, chatImpl = chatJson }) {
   const prompt = mcqPrompt({ problem, slots, seed, article });
-  const raw = await chatImpl({ ...prompt, effort: 'high', maxTokens: 8000 });
+  // MCQs are short, self-contained JSON objects. High reasoning and an 8k
+  // output budget were appropriate for coding questions, but make a cold MCQ
+  // unnecessarily slow. Keep this configurable for providers with different
+  // latency/quality trade-offs, while using the fast safe default in prod.
+  const effort = process.env.ASSESSMENT_MCQ_REASONING_EFFORT ?? 'low';
+  const maxTokens = Math.max(800, Number(process.env.ASSESSMENT_MCQ_MAX_TOKENS ?? 2200));
+  const startedAt = Date.now();
+  const raw = await chatImpl({ ...prompt, effort, maxTokens });
+  console.info(`[optimus] generated ${slots.length} MCQ question(s) in ${Date.now() - startedAt}ms`);
   const questions = Array.isArray(raw?.questions) ? raw.questions : [];
   if (questions.length !== slots.length) {
     throw new GenerationError(`Expected ${slots.length} questions, received ${questions.length}`);

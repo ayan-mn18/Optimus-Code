@@ -246,65 +246,10 @@ export async function createAssessment(user, problemId, { language } = {}) {
 
 async function prepareAssessment({ user, problem, blueprint, placeholder, article }) {
   try {
-    const assembled = [];
+    const assembled = new Map();
     const usedQuestionIds = [];
 
-    for (const slot of blueprint.slots) {
-      const current = unwrap(
-        await db.from('assessment_attempts').select('status').eq('id', placeholder.id).maybeSingle(),
-        'check assessment generation',
-      );
-      if (!current || !OPEN_STATUSES.includes(current.status)) return;
-
-      const result = await assembleSlot({
-        problem, blueprint, userId: user.id, article, slot, usedQuestionIds,
-      });
-      if (!result) {
-        if (slot.optional) continue;
-        throw new Error(`Could not prepare ${slot.type} question ${slot.id}`);
-      }
-
-      usedQuestionIds.push(result.row.id);
-      assembled.push(result);
-      const questionSet = assembled.map(({ slot: itemSlot, row }) => ({
-        slotId: itemSlot.id,
-        questionId: row.id,
-        type: itemSlot.type,
-        weight: itemSlot.weight,
-        conceptArea: row.concept_area,
-        difficulty: row.difficulty,
-        minutes: itemSlot.minutes ?? null,
-        // A debug question exists only in the language it was written in; a
-        // machine-coding question is language-neutral and the student chooses.
-        language: itemSlot.type === 'debug' ? row.payload.referenceSolution.language : null,
-        payload: row.payload,
-      }));
-      const progress = {
-        ...blueprint,
-        generation: { complete: false, ready: questionSet.length, target: blueprint.slots.length },
-      };
-      const published = unwrap(
-        await db
-          .from('assessment_attempts')
-          .update({
-            status: 'active',
-            question_set: jsonbValue(questionSet),
-            blueprint: progress,
-            ...(current.status === 'generating' ? { started_at: new Date().toISOString() } : {}),
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', placeholder.id)
-          .in('status', OPEN_STATUSES)
-          .select('id')
-          .maybeSingle(),
-        'publish assessment question',
-      );
-      if (!published) return;
-      await recordExposures(user.id, placeholder.id, [result.row.id]);
-    }
-
-    const dropped = blueprint.slots.filter((slot) => !assembled.some(({ slot: item }) => item.id === slot.id));
-    const finalSet = redistribute(assembled, dropped).map(({ slot: itemSlot, row }) => ({
+    const questionEntry = (itemSlot, row) => ({
       slotId: itemSlot.id,
       questionId: row.id,
       type: itemSlot.type,
@@ -314,7 +259,98 @@ async function prepareAssessment({ user, problem, blueprint, placeholder, articl
       minutes: itemSlot.minutes ?? null,
       language: itemSlot.type === 'debug' ? row.payload.referenceSolution.language : null,
       payload: row.payload,
-    }));
+    });
+
+    // Concurrent workers must not overwrite each other's question_set update.
+    // Queue only the tiny database publish, never the slow model generation.
+    let publishQueue = Promise.resolve();
+    const publish = () => {
+      const run = publishQueue.then(async () => {
+        // Always publish in blueprint order even when background workers finish
+        // out of order. This keeps q1, q2, ... stable in the exam UI.
+        const questionSet = blueprint.slots
+          .map((slot) => assembled.get(slot.id))
+          .filter(Boolean)
+          .map(({ slot: itemSlot, row }) => questionEntry(itemSlot, row));
+        const progress = {
+          ...blueprint,
+          generation: { complete: false, ready: questionSet.length, target: blueprint.slots.length },
+        };
+        const published = unwrap(
+          await db
+            .from('assessment_attempts')
+            .update({
+              status: 'active',
+              question_set: jsonbValue(questionSet),
+              blueprint: progress,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', placeholder.id)
+            .in('status', OPEN_STATUSES)
+            .select('id')
+            .maybeSingle(),
+          'publish assessment question',
+        );
+        return Boolean(published);
+      });
+      publishQueue = run.catch(() => {});
+      return run;
+    };
+
+    const prepareOne = async (slot) => {
+      const current = unwrap(
+        await db.from('assessment_attempts').select('status').eq('id', placeholder.id).maybeSingle(),
+        'check assessment generation',
+      );
+      if (!current || !OPEN_STATUSES.includes(current.status)) return false;
+
+      let result = await assembleSlot({
+        problem, blueprint, userId: user.id, article, slot, usedQuestionIds: [...usedQuestionIds],
+      });
+      // Concurrent bank reads can select the same row. Retry only that rare
+      // collision, keeping every question unique without serialising generation.
+      if (result && usedQuestionIds.includes(result.row.id)) {
+        result = await assembleSlot({
+          problem, blueprint, userId: user.id, article, slot, usedQuestionIds: [...usedQuestionIds],
+        });
+      }
+      if (!result) {
+        if (slot.optional) return true;
+        throw new Error(`Could not prepare ${slot.type} question ${slot.id}`);
+      }
+
+      usedQuestionIds.push(result.row.id);
+      assembled.set(slot.id, result);
+      if (!await publish()) return false;
+      if (current.status === 'generating') {
+        await db.from('assessment_attempts')
+          .update({ started_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+          .eq('id', placeholder.id)
+          .in('status', OPEN_STATUSES);
+      }
+      await recordExposures(user.id, placeholder.id, [result.row.id]);
+      return true;
+    };
+
+    // Deliver q1 as soon as it is verified; prepare the rest in bounded,
+    // independent workers so background generation cannot block the exam.
+    if (!await prepareOne(blueprint.slots[0])) return;
+    const remaining = blueprint.slots.slice(1);
+    const workerCount = Math.min(env.assessment.generationConcurrency, remaining.length);
+    let nextIndex = 0;
+    const runWorker = async () => {
+      while (nextIndex < remaining.length) {
+        const slot = remaining[nextIndex];
+        nextIndex += 1;
+        if (!await prepareOne(slot)) return;
+      }
+    };
+    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+
+    const dropped = blueprint.slots.filter((slot) => !assembled.has(slot.id));
+    const ordered = blueprint.slots.map((slot) => assembled.get(slot.id)).filter(Boolean);
+    const finalSet = redistribute(ordered, dropped)
+      .map(({ slot: itemSlot, row }) => questionEntry(itemSlot, row));
     unwrap(
       await db
         .from('assessment_attempts')

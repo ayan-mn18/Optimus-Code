@@ -88,10 +88,15 @@ export const env = {
   },
 
   assessment: {
-    // Generation is background work with no deadline; it runs rarely and one
-    // question at a time so it never competes with a student pressing Run.
-    workerIntervalMs: Number(process.env.ASSESSMENT_WORKER_INTERVAL_MIN ?? 20) * 60_000,
+    // Keep a small verified bank warm so a student normally draws the first
+    // question from Postgres instead of waiting for a cold model call.
+    workerIntervalMs: Number(process.env.ASSESSMENT_WORKER_INTERVAL_MIN ?? 5) * 60_000,
     bankTopUp: process.env.ASSESSMENT_BANK_TOPUP !== 'false',
+    bankTopUpPerTick: Math.max(1, Number(process.env.ASSESSMENT_BANK_TOPUP_PER_TICK ?? 2)),
+    // A couple of background slots can be prepared in parallel after the first
+    // question is visible. Keep this bounded so the LLM and runner stay fair to
+    // live requests.
+    generationConcurrency: Math.max(1, Number(process.env.ASSESSMENT_GENERATION_CONCURRENCY ?? 2)),
   },
 
   runner: {

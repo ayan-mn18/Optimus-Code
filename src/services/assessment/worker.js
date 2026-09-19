@@ -11,14 +11,12 @@ import { toBankRow } from './generator.js';
 /**
  * Keeps assessments answerable without anyone waiting.
  *
- * Two jobs, both deliberately small per tick. It finishes any paper whose
+ * Two jobs, both deliberately bounded per tick. It finishes any paper whose
  * grading was cut short by a runner outage — a student must never lose a day
- * because a shared judge was down — and it tops up the thinnest question bank by
- * exactly one question. One at a time is the point: generation is the heaviest
- * user of the code runner we share with live students, and there is no deadline.
+ * because a shared judge was down — and it tops up the thinnest question bank.
+ * The bank job remains sequential so it cannot starve live coding runs.
  */
 
-const TOP_UP_PER_TICK = 1;
 const RECENT_DAYS = 45;
 
 async function recentlyAssessedProblems() {
@@ -96,7 +94,7 @@ export function startAssessmentWorker({ intervalMs = env.assessment.workerInterv
       if (settled) console.log(`[optimus] settled ${settled} interrupted assessment(s)`);
 
       if (env.assessment.bankTopUp) {
-        for (let index = 0; index < TOP_UP_PER_TICK; index += 1) {
+        for (let index = 0; index < env.assessment.bankTopUpPerTick; index += 1) {
           const result = await topUpOnce();
           if (!result) break;
           console.log(`[optimus] banked ${result.added} ${result.kind} question(s) for ${result.problemId}`);
