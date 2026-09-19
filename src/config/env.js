@@ -14,6 +14,9 @@ const brevoApiKey = process.env.BREVO_API_KEY?.trim() ?? '';
 const emailFrom = process.env.EMAIL_FROM?.trim() ?? '';
 const emailDeliveryEnabled = process.env.EMAIL_DELIVERY_ENABLED === 'true';
 const emailTransport = (process.env.EMAIL_TRANSPORT ?? 'api').trim().toLowerCase();
+const databaseUrl = process.env.DATABASE_URL?.trim() ?? '';
+const databaseDriver = (process.env.DB_DRIVER ?? (databaseUrl ? 'native' : 'supabase')).trim().toLowerCase();
+const nativeDatabase = databaseDriver === 'native';
 
 export const env = {
   port: Number(process.env.PORT ?? 4000),
@@ -24,8 +27,22 @@ export const env = {
     .map((origin) => origin.trim())
     .filter(Boolean),
 
-  supabaseUrl: required('SUPABASE_URL'),
-  supabaseServiceKey: required('SUPABASE_SERVICE_ROLE_KEY'),
+  supabaseUrl: nativeDatabase ? (process.env.SUPABASE_URL?.trim() ?? '') : required('SUPABASE_URL'),
+  supabaseServiceKey: nativeDatabase ? (process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? '') : required('SUPABASE_SERVICE_ROLE_KEY'),
+
+  database: {
+    driver: databaseDriver,
+    url: databaseUrl,
+    host: process.env.DATABASE_HOST?.trim() ?? '',
+    port: Number(process.env.DATABASE_PORT ?? 5432),
+    name: process.env.DATABASE_NAME?.trim() || 'optimus',
+    user: process.env.DATABASE_USER?.trim() ?? '',
+    password: process.env.DATABASE_PASSWORD ?? '',
+    ssl: process.env.DATABASE_SSL !== 'false',
+    poolMax: Number(process.env.DATABASE_POOL_MAX ?? 10),
+    idleTimeoutMs: Number(process.env.DATABASE_IDLE_TIMEOUT_MS ?? 30_000),
+    connectTimeoutMs: Number(process.env.DATABASE_CONNECT_TIMEOUT_MS ?? 5_000),
+  },
 
   jwt: {
     accessSecret: required('JWT_ACCESS_SECRET'),
@@ -70,12 +87,31 @@ export const env = {
     autoPublish: process.env.RESEARCH_AUTO_PUBLISH === 'true',
   },
 
+  assessment: {
+    // Generation is background work with no deadline; it runs rarely and one
+    // question at a time so it never competes with a student pressing Run.
+    workerIntervalMs: Number(process.env.ASSESSMENT_WORKER_INTERVAL_MIN ?? 20) * 60_000,
+    bankTopUp: process.env.ASSESSMENT_BANK_TOPUP !== 'false',
+  },
+
   runner: {
-    enabled: Boolean(process.env.JUDGE0_URL?.trim()),
-    provider: (process.env.CODE_RUNNER_PROVIDER ?? 'judge0').trim().toLowerCase(),
-    baseUrl: (process.env.JUDGE0_URL ?? '').replace(/\/$/, ''),
+    // The public Judge0 instance needs no key, so coding assessments work out of
+    // the box. Moving to Sulu, RapidAPI or our own box is a URL and a key.
+    enabled: process.env.CODE_RUNNER_ENABLED !== 'false',
+    baseUrl: (process.env.JUDGE0_URL ?? 'https://ce.judge0.com').replace(/\/$/, ''),
     apiKey: process.env.JUDGE0_API_KEY?.trim() ?? '',
+    // RapidAPI and Sulu read the key from x-rapidapi-key; a self-hosted Judge0
+    // reads it from X-Auth-Token.
+    authHeader: (process.env.JUDGE0_AUTH_HEADER ?? 'x-rapidapi-key').trim().toLowerCase(),
     apiHost: process.env.JUDGE0_API_HOST?.trim() ?? '',
+    // Deliberately modest: we are a guest on a shared judge.
+    concurrency: Number(process.env.JUDGE0_CONCURRENCY ?? 4),
+    timeoutMs: Number(process.env.JUDGE0_TIMEOUT_MS ?? 30_000),
+    cpuTimeLimit: Number(process.env.JUDGE0_CPU_SECONDS ?? 5),
+    wallTimeLimit: Number(process.env.JUDGE0_WALL_SECONDS ?? 12),
+    memoryLimit: Number(process.env.JUDGE0_MEMORY_KB ?? 256_000),
+    // Verification of freshly generated questions must never crowd out students.
+    bankConcurrency: Number(process.env.JUDGE0_BANK_CONCURRENCY ?? 1),
   },
   billing: {
     enabled: Boolean(process.env.DODO_PAYMENTS_API_KEY?.trim()),

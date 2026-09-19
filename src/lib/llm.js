@@ -1,11 +1,17 @@
 import { env } from '../config/env.js';
 
 /**
- * One OpenAI-compatible client for the whole app.
+ * One LLM client for the whole app.
  *
  * Muse Spark 1.3 Contributor is reached the same way whether it is served by
  * Meta's Model API (https://api.meta.ai/v1) or by a gateway — both speak
  * /chat/completions, so only LLM_BASE_URL and LLM_API_KEY change between them.
+ *
+ * Anthropic's Messages API is the one shape that is not /chat/completions, and
+ * we support it here rather than in each caller: structured output arrives as a
+ * forced tool call instead of a response_format, and the whole difference is
+ * contained in `anthropicBody` and `readAnthropic` below. Switching providers
+ * stays an environment change.
  */
 
 export class LlmError extends Error {
@@ -67,6 +73,53 @@ export function strictify(node) {
 
 export const llmConfigured = () => Boolean(env.ai.apiKey);
 
+const TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 600_000);
+const RETRYABLE = new Set([408, 409, 429, 500, 502, 503, 504]);
+
+/**
+ * A hung request is worse than a failed one: a generation that never answers
+ * blocks a batch for as long as the socket stays open. Bound it, and retry the
+ * transient failures — rate limits and gateway hiccups — twice.
+ *
+ * The bound is generous on purpose. Writing a class, a reference implementation
+ * and a ten-scenario test suite at high effort legitimately takes minutes, and a
+ * tight limit throws away good work at the finish line; a shorter one here cost
+ * six questions in a single warming run. What must not happen is a timeout being
+ * retried, which is why that case throws instead of looping.
+ */
+async function post(fetchImpl, url, headers, body) {
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      const response = await fetchImpl(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok) return payload;
+      const message = payload?.error?.message ?? `LLM request failed (${response.status})`;
+      if (!RETRYABLE.has(response.status)) throw new LlmError(response.status, message);
+      lastError = new LlmError(response.status, message);
+    } catch (error) {
+      if (error instanceof LlmError) throw error;
+      if (error?.name === 'AbortError') {
+        // A request that ran out the clock will not beat it on the next go, and
+        // a caller retrying above us would multiply the wait.
+        throw new LlmError(504, `LLM request timed out after ${Math.round(TIMEOUT_MS / 1000)}s`);
+      }
+      lastError = new LlmError(502, error?.message ?? 'LLM request failed');
+    } finally {
+      clearTimeout(timer);
+    }
+    await new Promise((resolve) => { setTimeout(resolve, 1000 * 2 ** attempt); });
+  }
+  throw lastError;
+}
+
 /**
  * @param {object}   options
  * @param {string}   options.system      instruction text
@@ -84,6 +137,10 @@ export async function chat({
   schemaName = 'result',
   tools,
   messages,
+  // Some documents carry free-form JSON values that OpenAI's strict mode cannot
+  // express. Anthropic's tool schemas can, so the same schema is used as a
+  // forced tool there and degraded to plain JSON mode elsewhere.
+  looseSchema = false,
   effort = 'medium',
   maxTokens = 8000,
   model = env.ai.model,
@@ -103,12 +160,12 @@ export async function chat({
     reasoning_effort: effort,
   };
 
-  if (schema) {
+  if (schema && !looseSchema) {
     body.response_format = {
       type: 'json_schema',
       json_schema: { name: schemaName, strict: true, schema: strictify(schema) },
     };
-  } else if (json) {
+  } else if (json || looseSchema) {
     // Strict schemas must close every object, so a document with free-form
     // blocks cannot be expressed as one. We validate it ourselves instead.
     body.response_format = { type: 'json_object' };
@@ -118,20 +175,24 @@ export async function chat({
     body.tool_choice = 'auto';
   }
 
-  const response = await fetchImpl(`${env.ai.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
+  const isAnthropic = env.ai.provider === 'anthropic';
+  const url = isAnthropic ? `${env.ai.baseUrl}/messages` : `${env.ai.baseUrl}/chat/completions`;
+  const headers = isAnthropic
+    ? {
+      'x-api-key': env.ai.apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      ...(env.ai.workspaceId ? { 'anthropic-workspace-id': env.ai.workspaceId } : {}),
+    }
+    : {
       authorization: `Bearer ${env.ai.apiKey}`,
       'content-type': 'application/json',
       ...(env.ai.workspaceId ? { 'x-workspace-id': env.ai.workspaceId } : {}),
-    },
-    body: JSON.stringify(body),
-  });
+    };
 
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new LlmError(response.status, payload?.error?.message ?? `LLM request failed (${response.status})`);
-  }
+  const payload = await post(fetchImpl, url, headers, isAnthropic ? toAnthropic(body, { schema, schemaName }) : body);
+
+  if (isAnthropic) return readAnthropic(payload);
 
   const choice = payload.choices?.[0];
   return {
@@ -139,6 +200,43 @@ export async function chat({
     text: choice?.message?.content ?? '',
     toolCalls: choice?.message?.tool_calls ?? [],
     finishReason: choice?.finish_reason,
+    usage: payload.usage ?? {},
+  };
+}
+
+/**
+ * Anthropic speaks messages, not chat completions: the system prompt is its own
+ * field, and structured output is a tool the model is forced to call rather than
+ * a response format. Reasoning effort has no portable spelling here, so it goes.
+ */
+function toAnthropic(body, { schema, schemaName }) {
+  const system = body.messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n\n');
+  const messages = body.messages.filter((message) => message.role !== 'system');
+  return {
+    model: body.model,
+    max_tokens: body.max_tokens,
+    ...(system ? { system } : {}),
+    messages,
+    ...(schema
+      ? {
+        tools: [{ name: schemaName, description: `Return the ${schemaName}.`, input_schema: schema }],
+        tool_choice: { type: 'tool', name: schemaName },
+      }
+      : {}),
+    ...(body.tools && !schema ? { tools: body.tools } : {}),
+  };
+}
+
+function readAnthropic(payload) {
+  const parts = payload.content ?? [];
+  const forced = parts.find((part) => part.type === 'tool_use');
+  return {
+    message: { role: 'assistant', content: parts },
+    // A forced tool call IS the structured answer; hand it back as text so
+    // chatJson parses it the same way it parses every other provider.
+    text: forced ? JSON.stringify(forced.input) : parts.find((part) => part.type === 'text')?.text ?? '',
+    toolCalls: parts.filter((part) => part.type === 'tool_use'),
+    finishReason: payload.stop_reason,
     usage: payload.usage ?? {},
   };
 }
@@ -181,6 +279,9 @@ export async function chatJson(options) {
         // fall through to the repaired form, then to the next candidate
       }
     }
+  }
+  if (['length', 'max_tokens'].includes(result.finishReason)) {
+    throw new LlmError(502, `Model output was cut off at the ${options.maxTokens ?? 8000}-token limit`);
   }
   throw new LlmError(502, 'Model did not return parseable JSON');
 }

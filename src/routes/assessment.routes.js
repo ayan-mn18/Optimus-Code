@@ -4,9 +4,11 @@ import { z } from 'zod';
 import { requireAuth } from '../middleware/auth.js';
 import { requirePro } from '../middleware/subscription.js';
 import { validate } from '../middleware/validate.js';
+import { CODE_LANGUAGES, languageChoices } from '../services/runner/index.js';
 import {
   createAssessment,
   getAssessment,
+  runAssessmentAnswer,
   saveAssessmentAnswer,
   submitAssessment,
 } from '../services/assessment.service.js';
@@ -23,13 +25,31 @@ const generationLimiter = rateLimit({
   message: { error: { message: 'Assessment limit reached. Try again later.' } },
 });
 
+// Runs go to a shared judge, so they are capped per user as well as per attempt.
+const runLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: (req) => req.user?.id ?? req.ip,
+  message: { error: { message: 'Too many runs in a row. Give it a minute.' } },
+});
+
+router.get('/languages', (_req, res) => {
+  res.json({ languages: languageChoices() });
+});
+
 router.post(
   '/',
   generationLimiter,
-  validate(z.object({ problemId: z.string().uuid() })),
+  validate(z.object({
+    problemId: z.string().uuid(),
+    language: z.enum(CODE_LANGUAGES).optional(),
+  })),
   async (req, res, next) => {
     try {
-      res.status(201).json(await createAssessment(req.user, req.body.problemId));
+      const result = await createAssessment(req.user, req.body.problemId, { language: req.body.language });
+      res.status(result.attempt.status === 'generating' ? 202 : 201).json(result);
     } catch (error) {
       next(error);
     }
@@ -44,8 +64,15 @@ router.get('/:attemptId', async (req, res, next) => {
   }
 });
 
+/** One shape per question type: options for an MCQ, source for anything executed. */
 const answerSchema = z.object({
-  answer: z.object({ values: z.array(z.string().max(240)).max(6) }),
+  answer: z.union([
+    z.object({ values: z.array(z.string().max(600)).max(6) }),
+    z.object({
+      language: z.enum([...CODE_LANGUAGES, 'sql']).optional(),
+      source: z.string().max(50_000),
+    }),
+  ]),
 });
 
 router.patch('/:attemptId/answers/:questionId', validate(answerSchema), async (req, res, next) => {
@@ -56,9 +83,19 @@ router.patch('/:attemptId/answers/:questionId', validate(answerSchema), async (r
   }
 });
 
+router.post('/:attemptId/answers/:questionId/run', runLimiter, validate(answerSchema), async (req, res, next) => {
+  try {
+    res.json(await runAssessmentAnswer(req.user, req.params.attemptId, req.params.questionId, req.body.answer));
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post('/:attemptId/submit', async (req, res, next) => {
   try {
-    res.json(await submitAssessment(req.user, req.params.attemptId));
+    const result = await submitAssessment(req.user, req.params.attemptId);
+    // A runner outage leaves the paper in grading rather than failing the student.
+    res.status(result.pending ? 202 : 200).json(result);
   } catch (error) {
     next(error);
   }
