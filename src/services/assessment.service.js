@@ -131,8 +131,22 @@ export async function generateQuestionSet(problem, userId, attemptNumber, { fetc
   };
 }
 
-function publicQuestion(question) {
-  return { ...question };
+/**
+ * Only the prompt is public while an assessment is active.  The generated
+ * question object also contains the answer key, so returning it wholesale
+ * would let a candidate read the correct answers from the network response.
+ * Keep this as an allow-list: future private fields must not leak by default.
+ */
+export function publicQuestion(question) {
+  return {
+    id: question.id,
+    type: question.type,
+    label: question.label,
+    prompt: question.prompt,
+    context: question.context ?? '',
+    selectionMode: question.selectionMode,
+    options: question.options,
+  };
 }
 
 function publicAttempt(attempt, answers = []) {
