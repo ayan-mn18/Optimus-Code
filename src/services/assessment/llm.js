@@ -1,0 +1,42 @@
+import { env } from '../../config/env.js';
+import { chatJson } from '../../lib/llm.js';
+
+/**
+ * Return the assessment chat transport for one problem.
+ *
+ * The override is deliberately problem-ID scoped: a model experiment cannot
+ * silently change research, blogs, or another assessment. The API key is
+ * supplied through the encrypted runtime environment, never source control.
+ */
+export function assessmentChat(problemId) {
+  const override = env.assessment.llmOverride;
+  const active = override.enabled && override.problemIds.includes(problemId);
+  if (!active) return chatJson;
+
+  const config = {
+    ...env.ai,
+    provider: override.provider,
+    apiKey: override.apiKey,
+    baseUrl: override.baseUrl || env.ai.baseUrl,
+    model: override.model || env.ai.model,
+    fastModel: override.fastModel || override.model || env.ai.fastModel,
+  };
+
+  return (options = {}) => {
+    const isOpener = options.maxTokens === 900;
+    const isMcq = options.schemaName === 'question_set';
+    const maxTokens = isOpener
+      ? override.openerMaxTokens
+      : isMcq
+        ? override.mcqMaxTokens
+        : options.maxTokens;
+
+    return chatJson({
+      ...options,
+      llmConfig: config,
+      model: config.model,
+      effort: override.reasoningEffort,
+      ...(maxTokens ? { maxTokens } : {}),
+    });
+  };
+}

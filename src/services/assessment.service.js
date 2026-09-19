@@ -12,6 +12,7 @@ import {
   assembleSlot, bankInventory, drawFromBank, loadArticle, recordExposures, redistribute, storeQuestions,
 } from './assessment/bank.js';
 import { generateOpener, toBankRow } from './assessment/generator.js';
+import { assessmentChat } from './assessment/llm.js';
 import { PROMPT_VERSION } from './assessment/prompts.js';
 
 const OPEN_STATUSES = ['generating', 'active', 'grading'];
@@ -327,7 +328,12 @@ async function openFirstQuestion({ problem, blueprint, usedQuestionIds }) {
   const slot = blueprint.slots.find((entry) => entry.type === 'mcq');
   if (!slot) return null;
   try {
-    const generated = await generateOpener({ problem, slot, seed: `${blueprint.seed}:${slot.id}` });
+    const generated = await generateOpener({
+      problem,
+      slot,
+      seed: `${blueprint.seed}:${slot.id}`,
+      chatImpl: assessmentChat(problem.id),
+    });
     const [row] = await storeQuestions([toBankRow({ problem, generated })]);
     if (!row || usedQuestionIds.has(row.id)) return null;
     return { slot, row };

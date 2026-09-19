@@ -3,6 +3,7 @@ import { seededRandom } from './blueprint.js';
 import {
   generateCodingQuestion, generateDebugQuestion, generateMcqSet, generateSqlQuestion, toBankRow,
 } from './generator.js';
+import { assessmentChat } from './llm.js';
 
 /**
  * The question bank.
@@ -149,12 +150,15 @@ export async function generateMissing({ problem, slots, seed, article, continueO
       return null;
     }
   };
-  const {
-    generateMcqSetImpl = generateMcqSet,
-    generateCodingImpl = generateCodingQuestion,
-    generateDebugImpl = generateDebugQuestion,
-    generateSqlImpl = generateSqlQuestion,
-  } = deps;
+  const chatImpl = deps.chatImpl ?? assessmentChat(problem.id);
+  const generateMcqSetImpl = deps.generateMcqSetImpl
+    ?? ((options) => generateMcqSet({ ...options, chatImpl }));
+  const generateCodingImpl = deps.generateCodingImpl
+    ?? ((options) => generateCodingQuestion({ ...options, chatImpl }));
+  const generateDebugImpl = deps.generateDebugImpl
+    ?? ((options) => generateDebugQuestion({ ...options, chatImpl }));
+  const generateSqlImpl = deps.generateSqlImpl
+    ?? ((options) => generateSqlQuestion({ ...options, chatImpl }));
 
   const produced = [];
   const mcqSlots = slots.filter((slot) => slot.type === 'mcq');
