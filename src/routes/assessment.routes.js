@@ -7,6 +7,7 @@ import { validate } from '../middleware/validate.js';
 import { CODE_LANGUAGES, languageChoices } from '../services/runner/index.js';
 import {
   createAssessment,
+  abandonAssessment,
   getAssessment,
   runAssessmentAnswer,
   saveAssessmentAnswer,
@@ -59,6 +60,14 @@ router.post(
 router.get('/:attemptId', async (req, res, next) => {
   try {
     res.json(await getAssessment(req.user, req.params.attemptId));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete('/:attemptId', async (req, res, next) => {
+  try {
+    res.json(await abandonAssessment(req.user, req.params.attemptId));
   } catch (error) {
     next(error);
   }

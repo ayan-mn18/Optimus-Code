@@ -271,6 +271,40 @@ export async function assemblePaper({ problem, blueprint, userId, article, deps 
 }
 
 /**
+ * Assemble a single slot for progressive delivery.
+ *
+ * The paper is still selected from the verified bank first. Only when that
+ * pool is empty do we generate and verify one question. Keeping this unit of
+ * work small lets the assessment expose its first question while the rest of
+ * the paper is prepared in the background.
+ */
+export async function assembleSlot({ problem, blueprint, userId, article, slot, usedQuestionIds = [], deps = {} }) {
+  const random = seededRandom(`${userId}:${problem.id}:${blueprint.seed}:${slot.id}`);
+  const pool = (await candidatesFor({ problemId: problem.id, kind: slot.type, userId }))
+    .filter((row) => !usedQuestionIds.includes(row.id));
+  const chosen = chooseFromPool(pool, slot, random);
+  if (chosen) return { slot, row: chosen };
+
+  const produced = await generateMissing({
+    problem,
+    slots: [slot],
+    seed: `${blueprint.seed}:${slot.id}`,
+    article,
+    // Optional debug questions may be unavailable until a verified coding
+    // question exists. They are safely dropped and their weight is moved at
+    // the end of assembly.
+    continueOnError: Boolean(slot.optional),
+    deps,
+  });
+  if (!produced.length) return null;
+
+  const stored = await storeQuestions(produced.map(({ generated }) => toBankRow({ problem, generated })));
+  const generated = produced[0];
+  const row = stored.find((candidate) => candidate.fingerprint === toBankRow({ problem, generated: generated.generated }).fingerprint);
+  return row ? { slot, row } : null;
+}
+
+/**
  * A dropped slot's marks go to the remaining work rather than shrinking the
  * paper — 80% has to mean the same thing whether or not the debug question
  * could be written.

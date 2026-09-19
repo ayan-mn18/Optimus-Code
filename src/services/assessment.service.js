@@ -8,7 +8,7 @@ import {
 } from './runner/index.js';
 import { runAnswer, redactResults } from './runner/grade.js';
 import { PASS_RATIO, planBlueprint } from './assessment/blueprint.js';
-import { assemblePaper, loadArticle, recordExposures } from './assessment/bank.js';
+import { assembleSlot, loadArticle, recordExposures, redistribute } from './assessment/bank.js';
 import { PROMPT_VERSION } from './assessment/prompts.js';
 
 const OPEN_STATUSES = ['generating', 'active', 'grading'];
@@ -123,6 +123,11 @@ function publicAttempt(attempt, answers = []) {
   const settled = ['passed', 'failed'].includes(attempt.status);
   const entries = (attempt.question_set ?? []).map(upgradeLegacyEntry);
   const questions = entries.map(publicQuestion);
+  const generation = attempt.blueprint?.generation ?? {};
+  const generationComplete = generation.complete ?? (!attempt.blueprint?.generation || settled || !attempt.blueprint?.slots);
+  const totalQuestions = generationComplete
+    ? questions.length
+    : Number(generation.target ?? attempt.blueprint?.slots?.length ?? questions.length);
   const graded = new Map((answers ?? []).map((answer) => [answer.question_id, answer]));
 
   return {
@@ -137,6 +142,10 @@ function publicAttempt(attempt, answers = []) {
     startedAt: attempt.started_at,
     submittedAt: attempt.submitted_at,
     completedAt: attempt.completed_at,
+    questionsReady: questions.length,
+    totalQuestions,
+    generationComplete,
+    generationError: generation.error ?? null,
     questions,
     answers: Object.fromEntries((answers ?? []).map((answer) => [answer.question_id, answer.answer])),
     ...(settled
@@ -203,6 +212,7 @@ export async function createAssessment(user, problemId, { language } = {}) {
     language: chosen,
     blogAvailable: Boolean(article),
   });
+  blueprint.generation = { complete: false, ready: 0, target: blueprint.slots.length };
 
   const placeholder = unwrap(
     await db
@@ -231,38 +241,105 @@ export async function createAssessment(user, problemId, { language } = {}) {
 
 async function prepareAssessment({ user, problem, blueprint, placeholder, article }) {
   try {
-    const assembled = await assemblePaper({ problem, blueprint, userId: user.id, article });
-    const questionSet = assembled.map(({ slot, row }) => ({
-      slotId: slot.id,
+    const assembled = [];
+    const usedQuestionIds = [];
+
+    for (const slot of blueprint.slots) {
+      const current = unwrap(
+        await db.from('assessment_attempts').select('status').eq('id', placeholder.id).maybeSingle(),
+        'check assessment generation',
+      );
+      if (!current || !OPEN_STATUSES.includes(current.status)) return;
+
+      const result = await assembleSlot({
+        problem, blueprint, userId: user.id, article, slot, usedQuestionIds,
+      });
+      if (!result) {
+        if (slot.optional) continue;
+        throw new Error(`Could not prepare ${slot.type} question ${slot.id}`);
+      }
+
+      usedQuestionIds.push(result.row.id);
+      assembled.push(result);
+      const questionSet = assembled.map(({ slot: itemSlot, row }) => ({
+        slotId: itemSlot.id,
+        questionId: row.id,
+        type: itemSlot.type,
+        weight: itemSlot.weight,
+        conceptArea: row.concept_area,
+        difficulty: row.difficulty,
+        minutes: itemSlot.minutes ?? null,
+        // A debug question exists only in the language it was written in; a
+        // machine-coding question is language-neutral and the student chooses.
+        language: itemSlot.type === 'debug' ? row.payload.referenceSolution.language : null,
+        payload: row.payload,
+      }));
+      const progress = {
+        ...blueprint,
+        generation: { complete: false, ready: questionSet.length, target: blueprint.slots.length },
+      };
+      const published = unwrap(
+        await db
+          .from('assessment_attempts')
+          .update({
+            status: 'active',
+            question_set: questionSet,
+            blueprint: progress,
+            ...(current.status === 'generating' ? { started_at: new Date().toISOString() } : {}),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', placeholder.id)
+          .in('status', OPEN_STATUSES)
+          .select('id')
+          .maybeSingle(),
+        'publish assessment question',
+      );
+      if (!published) return;
+      await recordExposures(user.id, placeholder.id, [result.row.id]);
+    }
+
+    const dropped = blueprint.slots.filter((slot) => !assembled.some(({ slot: item }) => item.id === slot.id));
+    const finalSet = redistribute(assembled, dropped).map(({ slot: itemSlot, row }) => ({
+      slotId: itemSlot.id,
       questionId: row.id,
-      type: slot.type,
-      weight: slot.weight,
+      type: itemSlot.type,
+      weight: itemSlot.weight,
       conceptArea: row.concept_area,
       difficulty: row.difficulty,
-      minutes: slot.minutes ?? null,
-      // A debug question exists only in the language it was written in; a
-      // machine-coding question is language-neutral and the student chooses.
-      language: slot.type === 'debug' ? row.payload.referenceSolution.language : null,
+      minutes: itemSlot.minutes ?? null,
+      language: itemSlot.type === 'debug' ? row.payload.referenceSolution.language : null,
       payload: row.payload,
     }));
-
-    const active = unwrap(
+    unwrap(
       await db
         .from('assessment_attempts')
         .update({
           status: 'active',
-          question_set: questionSet,
-          started_at: new Date().toISOString(),
+          question_set: finalSet,
+          blueprint: { ...blueprint, generation: { complete: true, ready: finalSet.length, target: blueprint.slots.length } },
           updated_at: new Date().toISOString(),
         })
         .eq('id', placeholder.id)
-        .select('*')
-        .single(),
-      'activate assessment',
+        .eq('status', 'active'),
+      'finish assessment generation',
     );
-    await recordExposures(user.id, active.id, assembled.map(({ row }) => row.id));
   } catch (error) {
-    await db.from('assessment_attempts').update({ status: 'failed', updated_at: new Date().toISOString() }).eq('id', placeholder.id);
+    await db.from('assessment_attempts')
+      .update({
+        status: 'failed',
+        blueprint: {
+          ...blueprint,
+          generation: {
+            complete: false,
+            ready: 0,
+            target: blueprint.slots.length,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        },
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', placeholder.id)
+      .in('status', OPEN_STATUSES);
     console.error('[optimus] paper assembly failed:', error instanceof Error ? error.message : error);
   }
 }
@@ -430,6 +507,8 @@ async function gradeEntry(entry, answer) {
 export async function submitAssessment(user, attemptId) {
   const attempt = await loadOwnedAttempt(user.id, attemptId);
   if (['passed', 'failed'].includes(attempt.status)) throw ApiError.conflict('Assessment was already submitted');
+  const generationComplete = attempt.blueprint?.generation?.complete ?? true;
+  if (!generationComplete) throw ApiError.conflict('Assessment is still preparing. Please wait for the remaining questions.');
 
   const answers = unwrap(
     await db.from('assessment_answers').select('*').eq('attempt_id', attempt.id),
@@ -520,6 +599,23 @@ export async function submitAssessment(user, attemptId) {
     score: Number(total.toFixed(2)),
     maxScore,
   };
+}
+
+/** Close an open attempt and discard its answers. The question bank remains reusable. */
+export async function abandonAssessment(user, attemptId) {
+  const deleted = unwrap(
+    await db
+      .from('assessment_attempts')
+      .delete()
+      .eq('id', attemptId)
+      .eq('user_id', user.id)
+      .in('status', OPEN_STATUSES)
+      .select('id')
+      .maybeSingle(),
+    'abandon assessment',
+  );
+  if (!deleted) throw ApiError.conflict('Assessment is no longer open');
+  return { abandoned: true, attemptId: deleted.id };
 }
 
 /**
