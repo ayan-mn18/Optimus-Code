@@ -309,10 +309,15 @@ class PostgresQuery {
     const rows = result.rows.map((row) => {
       const copy = { ...row };
       delete copy.__total_count;
-      for (const key of hiddenForeignKeys) delete copy[key];
       return copy;
     });
     await this.attachRelations(rows, parsed.relations);
+    // Relation attachment needs the hidden foreign keys. Remove them only
+    // after the related rows have been materialised so Postgres mode matches
+    // Supabase/PostgREST's nested relation shape.
+    rows.forEach((row) => {
+      for (const key of hiddenForeignKeys) delete row[key];
+    });
     return this.applyCardinality(rows, count);
   }
 
