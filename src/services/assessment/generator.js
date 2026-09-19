@@ -214,7 +214,12 @@ export async function generateMcqSet({ problem, slots, seed, article, chatImpl =
     model: env.ai.fastModel,
   });
   console.info(`[optimus] generated ${slots.length} MCQ question(s) in ${Date.now() - startedAt}ms`);
-  const questions = Array.isArray(raw?.questions) ? raw.questions : [];
+  // JSON-object mode providers occasionally unwrap a one-item question_set
+  // into the question itself. Accept that harmless shape for a single slot;
+  // the schema parser below still validates every field before banking it.
+  const questions = Array.isArray(raw?.questions)
+    ? raw.questions
+    : slots.length === 1 && Array.isArray(raw?.options) ? [raw] : [];
   if (questions.length !== slots.length) {
     throw new GenerationError(`Expected ${slots.length} questions, received ${questions.length}`);
   }
