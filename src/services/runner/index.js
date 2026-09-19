@@ -79,7 +79,11 @@ export function buildSubmissions({ question, languageId, source, tests, marker }
 
   const built = language.buildProgram({ entity: question.entity, tests, source, marker });
   const judge0 = built.files
-    ? { language_id: language.judge0Id, additional_files: zipBase64(built.files) }
+    ? {
+      language_id: language.judge0Id,
+      additional_files: zipBase64(built.files),
+      ...(built.source ? { source_code: built.source } : {}),
+    }
     : { language_id: language.judge0Id, source_code: built.source };
 
   return [{ mode: 'marker', tests, judge0 }];

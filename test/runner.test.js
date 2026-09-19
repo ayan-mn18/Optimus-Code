@@ -131,6 +131,7 @@ test('cpp submissions use Judge0 GCC and ship the student file, harness, and scr
     marker: newMarker(),
   });
   assert.equal(submission.judge0.language_id, 54);
+  assert.match(submission.judge0.source_code, /int main\(\)/);
   const archive = Buffer.from(submission.judge0.additional_files, 'base64');
   const text = archive.toString('latin1');
   for (const name of ['LruCache.cpp', 'main.cpp', 'compile', 'run']) assert.ok(text.includes(name), `${name} missing`);

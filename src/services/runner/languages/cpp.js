@@ -169,10 +169,10 @@ static string canon(const char* value) { return jq(value ? string(value) : strin
 static string canon(bool value) { return value ? "true" : "false"; }
 static string canon(nullptr_t) { return "null"; }
 
-template <typename T, enable_if_t<is_integral_v<T> && !is_same_v<T, bool>, int> = 0>
+template <typename T, typename enable_if<is_integral<T>::value && !is_same<T, bool>::value, int>::type = 0>
 static string canon(T value) { return to_string(value); }
 
-template <typename T, enable_if_t<is_floating_point_v<T>, int> = 0>
+template <typename T, typename enable_if<is_floating_point<T>::value, int>::type = 0>
 static string canon(T value) {
     if (!isfinite(value)) return "null";
     if (value == trunc(value) && fabs(value) < 9.0e15) return to_string(static_cast<long long>(value));
@@ -195,13 +195,13 @@ static string canon(const vector<T>& value) {
 }
 
 static string mapKey(const string& value) { return value; }
-template <typename T, enable_if_t<is_integral_v<T>, int> = 0>
+template <typename T, typename enable_if<is_integral<T>::value, int>::type = 0>
 static string mapKey(T value) { return to_string(value); }
 
 template <typename K, typename V>
 static string canon(const map<K, V>& value) {
     vector<pair<string, string>> entries;
-    for (const auto& [key, item] : value) entries.emplace_back(mapKey(key), canon(item));
+    for (const auto& entry : value) entries.emplace_back(mapKey(entry.first), canon(entry.second));
     sort(entries.begin(), entries.end(), [](const auto& left, const auto& right) { return left.first < right.first; });
     string output = "{";
     for (size_t index = 0; index < entries.size(); index += 1) {
@@ -226,7 +226,7 @@ static void emit(const string& name, bool passed, const string& step, const stri
 int main() {
     cout << ${quote(marker)} << '[';
 ${tests.map((test) => testBlock(entity, test)).join('\n')}
-    cout << "]\\n";
+    cout << "]\n";
 }
 `;
 
@@ -258,11 +258,13 @@ export const cpp = {
   },
 
   buildProgram({ entity, tests, source, marker }) {
+    const harness = main(entity, tests, marker);
     return {
+      source: harness,
       files: [
         { name: `${entity.name}.cpp`, content: source },
-        { name: 'main.cpp', content: main(entity, tests, marker) },
-        { name: 'compile', content: '#!/usr/bin/env bash\ng++ -std=c++17 -O2 -pipe main.cpp -o main\n' },
+        { name: 'main.cpp', content: harness },
+        { name: 'compile', content: '#!/usr/bin/env bash\ng++ -std=c++14 -O2 -pipe main.cpp -o main\n' },
         { name: 'run', content: '#!/usr/bin/env bash\n./main\n' },
       ],
     };
