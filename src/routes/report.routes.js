@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
-import { z } from 'zod';
+import { reportSchema } from '../lib/report-validation.js';
 import { ApiError } from '../lib/errors.js';
 import { requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -11,26 +11,18 @@ const router = Router();
 const supportEmail = process.env.SUPPORT_EMAIL?.trim() || 'info@optimusco.de';
 const reportLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
+  limit: 20,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: { message: 'Too many reports from this address, try again later' } },
+});
+const accountReportLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
   limit: 5,
+  keyGenerator: (req) => req.user.id,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   message: { error: { message: 'Too many reports from this account, try again later' } },
-});
-
-const screenshotSchema = z.object({
-  name: z.string().trim().min(1).max(120),
-  type: z.enum(['image/png', 'image/jpeg', 'image/webp']),
-  dataUrl: z.string()
-    .max(7_000_000, 'Screenshot is too large')
-    .regex(/^data:image\/(?:png|jpeg|webp);base64,/, 'Screenshot must be a PNG, JPEG, or WebP image'),
-});
-
-const reportSchema = z.object({
-  message: z.string().trim().min(10, 'Tell us a little more about the problem').max(5_000),
-  steps: z.string().trim().max(2_000).optional(),
-  pageUrl: z.string().trim().url().max(500).optional(),
-  userAgent: z.string().trim().max(500).optional(),
-  screenshot: screenshotSchema.optional(),
 });
 
 function escapeHtml(value) {
@@ -49,7 +41,7 @@ function block(label, value) {
 
 router.use(requireAuth);
 
-router.post('/', reportLimiter, validate(reportSchema), async (req, res, next) => {
+router.post('/', reportLimiter, accountReportLimiter, validate(reportSchema), async (req, res, next) => {
   try {
     if (!emailConfigured()) throw ApiError.serviceUnavailable('Problem reports are temporarily unavailable');
 

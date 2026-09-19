@@ -23,6 +23,13 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: { message: 'Too many attempts, try again in a few minutes' } },
 });
+const refreshLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 120,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: { message: 'Too many refresh attempts, try again later' } },
+});
 
 
 const timezone = z
@@ -32,8 +39,8 @@ const timezone = z
 
 
 const loginSchema = z.object({
-  email: z.string().trim().toLowerCase().email('Enter a valid email'),
-  password: z.string().min(1, 'Password is required'),
+  email: z.string().trim().toLowerCase().max(254).email('Enter a valid email'),
+  password: z.string().min(1, 'Password is required').max(128),
 });
 
 const publicUser = (user) => ({
@@ -92,7 +99,7 @@ router.post('/login', authLimiter, validate(loginSchema), async (req, res, next)
 router.post(
   '/google',
   authLimiter,
-  validate(z.object({ credential: z.string().min(100), timezone })),
+  validate(z.object({ credential: z.string().min(100).max(8192), timezone })),
   async (req, res, next) => {
     try {
       if (!env.google.clientId) throw new ApiError(503, 'Google sign-in is not configured');
@@ -167,7 +174,7 @@ router.post(
   },
 );
 
-router.post('/refresh', validate(z.object({ refreshToken: z.string().min(10) })), async (req, res, next) => {
+router.post('/refresh', refreshLimiter, validate(z.object({ refreshToken: z.string().min(10).max(8192) })), async (req, res, next) => {
   try {
     const userId = await rotateRefreshToken(req.body.refreshToken);
     const user = unwrap(await db.from('users').select('*').eq('id', userId).maybeSingle(), 'load user');
