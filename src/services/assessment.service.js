@@ -256,10 +256,15 @@ async function prepareAssessment({ user, problem, blueprint, placeholder, articl
           updated_at: new Date().toISOString(),
         })
         .eq('id', placeholder.id)
+        .eq('status', 'generating')
         .select('*')
-        .single(),
-      'activate assessment',
+        .maybeSingle(),
+        'activate assessment',
     );
+    // The user may have quit while the paper was being assembled. In that
+    // case the attempt was deleted (or is no longer open), so do not revive it
+    // or record exposures after the user left.
+    if (!active) return;
     await recordExposures(user.id, active.id, assembled.map(({ row }) => row.id));
   } catch (error) {
     await db.from('assessment_attempts').update({ status: 'failed', updated_at: new Date().toISOString() }).eq('id', placeholder.id);
@@ -274,6 +279,23 @@ export async function getAssessment(user, attemptId) {
     getProblemById(attempt.problem_id, 'id, title, kind, topic, subtopic, difficulty'),
   ]);
   return { attempt: publicAttempt(attempt, answers), problem };
+}
+
+/** Abandon an open paper without submitting or recording a failed result. */
+export async function abandonAssessment(user, attemptId) {
+  const removed = unwrap(
+    await db
+      .from('assessment_attempts')
+      .delete()
+      .eq('id', attemptId)
+      .eq('user_id', user.id)
+      .in('status', OPEN_STATUSES)
+      .select('id')
+      .maybeSingle(),
+    'quit assessment',
+  );
+  if (!removed) throw ApiError.conflict('Assessment is no longer open');
+  return { abandoned: true, attemptId };
 }
 
 /* -------------------------------------------------------------------------- */
