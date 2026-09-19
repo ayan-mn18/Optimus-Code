@@ -8,6 +8,7 @@ import {
   PROMPT_VERSION, bugPrompt, mcqPrompt, openerPrompt, portPrompt, repairPrompt, repairTestsPrompt,
   specPrompt, sqlPrompt, testsPrompt,
 } from './prompts.js';
+import { assessmentModel } from './llm.js';
 
 /**
  * Writing a question is the easy half. Proving it is answerable is the other.
@@ -585,7 +586,7 @@ export function toBankRow({ problem, generated }) {
     fingerprint: fingerprint(generated.question),
     source: generated.meta.source,
     blog_id: generated.meta.blogId ?? null,
-    model_version: env.ai.model,
+    model_version: assessmentModel(problem.id),
     prompt_version: PROMPT_VERSION,
     verified: generated.question.kind === 'mcq' ? true : Boolean(generated.verification),
     verification: generated.verification ?? null,

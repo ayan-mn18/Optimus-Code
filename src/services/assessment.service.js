@@ -12,7 +12,7 @@ import {
   assembleSlot, bankInventory, drawFromBank, loadArticle, recordExposures, redistribute, storeQuestions,
 } from './assessment/bank.js';
 import { generateOpener, toBankRow } from './assessment/generator.js';
-import { assessmentChat } from './assessment/llm.js';
+import { assessmentChat, assessmentModel } from './assessment/llm.js';
 import { PROMPT_VERSION } from './assessment/prompts.js';
 
 const OPEN_STATUSES = ['generating', 'active', 'grading'];
@@ -289,7 +289,7 @@ export async function createAssessment(user, problemId, { language } = {}) {
         user_id: user.id,
         problem_id: problemId,
         status: questionSet.length ? 'active' : 'generating',
-        model_version: env.ai.model,
+        model_version: assessmentModel(problemId),
         prompt_version: PROMPT_VERSION,
         blueprint: {
           ...blueprint,

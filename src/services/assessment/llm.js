@@ -1,6 +1,13 @@
 import { env } from '../../config/env.js';
 import { chatJson } from '../../lib/llm.js';
 
+export function assessmentModel(problemId) {
+  const override = env.assessment.llmOverride;
+  return override.enabled && override.problemIds.includes(problemId)
+    ? override.model || env.ai.model
+    : env.ai.model;
+}
+
 /**
  * Return the assessment chat transport for one problem.
  *
@@ -15,10 +22,9 @@ export function assessmentChat(problemId) {
 
   const config = {
     ...env.ai,
-    provider: override.provider,
     apiKey: override.apiKey,
     baseUrl: override.baseUrl || env.ai.baseUrl,
-    model: override.model || env.ai.model,
+    model: assessmentModel(problemId),
     fastModel: override.fastModel || override.model || env.ai.fastModel,
   };
   // DeepSeek implements JSON mode but currently rejects OpenAI's strict
