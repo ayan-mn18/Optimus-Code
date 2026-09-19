@@ -21,8 +21,11 @@ const assessmentOverrideProblemIds = (process.env.ASSESSMENT_LLM_OVERRIDE_PROBLE
   .split(',')
   .map((value) => value.trim())
   .filter(Boolean);
+const assessmentOverrideAll = process.env.ASSESSMENT_LLM_OVERRIDE_ALL === 'true';
 const assessmentLlmOverride = {
-  enabled: Boolean(assessmentOverrideProblemIds.length && process.env.ASSESSMENT_LLM_OVERRIDE_API_KEY?.trim()),
+  enabled: Boolean((assessmentOverrideProblemIds.length || assessmentOverrideAll)
+    && process.env.ASSESSMENT_LLM_OVERRIDE_API_KEY?.trim()),
+  all: assessmentOverrideAll,
   problemIds: assessmentOverrideProblemIds,
   provider: (process.env.ASSESSMENT_LLM_OVERRIDE_PROVIDER ?? 'openai').trim().toLowerCase(),
   apiKey: process.env.ASSESSMENT_LLM_OVERRIDE_API_KEY?.trim() ?? '',

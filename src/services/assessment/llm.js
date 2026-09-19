@@ -3,7 +3,7 @@ import { chatJson } from '../../lib/llm.js';
 
 export function assessmentModel(problemId) {
   const override = env.assessment.llmOverride;
-  return override.enabled && override.problemIds.includes(problemId)
+  return override.enabled && (override.all || override.problemIds.includes(problemId))
     ? override.model || env.ai.model
     : env.ai.model;
 }
@@ -17,7 +17,7 @@ export function assessmentModel(problemId) {
  */
 export function assessmentChat(problemId) {
   const override = env.assessment.llmOverride;
-  const active = override.enabled && override.problemIds.includes(problemId);
+  const active = override.enabled && (override.all || override.problemIds.includes(problemId));
   if (!active) return chatJson;
 
   const config = {
