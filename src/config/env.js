@@ -68,6 +68,10 @@ export const env = {
     accessTtl: process.env.JWT_ACCESS_TTL ?? '15m',
     refreshTtl: process.env.JWT_REFRESH_TTL ?? '30d',
   },
+  admin: {
+    // Dedicated server-to-server credential; never expose through VITE_* or JWTs.
+    apiKey: process.env.ADMIN_API_KEY?.trim() ?? '',
+  },
 
   dailyGoals: {
     DSA: Number(process.env.DAILY_DSA_TARGET ?? 3),

@@ -124,6 +124,69 @@ it does not require a browser or an active user session. Failed-day reminders,
 end-of-day warnings, seven-day streak milestones, and 50-solve recaps are
 idempotent and retried by the worker.
 
+### Grant complimentary Pro by email (admin API)
+
+`POST /api/admin/pro/grant` grants **permanent complimentary Pro** to one existing
+account. It uses the existing `users.billing_exempt` entitlement, unlocking LLD,
+HLD and Pro blogs. It never creates accounts, charges a customer, changes a Dodo
+subscription, or sends an email. No database migration is required.
+
+Configure a **new, dedicated** `ADMIN_API_KEY` on the backend before using it.
+Generate one with `openssl rand -hex 32` and save it in your password manager and
+the encrypted production environment (`OPTIMUS_PROD_ENV` / SSM), preserving all
+existing environment values. Redeploy/restart the API to load it. For local use,
+set it in the backend's ignored `.env.local`. Do not commit a real key, reuse a
+JWT/payment/database secret, or put it in the frontend or a `VITE_*` variable.
+Anyone holding this key can grant Pro; rotate it by replacing it and restarting.
+Blank, short or malformed keys leave the endpoint disabled (HTTP 503).
+
+From a trusted API client, set `OPTIMUS_API_BASE_URL` to your backend origin (not
+the frontend website) and supply the key as a bearer credential. Local origin:
+`http://localhost:4000`. Production calls must use HTTPS.
+
+```bash
+curl --fail-with-body --request POST "$OPTIMUS_API_BASE_URL/api/admin/pro/grant" \
+  --header "Authorization: Bearer $ADMIN_API_KEY" \
+  --header 'Content-Type: application/json' \
+  --data '{"email":"subscriber@example.com"}'
+```
+
+The only accepted body field is `email`; surrounding whitespace and casing are
+normalized just like sign-in. A normal user JWT cannot authorize this endpoint.
+Keys in query parameters or request bodies are not accepted.
+
+```json
+{
+  "user": {
+    "id": "recipient-uuid",
+    "email": "subscriber@example.com",
+    "name": "Subscriber",
+    "billingExempt": true
+  },
+  "access": "pro",
+  "expiresAt": null,
+  "alreadyGranted": false,
+  "billingUnchanged": true
+}
+```
+
+- `200`: granted, or already complimentary (`alreadyGranted: true`). Safe to retry.
+- `400`: invalid email/body; `401`: missing or incorrect admin key.
+- `404`: email not registered. Ask the recipient to sign in first, then retry.
+- `409`: unresolved active, on-hold, paused subscription or pending checkout;
+  resolve it in Dodo before granting. This endpoint does **not** cancel billing or
+  invalidate an already-issued checkout link. It also returns 409 if the target
+  account changes during the request.
+- `429`: more than 30 admin requests per IP per minute (including rejected ones).
+- `503`: admin key not configured; `500`: database/server error, not a confirmed grant.
+
+The recipient should reload the dashboard after a successful grant; session
+caches on other API processes expire within five seconds. Existing subscriptions
+are untouched, and this endpoint has no revocation operation. Successful changes
+produce a structured `pro.granted` server log containing the user ID and time,
+never the admin key. Run `node --test test/admin.test.js` for the isolated API,
+authorization and PostgreSQL regression tests; they do not connect to production.
+
 ### Transactional email
 
 Brevo sends one-time waitlist invitations, account-ready messages, milestone celebrations,

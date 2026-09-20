@@ -20,6 +20,7 @@ import blogRoutes from './routes/blog.routes.js';
 import researchRoutes from './routes/research.routes.js';
 import searchRoutes from './routes/search.routes.js';
 import reportRoutes from './routes/report.routes.js';
+import adminRoutes from './routes/admin.routes.js';
 
 export function createApp() {
   const app = express();
@@ -70,6 +71,7 @@ export function createApp() {
   app.use('/api/research', researchRoutes);
   app.use('/api/search', searchRoutes);
   app.use('/api/reports', reportRoutes);
+  app.use('/api/admin', adminRoutes);
 
   app.use(notFoundHandler);
   app.use(errorHandler);
