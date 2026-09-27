@@ -430,17 +430,6 @@ export async function refreshDayCounters(userId, date) {
   );
 }
 
-async function resetMalformedToday(userId, date) {
-  unwrap(
-    await db.from('daily_assignments').delete().eq('user_id', userId).eq('assigned_on', date),
-    'remove malformed daily assignments',
-  );
-  unwrap(
-    await db.from('daily_logs').delete().eq('user_id', userId).eq('log_date', date),
-    'remove malformed daily log',
-  );
-}
-
 /**
  * Applies a goal change to the open day immediately. Completed assignments are
  * kept where possible; lowering a goal removes the excess assignments, while
@@ -448,7 +437,7 @@ async function resetMalformedToday(userId, date) {
  */
 async function syncTodayTargets(userId, today, enrollment, log) {
   const targets = enrollmentTargets(enrollment);
-  const [assignments, solvedRows] = await Promise.all([
+  const [assignments, solvedRows, catalog] = await Promise.all([
     unwrap(
       await db
         .from('daily_assignments')
@@ -463,14 +452,27 @@ async function syncTodayTargets(userId, today, enrollment, log) {
       await db.from('user_problems').select('problem_id').eq('user_id', userId).eq('status', 'solved'),
       'load solved problems for goal update',
     ),
+    getProblemCatalog({ fields: 'id, kind', orderBy: null }),
   ]);
+  const problemById = new Map(catalog.map((problem) => [problem.id, problem]));
+  const assignmentsWithKinds = assignments.map((assignment) => ({
+    ...assignment,
+    // Native Postgres and PostgREST should both attach this relation. The
+    // catalogue fallback keeps a goal update from treating existing DSA rows
+    // as missing when the nested relation is absent in an older deployment.
+    problem: assignment.problem?.kind
+      ? assignment.problem
+      : problemById.get(assignment.problem_id) ?? null,
+  }));
   const solvedIds = new Set(solvedRows.map((row) => row.problem_id));
-  const removeIds = [];
+  const removeIds = assignmentsWithKinds
+    .filter((assignment) => !assignment.problem?.kind)
+    .map((assignment) => assignment.id);
   const removedSolvedIds = [];
   const keptByKind = new Map();
 
   for (const kind of KINDS) {
-    const current = assignments.filter((assignment) => assignment.problem?.kind === kind);
+    const current = assignmentsWithKinds.filter((assignment) => assignment.problem?.kind === kind);
     const target = normalizeDailyTarget(targets[kind], kind);
     const solved = current.filter((assignment) => solvedIds.has(assignment.problem_id));
     const unsolved = current.filter((assignment) => !solvedIds.has(assignment.problem_id));
@@ -508,7 +510,7 @@ async function syncTodayTargets(userId, today, enrollment, log) {
     KINDS.map((kind) => [kind, Math.max(0, targets[kind] - keptByKind.get(kind).length)]),
   );
   const additions = await pickDailyProblems(userId, today, missingTargets);
-  const currentMaxPosition = assignments.reduce((max, assignment) => Math.max(max, assignment.position ?? 0), -1);
+  const currentMaxPosition = assignmentsWithKinds.reduce((max, assignment) => Math.max(max, assignment.position ?? 0), -1);
   if (additions.length) {
     unwrap(
       await db.from('daily_assignments').insert(
@@ -554,7 +556,7 @@ function todayGoalChanged(log, enrollment) {
 }
 
 async function isMalformedToday(userId, date, log) {
-  if (!log || log.status !== 'active') return false;
+  if (!log) return false;
   if (log.required_count !== targetTotal(log)) return true;
   const assignments = unwrap(
     await db
@@ -565,7 +567,7 @@ async function isMalformedToday(userId, date, log) {
       .eq('round', 1),
     'check daily assignment count',
   );
-  return assignments.length > log.required_count;
+  return assignments.length !== log.required_count;
 }
 
 /**
@@ -581,12 +583,7 @@ export async function getToday(user) {
     await db.from('daily_logs').select('*').eq('user_id', user.id).eq('log_date', today).maybeSingle(),
     'load today log',
   );
-  if (await isMalformedToday(user.id, today, log)) {
-    await resetMalformedToday(user.id, today);
-    log = null;
-  }
-
-  if (log && todayGoalChanged(log, enrollment)) {
+  if (log && (await isMalformedToday(user.id, today, log) || todayGoalChanged(log, enrollment))) {
     log = await syncTodayTargets(user.id, today, enrollment, log);
   }
 
