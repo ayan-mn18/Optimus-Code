@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import { normalizeDailyTarget, quotaComplete } from '../src/services/challenge.service.js';
+import { normalizeDailyTarget, quotaComplete, selectDailyPicks } from '../src/services/challenge.service.js';
 import { createJudge0 } from '../src/services/runner/judge0.js';
 import { PRICING, publicSubscription } from '../src/services/billing.service.js';
 
@@ -15,6 +15,33 @@ test('daily completion requires every configured category', () => {
   assert.equal(quotaComplete({ dsa_required: 3, dsa_solved: 3, lld_required: 1, lld_solved: 1, hld_required: 1, hld_solved: 1 }), true);
   assert.equal(quotaComplete({ dsa_required: 3, dsa_solved: 5, lld_required: 1, lld_solved: 0, hld_required: 1, hld_solved: 2 }), false);
   assert.equal(quotaComplete({ dsa_required: 0, dsa_solved: 0, lld_required: 1, lld_solved: 1, hld_required: 0, hld_solved: 0 }), true);
+});
+
+test('goal changes never reassign a problem already in today’s target set', () => {
+  const problems = [
+    { id: 'lld-today', kind: 'LLD', topic: 'Caching' },
+    { id: 'lld-backlog', kind: 'LLD', topic: 'Queues' },
+    { id: 'lld-fresh', kind: 'LLD', topic: 'Queues' },
+    { id: 'hld-today', kind: 'HLD', topic: 'Storage' },
+    { id: 'hld-fresh', kind: 'HLD', topic: 'Caching' },
+  ];
+  const assignments = [
+    { problem_id: 'lld-today', assigned_on: '2026-09-26' },
+    { problem_id: 'lld-today', assigned_on: '2026-09-27' },
+    { problem_id: 'lld-backlog', assigned_on: '2026-09-25' },
+    { problem_id: 'hld-today', assigned_on: '2026-09-27' },
+  ];
+
+  const picks = selectDailyPicks({
+    problems,
+    assignments,
+    solvedIds: new Set(),
+    today: '2026-09-27',
+    targets: { DSA: 0, LLD: 1, HLD: 1 },
+  });
+
+  assert.deepEqual(new Set(picks.map(({ problem }) => problem.id)), new Set(['lld-backlog', 'hld-fresh']));
+  assert.equal(new Set(picks.map(({ problem }) => problem.id)).size, picks.length);
 });
 
 /** A Judge0 that reports whatever language set the test wants it to have. */

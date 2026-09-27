@@ -274,20 +274,18 @@ async function getSolvedProblemIds(userId) {
  * Picks the day's set: a few problems carried over from red days, the rest
  * fresh, all from different topics wherever the remaining pool allows it.
  */
-async function pickDailyProblems(userId, today, targets) {
-  const [problems, assignments, solvedIds] = await Promise.all([
-    getProblemCatalog({ fields: PROBLEM_FIELDS }),
-    unwrap(
-      await db
-        .from('daily_assignments')
-        .select('problem_id, assigned_on, round')
-        .eq('user_id', userId)
-        .eq('round', 1),
-      'load past target assignments',
-    ),
-    getSolvedProblemIds(userId),
-  ]);
+export function selectDailyPicks({ problems, assignments, solvedIds, today, targets }) {
   const assignedEver = new Set(assignments.map((assignment) => assignment.problem_id));
+  // Goal changes and extra-set requests run this picker while today's target
+  // assignments already exist. A backlog problem can therefore appear in the
+  // historical index and today's set at the same time. Never pick an ID that
+  // is already assigned today or the unique assignment constraint turns a
+  // harmless goal change into a 500 response.
+  const assignedToday = new Set(
+    assignments
+      .filter((assignment) => assignment.assigned_on === today)
+      .map((assignment) => assignment.problem_id),
+  );
 
   const byId = new Map(problems.map((problem) => [problem.id, problem]));
   const firstAssigned = new Map();
@@ -312,7 +310,10 @@ async function pickDailyProblems(userId, today, targets) {
     const backlog = [...firstAssigned.entries()]
       .filter(([problemId, date]) => {
         const problem = byId.get(problemId);
-        return date < today && !solvedIds.has(problemId) && problem?.kind === kind;
+        return date < today
+          && !assignedToday.has(problemId)
+          && !solvedIds.has(problemId)
+          && problem?.kind === kind;
       })
       .sort((a, b) => (a[1] < b[1] ? -1 : 1))
       .map(([problemId]) => ({ problem: byId.get(problemId), carriedOver: true }));
@@ -349,6 +350,22 @@ async function pickDailyProblems(userId, today, targets) {
   }
 
   return allPicks;
+}
+
+async function pickDailyProblems(userId, today, targets) {
+  const [problems, assignments, solvedIds] = await Promise.all([
+    getProblemCatalog({ fields: PROBLEM_FIELDS }),
+    unwrap(
+      await db
+        .from('daily_assignments')
+        .select('problem_id, assigned_on, round')
+        .eq('user_id', userId)
+        .eq('round', 1),
+      'load past target assignments',
+    ),
+    getSolvedProblemIds(userId),
+  ]);
+  return selectDailyPicks({ problems, assignments, solvedIds, today, targets });
 }
 
 /** Recomputes solved/bonus counts for a day and flips it green once the target is hit. */
